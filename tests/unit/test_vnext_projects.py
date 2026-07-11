@@ -14,6 +14,8 @@ class InMemoryVNextProjectStore:
         self.artifacts: dict[str, dict[str, object]] = {}
         self.revisions: list[dict[str, object]] = []
         self.events: list[dict[str, object]] = []
+        self.cleared_embedding_ids: list[str] = []
+        self.fact_key_updates: list[tuple[str, str | None]] = []
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
@@ -40,6 +42,30 @@ class InMemoryVNextProjectStore:
     def update_memory(self, *, memory_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         memory = self.memories[memory_id]
         memory.update(patch)
+        return memory
+
+    def clear_memory_embedding(self, *, memory_id: str) -> dict[str, object] | None:
+        memory = self.memories.get(memory_id)
+        if memory is None:
+            return None
+        self.cleared_embedding_ids.append(memory_id)
+        memory["embedding"] = None
+        metadata = memory.get("metadata_json")
+        if isinstance(metadata, dict):
+            metadata.pop("_alice_embedding", None)
+        return memory
+
+    def update_memory_fact_keys(
+        self,
+        *,
+        memory_id: str,
+        fact_keys: str | None,
+    ) -> dict[str, object] | None:
+        memory = self.memories.get(memory_id)
+        if memory is None:
+            return None
+        self.fact_key_updates.append((memory_id, fact_keys))
+        memory["fact_keys"] = fact_keys
         return memory
 
     def append_revision(self, revision: dict[str, object], **_kwargs) -> dict[str, object]:
@@ -265,6 +291,32 @@ def test_accepting_project_update_updates_project_promotes_memory_and_appends_re
     assert store.revisions[0]["memory_key"] == store.memories["memory-2"]["memory_key"]
     assert store.revisions[0]["revision_type"] == "edited"
     assert store.events[-1]["event_type"] == "project.update_candidate_accepted"
+
+
+def test_project_update_review_refreshes_content_derived_indexes() -> None:
+    store = _seed_store()
+    service = VNextProjectService(store)
+    artifact = service.generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    memory_id = str(artifact["metadata_json"]["candidate_memory_id"])
+    memory = store.memories[memory_id]
+    memory["embedding"] = [0.1, 0.2]
+    metadata = memory.setdefault("metadata_json", {})
+    assert isinstance(metadata, dict)
+    metadata["_alice_embedding"] = {"content_sha256": "stale"}
+
+    service.review_project_update(
+        artifact_id=str(artifact["id"]),
+        action="edit",
+        edited_current_state="Alice Bike-a-Thon raised $5,000 for the release fundraiser.",
+    )
+
+    assert store.cleared_embedding_ids == [memory_id]
+    assert memory["embedding"] is None
+    assert "_alice_embedding" not in metadata
+    assert store.fact_key_updates[-1][0] == memory_id
+    assert "dollars" in str(memory["fact_keys"])
 
 
 def test_rejecting_project_update_logs_rejection_without_updating_project() -> None:

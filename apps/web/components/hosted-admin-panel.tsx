@@ -3,7 +3,7 @@
 import type { FormEvent } from "react";
 import { useState } from "react";
 
-import { getApiConfig } from "../lib/api";
+import { getApiConfig, isSupportedApiBaseUrl, requestJson, sanitizeApiBaseUrl } from "../lib/api";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
 
@@ -59,8 +59,9 @@ function formatTimestamp(value: string | undefined) {
 
 export function HostedAdminPanel({ apiBaseUrl }: HostedAdminPanelProps) {
   const apiConfig = getApiConfig();
-  const resolvedApiBaseUrl = (apiBaseUrl ?? apiConfig.apiBaseUrl).trim();
-  const liveModeReady = resolvedApiBaseUrl !== "";
+  const configuredApiBaseUrl = (apiBaseUrl ?? apiConfig.apiBaseUrl).trim();
+  const resolvedApiBaseUrl = sanitizeApiBaseUrl(configuredApiBaseUrl);
+  const liveModeReady = isSupportedApiBaseUrl(configuredApiBaseUrl);
 
   const [sessionToken, setSessionToken] = useState("");
   const [isWorking, setIsWorking] = useState(false);
@@ -68,7 +69,9 @@ export function HostedAdminPanel({ apiBaseUrl }: HostedAdminPanelProps) {
   const [statusText, setStatusText] = useState(
     liveModeReady
       ? "Load hosted admin datasets to inspect workspace, delivery, incidents, rollout flags, analytics, and rate-limit posture."
-      : "Admin datasets are unavailable until NEXT_PUBLIC_ALICEBOT_API_BASE_URL is configured.",
+      : configuredApiBaseUrl
+        ? "Hosted admin controls require HTTPS for remote APIs; loopback HTTP is allowed for local development."
+        : "Admin datasets are unavailable until NEXT_PUBLIC_ALICEBOT_API_BASE_URL is configured.",
   );
 
   const [overview, setOverview] = useState<HostedOverview | null>(null);
@@ -82,7 +85,9 @@ export function HostedAdminPanel({ apiBaseUrl }: HostedAdminPanelProps) {
 
   async function requestAdminJson<T>(path: string, init?: RequestInit): Promise<T> {
     if (!liveModeReady) {
-      throw new Error("NEXT_PUBLIC_ALICEBOT_API_BASE_URL must be configured for hosted admin controls.");
+      throw new Error(
+        "NEXT_PUBLIC_ALICEBOT_API_BASE_URL must use HTTPS remotely or loopback HTTP for local development.",
+      );
     }
 
     const token = sessionToken.trim();
@@ -90,22 +95,13 @@ export function HostedAdminPanel({ apiBaseUrl }: HostedAdminPanelProps) {
       throw new Error("Hosted session token is required.");
     }
 
-    const response = await fetch(new URL(path, `${resolvedApiBaseUrl.replace(/\/$/, "")}/`).toString(), {
-      cache: "no-store",
+    return requestJson<T>(resolvedApiBaseUrl, path, {
       ...init,
       headers: {
-        "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
         ...(init?.headers ?? {}),
       },
     });
-
-    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
-    if (!response.ok) {
-      throw new Error(payload?.detail ?? "Request failed");
-    }
-
-    return payload as T;
   }
 
   async function runOperation(operation: () => Promise<void>, loadingText: string) {

@@ -15,6 +15,7 @@ from alicebot_api.sqlite_store import (
     sqlite_user_connection,
 )
 from alicebot_api.store import ContinuityStoreInvariantError
+from alicebot_api.vnext_embeddings import memory_embedding_content_sha256
 
 
 def _open_connection() -> sqlite3.Connection:
@@ -361,11 +362,26 @@ def test_update_memory_applies_patch_and_archives() -> None:
 
     updated = store.update_memory(
         memory_id=memory["id"],
-        patch={"status": "active", "title": "Updated title", "metadata_json": {"reviewed": True}},
+        patch={
+            "status": "active",
+            "title": "Updated title",
+            "project_id": "project-new",
+            "metadata_json": {
+                "reviewed": True,
+                "project_id": "project-new",
+                "project_scope": ["project-new"],
+            },
+        },
     )
     assert updated["status"] == "active"
     assert updated["title"] == "Updated title"
-    assert updated["metadata_json"] == {"reviewed": True}
+    assert updated["project_id"] == "project-new"
+    assert updated["project_scope"] == ["project-new"]
+    assert updated["metadata_json"] == {
+        "reviewed": True,
+        "project_id": "project-new",
+        "project_scope": ["project-new"],
+    }
     assert updated["canonical_text"] == memory["canonical_text"]
     assert updated["updated_at"] >= memory["updated_at"]
 
@@ -402,6 +418,28 @@ def test_list_memories_filters_by_status_and_orders_by_recency() -> None:
 
     candidates = store.list_memories(status="candidate")
     assert [row["id"] for row in candidates] == [first["id"]]
+    conn.close()
+
+
+def test_list_memories_applies_scope_and_limit_in_query() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    _create_memory(store, domain="project", sensitivity="private", title="older project")
+    expected = _create_memory(store, domain="unknown", sensitivity="private", title="unknown is in scope")
+    _create_memory(store, domain="personal", sensitivity="private", title="wrong domain")
+    _create_memory(store, domain="project", sensitivity="public", title="wrong sensitivity")
+
+    rows = store.list_memories(
+        status="active",
+        domains=["project"],
+        sensitivity_allowed=["private"],
+        limit=1,
+    )
+
+    assert [row["id"] for row in rows] == [expected["id"]]
+    assert store.list_memories(status="active", sensitivity_allowed=[]) == []
+    with pytest.raises(ValueError, match="limit must be positive"):
+        store.list_memories(limit=0)
     conn.close()
 
 
@@ -882,25 +920,42 @@ def test_search_memories_filters_by_project_id_in_metadata_json() -> None:
         canonical_text="project keyword hermes",
         metadata_json={"project_id": "hermes"},
     )
+    shared = _create_memory(
+        store,
+        canonical_text="project keyword shared",
+        project_id="alicebot",
+        project_scope=["alicebot", "hermes"],
+    )
     unscoped = _create_memory(store, canonical_text="project keyword unscoped")
     store.update_memory_embedding(memory_id=alicebot["id"], vector=[1.0, 0.0])
     store.update_memory_embedding(memory_id=hermes["id"], vector=[0.0, 1.0])
+    store.update_memory_embedding(memory_id=shared["id"], vector=[0.8, 0.2])
 
     rows = store.search_memories(query="project keyword", projects=("alicebot",))
-    assert [row["id"] for row in rows] == [alicebot["id"]]
+    assert {row["id"] for row in rows} == {alicebot["id"], shared["id"]}
 
     rows = store.search_memories(query="project keyword", projects=("alicebot", "hermes"))
-    assert {row["id"] for row in rows} == {alicebot["id"], hermes["id"]}
+    assert {row["id"] for row in rows} == {alicebot["id"], hermes["id"], shared["id"]}
 
     fts_rows = store.search_memories_fts(query="keyword", projects=("hermes",))
-    assert [row["id"] for row in fts_rows] == [hermes["id"]]
+    assert {row["id"] for row in fts_rows} == {hermes["id"], shared["id"]}
 
     vector_rows = store.search_memories_vector(query_vector=[1.0, 0.0], projects=("alicebot",))
-    assert [row["id"] for row in vector_rows] == [alicebot["id"]]
+    assert {row["id"] for row in vector_rows} == {alicebot["id"], shared["id"]}
+    assert shared["project_scope"] == ["alicebot", "hermes"]
+    stored_shared_metadata = conn.execute(
+        "SELECT metadata_json FROM memories WHERE id = ?", (shared["id"],)
+    ).fetchone()[0]
+    assert json.loads(stored_shared_metadata)["project_scope"] == ["alicebot", "hermes"]
 
     # No projects filter returns everything, including unscoped memories.
     rows = store.search_memories(query="project keyword")
-    assert {row["id"] for row in rows} == {alicebot["id"], hermes["id"], unscoped["id"]}
+    assert {row["id"] for row in rows} == {
+        alicebot["id"],
+        hermes["id"],
+        shared["id"],
+        unscoped["id"],
+    }
     conn.close()
 
 
@@ -1333,6 +1388,87 @@ def test_vector_store_and_search_roundtrip_with_dimension_padding() -> None:
     conn.close()
 
 
+def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _create_memory(store, canonical_text="signed vector memory")
+    assert store.update_memory_embedding(
+        memory_id=str(memory["id"]),
+        vector=[1.0, 0.0],
+        provider="openai_compatible",
+        model="embed-v1",
+        content_sha256=memory_embedding_content_sha256(memory),
+        signature_version=1,
+    ) is not None
+
+    matching = store.search_memories_vector(
+        query_vector=[1.0, 0.0],
+        embedding_provider="openai_compatible",
+        embedding_model="embed-v1",
+        embedding_signature_version=1,
+    )
+    mismatched = store.search_memories_vector(
+        query_vector=[1.0, 0.0],
+        embedding_provider="openai_compatible",
+        embedding_model="embed-v2",
+        embedding_signature_version=1,
+    )
+
+    assert [row["id"] for row in matching] == [memory["id"]]
+    assert mismatched == []
+    assert store.list_memories_missing_embeddings(
+        embedding_provider="openai_compatible",
+        embedding_model="embed-v1",
+        embedding_signature_version=1,
+    ) == []
+    incompatible = store.list_memories_missing_embeddings(
+        embedding_provider="openai_compatible",
+        embedding_model="embed-v2",
+        embedding_signature_version=1,
+    )
+    assert [row["id"] for row in incompatible] == [memory["id"]]
+    assert incompatible[0]["embedding_present"] == 1
+    metadata = conn.execute(
+        "SELECT metadata_json FROM memories WHERE id = ?", (str(memory["id"]),)
+    ).fetchone()[0]
+    parsed_metadata = json.loads(metadata)
+    assert parsed_metadata["_alice_embedding"] == {
+        "content_sha256": memory_embedding_content_sha256(memory),
+        "model": "embed-v1",
+        "provider": "openai_compatible",
+        "version": 1,
+    }
+
+    # Simulate a stale restored snapshot or third-party adapter that puts the
+    # old vector/signature back after text changed. Signature-aware search must
+    # reject it even when lifecycle hooks and update triggers were bypassed.
+    embedding_blob = conn.execute(
+        "SELECT embedding FROM memories WHERE id = ?", (str(memory["id"]),)
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE memories SET canonical_text = ? WHERE id = ?",
+        ("signed vector memory changed", str(memory["id"])),
+    )
+    conn.execute(
+        "UPDATE memories SET embedding = ?, metadata_json = ? WHERE id = ?",
+        (embedding_blob, metadata, str(memory["id"])),
+    )
+    assert store.search_memories_vector(
+        query_vector=[1.0, 0.0],
+        embedding_provider="openai_compatible",
+        embedding_model="embed-v1",
+        embedding_signature_version=1,
+    ) == []
+
+    assert store.clear_memory_embedding(memory_id=str(memory["id"])) is not None
+    cleared = conn.execute(
+        "SELECT embedding, metadata_json FROM memories WHERE id = ?", (str(memory["id"]),)
+    ).fetchone()
+    assert cleared[0] is None
+    assert "_alice_embedding" not in json.loads(cleared[1])
+    conn.close()
+
+
 # -- open loops -------------------------------------------------------------------------
 
 
@@ -1734,6 +1870,7 @@ def test_bootstrap_upgrades_a_pre_existing_db_file_with_the_temporal_slice(tmp_p
     conn.commit()
 
     # Rewind the file to the pre-temporal-slice schema.
+    conn.execute("DROP TRIGGER IF EXISTS memories_expire_derived_entity_edges")
     conn.execute("DROP INDEX IF EXISTS memories_user_superseded_by_idx")
     conn.execute("DROP INDEX IF EXISTS graph_edges_user_edge_idx")
     conn.execute("DROP TABLE graph_edges")

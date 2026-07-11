@@ -42,7 +42,16 @@ class MemoryStore(Protocol):
 
     def get_memory(self, memory_id: str) -> JsonObject | None: ...
 
-    def list_memories(self, *, status: str | None = None) -> list[JsonObject]: ...
+    def get_memory_for_update(self, memory_id: str) -> JsonObject | None: ...
+
+    def list_memories(
+        self,
+        *,
+        status: str | None = None,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int | None = None,
+    ) -> list[JsonObject]: ...
 
     def search_memories(
         self,

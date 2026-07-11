@@ -27,6 +27,8 @@ import type {
   VNextWorkspacePayload,
 } from "../lib/api";
 import {
+  clearVNextOperatorAgentApiKey,
+  confirmVNextMemory,
   createVNextContextPack,
   createVNextOpenLoop,
   createVNextProject,
@@ -45,6 +47,7 @@ import {
   runVNextDoctor,
   runVNextSchedulerDue,
   runVNextSchedulerWorkflowNow,
+  setVNextOperatorAgentApiKey,
   syncVNextLocalFolderConnector,
   syncVNextTelegramConnector,
   updateVNextConnectorConfig,
@@ -1331,6 +1334,8 @@ export function VNextBrainWorkspace({
   const [actionLog, setActionLog] = useState<string[]>([
     liveModeReady ? "Live workspace is default for this local configuration." : "Fixture demo mode is active.",
   ]);
+  const [operatorAgentApiKey, setOperatorAgentApiKey] = useState("");
+  const [operatorAgentApiKeyActive, setOperatorAgentApiKeyActive] = useState(false);
 
   const [captureTitle, setCaptureTitle] = useState("Launch note");
   const [captureText, setCaptureText] = useState(
@@ -1366,6 +1371,7 @@ export function VNextBrainWorkspace({
   const [draftDomain, setDraftDomain] = useState<Domain>("project");
   const [draftSensitivity, setDraftSensitivity] = useState<Sensitivity>("private");
   const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [inlineConfirmationDrafts, setInlineConfirmationDrafts] = useState<Record<string, string>>({});
 
   const [question, setQuestion] = useState("What should I focus on before the product review?");
   const [answer, setAnswer] = useState<AskAnswer>({
@@ -1449,6 +1455,13 @@ export function VNextBrainWorkspace({
     [apiBaseUrl, liveModeReady, userId],
   );
 
+  useEffect(
+    () => () => {
+      clearVNextOperatorAgentApiKey();
+    },
+    [],
+  );
+
   useEffect(() => {
     if (liveModeReady) {
       void refreshWorkspace("Live vNext workspace loaded.");
@@ -1515,6 +1528,39 @@ export function VNextBrainWorkspace({
       setConnectorSecretRef("");
     }
   }, [selectedConnectorId, workspace.connectorHealth]);
+
+  function handleOperatorAgentApiKeyChange(value: string) {
+    clearVNextOperatorAgentApiKey();
+    setOperatorAgentApiKeyActive(false);
+    setOperatorAgentApiKey(value);
+  }
+
+  async function handleOperatorAgentApiKeySubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const normalizedAgentApiKey = operatorAgentApiKey.trim();
+    if (!normalizedAgentApiKey) {
+      clearVNextOperatorAgentApiKey();
+      setOperatorAgentApiKeyActive(false);
+      setStatusTone("danger");
+      setStatusText("Enter an unbound admin_agent API key for the local operator session.");
+      return;
+    }
+
+    setVNextOperatorAgentApiKey(normalizedAgentApiKey);
+    setOperatorAgentApiKey("");
+    setOperatorAgentApiKeyActive(true);
+    setStatusTone("info");
+    setStatusText("Operator key loaded into browser memory for this mounted session.");
+    await refreshWorkspace("Live vNext workspace loaded with operator authentication.");
+  }
+
+  function handleClearOperatorAgentApiKey() {
+    clearVNextOperatorAgentApiKey();
+    setOperatorAgentApiKey("");
+    setOperatorAgentApiKeyActive(false);
+    setStatusTone("info");
+    setStatusText("Operator key cleared from browser memory.");
+  }
 
   function updateFixtureWorkspace(mutator: (previous: WorkspaceView) => WorkspaceView, message: string) {
     setWorkspace((previous) => mutator(previous));
@@ -1709,6 +1755,88 @@ export function VNextBrainWorkspace({
         });
       },
       `Memory review action applied: ${action}.`,
+    );
+  }
+
+  async function handleInlineConfirmation(
+    memory: VNextMemoryRecord,
+    action: "confirm" | "edit" | "reject",
+  ) {
+    const agentic = agenticMemoryMetadata(memory);
+    const confirmation = asRecord(agentic.confirmation);
+    const confirmationId = textValue(confirmation.confirmation_id);
+    const editedText = (inlineConfirmationDrafts[memory.id] ?? memoryText(memory)).trim();
+
+    if (!confirmationId) {
+      setStatusTone("danger");
+      setStatusText("This inline confirmation is missing its confirmation ID and cannot be reviewed.");
+      return;
+    }
+    if (action === "edit" && !editedText) {
+      setStatusTone("danger");
+      setStatusText("Enter revised memory text before saving and confirming the edit.");
+      return;
+    }
+
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      const now = new Date().toISOString();
+      updateFixtureWorkspace(
+        (previous) => {
+          const updatedMemory: VNextMemoryRecord = {
+            ...memory,
+            canonical_text: action === "edit" ? editedText : memory.canonical_text,
+            summary: action === "edit" ? editedText.slice(0, 280) : memory.summary,
+            status: action === "reject" ? "rejected" : "active",
+            confirmation_status: action === "reject" ? memory.confirmation_status : "confirmed",
+            last_confirmed_at: action === "reject" ? memory.last_confirmed_at : now,
+            metadata_json: {
+              ...asRecord(memory.metadata_json),
+              agentic_memory: {
+                ...agentic,
+                lifecycle_status: action === "reject" ? "confirmation_rejected" : "inline_confirmed",
+                confirmation: {
+                  ...confirmation,
+                  status: action === "reject" ? "rejected" : "confirmed",
+                },
+              },
+            },
+          };
+          return {
+            ...previous,
+            agentActivity: {
+              ...previous.agentActivity,
+              inline_confirmations: previous.agentActivity.inline_confirmations.filter(
+                (item) => item.id !== memory.id,
+              ),
+              recent_commits:
+                action === "reject"
+                  ? previous.agentActivity.recent_commits
+                  : [updatedMemory, ...previous.agentActivity.recent_commits].slice(0, 20),
+            },
+          };
+        },
+        `Demo inline confirmation action applied: ${action}.`,
+      );
+      setInlineConfirmationDrafts((previous) => {
+        const next = { ...previous };
+        delete next[memory.id];
+        return next;
+      });
+      return;
+    }
+
+    await runLiveAction(
+      `${action === "reject" ? "Rejecting" : action === "edit" ? "Editing and confirming" : "Confirming"} inline memory...`,
+      async () => {
+        await confirmVNextMemory(apiBaseUrl, {
+          user_id: userId,
+          confirmation_id: confirmationId,
+          action,
+          canonical_text: action === "edit" ? editedText : undefined,
+          rationale: "Reviewed from the live /vnext operator console.",
+        });
+      },
+      `Inline memory ${action === "reject" ? "rejected" : "confirmed"}.`,
     );
   }
 
@@ -2613,11 +2741,68 @@ export function VNextBrainWorkspace({
         ))}
       </nav>
 
-      <div className="composer-status" aria-live="polite">
+      <div
+        className="composer-status"
+        role={statusTone === "danger" ? "alert" : "status"}
+        aria-live={statusTone === "danger" ? "assertive" : "polite"}
+        aria-atomic="true"
+        aria-busy={Boolean(pendingAction || isRefreshing)}
+      >
         <StatusBadge status={status} label={pendingAction ? "Working" : activeSourceLabel} />
         <span>{statusText}</span>
         <StatusBadge status="blocked" label="No auto-promotion" />
       </div>
+
+      {liveModeReady ? (
+        <SectionCard
+          eyebrow="Local session authentication"
+          title="Operator API key"
+          description="After any agent key is provisioned, the full review console requires an unbound admin_agent key entered for this browser session. trusted_local_agent does not grant all human/admin review actions."
+        >
+          <form className="detail-stack" onSubmit={handleOperatorAgentApiKeySubmit}>
+            <div className="form-field">
+              <label htmlFor="vnext-operator-agent-api-key">Unbound admin_agent API key</label>
+              <input
+                id="vnext-operator-agent-api-key"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                value={operatorAgentApiKey}
+                onChange={(event) => handleOperatorAgentApiKeyChange(event.target.value)}
+                aria-describedby="vnext-operator-agent-api-key-help"
+              />
+            </div>
+            <div className="button-row">
+              <button
+                type="submit"
+                className="button button--primary"
+                disabled={!operatorAgentApiKey.trim() || isRefreshing || Boolean(pendingAction)}
+              >
+                Use key for this session
+              </button>
+              <button
+                type="button"
+                className="button button--secondary"
+                disabled={!operatorAgentApiKey && !operatorAgentApiKeyActive}
+                onClick={handleClearOperatorAgentApiKey}
+              >
+                Clear session key
+              </button>
+            </div>
+          </form>
+          <div className="status-row">
+            <StatusBadge
+              status={operatorAgentApiKeyActive ? "active" : "needs_review"}
+              label={operatorAgentApiKeyActive ? "Key held in memory" : "No session key"}
+            />
+            <p id="vnext-operator-agent-api-key-help" className="muted-copy">
+              The key is held only in this mounted browser session, cleared on edit, clear, or
+              unmount, and forwarded only to loopback <code>/v0/vnext</code> requests. It is never
+              read from environment variables, local storage, URLs, logs, or error output.
+            </p>
+          </div>
+        </SectionCard>
+      ) : null}
 
       <section id="vnext-home" className="metric-grid" aria-label="vNext home dashboard">
         <SectionCard className="section-card--metric">
@@ -3602,6 +3787,8 @@ export function VNextBrainWorkspace({
               workspace.agentActivity.inline_confirmations.slice(0, 6).map((memory) => {
                 const agentic = agenticMemoryMetadata(memory);
                 const confirmation = asRecord(agentic.confirmation);
+                const confirmationId = textValue(confirmation.confirmation_id);
+                const draftText = inlineConfirmationDrafts[memory.id] ?? memoryText(memory);
                 return (
                   <article key={`inline-confirmation-${memory.id}`} className="list-row">
                     <div className="list-row__topline">
@@ -3615,6 +3802,49 @@ export function VNextBrainWorkspace({
                       <span className="meta-pill">Reason: {textValue(confirmation.policy_reason) || "policy gate"}</span>
                       <span className="meta-pill">Expires: {textValue(confirmation.expires_at) || "unknown"}</span>
                     </div>
+                    <div className="form-field">
+                      <label htmlFor={`inline-confirmation-text-${memory.id}`}>Reviewed memory text</label>
+                      <textarea
+                        id={`inline-confirmation-text-${memory.id}`}
+                        value={draftText}
+                        onChange={(event) =>
+                          setInlineConfirmationDrafts((previous) => ({
+                            ...previous,
+                            [memory.id]: event.target.value,
+                          }))
+                        }
+                        disabled={Boolean(pendingAction) || !confirmationId}
+                      />
+                    </div>
+                    <div className="vnext-review-actions" aria-label={`Review confirmation ${confirmationId || memory.id}`}>
+                      <button
+                        type="button"
+                        className="button"
+                        onClick={() => void handleInlineConfirmation(memory, "confirm")}
+                        disabled={Boolean(pendingAction) || !confirmationId}
+                      >
+                        Confirm memory
+                      </button>
+                      <button
+                        type="button"
+                        className="button-secondary"
+                        onClick={() => void handleInlineConfirmation(memory, "edit")}
+                        disabled={Boolean(pendingAction) || !confirmationId || !draftText.trim()}
+                      >
+                        Save edit and confirm
+                      </button>
+                      <button
+                        type="button"
+                        className="button-secondary button-secondary--danger"
+                        onClick={() => void handleInlineConfirmation(memory, "reject")}
+                        disabled={Boolean(pendingAction) || !confirmationId}
+                      >
+                        Reject memory
+                      </button>
+                    </div>
+                    {dataSource === "fixture" ? (
+                      <p className="muted-copy">Demo controls update fixture state only; they never call the configured API.</p>
+                    ) : null}
                   </article>
                 );
               })
@@ -4191,9 +4421,17 @@ export function VNextBrainWorkspace({
             </div>
           </div>
           {selectedConnector.id === "browser_clipper" ? (
-            <div className="form-field">
-              <label htmlFor="vnext-browser-bookmarklet">Bookmarklet</label>
-              <textarea id="vnext-browser-bookmarklet" readOnly value={BROWSER_CLIPPER_BOOKMARKLET} />
+            <div className="detail-stack">
+              <div className="form-field">
+                <label htmlFor="vnext-browser-bookmarklet">Bookmarklet</label>
+                <textarea id="vnext-browser-bookmarklet" readOnly value={BROWSER_CLIPPER_BOOKMARKLET} />
+              </div>
+              <p className="section-note">
+                The bookmarklet never receives or prompts for an agent API key because it runs in
+                the visited page context. It works only in zero-active-key local compatibility
+                mode. After provisioning a key, capture with a trusted API client that sends both
+                Bearer authentication and the configured capture token.
+              </p>
             </div>
           ) : null}
           {selectedConnector.id === "browser_clipper" ? (

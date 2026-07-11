@@ -16,10 +16,12 @@ model-backed merge seam in
 - **Near-duplicate clustering.** Pairwise cosine similarity (numpy) over the
   user's active/accepted memories that have embeddings, single-linkage
   grouping at a configurable threshold (default `0.88`), minimum cluster size
-  `2`. The pass is capped at the **5000** most recently updated in-scope
+  `2`. The pass is capped at the **2000** most recently updated in-scope
   memories; when the cap truncates, the bound is logged
   (`alicebot_api.vnext_consolidation` at INFO) and recorded in the artifact's
-  *Skipped / Bounds* section.
+  *Skipped / Bounds* section. The bundled stores apply domain, sensitivity,
+  status, and limit in the database, so the cap also bounds rows loaded into
+  the consolidation process.
 - **Dedup proposals.** Without a real model, each cluster produces a `dedup`
   proposal: the longest-text member is the survivor, its `canonical_text` is
   copied **verbatim** into the candidate, and the other members are listed as
@@ -61,7 +63,9 @@ rows never expose the raw embedding column, so the service:
    have stored embeddings (and records the probe row's self-distance as a
    staleness check — a non-zero value means the stored embeddings drifted and
    the backfill should be rerun);
-3. computes the pairwise cosine matrix in numpy over that intersection.
+3. computes one bounded float32 pairwise cosine matrix over that intersection.
+   The upper triangle is scanned row by row; pair indexes and per-cluster
+   similarity lists are never materialized.
 
 Without a provider (or on a store without vector search) the run still
 produces the report artifact, with an explicit skip reason and **zero**
@@ -89,12 +93,23 @@ lexical/entity-only behavior.
 - Members are never superseded automatically. Each candidate carries
   `metadata_json.consolidation.proposed_supersede` (all members for `merge`;
   everyone except the survivor for `dedup`) plus explicit
-  `reviewer_instructions`: after accepting, supersede the listed members
-  through the existing memory review/undo flows.
-- Idempotent by digest: each cluster's candidate is keyed by a digest of its
-  member ids, so re-running on the same input set reuses the existing
-  candidate instead of duplicating it. The run-level artifact digest also
-  covers cluster membership.
+  `reviewer_instructions`. The canonical acceptance transaction validates
+  every reviewed input, promotes the candidate, and then executes exactly
+  those supersessions. Roll-up cards keep their member memories active;
+  accepting a roll-up revision retires only the previous card.
+- Every merge, dedup, and roll-up candidate persists a version snapshot for
+  each reviewed input: id, status, `updated_at`, and a digest of its content.
+  Acceptance locks and validates the complete snapshot set before its first
+  write. A missing, corrected, forgotten, redacted, or superseded member
+  therefore stale-fails with no partial promotion or supersession.
+- Correcting or retiring a member also marks related pending candidates
+  `stale` and `not_promotable` in the same transaction. The invalidation is
+  recorded in candidate metadata, a revision, and an event. Stores without
+  the optional proactive lookup still fail closed during snapshot validation.
+- Idempotent by versioned digest: candidate identity covers the member ids,
+  status, and content versions, so re-running unchanged input reuses the
+  existing candidate while a corrected same-id member produces a new review
+  proposal. The run-level artifact digest also covers cluster membership.
 - Candidate provenance: `source_refs` link back to every member
   (`memory:<id>`) and to the members' own sources; `source_event_ids` are the
   union of the members'.
@@ -109,6 +124,9 @@ lexical/entity-only behavior.
   "review_required": true,
   "consolidation": {
     "cluster_member_ids": ["..."],
+    "member_snapshots": [
+      {"id": "...", "status": "active", "updated_at": "...", "content_digest": "..."}
+    ],
     "similarity_stats": {"pair_count": 3, "min": 0.99, "max": 1.0, "mean": 0.99},
     "proposal_kind": "merge | dedup",
     "model_provenance": {"provider": "...", "model": "...", "prompt_hash": "sha256:..."},
@@ -135,8 +153,10 @@ supplied by direct callers via
 
 ## Bounds and costs
 
-- At most 5000 memories are embedded and compared per run (`O(n^2)` cosine in
-  float32; roughly 100 MB peak at the hard cap).
+- At most 2000 memories are embedded and compared per run (`O(n^2)` cosine in
+  float32). The similarity matrix is capped at 16 MB and the unique-pair
+  count at 1,999,000; the report records both values under
+  `metadata_json.consolidation.resource_guard`.
 - At most `max_clusters` (default 20) proposals per run; extra clusters are
   reported in *Skipped / Bounds* and picked up on later runs.
 - One embedding-provider batch pass over the in-scope memories and one

@@ -132,6 +132,7 @@ describe("RequestComposer", () => {
         selectedThreadId="thread-1"
         selectedThreadTitle="Gamma thread"
         defaultToolId="tool-1"
+        source="live"
       />,
     );
 
@@ -155,6 +156,42 @@ describe("RequestComposer", () => {
     });
 
     expect(screen.getByText(/Governed request submitted successfully/i)).toBeInTheDocument();
+  });
+
+  it("never submits fixture thread IDs even when API credentials are present", async () => {
+    render(
+      <RequestComposer
+        initialEntries={[]}
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+        selectedThreadId="fixture-thread-1"
+        selectedThreadTitle="Fixture thread"
+        defaultToolId="tool-1"
+        source="fixture"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Submit governed request" }));
+
+    expect(submitApprovalRequestMock).not.toHaveBeenCalled();
+    expect(await screen.findByText(/Fixture request summary added/i)).toBeInTheDocument();
+  });
+
+  it("disables governed submission while continuity is unavailable", () => {
+    render(
+      <RequestComposer
+        initialEntries={[]}
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+        selectedThreadId="thread-1"
+        selectedThreadTitle="Unavailable thread"
+        defaultToolId="tool-1"
+        source="unavailable"
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Submit governed request" })).toBeDisabled();
+    expect(screen.getByText(/submission is unavailable until live continuity can be loaded/i)).toBeInTheDocument();
   });
 
   it("disables governed submission when no thread is selected", () => {

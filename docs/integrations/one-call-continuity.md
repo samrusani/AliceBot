@@ -4,7 +4,7 @@ One continuity call is the default integration path for external agents:
 
 - API: `POST /v1/continuity/brief`
 - CLI: `alice brief`
-- MCP: `alice_brief` (legacy surface; requires `ALICE_MCP_LEGACY_TOOLS=1`)
+- MCP: core `alice_resume` / `alice_context_pack`; `alice_brief` is keyless-local legacy compatibility only
 
 This surface composes the shipped recall, resumption, contradiction, trust, and task-briefing systems into one response bundle so callers do not need tool choreography.
 
@@ -74,7 +74,7 @@ If you are running directly from the repository Python runtime:
 
 ## MCP
 
-The default MCP surface is the nine core tools (see [docs/integrations/mcp.md](mcp.md)); `alice_resume` and `alice_context_pack` cover most continuity lookups there. The `alice_brief` tool lives on the legacy surface and requires the MCP server to run with `ALICE_MCP_LEGACY_TOOLS=1`.
+The default MCP surface is the eleven core tools (see [docs/integrations/mcp.md](mcp.md)); `alice_resume` and `alice_context_pack` cover most continuity lookups there. `alice_brief` requires a deliberately keyless local server with `ALICE_MCP_LEGACY_TOOLS=1`; a key-bound server hides and rejects it.
 
 Example:
 
@@ -93,4 +93,4 @@ Example:
 
 - use `alice_recall` (core) when you only need ranked facts
 - use `alice_resume` (core) when you only need a resumption brief
-- use `alice_task_brief` (legacy, needs `ALICE_MCP_LEGACY_TOOLS=1`) when you explicitly want persisted task-adaptive briefing output
+- use `alice_task_brief` only on a deliberately keyless local legacy server when you explicitly want persisted task-adaptive briefing output

@@ -43,6 +43,7 @@ class FakeRollupStore:
     def __init__(self) -> None:
         self.memories: list[dict] = []
         self._counter = 0
+        self.rollup_read_calls: list[tuple[str, JsonObject]] = []
 
     def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> JsonObject:
         self._counter += 1
@@ -57,6 +58,144 @@ class FakeRollupStore:
 
     def list_memories(self, *, status: str | None = None) -> list[JsonObject]:
         return [dict(row) for row in self.memories if status is None or row.get("status") == status]
+
+    @staticmethod
+    def _in_scope(
+        row: JsonObject,
+        *,
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+    ) -> bool:
+        domain = str(row.get("domain") or "unknown")
+        sensitivity = str(row.get("sensitivity") or "unknown")
+        return (not domains or domain in {*domains, "unknown"}) and sensitivity in sensitivity_allowed
+
+    def list_rollup_input_memories(
+        self,
+        *,
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        excluded_candidate_kind: str,
+        limit: int,
+    ) -> list[JsonObject]:
+        self.rollup_read_calls.append(
+            (
+                "inputs",
+                {
+                    "domains": domains,
+                    "sensitivity_allowed": sensitivity_allowed,
+                    "excluded_candidate_kind": excluded_candidate_kind,
+                    "limit": limit,
+                },
+            )
+        )
+        rows = [
+            dict(row)
+            for row in self.memories
+            if row.get("status") in {"active", "accepted"}
+            and self._in_scope(row, domains=domains, sensitivity_allowed=sensitivity_allowed)
+            and not (
+                isinstance(row.get("metadata_json"), dict)
+                and row["metadata_json"].get("candidate_kind") == excluded_candidate_kind
+            )
+        ]
+        rows.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id"))), reverse=True)
+        return rows[:limit]
+
+    def list_pending_rollup_candidates(
+        self,
+        *,
+        rollup_digests: tuple[str, ...],
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        candidate_kind: str,
+        limit: int,
+    ) -> list[JsonObject]:
+        self.rollup_read_calls.append(
+            (
+                "pending",
+                {
+                    "rollup_digests": rollup_digests,
+                    "domains": domains,
+                    "sensitivity_allowed": sensitivity_allowed,
+                    "candidate_kind": candidate_kind,
+                    "limit": limit,
+                },
+            )
+        )
+        selected: list[JsonObject] = []
+        for digest in sorted(set(rollup_digests)):
+            matches = [
+                row
+                for row in self.memories
+                if row.get("status") == "candidate"
+                and self._in_scope(row, domains=domains, sensitivity_allowed=sensitivity_allowed)
+                and isinstance(row.get("metadata_json"), dict)
+                and row["metadata_json"].get("candidate_kind") == candidate_kind
+                and row["metadata_json"].get("rollup_digest") == digest
+            ]
+            if matches:
+                selected.append(
+                    dict(
+                        max(
+                            matches,
+                            key=lambda row: (
+                                str(row.get("updated_at") or ""),
+                                str(row.get("created_at") or ""),
+                                str(row.get("id")),
+                            ),
+                        )
+                    )
+                )
+        return selected[:limit]
+
+    def list_accepted_rollup_cards(
+        self,
+        *,
+        rollup_keys: tuple[str, ...],
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        candidate_kind: str,
+        limit: int,
+    ) -> list[JsonObject]:
+        self.rollup_read_calls.append(
+            (
+                "accepted",
+                {
+                    "rollup_keys": rollup_keys,
+                    "domains": domains,
+                    "sensitivity_allowed": sensitivity_allowed,
+                    "candidate_kind": candidate_kind,
+                    "limit": limit,
+                },
+            )
+        )
+        selected: list[JsonObject] = []
+        for rollup_key in sorted(set(rollup_keys)):
+            matches = [
+                row
+                for row in self.memories
+                if row.get("status") in {"active", "accepted"}
+                and self._in_scope(row, domains=domains, sensitivity_allowed=sensitivity_allowed)
+                and isinstance(row.get("metadata_json"), dict)
+                and row["metadata_json"].get("candidate_kind") == candidate_kind
+                and row["metadata_json"].get("rollup_key") == rollup_key
+            ]
+            if matches:
+                active = [row for row in matches if row.get("status") == "active"]
+                selected.append(
+                    dict(
+                        max(
+                            active or matches,
+                            key=lambda row: (
+                                str(row.get("updated_at") or ""),
+                                str(row.get("created_at") or ""),
+                                str(row.get("id")),
+                            ),
+                        )
+                    )
+                )
+        return selected[:limit]
 
 
 GAME_SPECS = (
@@ -138,6 +277,12 @@ def test_same_topic_instances_produce_one_rollup_card() -> None:
     consolidation = card["metadata_json"]["consolidation"]
     assert consolidation["proposal_kind"] == "rollup"
     assert sorted(consolidation["cluster_member_ids"]) == sorted(str(row["id"]) for row in members.values())
+    snapshots = consolidation["member_snapshots"]
+    assert {snapshot["id"] for snapshot in snapshots} == {
+        str(row["id"]) for row in members.values()
+    }
+    assert all(snapshot["status"] == "active" for snapshot in snapshots)
+    assert all(len(snapshot["content_digest"]) == 16 for snapshot in snapshots)
     # First proposal supersedes NOTHING: members stay individually recallable.
     assert consolidation["proposed_supersede"] == []
     assert consolidation["survivor_memory_id"] is None
@@ -322,6 +467,52 @@ def test_max_rollups_bound_is_reported() -> None:
     )
     assert len(outcome.proposals) == 1
     assert any("rollup_bound" in reason for reason in outcome.skipped)
+
+
+def test_rollup_reads_apply_deterministic_database_bounds_before_grouping() -> None:
+    class BoundedOnlyStore(FakeRollupStore):
+        def list_memories(self, *, status: str | None = None) -> list[JsonObject]:
+            raise AssertionError("the roll-up service must not use the unbounded generic read")
+
+    store = BoundedOnlyStore()
+    members = _seed_game_memories(store)
+    options = RollupOptions(max_groupable_memories=3)
+
+    outcome = VNextRollupService(store).propose_rollups(
+        domains=["personal"],
+        sensitivity_allowed=["internal"],
+        options=options,
+    )
+
+    assert outcome.bounded is True
+    assert outcome.groupable_count == 3
+    expected_member_ids = {
+        str(members[key]["id"])
+        for key in ("game-3", "game-4", "game-5")
+    }
+    assert set(outcome.proposals[0]["member_ids"]) == expected_member_ids
+
+    input_call = store.rollup_read_calls[0]
+    assert input_call == (
+        "inputs",
+        {
+            "domains": ["personal"],
+            "sensitivity_allowed": ["internal"],
+            "excluded_candidate_kind": ROLLUP_CANDIDATE_KIND,
+            # One sentinel row proves that the configured cap was reached.
+            "limit": 4,
+        },
+    )
+    pending_call = next(call for call in store.rollup_read_calls if call[0] == "pending")
+    accepted_call = next(call for call in store.rollup_read_calls if call[0] == "accepted")
+    assert pending_call[1]["limit"] == len(pending_call[1]["rollup_digests"]) == 1
+    assert accepted_call[1]["limit"] == len(accepted_call[1]["rollup_keys"]) == 1
+    assert pending_call[1]["domains"] == accepted_call[1]["domains"] == ["personal"]
+    assert (
+        pending_call[1]["sensitivity_allowed"]
+        == accepted_call[1]["sensitivity_allowed"]
+        == ["internal"]
+    )
 
 
 # -- label hygiene & group-utility gate ------------------------------------------------
@@ -814,6 +1005,109 @@ def _seed_live_game_memories(store: SQLiteVNextStore) -> dict[str, JsonObject]:
     return _seed_game_memories(store)
 
 
+def test_sqlite_rollup_reads_are_exact_deduplicated_and_bounded() -> None:
+    conn, store = _live_store()
+
+    def create_row(name: str, *, status: str, metadata: JsonObject) -> JsonObject:
+        return store.create_memory(
+            {
+                "memory_key": f"memory.{name}",
+                "value": {"text": name},
+                "status": status,
+                "memory_type": "semantic",
+                "title": name,
+                "canonical_text": name,
+                "summary": name,
+                "domain": "personal",
+                "sensitivity": "internal",
+                "metadata_json": metadata,
+            }
+        )
+
+    ordinary_active = create_row("ordinary-active", status="active", metadata={})
+    ordinary_accepted = create_row("ordinary-accepted", status="accepted", metadata={})
+    create_row(
+        "excluded-card",
+        status="active",
+        metadata={"candidate_kind": ROLLUP_CANDIDATE_KIND, "rollup_key": "topic:excluded"},
+    )
+
+    inputs = store.list_rollup_input_memories(
+        domains=["personal"],
+        sensitivity_allowed=["internal"],
+        excluded_candidate_kind=ROLLUP_CANDIDATE_KIND,
+        limit=1,
+    )
+    expected_newest = max(
+        (ordinary_active, ordinary_accepted),
+        key=lambda row: (str(row["created_at"]), str(row["id"])),
+    )
+    assert [str(row["id"]) for row in inputs] == [str(expected_newest["id"])]
+
+    older_pending = create_row(
+        "pending-old",
+        status="candidate",
+        metadata={
+            "candidate_kind": ROLLUP_CANDIDATE_KIND,
+            "rollup_digest": "digest-exact",
+        },
+    )
+    newer_pending = create_row(
+        "pending-new",
+        status="candidate",
+        metadata={
+            "candidate_kind": ROLLUP_CANDIDATE_KIND,
+            "rollup_digest": "digest-exact",
+        },
+    )
+    create_row(
+        "pending-unrelated",
+        status="candidate",
+        metadata={
+            "candidate_kind": ROLLUP_CANDIDATE_KIND,
+            "rollup_digest": "digest-unrelated",
+        },
+    )
+    pending = store.list_pending_rollup_candidates(
+        rollup_digests=("digest-exact", "digest-exact"),
+        domains=["personal"],
+        sensitivity_allowed=["internal"],
+        candidate_kind=ROLLUP_CANDIDATE_KIND,
+        limit=99,
+    )
+    expected_pending = max(
+        (older_pending, newer_pending),
+        key=lambda row: (str(row["updated_at"]), str(row["created_at"]), str(row["id"])),
+    )
+    assert [str(row["id"]) for row in pending] == [str(expected_pending["id"])]
+
+    active_card = create_row(
+        "card-active",
+        status="active",
+        metadata={
+            "candidate_kind": ROLLUP_CANDIDATE_KIND,
+            "rollup_key": "topic:exact",
+        },
+    )
+    create_row(
+        "card-accepted-newer",
+        status="accepted",
+        metadata={
+            "candidate_kind": ROLLUP_CANDIDATE_KIND,
+            "rollup_key": "topic:exact",
+        },
+    )
+    cards = store.list_accepted_rollup_cards(
+        rollup_keys=("topic:exact", "topic:exact"),
+        domains=["personal"],
+        sensitivity_allowed=["internal"],
+        candidate_kind=ROLLUP_CANDIDATE_KIND,
+        limit=99,
+    )
+    assert [str(row["id"]) for row in cards] == [str(active_card["id"])]
+    conn.close()
+
+
 def _compile_pack(store: SQLiteVNextStore, query: str) -> JsonObject:
     from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService
 
@@ -837,6 +1131,87 @@ def test_unaccepted_rollup_candidate_never_appears_in_packs(monkeypatch) -> None
     pack = _compile_pack(store, AGGREGATION_QUERY)
     pack_ids = {str(memory.get("id")) for memory in pack.get("relevant_memories") or []}
     assert candidate_id not in pack_ids
+    conn.close()
+
+
+@pytest.mark.parametrize("mutation", ("corrected", "forgotten", "redacted", "superseded"))
+def test_member_mutation_invalidates_pending_rollup_and_prevents_publication(
+    monkeypatch,
+    mutation: str,
+) -> None:
+    """Every destructive/content mutation closes the pending review lane."""
+    from alicebot_api.vnext_memory_commit import VNextMemoryCommitService, VNextMemoryCommitValidationError
+
+    monkeypatch.delenv("ALICE_EMBEDDINGS_BASE_URL", raising=False)
+    monkeypatch.delenv("ALICE_EMBEDDINGS_MODEL", raising=False)
+    monkeypatch.delenv("ALICE_EMBEDDINGS_API_KEY", raising=False)
+    conn, store = _live_store()
+    members = _seed_live_game_memories(store)
+    VNextRollupService(store).propose_rollups()
+    candidate_id = str(_rollup_candidates(store)[0]["id"])
+    target_id = str(members["game-5"]["id"])
+    commit = VNextMemoryCommitService(store)
+
+    if mutation == "corrected":
+        commit.correct(
+            identity=None,
+            memory_id=target_id,
+            canonical_text="I played Celeste for 12 hours on 2023-07-01.",
+            reason="Correct the recorded duration.",
+        )
+    elif mutation == "forgotten":
+        commit.forget(identity=None, memory_id=target_id, reason="Forget this game session.")
+    elif mutation == "redacted":
+        commit.forget(identity=None, memory_id=target_id, reason="Redact this game session.")
+        store.redact_memory_content(memory_id=target_id, actor_type="user")
+    else:
+        replacement = store.create_memory(
+            {
+                "memory_key": "memory.game-5-replacement",
+                "value": {"text": "I played Celeste for 12 hours"},
+                "status": "active",
+                "memory_type": "episode",
+                "title": "Corrected Celeste duration",
+                "canonical_text": "I played Celeste for 12 hours",
+                "domain": "personal",
+                "sensitivity": "internal",
+            }
+        )
+        commit.undo(
+            identity=None,
+            memory_id=target_id,
+            superseded_by_memory_id=str(replacement["id"]),
+            reason="Superseded by the corrected game session.",
+        )
+
+    invalidated = store.get_memory(candidate_id)
+    assert invalidated["status"] == "stale"
+    assert invalidated["promotion_eligibility"] == "not_promotable"
+    assert invalidated["metadata_json"]["review_required"] is False
+    invalidation = invalidated["metadata_json"]["consolidation"]["invalidated"]
+    assert invalidation["member_id"] == target_id
+    assert any(
+        revision["action"] == "memory_consolidation_candidate_invalidated"
+        for revision in store.list_revisions(candidate_id)
+    )
+    assert any(
+        event["event_type"] == "agent.memory_consolidation_candidate_invalidated"
+        for event in store.list_events(target_type="memory", target_id=candidate_id)
+    )
+    with pytest.raises(VNextMemoryCommitValidationError, match="candidate is stale"):
+        commit.accept_consolidation_candidate(candidate_id, reason="Attempt stale acceptance.")
+
+    # Acceptance performed no derived publication or unrelated retirement.
+    assert store.get_memory(candidate_id)["status"] == "stale"
+    for key, row in members.items():
+        current = store.get_memory(str(row["id"]))
+        if key == "game-5" and mutation == "redacted":
+            assert current is None
+            continue
+        assert current is not None
+        if key != "game-5" or mutation == "corrected":
+            assert current["status"] == "active"
+        assert str(current.get("superseded_by") or "") != candidate_id
     conn.close()
 
 
@@ -925,6 +1300,11 @@ def test_new_member_triggers_revision_that_retires_only_the_old_card(monkeypatch
     revision_row = store.get_memory(str(revision["candidate_memory_id"]))
     assert revision_row["status"] == "candidate"  # not silent mutation
     assert str(new_member["id"]) in revision_row["metadata_json"]["consolidation"]["cluster_member_ids"]
+    revision_consolidation = revision_row["metadata_json"]["consolidation"]
+    assert {snapshot["id"] for snapshot in revision_consolidation["member_snapshots"]} == {
+        *revision_consolidation["cluster_member_ids"],
+        first_card_id,
+    }
     assert "40 hours" in revision_row["canonical_text"]
     # The old card is untouched until a reviewer accepts the revision.
     assert store.get_memory(first_card_id)["status"] == "active"
@@ -941,6 +1321,39 @@ def test_new_member_triggers_revision_that_retires_only_the_old_card(monkeypatch
     third = service.propose_rollups()
     assert third.proposals == []
     assert any(group["state"] == "already_covered_by_accepted" for group in third.groups)
+    conn.close()
+
+
+def test_corrected_member_versions_propose_reviewed_rollup_revision(monkeypatch) -> None:
+    from alicebot_api.vnext_memory_commit import VNextMemoryCommitService
+
+    monkeypatch.delenv("ALICE_EMBEDDINGS_BASE_URL", raising=False)
+    monkeypatch.delenv("ALICE_EMBEDDINGS_MODEL", raising=False)
+    monkeypatch.delenv("ALICE_EMBEDDINGS_API_KEY", raising=False)
+    conn, store = _live_store()
+    members = _seed_live_game_memories(store)
+    rollups = VNextRollupService(store)
+    first = rollups.propose_rollups()
+    first_card_id = str(first.proposals[0]["candidate_memory_id"])
+    commit = VNextMemoryCommitService(store)
+    commit.accept_consolidation_candidate(first_card_id, reason="Accept initial games roll-up.")
+
+    commit.correct(
+        identity=None,
+        memory_id=str(members["game-1"]["id"]),
+        canonical_text="I played The Last of Us Part II for 35 hours",
+        reason="Correct the duration without changing the topic.",
+    )
+    revised = rollups.propose_rollups()
+
+    assert len(revised.proposals) == 1
+    proposal = revised.proposals[0]
+    assert proposal["candidate_state"] == "revision_proposed"
+    assert proposal["revises_memory_id"] == first_card_id
+    assert proposal["rollup_digest"] != first.proposals[0]["rollup_digest"]
+    revision_row = store.get_memory(str(proposal["candidate_memory_id"]))
+    assert "35 hours" in revision_row["canonical_text"]
+    assert store.get_memory(first_card_id)["status"] == "active"
     conn.close()
 
 

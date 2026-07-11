@@ -16,10 +16,12 @@ using the checked-in two-question synthetic fixture.
 from __future__ import annotations
 
 import hashlib
+from io import BytesIO
 import json
 from pathlib import Path
 import re
 import sys
+from urllib.error import HTTPError
 
 import pytest
 
@@ -39,6 +41,11 @@ from longmemeval.dataset import (  # noqa: E402
 )
 from longmemeval.fetch import LongMemEvalFetchError, sha256_of_file, verify_file  # noqa: E402
 
+_SCRIPTS_DIR = _EVAL_DIR.parent / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+import check_longmemeval_evidence  # noqa: E402
+
 
 @pytest.fixture(autouse=True)
 def _no_ambient_model_config(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -47,6 +54,9 @@ def _no_ambient_model_config(monkeypatch: pytest.MonkeyPatch) -> None:
         "ALICE_EMBEDDINGS_BASE_URL",
         "ALICE_EMBEDDINGS_MODEL",
         "ALICE_EMBEDDINGS_API_KEY",
+        "ALICE_RERANKER_BASE_URL",
+        "ALICE_RERANKER_MODEL",
+        "ALICE_RERANKER_API_KEY",
         chat.MODEL_BASE_URL_ENV,
         chat.MODEL_NAME_ENV,
         chat.MODEL_API_KEY_ENV,
@@ -257,8 +267,47 @@ def test_parse_chat_completion_payload() -> None:
     assert (text, prompt_tokens, completion_tokens) == ("hello", 12, 3)
     with pytest.raises(chat.ChatCompletionError):
         chat.parse_chat_completion_payload({"choices": []})
+
+
+def test_model_fingerprint_redacts_endpoint_credentials_and_query_tokens() -> None:
+    config = chat.ChatModelConfig(
+        base_url="https://user:secret@example.com/v1?api_key=hidden#fragment",
+        model="reader-v1",
+        api_key="also-hidden",
+    )
+    assert config.redacted() == {
+        "base_url": "https://example.com/v1",
+        "model": "reader-v1",
+        "api_key_configured": True,
+    }
     with pytest.raises(chat.ChatCompletionError):
         chat.parse_chat_completion_payload({"choices": [{"message": {}}]})
+
+
+def test_chat_errors_and_checkpoint_serialization_redact_endpoint_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw_url = "https://user:secret@example.com/v1?api_key=hidden#fragment"
+    config = chat.ChatModelConfig(base_url=raw_url, model="reader-v1", max_retries=0)
+
+    def fail_request(*_args: object, **_kwargs: object) -> object:
+        body = BytesIO(f"provider echoed {raw_url}".encode("utf-8"))
+        raise HTTPError(raw_url, 401, "Unauthorized", None, body)
+
+    monkeypatch.setattr(chat, "urlopen", fail_request)
+    with pytest.raises(chat.ChatCompletionError) as excinfo:
+        chat.chat_completion(config, [{"role": "user", "content": "hello"}])
+
+    error_text = str(excinfo.value)
+    assert "https://example.com/v1" in error_text
+    for secret in ("user", "secret", "api_key", "hidden", "fragment"):
+        assert secret not in error_text
+
+    checkpoint = tmp_path / "checkpoint.jsonl"
+    runner.CheckpointWriter(checkpoint).append({"status": "error", "error": error_text})
+    serialized = checkpoint.read_text(encoding="utf-8")
+    for secret in ("secret", "api_key", "hidden", "fragment"):
+        assert secret not in serialized
 
 
 def test_model_config_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1201,6 +1250,128 @@ def test_fingerprint_records_reuse_stores_flag(tmp_path: Path) -> None:
     assert args.reuse_stores is False
 
 
+def test_fingerprint_records_reranker_and_source_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixed_source = {
+        "git_commit": "test-commit",
+        "tracked_tree_dirty": False,
+        "tracked_diff_sha256_prefix": None,
+        "untracked_tree_dirty": True,
+        "untracked_file_count": 1,
+        "untracked_manifest_sha256_prefix": "0123456789abcdef",
+    }
+    monkeypatch.setattr(runner, "_source_provenance", lambda: fixed_source)
+    config = runner.RunnerConfig(
+        variant="s",
+        dataset_path=SYNTHETIC_FIXTURE_PATH,
+        limit=None,
+        question_ids=None,
+        question_ids_file=None,
+        resume=False,
+        dry_run=True,
+        cot=False,
+        workers=1,
+        max_items=8,
+        context_char_budget=12_000,
+        work_dir=tmp_path,
+        checkpoint_path=tmp_path / "c.jsonl",
+        report_path=tmp_path / "r.json",
+        keep_stores=False,
+    )
+    dormant = runner.config_fingerprint(config, model=None, judge=None)
+    monkeypatch.setenv("ALICE_RERANKER_BASE_URL", "https://reranker.invalid/v1")
+    monkeypatch.setenv("ALICE_RERANKER_MODEL", "reranker-v1")
+    enabled = runner.config_fingerprint(config, model=None, judge=None)
+    assert dormant["reranker_enabled"] is False
+    assert enabled["reranker_enabled"] is True
+    assert enabled["reranker_model"] == "reranker-v1"
+    assert enabled["reranker_prompt_sha256"]
+    assert dormant["digest"] != enabled["digest"]
+    assert isinstance(enabled["source"], dict)
+    assert set(enabled["source"]) == {
+        "git_commit",
+        "tracked_tree_dirty",
+        "tracked_diff_sha256_prefix",
+        "untracked_tree_dirty",
+        "untracked_file_count",
+        "untracked_manifest_sha256_prefix",
+    }
+
+
+def test_untracked_source_identity_hashes_names_content_and_symlink_targets(tmp_path: Path) -> None:
+    source = tmp_path / "new_source.py"
+    source.write_text("first", encoding="utf-8")
+    link = tmp_path / "source-link"
+    link.symlink_to("new_source.py")
+    output = b"source-link\0new_source.py\0"
+
+    first = runner._untracked_source_identity(tmp_path, output)
+    assert first["untracked_tree_dirty"] is True
+    assert first["untracked_file_count"] == 2
+    assert isinstance(first["untracked_manifest_sha256_prefix"], str)
+
+    source.write_text("second", encoding="utf-8")
+    second = runner._untracked_source_identity(tmp_path, output)
+    assert second["untracked_manifest_sha256_prefix"] != first["untracked_manifest_sha256_prefix"]
+
+
+def test_ingest_code_digest_covers_and_invalidates_for_every_manifest_input(tmp_path: Path) -> None:
+    direct_ingest_modules = {
+        Path("apps/api/src/alicebot_api/vnext_memory_commit.py"),
+        Path("apps/api/src/alicebot_api/vnext_rollups.py"),
+    }
+    assert direct_ingest_modules <= set(runner._INGEST_CODE_MANIFEST)
+    assert len(runner._INGEST_CODE_MANIFEST) == len(set(runner._INGEST_CODE_MANIFEST))
+
+    for index, relative_path in enumerate(runner._INGEST_CODE_MANIFEST):
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"manifest input {index}\n".encode())
+
+    baseline = runner._ingest_code_digest(repo_root=tmp_path)
+    for relative_path in runner._INGEST_CODE_MANIFEST:
+        path = tmp_path / relative_path
+        original = path.read_bytes()
+        path.write_bytes(original + b"changed\n")
+        assert runner._ingest_code_digest(repo_root=tmp_path) != baseline, relative_path
+        path.write_bytes(original)
+
+
+def test_store_reuse_requires_exact_question_code_and_config_marker(tmp_path: Path) -> None:
+    question = load_dataset(SYNTHETIC_FIXTURE_PATH, limit=1)[0]
+    config = runner.RunnerConfig(
+        variant="s",
+        dataset_path=SYNTHETIC_FIXTURE_PATH,
+        limit=1,
+        question_ids=None,
+        question_ids_file=None,
+        resume=False,
+        dry_run=True,
+        cot=False,
+        workers=1,
+        max_items=8,
+        context_char_budget=12_000,
+        work_dir=tmp_path / "work",
+        checkpoint_path=tmp_path / "c.jsonl",
+        report_path=tmp_path / "r.json",
+        keep_stores=True,
+        reuse_stores=True,
+    )
+    config.work_dir.mkdir()
+    first = runner.run_question(question, config, model=None, judge=None, fingerprint_digest="first")
+    assert first["ingest"]["reused_store"] is False
+    second = runner.run_question(question, config, model=None, judge=None, fingerprint_digest="second")
+    assert second["ingest"]["reused_store"] is True
+
+    marker_path = Path(str(runner._db_path_for(config, question.question_id)) + ".ingested.json")
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["question_ingest_sha256_prefix"] = "stale"
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+    third = runner.run_question(question, config, model=None, judge=None, fingerprint_digest="third")
+    assert third["ingest"]["reused_store"] is False
+
+
 def test_runner_dry_run_with_accept_rollups_records_ingest_stats(tmp_path: Path) -> None:
     checkpoint_path = tmp_path / "checkpoint.jsonl"
     report_path = tmp_path / "report.json"
@@ -1435,7 +1606,22 @@ def test_supported_entity_question_gets_no_grounding_note(tmp_path: Path) -> Non
     assert "no stored memories" not in outcome.context_block
 
 
-def test_runner_dry_run_end_to_end(tmp_path: Path) -> None:
+def test_runner_dry_run_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The test itself runs the command twice. Pin source identity so an
+    # unrelated concurrent workspace edit cannot make the second invocation
+    # look like a different benchmark build.
+    monkeypatch.setattr(
+        runner,
+        "_source_provenance",
+        lambda: {
+            "git_commit": "test-commit",
+            "tracked_tree_dirty": False,
+            "tracked_diff_sha256_prefix": None,
+            "untracked_tree_dirty": False,
+            "untracked_file_count": 0,
+            "untracked_manifest_sha256_prefix": None,
+        },
+    )
     report_path = tmp_path / "report.json"
     checkpoint_path = tmp_path / "checkpoint.jsonl"
     exit_code = runner.main(
@@ -1783,14 +1969,11 @@ def test_runner_question_ids_filters_and_resumes(tmp_path: Path) -> None:
     assert report["resumed_from_checkpoint"] == 1
     assert report["totals"] == {"questions": 1, "ok": 1, "errors": 0, "correct": 0, "accuracy": None}
 
-    # Widening the slice re-runs only the new id.
+    # A different slice changes the run fingerprint. Reusing the old
+    # checkpoint would silently produce a mixed-configuration report, so the
+    # runner fails closed and requires a fresh checkpoint.
     ids_file.write_text("synthetic_2_abs\nsynthetic_1\n", encoding="utf-8")
-    assert runner.main([*common, "--resume"]) == runner.EXIT_OK
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["resumed_from_checkpoint"] == 1
-    assert report["totals"]["questions"] == 2
-    records = runner.load_checkpoint(checkpoint_path)
-    assert set(records) == {"synthetic_1", "synthetic_2_abs"}
+    assert runner.main([*common, "--resume"]) == runner.EXIT_CONFIG_ERROR
 
 
 # -- compare_runs -------------------------------------------------------------------
@@ -1807,6 +1990,10 @@ def test_exact_mcnemar_hand_computed() -> None:
     assert compare_runs.exact_mcnemar_p(0, 0) == 1.0
     with pytest.raises(ValueError):
         compare_runs.exact_mcnemar_p(-1, 2)
+
+
+def test_committed_saturation_comparisons_replay_byte_identically() -> None:
+    assert check_longmemeval_evidence.validate() == []
 
 
 def _result_row(question_id: str, question_type: str, *, correct: bool | None) -> dict[str, object]:

@@ -9,6 +9,7 @@ import {
   createThread,
   createContinuityCapture,
   captureVNextBrowserClip,
+  confirmVNextMemory,
   applyContinuityCorrection,
   createVNextContextPack,
   createVNextOpenLoop,
@@ -20,6 +21,7 @@ import {
   generateVNextProjectUpdate,
   generateVNextWeeklySynthesis,
   getCalendarAccountDetail,
+  getApiConfig,
   getGmailAccountDetail,
   getOpenLoopDetail,
   getTaskArtifactDetail,
@@ -53,6 +55,7 @@ import {
   captureChiefOfStaffHandoffOutcome,
   captureChiefOfStaffHandoffReviewAction,
   captureChiefOfStaffRecommendationOutcome,
+  clearVNextOperatorAgentApiKey,
   getThreadSessions,
   executeApproval,
   ingestCalendarEvent,
@@ -82,6 +85,11 @@ import {
   getContinuityRetrievalEvaluation,
   hasLiveApiConfig,
   isLocalApiBaseUrl,
+  isSupportedApiBaseUrl,
+  requestJson,
+  sanitizeApiBaseUrl,
+  sanitizePublicErrorText,
+  setVNextOperatorAgentApiKey,
   pageModeLabel,
   rateVNextArtifactQuality,
   recordVNextArtifactInsightFeedback,
@@ -113,7 +121,10 @@ describe("api helpers", () => {
   });
 
   afterEach(() => {
+    clearVNextOperatorAgentApiKey();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("combines live and fixture sources into a mixed page mode", () => {
@@ -121,9 +132,14 @@ describe("api helpers", () => {
     expect(pageModeLabel("mixed")).toBe("Mixed fallback");
   });
 
-  it("only enables generic live API mode for loopback legacy v0 targets", () => {
+  it("keeps the generic console loopback-only while validating hosted HTTPS separately", () => {
     expect(isLocalApiBaseUrl("http://127.0.0.1:8000")).toBe(true);
+    expect(isLocalApiBaseUrl("https://[::1]:8443")).toBe(true);
+    expect(isLocalApiBaseUrl("ftp://localhost:8000")).toBe(false);
     expect(isLocalApiBaseUrl("https://api.example.com")).toBe(false);
+    expect(isSupportedApiBaseUrl("https://api.example.com")).toBe(true);
+    expect(isSupportedApiBaseUrl("http://api.example.com")).toBe(false);
+    expect(isSupportedApiBaseUrl("https://user:secret@api.example.com")).toBe(false);
     expect(
       hasLiveApiConfig({
         apiBaseUrl: "http://localhost:8000",
@@ -136,6 +152,136 @@ describe("api helpers", () => {
         userId: "user-1",
       }),
     ).toBe(false);
+    expect(
+      hasLiveApiConfig({
+        apiBaseUrl: "http://api.example.com",
+        userId: "user-1",
+      }),
+    ).toBe(false);
+  });
+
+  it("sanitizes configured API URLs and public error text", () => {
+    expect(sanitizeApiBaseUrl("https://api.example.com/root?token=secret#fragment")).toBe(
+      "https://api.example.com/root",
+    );
+    expect(sanitizeApiBaseUrl("https://user:secret@api.example.com/root?token=secret")).toBe("");
+    expect(
+      sanitizePublicErrorText(
+        "Failed at https://user:secret@api.example.com/root?token=secret#fragment",
+      ),
+    ).toBe("Failed at https://api.example.com/root");
+  });
+
+  it("sanitizes the configured API base URL before returning browser config", () => {
+    vi.stubEnv(
+      "NEXT_PUBLIC_ALICEBOT_API_BASE_URL",
+      "https://api.example.com/root?token=secret#fragment",
+    );
+    expect(getApiConfig().apiBaseUrl).toBe("https://api.example.com/root");
+
+    vi.stubEnv(
+      "NEXT_PUBLIC_ALICEBOT_API_BASE_URL",
+      "https://user:secret@api.example.com/root?token=secret#fragment",
+    );
+    expect(getApiConfig().apiBaseUrl).toBe("");
+  });
+
+  it("attaches the in-memory operator key only to loopback vNext routes", async () => {
+    const agentApiKey = "alice_sk_operator_session_secret";
+    setVNextOperatorAgentApiKey(agentApiKey);
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await requestJson("http://127.0.0.1:8000", "/v0/vnext");
+    await requestJson("https://localhost:8443", "/v0/vnext/workspace");
+    await requestJson("https://api.example.com", "/v0/vnext/workspace");
+    await requestJson("http://127.0.0.1:8000", "/v0/threads");
+    await requestJson("http://127.0.0.1:8000", "/v1/admin/hosted/overview");
+    await requestJson("http://127.0.0.1:8000", "/v0/vnextish/workspace");
+
+    const authorizationHeaders = fetchMock.mock.calls.map(([, init]) =>
+      new Headers((init as RequestInit).headers).get("Authorization"),
+    );
+    expect(authorizationHeaders).toEqual([
+      `Bearer ${agentApiKey}`,
+      `Bearer ${agentApiKey}`,
+      null,
+      null,
+      null,
+      null,
+    ]);
+    expect(fetchMock.mock.calls.map(([url]) => String(url)).join(" ")).not.toContain(agentApiKey);
+  });
+
+  it("keeps explicit Authorization headers authoritative over the in-memory operator key", async () => {
+    setVNextOperatorAgentApiKey("alice_sk_operator_session_secret");
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await requestJson("http://127.0.0.1:8000", "/v0/vnext/workspace", {
+      headers: { Authorization: "Bearer explicit-session-token" },
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).get("Authorization")).toBe(
+      "Bearer explicit-session-token",
+    );
+  });
+
+  it("redacts an active operator key if a backend echoes it in an error envelope", async () => {
+    const agentApiKey = "alice_sk_operator_session_secret";
+    setVNextOperatorAgentApiKey(agentApiKey);
+    fetchMock.mockImplementation(() => {
+      clearVNextOperatorAgentApiKey();
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            detail: {
+              message: `Rejected credential ${agentApiKey}`,
+              code: agentApiKey,
+              echoed_fields: {
+                [agentApiKey]: "secret-named field",
+                "[redacted agent key]": "pre-existing redacted field",
+              },
+            },
+          }),
+          { status: 401, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+
+    const error = await requestJson("http://127.0.0.1:8000", "/v0/vnext/workspace").catch(
+      (value) => value,
+    );
+    const serialized = JSON.stringify({
+      message: error.message,
+      code: error.code,
+      detail: error.detail,
+    });
+
+    expect(error).toEqual(
+      expect.objectContaining<ApiError>({
+        message: "Rejected credential [redacted agent key]",
+        code: "request_failed",
+        detail: expect.objectContaining({
+          echoed_fields: {
+            "[redacted agent key]": "secret-named field",
+            "[redacted agent key]#2": "pre-existing redacted field",
+          },
+        }),
+      }),
+    );
+    expect(serialized).not.toContain(agentApiKey);
   });
 
   it("does not borrow an older unrelated execution from the same thread", () => {
@@ -656,6 +802,179 @@ describe("api helpers", () => {
         method: "POST",
       }),
     );
+  });
+
+  it("preserves structured validation details in ApiError", async () => {
+    const detail = [
+      { loc: ["body", "title"], msg: "Field required", type: "missing" },
+      { loc: ["body", "domain"], msg: "Invalid domain", type: "value_error" },
+    ];
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ detail, code: "validation_failed" }), {
+        status: 422,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(listThreads("https://api.example.com", "user-1")).rejects.toEqual(
+      expect.objectContaining<ApiError>({
+        message: "Field required; Invalid domain",
+        status: 422,
+        code: "validation_failed",
+        detail,
+      }),
+    );
+  });
+
+  it("normalizes object errors, sanitizes URLs, and preserves Retry-After", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: {
+            code: "upstream_unavailable",
+            message:
+              "Upstream failed at https://user:secret@api.example.com/v0/run?token=secret#trace",
+            diagnostic_url:
+              "https://user:secret@api.example.com/debug?token=secret#trace",
+          },
+        }),
+        {
+          status: 429,
+          headers: { "Content-Type": "application/json", "Retry-After": "7" },
+        },
+      ),
+    );
+
+    const error = await listThreads("https://api.example.com", "user-1").catch((value) => value);
+
+    expect(error).toEqual(
+      expect.objectContaining<ApiError>({
+        message: "Upstream failed at https://api.example.com/v0/run",
+        status: 429,
+        code: "upstream_unavailable",
+        retryAfterSeconds: 7,
+        detail: {
+          code: "upstream_unavailable",
+          message: "Upstream failed at https://api.example.com/v0/run",
+          diagnostic_url: "https://api.example.com/debug",
+        },
+      }),
+    );
+    const serialized = JSON.stringify({ message: error.message, detail: error.detail });
+    expect(serialized).not.toContain("user:secret");
+    expect(serialized).not.toContain("token=secret");
+    expect(serialized).not.toContain("#trace");
+  });
+
+  it("normalizes transport failures without serializing their URL", async () => {
+    fetchMock.mockRejectedValue(
+      new TypeError(
+        "fetch failed for https://user:secret@api.example.com/v0/run?token=secret#trace",
+      ),
+    );
+
+    const error = await listThreads("https://api.example.com", "user-1").catch((value) => value);
+
+    expect(error).toEqual(
+      expect.objectContaining<ApiError>({
+        message: "Unable to reach the configured API",
+        status: 0,
+        code: "transport_error",
+      }),
+    );
+    expect(JSON.stringify({ message: error.message, detail: error.detail })).not.toContain("secret");
+  });
+
+  it("rejects credential-bearing base URLs without exposing them", async () => {
+    const error = await listThreads(
+      "https://user:secret@api.example.com?token=secret#trace",
+      "user-1",
+    ).catch((value) => value);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(error).toEqual(
+      expect.objectContaining<ApiError>({
+        message: "The configured API base URL is invalid",
+        code: "invalid_api_base_url",
+      }),
+    );
+    expect(JSON.stringify({ message: error.message, detail: error.detail })).not.toContain("secret");
+  });
+
+  it("aborts stalled API requests after the bounded timeout", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation(
+      (_url: string, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        }),
+    );
+
+    const request = listThreads("https://api.example.com", "user-1");
+    const rejection = expect(request).rejects.toEqual(
+      expect.objectContaining<ApiError>({
+        message: "Request timed out after 15 seconds",
+        status: 0,
+        code: "request_timeout",
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(15_000);
+    await rejection;
+  });
+
+  it("uses an endpoint-specific deadline for long-running mutations", async () => {
+    vi.useFakeTimers();
+    const abortSpy = vi.fn();
+    fetchMock.mockImplementation(
+      (_url: string, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            abortSpy();
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        }),
+    );
+
+    const request = submitAssistantResponse("https://api.example.com", {
+      user_id: "user-1",
+      thread_id: "thread-1",
+      message: "Run the model-backed response path.",
+    });
+    const rejection = expect(request).rejects.toEqual(
+      expect.objectContaining<ApiError>({
+        message: "Request timed out after 120 seconds",
+        code: "request_timeout",
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(abortSpy).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(90_000);
+    await rejection;
+    expect(abortSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("honors a bounded custom mutation deadline", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation(
+      (_url: string, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        }),
+    );
+
+    const request = requestJson("https://api.example.com", "/v0/test", {
+      method: "POST",
+      timeoutMs: 25,
+    });
+    const rejection = expect(request).rejects.toEqual(
+      expect.objectContaining<ApiError>({ message: "Request timed out after 0.025 seconds" }),
+    );
+    await vi.advanceTimersByTimeAsync(25);
+    await rejection;
   });
 
   it("executes approved requests and reads execution detail from the shipped endpoints", async () => {
@@ -3845,6 +4164,40 @@ describe("api helpers", () => {
       user_id: "user-1",
       fix_safe: true,
       ci: true,
+    });
+  });
+
+  it("submits bounded inline confirmation actions", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: "committed",
+          write_mode: "confirm_inline",
+          confirmation_id: "confirm-1",
+          memory: { id: "memory-1" },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await confirmVNextMemory("https://api.example.com", {
+      user_id: "user-1",
+      confirmation_id: "confirm-1",
+      action: "edit",
+      canonical_text: "Reviewed and corrected memory text.",
+      rationale: "Reviewed in the operator console.",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/vnext/memories/confirm",
+      expect.objectContaining({ method: "POST", cache: "no-store" }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      confirmation_id: "confirm-1",
+      action: "edit",
+      canonical_text: "Reviewed and corrected memory text.",
+      rationale: "Reviewed in the operator console.",
     });
   });
 });

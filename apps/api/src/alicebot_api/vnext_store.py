@@ -10,9 +10,14 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from alicebot_api.store import ContinuityStoreInvariantError
+from alicebot_api.vnext_embeddings import (
+    EMBEDDING_SIGNATURE_METADATA_KEY,
+    memory_embedding_signature_is_current,
+)
 from alicebot_api.vnext_entity_names import ENTITY_IMMUTABLE_PATCH_FIELDS, normalize_entity_name
 from alicebot_api.vnext_event_log import build_event_log_record
 from alicebot_api.vnext_json import json_safe
+from alicebot_api.vnext_project_scope import canonical_memory_metadata, expose_memory_project_scope
 from alicebot_api.vnext_repositories import JsonObject
 
 
@@ -25,12 +30,25 @@ VNextRow = dict[str, object]
 # sqlite_store._MEMORY_SEARCHABLE_STATUSES_SQL; keep the two in sync.
 _MEMORY_SEARCHABLE_STATUSES_SQL = "('active', 'accepted')"
 
-# The memories.project_id column (migration 20260704_0076) is the real
-# project scope; the metadata_json fallback covers rows written before the
-# column existed or by writers that still stash project_id in metadata only
-# (e.g. capture-created candidates). Drop the COALESCE once a follow-up
-# backfill retires the metadata-only writers.
-_MEMORY_PROJECT_ID_SQL = "COALESCE(project_id, metadata_json ->> 'project_id')"
+# The canonical overlap-aware scope is the top-level metadata array.  The
+# nested agentic array covers early commit rows; project_id and its metadata
+# predecessor remain singular legacy/index fallbacks.  CASE precedence is
+# intentionally non-widening: stale lower-priority representations cannot add
+# projects once a higher-priority array is present.
+_MEMORY_PROJECT_SCOPE_SQL = """
+CASE
+  WHEN jsonb_typeof(metadata_json -> 'project_scope') = 'array'
+       AND jsonb_array_length(metadata_json -> 'project_scope') > 0
+    THEN metadata_json -> 'project_scope'
+  WHEN jsonb_typeof(metadata_json #> '{agentic_memory,project_scope}') = 'array'
+       AND jsonb_array_length(metadata_json #> '{agentic_memory,project_scope}') > 0
+    THEN metadata_json #> '{agentic_memory,project_scope}'
+  WHEN project_id IS NOT NULL THEN jsonb_build_array(project_id)
+  WHEN metadata_json ->> 'project_id' IS NOT NULL
+    THEN jsonb_build_array(metadata_json ->> 'project_id')
+  ELSE '[]'::jsonb
+END
+"""
 
 # Canonical true-redaction marker. Content columns are replaced with this
 # literal (text columns) or with {"redacted": True} (JSON columns) so the
@@ -51,6 +69,7 @@ REDACTION_METADATA_STRUCTURAL_KEYS = frozenset(
     {
         "consolidation_digest",
         "project_id",
+        "project_scope",
         "superseded_by",
         "supersedes",
         "source_refs",
@@ -624,7 +643,7 @@ class PostgresVNextStore:
                 f"{operation_name} did not return a row from the database",
             )
 
-        return cast(VNextRow, row)
+        return expose_memory_project_scope(cast(VNextRow, row))
 
     def _fetch_optional_one(
         self,
@@ -634,7 +653,9 @@ class PostgresVNextStore:
         with self.conn.cursor() as cur:
             cur.execute(query, params)
             row = cur.fetchone()
-        return cast(VNextRow | None, row)
+        if row is None:
+            return None
+        return expose_memory_project_scope(cast(VNextRow, row))
 
     def _fetch_all(
         self,
@@ -644,7 +665,7 @@ class PostgresVNextStore:
         with self.conn.cursor() as cur:
             cur.execute(query, params)
             rows = cur.fetchall()
-        return cast(list[VNextRow], list(rows))
+        return [expose_memory_project_scope(cast(VNextRow, row)) for row in rows]
 
     def _append_mutation_event(
         self,
@@ -1367,6 +1388,11 @@ class PostgresVNextStore:
                   clock_timestamp(),
                   clock_timestamp()
                 )
+                -- Targetless form stays executable while migration tests
+                -- run current code against pre-0083 schemas, where the
+                -- commit-digest UNIQUE index does not exist yet. Once 0083
+                -- is installed, that index still makes retries atomic.
+                ON CONFLICT DO NOTHING
                 RETURNING {MEMORY_COLUMNS}
                 """,
             (
@@ -1397,7 +1423,7 @@ class PostgresVNextStore:
                 memory.get("first_seen_at"),
                 memory.get("last_seen_at"),
                 memory.get("last_reviewed_at"),
-                _json_object(memory.get("metadata_json")),
+                _json_object(canonical_memory_metadata(memory)),
                 memory.get("commit_digest"),
                 memory.get("confirmation_id"),
                 memory.get("project_id"),
@@ -1427,25 +1453,210 @@ class PostgresVNextStore:
             (memory_id,),
         )
 
-    def list_memories(self, *, status: str | None = None) -> list[VNextRow]:
-        if status is None:
-            return self._fetch_all(
-                f"""
+    def get_memory_for_update(self, memory_id: str) -> VNextRow | None:
+        """Load and lock one memory for a review/lifecycle decision."""
+        return self._fetch_optional_one(
+            f"""
                 SELECT {MEMORY_COLUMNS}
                 FROM memories
-                WHERE deleted_at IS NULL
-                ORDER BY updated_at DESC, created_at DESC, id DESC
-                """
-            )
+                WHERE id = %s::uuid
+                  AND deleted_at IS NULL
+                FOR UPDATE
+                """,
+            (memory_id,),
+        )
+
+    def list_pending_derived_candidates_for_member(
+        self,
+        *,
+        member_id: str,
+        exclude_memory_id: str | None = None,
+    ) -> list[VNextRow]:
+        """Lock pending consolidation/roll-up candidates derived from a member.
+
+        New derived candidates persist their reviewed inputs under
+        ``consolidation.member_snapshots``. Querying that bounded pending set
+        lets a correction or retirement invalidate stale review work in the
+        same transaction as the source-memory mutation.
+        """
+        return self._fetch_all(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories AS candidate
+                WHERE candidate.deleted_at IS NULL
+                  AND candidate.status IN ('candidate', 'needs_review')
+                  AND (%s::uuid IS NULL OR candidate.id <> %s::uuid)
+                  AND EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(
+                      CASE
+                        WHEN jsonb_typeof(
+                          candidate.metadata_json #> '{{consolidation,member_snapshots}}'
+                        ) = 'array'
+                        THEN candidate.metadata_json #> '{{consolidation,member_snapshots}}'
+                        ELSE '[]'::jsonb
+                      END
+                    ) AS member_snapshot(value)
+                    WHERE member_snapshot.value ->> 'id' = %s
+                  )
+                ORDER BY candidate.id
+                FOR UPDATE OF candidate
+                """,
+            (exclude_memory_id, exclude_memory_id, str(member_id)),
+        )
+
+    def list_memories(
+        self,
+        *,
+        status: str | None = None,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int | None = None,
+    ) -> list[VNextRow]:
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be positive")
+        status_sql = ""
+        params: list[object] = []
+        if status is not None:
+            status_sql = " AND status = %s"
+            params.append(status)
+        domains_sql = ""
+        if domains:
+            domains_sql = " AND (domain = ANY(%s::text[]) OR domain = 'unknown')"
+            params.append(domains)
+        sensitivity_sql = ""
+        if sensitivity_allowed is not None:
+            if not sensitivity_allowed:
+                return []
+            sensitivity_sql = " AND COALESCE(sensitivity, 'unknown') = ANY(%s::text[])"
+            params.append(sensitivity_allowed)
+        limit_sql = ""
+        if limit is not None:
+            limit_sql = " LIMIT %s"
+            params.append(limit)
         return self._fetch_all(
             f"""
                 SELECT {MEMORY_COLUMNS}
                 FROM memories
-                WHERE status = %s
-                  AND deleted_at IS NULL
+                WHERE deleted_at IS NULL{status_sql}{domains_sql}{sensitivity_sql}
                 ORDER BY updated_at DESC, created_at DESC, id DESC
+                {limit_sql}
                 """,
-            (status,),
+            tuple(params),
+        )
+
+    def list_rollup_input_memories(
+        self,
+        *,
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        excluded_candidate_kind: str,
+        limit: int,
+    ) -> list[VNextRow]:
+        """Return the newest bounded roll-up inputs, excluding cards in SQL."""
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        if not sensitivity_allowed:
+            return []
+        domain_filter = domains or None
+        return self._fetch_all(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}
+                  AND COALESCE(metadata_json ->> 'candidate_kind', '') <> %s
+                  AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
+                  AND COALESCE(sensitivity, 'unknown') = ANY(%s::text[])
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+            (excluded_candidate_kind, domain_filter, domain_filter, sensitivity_allowed, limit),
+        )
+
+    def list_pending_rollup_candidates(
+        self,
+        *,
+        rollup_digests: tuple[str, ...],
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        candidate_kind: str,
+        limit: int,
+    ) -> list[VNextRow]:
+        """Return at most one newest pending candidate per requested digest."""
+        unique_digests = tuple(sorted(set(rollup_digests)))
+        if not unique_digests or not sensitivity_allowed:
+            return []
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        bounded_limit = min(limit, len(unique_digests))
+        domain_filter = domains or None
+        return self._fetch_all(
+            f"""
+                SELECT DISTINCT ON (metadata_json ->> 'rollup_digest') {MEMORY_COLUMNS}
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND status = 'candidate'
+                  AND metadata_json ->> 'candidate_kind' = %s
+                  AND metadata_json ->> 'rollup_digest' = ANY(%s::text[])
+                  AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
+                  AND COALESCE(sensitivity, 'unknown') = ANY(%s::text[])
+                ORDER BY metadata_json ->> 'rollup_digest', updated_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """,
+            (
+                candidate_kind,
+                list(unique_digests),
+                domain_filter,
+                domain_filter,
+                sensitivity_allowed,
+                bounded_limit,
+            ),
+        )
+
+    def list_accepted_rollup_cards(
+        self,
+        *,
+        rollup_keys: tuple[str, ...],
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        candidate_kind: str,
+        limit: int,
+    ) -> list[VNextRow]:
+        """Return at most one active/accepted card per requested roll-up key."""
+        unique_keys = tuple(sorted(set(rollup_keys)))
+        if not unique_keys or not sensitivity_allowed:
+            return []
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        bounded_limit = min(limit, len(unique_keys))
+        domain_filter = domains or None
+        return self._fetch_all(
+            f"""
+                SELECT DISTINCT ON (metadata_json ->> 'rollup_key') {MEMORY_COLUMNS}
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}
+                  AND metadata_json ->> 'candidate_kind' = %s
+                  AND metadata_json ->> 'rollup_key' = ANY(%s::text[])
+                  AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
+                  AND COALESCE(sensitivity, 'unknown') = ANY(%s::text[])
+                ORDER BY
+                  metadata_json ->> 'rollup_key',
+                  CASE WHEN status = 'active' THEN 0 ELSE 1 END,
+                  updated_at DESC,
+                  created_at DESC,
+                  id DESC
+                LIMIT %s
+                """,
+            (
+                candidate_kind,
+                list(unique_keys),
+                domain_filter,
+                domain_filter,
+                sensitivity_allowed,
+                bounded_limit,
+            ),
         )
 
     def search_memories(
@@ -1475,7 +1686,7 @@ class PostgresVNextStore:
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
                   AND (%s::text[] IS NULL OR memory_type = ANY(%s::text[]))
-                  AND (%s::text[] IS NULL OR {_MEMORY_PROJECT_ID_SQL} = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR ({_MEMORY_PROJECT_SCOPE_SQL}) ?| %s::text[])
                   AND (%s::text[] IS NULL OR created_by_agent_id = ANY(%s::text[]))
                   AND (%s::text IS NULL OR run_id = %s)
                   AND (%s::boolean OR valid_to IS NULL OR valid_to >= clock_timestamp())
@@ -1565,7 +1776,7 @@ class PostgresVNextStore:
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
                   AND (%s::text[] IS NULL OR memory_type = ANY(%s::text[]))
-                  AND (%s::text[] IS NULL OR {_MEMORY_PROJECT_ID_SQL} = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR ({_MEMORY_PROJECT_SCOPE_SQL}) ?| %s::text[])
                   AND (%s::text[] IS NULL OR created_by_agent_id = ANY(%s::text[]))
                   AND (%s::text IS NULL OR run_id = %s)
                   AND (%s::boolean OR valid_to IS NULL OR valid_to >= clock_timestamp())
@@ -1605,12 +1816,50 @@ class PostgresVNextStore:
         created_by_agent_ids: tuple[str, ...] = (),
         run_id: str | None = None,
         include_expired: bool = False,
+        embedding_provider: str | None = None,
+        embedding_model: str | None = None,
+        embedding_signature_version: int | None = None,
     ) -> list[VNextRow]:
         vector_param = _vector_literal(query_vector)
         memory_type_list = list(memory_types) or None
         project_list = list(projects) or None
         created_by_list = list(created_by_agent_ids) or None
-        return self._fetch_all(
+        signature_sql = ""
+        signature_params: list[object] = []
+        if embedding_provider is not None or embedding_model is not None:
+            if not embedding_provider or not embedding_model:
+                raise ContinuityStoreInvariantError(
+                    "embedding_provider and embedding_model must be supplied together"
+                )
+            signature_sql = f"""
+                  AND metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'provider' = %s
+                  AND metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'model' = %s
+            """
+            signature_params.extend((embedding_provider, embedding_model))
+            if embedding_signature_version is not None:
+                signature_sql += f"""
+                  AND metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'version' = %s
+                """
+                signature_params.append(str(embedding_signature_version))
+        params: list[object] = [
+            vector_param,
+            domains,
+            domains,
+            sensitivity_allowed,
+            sensitivity_allowed,
+            memory_type_list,
+            memory_type_list,
+            project_list,
+            project_list,
+            created_by_list,
+            created_by_list,
+            run_id,
+            run_id,
+        ]
+        params.extend(signature_params)
+        candidate_limit = max(limit, min(limit * 4, 1000)) if signature_sql else limit
+        params.extend((include_expired, vector_param, candidate_limit))
+        rows = self._fetch_all(
             f"""
                 SELECT {MEMORY_COLUMNS},
                   (embedding_vector <=> %s::vector) AS vector_distance
@@ -1621,32 +1870,19 @@ class PostgresVNextStore:
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
                   AND (%s::text[] IS NULL OR memory_type = ANY(%s::text[]))
-                  AND (%s::text[] IS NULL OR {_MEMORY_PROJECT_ID_SQL} = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR ({_MEMORY_PROJECT_SCOPE_SQL}) ?| %s::text[])
                   AND (%s::text[] IS NULL OR created_by_agent_id = ANY(%s::text[]))
                   AND (%s::text IS NULL OR run_id = %s)
+                  {signature_sql}
                   AND (%s::boolean OR valid_to IS NULL OR valid_to >= clock_timestamp())
                 ORDER BY embedding_vector <=> %s::vector
                 LIMIT %s
                 """,
-            (
-                vector_param,
-                domains,
-                domains,
-                sensitivity_allowed,
-                sensitivity_allowed,
-                memory_type_list,
-                memory_type_list,
-                project_list,
-                project_list,
-                created_by_list,
-                created_by_list,
-                run_id,
-                run_id,
-                include_expired,
-                vector_param,
-                limit,
-            ),
+            tuple(params),
         )
+        if not signature_sql:
+            return rows
+        return [row for row in rows if memory_embedding_signature_is_current(row)][:limit]
 
     def search_memories_by_time(
         self,
@@ -1703,7 +1939,7 @@ class PostgresVNextStore:
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
                   AND (%s::text[] IS NULL OR memory_type = ANY(%s::text[]))
-                  AND (%s::text[] IS NULL OR {_MEMORY_PROJECT_ID_SQL} = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR ({_MEMORY_PROJECT_SCOPE_SQL}) ?| %s::text[])
                   AND (%s::text[] IS NULL OR created_by_agent_id = ANY(%s::text[]))
                   AND (%s::text IS NULL OR run_id = %s)
                   AND (%s::boolean OR valid_to IS NULL OR valid_to >= clock_timestamp())
@@ -1746,9 +1982,46 @@ class PostgresVNextStore:
             ),
         )
 
-    def update_memory_embedding(self, *, memory_id: str, vector: list[float]) -> VNextRow | None:
+    def update_memory_embedding(
+        self,
+        *,
+        memory_id: str,
+        vector: list[float],
+        provider: str | None = None,
+        model: str | None = None,
+        content_sha256: str | None = None,
+        signature_version: int = 1,
+    ) -> VNextRow | None:
+        signature_values = (provider, model, content_sha256)
+        if any(value is not None for value in signature_values):
+            if not all(isinstance(value, str) and value for value in signature_values):
+                raise ContinuityStoreInvariantError(
+                    "embedding provider, model, and content_sha256 must be supplied together"
+                )
+            signature_metadata: JsonObject = {
+                "version": signature_version,
+                "provider": provider,
+                "model": model,
+                "content_sha256": content_sha256,
+            }
+            return self._fetch_optional_one(
+                f"""
+                    UPDATE memories
+                    SET embedding_vector = %s::vector,
+                        metadata_json = jsonb_set(
+                          metadata_json,
+                          '{{{EMBEDDING_SIGNATURE_METADATA_KEY}}}',
+                          %s::jsonb,
+                          true
+                        )
+                    WHERE id = %s::uuid
+                      AND deleted_at IS NULL
+                    RETURNING id
+                    """,
+                (_vector_literal(vector), Jsonb(signature_metadata), memory_id),
+            )
         return self._fetch_optional_one(
-            """
+            f"""
                 UPDATE memories
                 SET embedding_vector = %s::vector
                 WHERE id = %s::uuid
@@ -1758,18 +2031,70 @@ class PostgresVNextStore:
             (_vector_literal(vector), memory_id),
         )
 
-    def list_memories_missing_embeddings(self, *, limit: int = 100, after_id: str | None = None) -> list[VNextRow]:
+    def clear_memory_embedding(self, *, memory_id: str) -> VNextRow | None:
+        """Invalidate content-derived vector state before a text mutation.
+
+        The caller may immediately repopulate it through the configured
+        provider. A missing/failed provider must leave NULL, never an
+        embedding for the memory's previous text.
+        """
+        return self._fetch_optional_one(
+            f"""
+                UPDATE memories
+                SET embedding_vector = NULL,
+                    metadata_json = metadata_json - '{EMBEDDING_SIGNATURE_METADATA_KEY}'
+                WHERE id = %s::uuid
+                  AND deleted_at IS NULL
+                RETURNING id
+                """,
+            (memory_id,),
+        )
+
+    def list_memories_missing_embeddings(
+        self,
+        *,
+        limit: int = 100,
+        after_id: str | None = None,
+        embedding_provider: str | None = None,
+        embedding_model: str | None = None,
+        embedding_signature_version: int | None = None,
+    ) -> list[VNextRow]:
+        signature_sql = ""
+        signature_params: list[object] = []
+        if embedding_provider is not None or embedding_model is not None:
+            if not embedding_provider or not embedding_model:
+                raise ContinuityStoreInvariantError(
+                    "embedding_provider and embedding_model must be supplied together"
+                )
+            signature_sql = f"""
+                  OR metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'provider'
+                       IS DISTINCT FROM %s
+                  OR metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'model'
+                       IS DISTINCT FROM %s
+            """
+            signature_params.extend((embedding_provider, embedding_model))
+            if embedding_signature_version is not None:
+                signature_sql += f"""
+                  OR metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'version'
+                       IS DISTINCT FROM %s
+                """
+                signature_params.append(str(embedding_signature_version))
+        params: list[object] = [*signature_params, after_id, after_id, limit]
         return self._fetch_all(
             f"""
-                SELECT {MEMORY_COLUMNS}
+                SELECT {MEMORY_COLUMNS},
+                  (embedding_vector IS NOT NULL) AS embedding_present
                 FROM memories
                 WHERE deleted_at IS NULL
-                  AND embedding_vector IS NULL
+                  AND (
+                    embedding_vector IS NULL
+                    {signature_sql}
+                  )
                   AND (%s::uuid IS NULL OR id > %s::uuid)
                 ORDER BY id ASC
                 LIMIT %s
                 """,
-            (after_id, after_id, limit),
+            tuple(params),
         )
 
     def update_memory_fact_keys(self, *, memory_id: str, fact_keys: str | None) -> VNextRow | None:
@@ -1883,6 +2208,7 @@ class PostgresVNextStore:
                     last_seen_at = COALESCE(%s, last_seen_at),
                     last_reviewed_at = COALESCE(%s, last_reviewed_at),
                     metadata_json = COALESCE(%s, metadata_json),
+                    project_id = COALESCE(%s, project_id),
                     superseded_by = COALESCE(%s::uuid, superseded_by),
                     supersedes = COALESCE(%s::uuid, supersedes),
                     updated_at = clock_timestamp(),
@@ -1919,6 +2245,7 @@ class PostgresVNextStore:
                 patch.get("last_seen_at"),
                 patch.get("last_reviewed_at"),
                 _json_object(patch["metadata_json"]) if "metadata_json" in patch else None,
+                patch.get("project_id"),
                 patch.get("superseded_by"),
                 patch.get("supersedes"),
                 patch.get("status"),
@@ -1938,12 +2265,19 @@ class PostgresVNextStore:
         row = self._fetch_one(
             "append_revision",
             f"""
-                WITH next_revision AS (
+                WITH locked_memory AS (
+                  SELECT id
+                  FROM memories
+                  WHERE id = %s::uuid
+                    AND user_id = app.current_user_id()
+                  FOR UPDATE
+                ),
+                next_revision AS (
                   SELECT
                     COALESCE(MAX(sequence_no) + 1, 1) AS sequence_no,
                     COALESCE(MAX(revision_number) + 1, 1) AS revision_number
                   FROM memory_revisions
-                  WHERE memory_id = %s::uuid
+                  WHERE memory_id = (SELECT id FROM locked_memory)
                     AND user_id = app.current_user_id()
                 )
                 INSERT INTO memory_revisions (
@@ -3442,6 +3776,19 @@ class PostgresVNextStore:
                 SELECT {ARTIFACT_COLUMNS}
                 FROM generated_artifacts
                 WHERE id = %s::uuid
+                """,
+            (artifact_id,),
+        )
+
+    def get_artifact_for_update(self, artifact_id: str) -> VNextRow | None:
+        """Lock one persisted artifact before an authorized side effect."""
+
+        return self._fetch_optional_one(
+            f"""
+                SELECT {ARTIFACT_COLUMNS}
+                FROM generated_artifacts
+                WHERE id = %s::uuid
+                FOR UPDATE
                 """,
             (artifact_id,),
         )

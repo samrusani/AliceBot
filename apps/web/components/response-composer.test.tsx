@@ -65,6 +65,7 @@ describe("ResponseComposer", () => {
         userId="user-1"
         selectedThreadId="thread-1"
         selectedThreadTitle="Gamma thread"
+        source="live"
       />,
     );
 
@@ -106,6 +107,46 @@ describe("ResponseComposer", () => {
     expect(submitAssistantResponseMock).not.toHaveBeenCalled();
     expect(await screen.findByText(/Fixture mode generated a preview response only/i)).toBeInTheDocument();
     expect(screen.getByText(/Fixture response preview added/i)).toBeInTheDocument();
+  });
+
+  it("never submits fixture thread IDs even when API credentials are present", async () => {
+    render(
+      <ResponseComposer
+        initialEntries={[]}
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+        selectedThreadId="fixture-thread-1"
+        selectedThreadTitle="Fixture thread"
+        source="fixture"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Ask the assistant"), {
+      target: { value: "Preview this fixture thread." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Ask assistant" }));
+
+    expect(submitAssistantResponseMock).not.toHaveBeenCalled();
+    expect(await screen.findByText(/Fixture response preview added/i)).toBeInTheDocument();
+  });
+
+  it("disables assistant submission while continuity is unavailable", () => {
+    render(
+      <ResponseComposer
+        initialEntries={[]}
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+        selectedThreadId="thread-1"
+        selectedThreadTitle="Unavailable thread"
+        source="unavailable"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Ask the assistant"), {
+      target: { value: "Do not submit this." },
+    });
+    expect(screen.getByRole("button", { name: "Ask assistant" })).toBeDisabled();
+    expect(screen.getByText(/submission is unavailable until live continuity can be loaded/i)).toBeInTheDocument();
   });
 
   it("requires a selected thread before enabling assistant submission", () => {

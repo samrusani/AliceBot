@@ -6,6 +6,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_memory_commit import VNextMemoryCommitService
 from alicebot_api.vnext_model_intelligence import (
     ModelBackedRequest,
     ModelRoutingRequest,
@@ -526,6 +527,10 @@ class VNextProjectService:
         updated_memory = self.store.update_memory(
             memory_id=candidate_memory_id,
             patch={"status": "active", "canonical_text": current_state},
+        )
+        VNextMemoryCommitService(self.store).refresh_memory_derived_state(
+            updated_memory,
+            stage="project_update_review",
         )
         memory_key = str(updated_memory.get("memory_key", "")).strip()
         if memory_key == "":

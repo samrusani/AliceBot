@@ -58,7 +58,12 @@ mcp_servers:
 
 Do not paste real database passwords into shared logs. Keep this config readable only by the Hermes/Alice operator.
 
-`ALICE_MCP_LEGACY_TOOLS=1` is only needed because the recipes below call the legacy `alice_vnext_*` tools. The default MCP surface is the nine core tools in [mcp-tools.md](mcp-tools.md); omit the flag if Hermes only uses those.
+This example is a deliberately keyless, same-host compatibility setup because
+the recipes below call legacy `alice_vnext_*` tools. Do not add
+`ALICE_AGENT_API_KEY` to this server: key-bound MCP hides and rejects the
+legacy surface even when the flag is set. For the recommended authenticated
+deployment, follow the [Hermes bridge operator guide](../integrations/hermes-bridge-operator-guide.md)
+and use the eleven core tools in [mcp-tools.md](mcp-tools.md).
 
 ## API Request Shape
 

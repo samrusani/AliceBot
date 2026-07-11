@@ -3,10 +3,14 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 from pathlib import Path
+from urllib.parse import urlencode
 from uuid import uuid4
+
+import anyio
 
 import apps.api.src.alicebot_api.main as main_module
 from alicebot_api.config import Settings
+from alicebot_api.vnext_memory_version import memory_version_snapshot
 
 
 class FakeVNextStore:
@@ -170,6 +174,7 @@ class FakeVNextStore:
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = 8,
+        **_filters: object,
     ) -> list[dict[str, object]]:
         del query, domains, sensitivity_allowed
         return self.memories[:limit]
@@ -181,6 +186,7 @@ class FakeVNextStore:
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = 8,
+        **_filters: object,
     ) -> list[dict[str, object]]:
         del query, domains, sensitivity_allowed
         return list(self.sources.values())[:limit]
@@ -272,6 +278,9 @@ class FakeVNextStore:
         return row
 
     def get_artifact(self, artifact_id: str) -> dict[str, object] | None:
+        return self.artifacts.get(artifact_id)
+
+    def get_artifact_for_update(self, artifact_id: str) -> dict[str, object] | None:
         return self.artifacts.get(artifact_id)
 
     def list_artifacts(
@@ -517,6 +526,283 @@ def _install_fake_vnext_store(monkeypatch, store: FakeVNextStore) -> None:
     monkeypatch.setattr(main_module, "PostgresVNextStore", lambda _conn: store)
 
 
+def _invoke_vnext_request(
+    method: str,
+    path: str,
+    *,
+    query: dict[str, str] | None = None,
+    payload: dict[str, object] | None = None,
+    authorization: str | None = None,
+) -> tuple[int, dict[str, object]]:
+    messages: list[dict[str, object]] = []
+    body = b"" if payload is None else json.dumps(payload).encode()
+    received = False
+
+    async def receive() -> dict[str, object]:
+        nonlocal received
+        if received:
+            return {"type": "http.disconnect"}
+        received = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(message: dict[str, object]) -> None:
+        messages.append(message)
+
+    headers = [(b"content-type", b"application/json")]
+    if authorization is not None:
+        headers.append((b"authorization", authorization.encode()))
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": urlencode(query or {}).encode(),
+        "headers": headers,
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+        "root_path": "",
+    }
+    anyio.run(main_module.app, scope, receive, send)
+    start = next(message for message in messages if message["type"] == "http.response.start")
+    response_body = b"".join(
+        message.get("body", b"")
+        for message in messages
+        if message["type"] == "http.response.body"
+    )
+    return int(start["status"]), json.loads(response_body)
+
+
+def test_vnext_http_auth_gate_covers_query_and_json_routes(monkeypatch) -> None:
+    from alicebot_api.vnext_agent_keys import create_agent_key
+
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+
+    # Fresh local installs keep their explicit keyless compatibility path.
+    assert _invoke_vnext_request(
+        "GET", "/v0/vnext/projects", query={"user_id": str(user_id)}
+    )[0] == 200
+
+    _record, raw_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="hermes",
+        permission_profile="trusted_local_agent",
+    )
+    assert _invoke_vnext_request(
+        "GET", "/v0/vnext/projects", query={"user_id": str(user_id)}
+    )[0] == 401
+    assert _invoke_vnext_request(
+        "GET",
+        "/v0/vnext/projects",
+        query={"user_id": str(user_id)},
+        authorization=raw_key,
+    )[0] == 401
+    assert _invoke_vnext_request(
+        "GET",
+        "/v0/vnext/projects",
+        query={"user_id": str(user_id)},
+        authorization="Bearer alice_sk_invalid",
+    )[0] == 401
+    assert _invoke_vnext_request(
+        "GET",
+        "/v0/vnext/projects",
+        query={"user_id": str(user_id)},
+        authorization=f"Bearer {raw_key}",
+    )[0] == 200
+
+    created_status, _created_payload = _invoke_vnext_request(
+        "POST",
+        "/v0/vnext/sources",
+        authorization=f"Bearer {raw_key}",
+        payload={
+            "user_id": str(user_id),
+            "raw_text": "Fact: the centralized gate preserves JSON bodies.",
+            "domain": "project",
+            "sensitivity": "internal",
+        },
+    )
+    assert created_status == 201
+    assert store.sources
+    assert _invoke_vnext_request("GET", "/v0/vnext/projects")[0] == 400
+
+    _scoped_record, scoped_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="project-reader",
+        permission_profile="read_only_agent",
+        project_scope="project-a",
+    )
+    scoped_status, scoped_payload = _invoke_vnext_request(
+        "GET",
+        "/v0/vnext/projects",
+        query={"user_id": str(user_id)},
+        authorization=f"Bearer {scoped_key}",
+    )
+    assert scoped_status == 403
+    assert "trusted_or_admin_agent_required_for_operator_route" in scoped_payload["policy_decision"]["reasons"]
+    assert "unbound_operator_key_required" in scoped_payload["policy_decision"]["reasons"]
+
+    _reader_record, reader_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="unbound-reader",
+        permission_profile="read_only_agent",
+    )
+    mutation_status, mutation_payload = _invoke_vnext_request(
+        "POST",
+        "/v0/vnext/doctor/run",
+        authorization=f"Bearer {reader_key}",
+        payload={"user_id": str(user_id)},
+    )
+    assert mutation_status == 403
+    assert "trusted_or_admin_agent_required_for_operator_route" in mutation_payload["policy_decision"]["reasons"]
+
+    # Every central operator-console route requires an unbound trusted/admin
+    # key once keys exist. Target-aware routes retain their local policy.
+    assert _invoke_vnext_request(
+        "GET",
+        "/v0/vnext/connectors",
+        query={"user_id": str(user_id)},
+        authorization=f"Bearer {raw_key}",
+    )[0] == 200
+    assert _invoke_vnext_request(
+        "GET",
+        "/v0/vnext/artifacts",
+        query={"user_id": str(user_id)},
+        authorization=f"Bearer {raw_key}",
+    )[0] == 200
+    assert _invoke_vnext_request(
+        "POST",
+        "/v0/vnext/queue/process-next",
+        authorization=f"Bearer {raw_key}",
+        payload={"user_id": str(user_id)},
+    )[0] == 200
+
+    _project_operator_record, project_operator_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="unbound-project-operator",
+        permission_profile="project_scoped_agent",
+    )
+    brain_status, brain_payload = _invoke_vnext_request(
+        "PUT",
+        "/v0/vnext/settings/brain-charter",
+        authorization=f"Bearer {project_operator_key}",
+        payload={"user_id": str(user_id)},
+    )
+    assert brain_status == 403
+    assert "trusted_or_admin_agent_required_for_operator_route" in brain_payload["policy_decision"]["reasons"]
+
+    _bound_operator_record, bound_operator_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="bound-trusted-operator",
+        permission_profile="trusted_local_agent",
+        project_scope="project-a",
+    )
+    bound_status, bound_payload = _invoke_vnext_request(
+        "GET",
+        "/v0/vnext/connectors",
+        query={"user_id": str(user_id)},
+        authorization=f"Bearer {bound_operator_key}",
+    )
+    assert bound_status == 403
+    assert "unbound_operator_key_required" in bound_payload["policy_decision"]["reasons"]
+
+
+def test_vnext_route_inventory_fails_closed_without_route_local_policy() -> None:
+    registered = {
+        (method, str(route.path))
+        for route in main_module.app.routes
+        if str(getattr(route, "path", "")).startswith("/v0/vnext")
+        for method in (getattr(route, "methods", None) or set())
+        if method != "OPTIONS"
+    }
+    assert not (
+        main_module._VNEXT_ROUTE_LOCAL_POLICY
+        & main_module._VNEXT_CENTRAL_OPERATOR_ROUTES
+    )
+    assert (
+        main_module._VNEXT_ROUTE_LOCAL_POLICY
+        | main_module._VNEXT_CENTRAL_OPERATOR_ROUTES
+    ) == registered
+    assert len(registered) == 70
+
+    project_bound = main_module.AgentIdentity(
+        agent_id="project-reader",
+        permission_profile="read_only_agent",
+        project_scope=("project-a",),
+        project_scope_locked=True,
+    )
+    read_only = main_module.AgentIdentity(
+        agent_id="reader",
+        permission_profile="read_only_agent",
+    )
+    proposal_only = main_module.AgentIdentity(
+        agent_id="proposer",
+        permission_profile="memory_proposal_agent",
+    )
+    project_scoped = main_module.AgentIdentity(
+        agent_id="project-operator",
+        permission_profile="project_scoped_agent",
+    )
+    trusted = main_module.AgentIdentity(
+        agent_id="trusted-operator",
+        permission_profile="trusted_local_agent",
+    )
+    admin = main_module.AgentIdentity(
+        agent_id="admin-operator",
+        permission_profile="admin_agent",
+    )
+    bound_trusted = main_module.AgentIdentity(
+        agent_id="bound-trusted",
+        permission_profile="trusted_local_agent",
+        project_scope=("project-a",),
+        project_scope_locked=True,
+    )
+    for method, path in main_module._VNEXT_CENTRAL_OPERATOR_ROUTES:
+        for identity in (project_bound, read_only, proposal_only, project_scoped, bound_trusted):
+            decision = main_module._vnext_central_route_policy(
+                identity=identity,
+                method=method,
+                route_path=path,
+            )
+            assert decision is not None and decision.decision == "blocked", (
+                identity.permission_profile,
+                method,
+                path,
+            )
+        for identity in (trusted, admin):
+            decision = main_module._vnext_central_route_policy(
+                identity=identity,
+                method=method,
+                route_path=path,
+            )
+            assert decision is not None and decision.decision == "allowed", (
+                identity.permission_profile,
+                method,
+                path,
+            )
+        assert main_module._vnext_central_route_policy(
+            identity=None,
+            method=method,
+            route_path=path,
+        ) is None
+
+    unknown = main_module._vnext_central_route_policy(
+        identity=admin,
+        method="GET",
+        route_path="/v0/vnext/new-unclassified-route",
+    )
+    assert unknown is not None and unknown.decision == "blocked"
+    assert unknown.reasons == ("vnext_route_not_classified",)
+
+
 def test_create_vnext_source_endpoint_captures_text(monkeypatch) -> None:
     store = FakeVNextStore(None)
     _install_fake_vnext_store(monkeypatch, store)
@@ -617,7 +903,11 @@ def test_vnext_source_review_trace_and_doctor_endpoints(monkeypatch) -> None:
         "captured_at": "2026-05-12T00:00:00Z",
         "domain": "project",
         "sensitivity": "private",
-        "metadata_json": {"raw_text": "Fact: source review persists."},
+        "metadata_json": {
+            "raw_text": "Fact: source review persists.",
+            "project_id": "project-old",
+            "project_scope": ["project-old"],
+        },
     }
     store.chunks.append({"id": "chunk-1", "source_id": source_id, "chunk_index": 0, "text": "Fact: source review persists."})
     store.memories.append(
@@ -665,6 +955,24 @@ def test_vnext_source_review_trace_and_doctor_endpoints(monkeypatch) -> None:
     )
 
     review_payload = json.loads(review_response.body)
+    old_scope_response = main_module.create_vnext_context_pack(
+        main_module.VNextContextPackRequest(
+            user_id=user_id,
+            query="source review persists",
+            scope={"projects": ["project-old"]},
+            options={"include_sources": True},
+        )
+    )
+    new_scope_response = main_module.create_vnext_context_pack(
+        main_module.VNextContextPackRequest(
+            user_id=user_id,
+            query="source review persists",
+            scope={"projects": ["project-1"]},
+            options={"include_sources": True},
+        )
+    )
+    old_scope_payload = json.loads(old_scope_response.body)
+    new_scope_payload = json.loads(new_scope_response.body)
     trace_payload = json.loads(trace_response.body)
     artifact_trace_payload = json.loads(artifact_trace_response.body)
     doctor_payload = json.loads(doctor_response.body)
@@ -672,6 +980,11 @@ def test_vnext_source_review_trace_and_doctor_endpoints(monkeypatch) -> None:
     assert review_response.status_code == 200
     assert review_payload["source"]["title"] == "Reviewed source"
     assert review_payload["source"]["metadata_json"]["project_id"] == "project-1"
+    assert review_payload["source"]["metadata_json"]["project_scope"] == ["project-1"]
+    assert old_scope_response.status_code == 201
+    assert old_scope_payload["sources"] == []
+    assert new_scope_response.status_code == 201
+    assert [row["id"] for row in new_scope_payload["sources"]] == [source_id]
     assert review_payload["trace"]["summary"]["candidate_memory_count"] == 1
     assert trace_response.status_code == 200
     assert trace_payload["summary"]["chunk_count"] == 1
@@ -1193,17 +1506,10 @@ def test_vnext_memory_commit_rejects_keyless_agent_call_when_keys_exist(monkeypa
 
 
 def test_vnext_memory_commit_without_identity_commits_as_direct_user(monkeypatch) -> None:
-    from alicebot_api.vnext_agent_keys import create_agent_key
-
     store = FakeVNextStore(None)
     _install_fake_vnext_store(monkeypatch, store)
     monkeypatch.delenv("ALICE_EMBEDDINGS_BASE_URL", raising=False)
     user_id = uuid4()
-    # Registered keys gate agent-identity calls, not the direct human path.
-    create_agent_key(
-        store, user_id=user_id, agent_id="hermes", permission_profile="trusted_local_agent"
-    )
-
     response = main_module.commit_vnext_memory(
         main_module.VNextMemoryCommitRequest(
             user_id=user_id,
@@ -1318,6 +1624,56 @@ def _seed_active_memory(store: FakeVNextStore, *, text: str = "The quarterly pla
     return memory_id
 
 
+def test_assign_project_replaces_canonical_memory_scope_used_by_retrieval(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    memory_id = _seed_active_memory(store, text="Release scope reassignment marker.")
+    memory = store.get_memory(memory_id)
+    assert memory is not None
+    memory.update(
+        {
+            "domain": "project",
+            "project_id": "project-old",
+            "metadata_json": {
+                "project_id": "project-old",
+                "project_scope": ["project-old"],
+            },
+        }
+    )
+
+    response = main_module.review_vnext_memory(
+        main_module.UUID(memory_id),
+        main_module.VNextMemoryReviewRequest(
+            user_id=user_id,
+            action="assign_project",
+            project_id="project-new",
+        ),
+    )
+
+    assert response.status_code == 200
+    reassigned = store.get_memory(memory_id)
+    assert reassigned is not None
+    assert reassigned["project_id"] == "project-new"
+    assert reassigned["metadata_json"]["project_id"] == "project-new"
+    assert reassigned["metadata_json"]["project_scope"] == ["project-new"]
+
+    def scoped_pack(project_id: str) -> dict[str, object]:
+        pack_response = main_module.create_vnext_context_pack(
+            main_module.VNextContextPackRequest(
+                user_id=user_id,
+                query="release scope reassignment marker",
+                scope={"projects": [project_id]},
+                options={"include_sources": False},
+            )
+        )
+        assert pack_response.status_code == 201
+        return json.loads(pack_response.body)
+
+    assert scoped_pack("project-old")["relevant_memories"] == []
+    assert [row["id"] for row in scoped_pack("project-new")["relevant_memories"]] == [memory_id]
+
+
 def test_vnext_memory_expire_and_unexpire_endpoints(monkeypatch) -> None:
     store = FakeVNextStore(None)
     _install_fake_vnext_store(monkeypatch, store)
@@ -1380,6 +1736,97 @@ def test_vnext_memory_accept_consolidation_endpoint_supersedes_members(monkeypat
     )
 
 
+def test_generic_http_review_delegates_consolidation_acceptance_and_rejects_stale_input(
+    monkeypatch,
+) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    first_id = _seed_active_memory(store, text="First duplicate fact.")
+    second_id = _seed_active_memory(store, text="Second duplicate fact.")
+
+    def seed_candidate() -> str:
+        candidate_id = _seed_active_memory(store, text="Canonical merged fact.")
+        candidate = store.get_memory(candidate_id)
+        candidate["status"] = "candidate"
+        candidate["metadata_json"] = {
+            "candidate_kind": "memory_consolidation",
+            "review_required": True,
+            "consolidation": {
+                "proposal_kind": "merge",
+                "cluster_member_ids": [first_id, second_id],
+                "member_snapshots": [
+                    memory_version_snapshot(store.get_memory(first_id)),
+                    memory_version_snapshot(store.get_memory(second_id)),
+                ],
+                "proposed_supersede": [first_id, second_id],
+            },
+        }
+        return candidate_id
+
+    candidate_id = seed_candidate()
+    edited = main_module.review_vnext_memory(
+        main_module.UUID(candidate_id),
+        main_module.VNextMemoryReviewRequest(
+            user_id=user_id,
+            action="edit",
+            canonical_text="Unsafe edited merge.",
+        ),
+    )
+    assert edited.status_code == 400
+    assert store.get_memory(candidate_id)["status"] == "candidate"
+    assert store.get_memory(first_id)["status"] == "active"
+
+    accepted = main_module.review_vnext_memory(
+        main_module.UUID(candidate_id),
+        main_module.VNextMemoryReviewRequest(
+            user_id=user_id,
+            action="accept",
+            reason="Reviewed duplicates.",
+        ),
+    )
+    assert accepted.status_code == 200
+    payload = json.loads(accepted.body)
+    assert payload["consolidation_acceptance"]["status"] == "accepted"
+    assert payload["consolidation_acceptance"]["superseded_member_ids"] == [
+        first_id,
+        second_id,
+    ]
+    assert store.get_memory(candidate_id)["metadata_json"]["consolidation"]["accepted"]
+    assert store.get_memory(first_id)["superseded_by"] == candidate_id
+
+    # A stale generic approval must not partially supersede any member.
+    fresh_first = _seed_active_memory(store, text="Fresh first fact.")
+    fresh_second = _seed_active_memory(store, text="Fresh second fact.")
+    stale_id = _seed_active_memory(store, text="Stale merge candidate.")
+    stale = store.get_memory(stale_id)
+    stale["status"] = "candidate"
+    stale["metadata_json"] = {
+        "candidate_kind": "memory_consolidation",
+        "review_required": True,
+        "consolidation": {
+            "proposal_kind": "merge",
+            "cluster_member_ids": [fresh_first, fresh_second],
+            "member_snapshots": [
+                memory_version_snapshot(store.get_memory(fresh_first)),
+                memory_version_snapshot(store.get_memory(fresh_second)),
+            ],
+            "proposed_supersede": [fresh_first, fresh_second],
+        },
+    }
+    store.get_memory(fresh_first)["canonical_text"] = "Changed after proposal."
+
+    rejected = main_module.review_vnext_memory(
+        main_module.UUID(stale_id),
+        main_module.VNextMemoryReviewRequest(user_id=user_id, action="accept"),
+    )
+    assert rejected.status_code == 400
+    assert "candidate is stale" in json.loads(rejected.body)["detail"]
+    assert store.get_memory(stale_id)["status"] == "candidate"
+    assert store.get_memory(fresh_first)["status"] == "active"
+    assert store.get_memory(fresh_second)["status"] == "active"
+
+
 def test_vnext_memory_redact_endpoint_forgets_then_scrubs(monkeypatch) -> None:
     store = FakeVNextStore(None)
     _install_fake_vnext_store(monkeypatch, store)
@@ -1409,7 +1856,7 @@ def test_vnext_memory_redact_endpoint_forgets_then_scrubs(monkeypatch) -> None:
     missing = main_module.redact_vnext_memory(
         main_module.VNextMemoryRedactRequest(user_id=user_id, memory_id=uuid4(), reason="Nothing there")
     )
-    assert missing.status_code == 400
+    assert missing.status_code == 404
 
 
 def test_vnext_memory_redact_endpoint_blocks_non_admin_agents(monkeypatch) -> None:
@@ -1489,6 +1936,79 @@ def test_vnext_memory_lifecycle_endpoints_share_agent_key_auth(monkeypatch) -> N
     assert keyless_accept.status_code == 401
 
 
+def test_http_memory_review_rejects_non_admin_and_out_of_scope_keys(monkeypatch) -> None:
+    from alicebot_api.vnext_agent_keys import create_agent_key
+
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    memory_id = _seed_active_memory(store, text="Project B review target.")
+    store.get_memory(memory_id)["status"] = "candidate"
+    store.get_memory(memory_id)["project_id"] = "project-b"
+
+    _reader_record, reader_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="reader",
+        permission_profile="read_only_agent",
+        project_scope="project-b",
+    )
+    reader_response = main_module.review_vnext_memory(
+        main_module.UUID(memory_id),
+        main_module.VNextMemoryReviewRequest(user_id=user_id, action="accept"),
+        authorization=f"Bearer {reader_key}",
+    )
+    assert reader_response.status_code == 403
+    assert store.get_memory(memory_id)["status"] == "candidate"
+    assert "human_or_admin_review_required" in json.loads(reader_response.body)["policy_decision"]["reasons"]
+
+    _admin_record, admin_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="admin",
+        permission_profile="admin_agent",
+        project_scope="project-a",
+    )
+    scope_response = main_module.review_vnext_memory(
+        main_module.UUID(memory_id),
+        main_module.VNextMemoryReviewRequest(user_id=user_id, action="accept"),
+        authorization=f"Bearer {admin_key}",
+    )
+    assert scope_response.status_code == 403
+    assert store.get_memory(memory_id)["status"] == "candidate"
+    assert "project_scope_binding_violation" in json.loads(scope_response.body)["policy_decision"]["reasons"]
+
+
+def test_http_memory_lifecycle_authorizes_the_persisted_target_scope(monkeypatch) -> None:
+    from alicebot_api.vnext_agent_keys import create_agent_key
+
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    memory_id = _seed_active_memory(store, text="Project B lifecycle target.")
+    store.get_memory(memory_id)["project_id"] = "project-b"
+    _record, raw_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="openclaw",
+        permission_profile="project_scoped_agent",
+        project_scope="project-a",
+    )
+
+    response = main_module.forget_vnext_memory(
+        main_module.VNextMemoryForgetRequest(
+            user_id=user_id,
+            memory_id=memory_id,
+            reason="Cross-project attempt.",
+        ),
+        authorization=f"Bearer {raw_key}",
+    )
+
+    assert response.status_code == 403
+    assert store.get_memory(memory_id)["status"] == "active"
+    assert "project_scope_binding_violation" in json.loads(response.body)["policy_decision"]["reasons"]
+
+
 def test_agent_output_ingest_api_creates_review_only_records(monkeypatch) -> None:
     store = FakeVNextStore(None)
     _install_fake_vnext_store(monkeypatch, store)
@@ -1552,3 +2072,166 @@ def test_dogfooding_dashboard_and_insight_feedback_api(monkeypatch) -> None:
     assert dashboard_response.status_code == 200
     assert dashboard["artifact_quality_rating_count"] == 1
     assert dashboard["insight_feedback"]["useful_yes"] == 1
+
+
+def test_artifact_routes_authorize_persisted_target_scope_and_profile(monkeypatch) -> None:
+    from alicebot_api.vnext_agent_keys import create_agent_key
+
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    artifact_id = str(uuid4())
+    store.artifacts[artifact_id] = {
+        "id": artifact_id,
+        "artifact_type": "daily_brief",
+        "title": "Project B private brief",
+        "content_markdown": "# Project B\n\nPrivate target content.",
+        "status": "needs_review",
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {"project_id": "project-b"},
+    }
+
+    _reader_record, reader_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="project-b-reader",
+        permission_profile="read_only_agent",
+        project_scope="project-b",
+    )
+    feedback_status, feedback_payload = _invoke_vnext_request(
+        "POST",
+        f"/v0/vnext/artifacts/{artifact_id}/insight-feedback",
+        authorization=f"Bearer {reader_key}",
+        payload={"user_id": str(user_id), "useful_insight": "yes"},
+    )
+    assert feedback_status == 403
+    assert "read_only_agent_cannot_write" in feedback_payload["policy_decision"]["reasons"]
+
+    sensitive_source_id = str(uuid4())
+    public_artifact_id = str(uuid4())
+    store.sources[sensitive_source_id] = {
+        "id": sensitive_source_id,
+        "domain": "health",
+        "sensitivity": "highly_sensitive",
+        "metadata_json": {"project_id": "project-b", "raw_text": "VERY SECRET"},
+    }
+    store.artifacts[public_artifact_id] = {
+        "id": public_artifact_id,
+        "artifact_type": "daily_brief",
+        "title": "Public shell",
+        "content_markdown": "# Public shell",
+        "status": "needs_review",
+        "domain": "project",
+        "sensitivity": "public",
+        "metadata_json": {
+            "project_id": "project-b",
+            "source_refs": [f"source:{sensitive_source_id}"],
+        },
+    }
+    trace_status, trace_payload = _invoke_vnext_request(
+        "GET",
+        f"/v0/vnext/traces/artifacts/{public_artifact_id}",
+        query={"user_id": str(user_id)},
+        authorization=f"Bearer {reader_key}",
+    )
+    assert trace_status == 200
+    assert trace_payload["sources"] == []
+    assert "VERY SECRET" not in json.dumps(trace_payload)
+
+    _project_a_record, project_a_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="project-a-admin",
+        permission_profile="admin_agent",
+        project_scope="project-a",
+    )
+    denied_requests = (
+        (
+            "GET",
+            f"/v0/vnext/artifacts/{artifact_id}",
+            {"query": {"user_id": str(user_id)}},
+        ),
+        (
+            "GET",
+            f"/v0/vnext/traces/artifacts/{artifact_id}",
+            {"query": {"user_id": str(user_id)}},
+        ),
+        (
+            "POST",
+            f"/v0/vnext/artifacts/{artifact_id}/review",
+            {"payload": {"user_id": str(user_id), "action": "accept"}},
+        ),
+        (
+            "POST",
+            f"/v0/vnext/artifacts/{artifact_id}/quality-ratings",
+            {"payload": {"user_id": str(user_id), "verbosity": "right_sized"}},
+        ),
+        (
+            "POST",
+            f"/v0/vnext/artifacts/{artifact_id}/export",
+            {"payload": {"user_id": str(user_id), "output_dir": "/tmp"}},
+        ),
+    )
+    for method, path, kwargs in denied_requests:
+        status, payload = _invoke_vnext_request(
+            method,
+            path,
+            authorization=f"Bearer {project_a_key}",
+            **kwargs,
+        )
+        assert status == 403, (method, path, payload)
+        assert "project_scope_binding_violation" in payload["policy_decision"]["reasons"]
+        assert "content_markdown" not in payload
+
+    _trusted_b_record, trusted_b_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="project-b-trusted",
+        permission_profile="trusted_local_agent",
+        project_scope="project-b",
+    )
+    assert _invoke_vnext_request(
+        "GET",
+        f"/v0/vnext/artifacts/{artifact_id}",
+        query={"user_id": str(user_id)},
+        authorization=f"Bearer {trusted_b_key}",
+    )[0] == 200
+    assert _invoke_vnext_request(
+        "GET",
+        f"/v0/vnext/traces/artifacts/{artifact_id}",
+        query={"user_id": str(user_id)},
+        authorization=f"Bearer {trusted_b_key}",
+    )[0] == 200
+    assert _invoke_vnext_request(
+        "POST",
+        f"/v0/vnext/artifacts/{artifact_id}/insight-feedback",
+        authorization=f"Bearer {trusted_b_key}",
+        payload={"user_id": str(user_id), "useful_insight": "yes"},
+    )[0] == 201
+    assert _invoke_vnext_request(
+        "POST",
+        f"/v0/vnext/artifacts/{artifact_id}/quality-ratings",
+        authorization=f"Bearer {trusted_b_key}",
+        payload={"user_id": str(user_id), "verbosity": "right_sized", "usefulness": 5},
+    )[0] == 201
+    assert _invoke_vnext_request(
+        "POST",
+        f"/v0/vnext/artifacts/{artifact_id}/export",
+        authorization=f"Bearer {trusted_b_key}",
+        payload={"user_id": str(user_id), "output_dir": "/tmp"},
+    )[0] == 200
+
+    _admin_b_record, admin_b_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="project-b-admin",
+        permission_profile="admin_agent",
+        project_scope="project-b",
+    )
+    assert _invoke_vnext_request(
+        "POST",
+        f"/v0/vnext/artifacts/{artifact_id}/review",
+        authorization=f"Bearer {admin_b_key}",
+        payload={"user_id": str(user_id), "action": "accept"},
+    )[0] == 200

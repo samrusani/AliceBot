@@ -1,6 +1,6 @@
 # Reference Integration Paths
 
-This page is the path-selection guide for external builders adopting Alice on top of the shipped `v0.5.1` continuity, provider, model-pack, and reference-integration baseline.
+This page is the path-selection guide for external builders adopting Alice on top of the latest published `v0.9.1` baseline.
 
 ## Default Recommendation
 
@@ -8,7 +8,7 @@ Start with the narrowest path that solves the integration need:
 
 | Need | Default path | Demo or example |
 |---|---|---|
-| Generic external agent needs continuity in one call | `POST /v1/continuity/brief` (or MCP `alice_brief` with `ALICE_MCP_LEGACY_TOOLS=1`) | `docs/examples/reference-agent-examples.md` |
+| Generic external agent needs continuity in one call | `POST /v1/continuity/brief`; key-bound MCP integrations use core `alice_recall` / `alice_resume` (`alice_brief` is keyless-local legacy compatibility only) | `docs/examples/reference-agent-examples.md` |
 | Hermes owns orchestration and Alice supplies continuity workflows | provider plus MCP | `./.venv/bin/python scripts/run_hermes_bridge_demo.py` |
 | Existing OpenClaw workspace data must become queryable in Alice | import, then use normal brief/recall/resume surfaces | `./scripts/use_alice_with_openclaw.sh` |
 | Alice must target a non-default runtime provider or provider-aware pack | supporting Alice-side configuration for the paths above | `docs/integrations/phase14-provider-configuration.md` |

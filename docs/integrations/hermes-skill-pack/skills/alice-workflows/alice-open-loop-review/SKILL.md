@@ -26,7 +26,7 @@ Use this skill when the user asks:
 ## Required MCP Tools
 
 - `mcp_<alice_server>_alice_open_loops`
-- Optional: `mcp_<alice_server>_alice_recent_changes` (legacy tool; the Alice MCP server must run with `ALICE_MCP_LEGACY_TOOLS=1`)
+- Optional: `mcp_<alice_server>_alice_recent_changes` (keyless-local legacy tool; unavailable when the Alice MCP server is bound with `ALICE_AGENT_API_KEY`)
 
 `<alice_server>` is usually `alice_core`.
 

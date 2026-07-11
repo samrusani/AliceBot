@@ -1,7 +1,7 @@
 {
   "name": "@alicebot/web",
   "private": true,
-  "version": "0.5.1",
+  "version": "0.9.2",
   "packageManager": "pnpm@10.23.0",
   "scripts": {
     "dev": "next dev",
@@ -13,23 +13,28 @@
     "test:mvp:validation-matrix": "vitest run app/chat/page.test.tsx components/approval-actions.test.tsx components/approval-detail.test.tsx components/task-step-list.test.tsx components/thread-workflow-panel.test.tsx app/artifacts/page.test.tsx components/gmail-account-list.test.tsx components/gmail-message-ingest-form.test.tsx app/calendar/page.test.tsx app/memories/page.test.tsx app/entities/page.test.tsx components/trace-list.test.tsx lib/api.test.ts"
   },
   "dependencies": {
-    "next": "15.2.0",
-    "react": "19.0.0",
-    "react-dom": "19.0.0"
+    "next": "15.5.20",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "6.6.3",
     "@testing-library/react": "16.3.0",
     "@types/node": "22.13.10",
-    "@types/react": "19.0.10",
-    "@types/react-dom": "19.0.4",
-    "eslint": "9.22.0",
-    "eslint-config-next": "15.2.0",
-    "jsdom": "26.0.0",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "eslint": "9.39.5",
+    "eslint-config-next": "15.5.20",
+    "jsdom": "26.1.0",
     "typescript": "5.8.2",
-    "vitest": "3.0.8"
+    "vitest": "3.2.6"
   },
   "pnpm": {
+    "overrides": {
+      "postcss": "8.5.10",
+      "vite": "6.4.3",
+      "ws": "8.21.0"
+    },
     "onlyBuiltDependencies": [
       "esbuild",
       "sharp",

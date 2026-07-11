@@ -137,6 +137,27 @@ describe("VNextPage", () => {
     ).toBe(true);
   });
 
+  it("reviews inline confirmations without sending demo data to the API", async () => {
+    await renderVNextPage();
+
+    expect(screen.getByRole("button", { name: "Confirm memory" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reject memory" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Demo controls update fixture state only; they never call the configured API."),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Reviewed memory text"), {
+      target: { value: "Use reviewed release wording for the public launch." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save edit and confirm" }));
+
+    expect(
+      screen.getAllByText("Demo inline confirmation action applied: edit.").length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByText("No inline confirmations")).toBeInTheDocument();
+    expect(screen.getByText("Use reviewed release wording for the public launch.")).toBeInTheDocument();
+  });
+
   it("updates review state, labels, project assignment, and open loops from Inbox actions", async () => {
     await renderVNextPage();
 

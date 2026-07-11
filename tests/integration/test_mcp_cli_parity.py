@@ -278,7 +278,14 @@ def test_mcp_recall_and_resume_match_core_and_cli_behavior(migrated_database_url
     # Core alice_recall searches vNext memories now (none seeded in this test);
     # legacy continuity parity is asserted through alice_recall_debug below.
     assert mcp_recall == {"query": "release", "results": [], "count": 0}
-    assert mcp_resume == core_resume
+    # Core resume is canonical vNext. This fixture intentionally seeds only
+    # the legacy continuity store, so the core view is empty and reports the
+    # legacy-only thread filter instead of silently switching backends.
+    assert mcp_resume["brief"]["mode"] == "vnext"
+    assert mcp_resume["brief"]["last_decision"] is None
+    assert mcp_resume["brief"]["next_action"] is None
+    assert mcp_resume["brief"]["open_loops"] == []
+    assert mcp_resume["brief"]["filters_ignored"] == ["thread_id"]
     assert mcp_recall_debug["items"] == core_recall["items"]
     assert mcp_recall_debug["debug"]["candidate_count"] >= 1
     assert mcp_retrieval_trace["retrieval_run"]["id"] == retrieval_run_id

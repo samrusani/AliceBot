@@ -1814,11 +1814,23 @@ def test_backfill_embeddings_cli_embeds_missing_memories_in_batches(monkeypatch)
                 {"id": "00000000-0000-4000-8000-000000000003", "title": "", "canonical_text": "  "},
             ]
 
-        def list_memories_missing_embeddings(self, *, limit: int = 100, after_id: str | None = None):
+        def list_memories_missing_embeddings(
+            self,
+            *,
+            limit: int = 100,
+            after_id: str | None = None,
+            **_signature: object,
+        ):
             rows = [row for row in self.missing if after_id is None or str(row["id"]) > after_id]
             return rows[:limit]
 
-        def update_memory_embedding(self, *, memory_id: str, vector: list[float]):
+        def update_memory_embedding(
+            self,
+            *,
+            memory_id: str,
+            vector: list[float],
+            **_signature: object,
+        ):
             self.embedding_updates.append((memory_id, vector))
             return {"id": memory_id}
 
@@ -1853,6 +1865,7 @@ def test_backfill_embeddings_cli_embeds_missing_memories_in_batches(monkeypatch)
     assert payload["embedded"] == 2
     assert payload["skipped"] == 1
     assert payload["failed"] == 0
+    assert payload["reindexed_incompatible"] == 0
     assert payload["batches"] == 2
     assert [memory_id for memory_id, _vector in store.embedding_updates] == [
         "00000000-0000-4000-8000-000000000001",

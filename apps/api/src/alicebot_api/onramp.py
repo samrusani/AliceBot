@@ -9,37 +9,54 @@ Subcommands:
 - ``mcp`` (default): serve MCP over stdio. stdout carries only the MCP
   protocol; human-facing notices go to stderr.
 - ``export``: dump the memory graph as JSONL -- memories, sources, source
-  chunks, entities, graph edges, memory revisions, provenance links, open
-  loops, and the event log.
+  chunks, entities and relationship changes, graph edges, memory revisions,
+  provenance links, open loops, and the event log.
 - ``import``: load an export JSONL file into a (new or existing) local
   database, preserving ids and timestamps so provenance references and
   the audit trail survive the round trip.
+- ``reindex-embeddings``: rebuild missing or provider/model-incompatible
+  vectors in place after an import, upgrade, or embedding-model change.
 - ``--version``: print the package version.
 
 Export/import round-trip contract ("you own the memory"):
 - Every exported record keeps its original ``id`` and timestamps on
   import, so ``export -> import into a fresh file -> export`` produces
   equivalent records (event-log ordering aside).
+- Versioned exports carry an explicit record schema plus per-type counts
+  and a stable SHA-256 data-record footer. Export verifies a raw read-only
+  source-family replica, copies it through SQLite's private backup API,
+  upgrades only the private snapshot, and atomically replaces a file
+  destination.
 - Import writes rows via direct INSERT rather than the store's
   ``create_*`` methods: those methods re-stamp ``created_at``/``updated_at``
   and append fresh ``*.created`` mutation events, which would corrupt the
-  imported audit trail. Events go through ``SQLiteVNextStore.append_event``,
-  which preserves a passed id/occurred_at/integrity_hash verbatim; the
+  imported audit trail. Historical events also use direct INSERT so their
+  ids, occurred_at values, and integrity hashes remain byte-for-byte exact;
   append-only triggers on ``event_log``/``memory_revisions`` only block
-  UPDATE/DELETE, so inserting historical rows is allowed.
+  UPDATE/DELETE.
+- Soft-deleted rows are omitted. Nullable references to omitted parents are
+  cleared, and graph edges with omitted known endpoints are left behind, so
+  the portable record set can be restored into a fresh database.
 - Embedding vectors are NOT exported (they are provider-specific blobs);
   imported memories are searchable via FTS immediately and re-enter
-  vector search once re-embedded (configure ``ALICE_EMBEDDINGS_*`` and
-  touch or re-commit the memory).
+  vector search once re-embedded (configure ``ALICE_EMBEDDINGS_*`` and run
+  ``alice-memory reindex-embeddings``).
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import sqlite3
 import sys
-from collections.abc import Iterator
+import tempfile
+import unicodedata
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
 from uuid import UUID
@@ -51,6 +68,7 @@ from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.store import ContinuityStoreInvariantError
 from alicebot_api.sqlite_store import (
     ENTITY_COLUMNS,
+    ENTITY_RELATIONSHIP_EVENT_COLUMNS,
     EVENT_LOG_COLUMNS,
     GRAPH_EDGE_COLUMNS,
     MEMORY_COLUMNS,
@@ -65,14 +83,42 @@ from alicebot_api.sqlite_store import (
     sqlite_user_connection,
 )
 from alicebot_api.vnext_json import json_safe
+from alicebot_api.vnext_embeddings import (
+    EMBEDDINGS_API_KEY_ENV,
+    EMBEDDINGS_BASE_URL_ENV,
+    EMBEDDINGS_MODEL_ENV,
+    EMBEDDING_SIGNATURE_VERSION,
+    MAX_EMBEDDINGS_BATCH_SIZE,
+    VNextEmbeddingConfigurationError,
+    VNextEmbeddingProviderError,
+    get_embedding_provider,
+    memory_embedding_signature,
+    memory_embedding_text,
+)
 
 DEFAULT_DATA_DIR = "~/.alice"
 DEFAULT_DB_FILENAME = "memory.db"
 DEFAULT_USER_EMAIL = "local@alice"
-_KNOWN_COMMANDS = ("mcp", "export", "import")
-# A very large LIMIT stands in for "no limit" on store list methods that
-# require one; SQLite treats it as unbounded in practice.
-_EXPORT_ROW_LIMIT = 1_000_000_000
+_KNOWN_COMMANDS = ("mcp", "export", "import", "reindex-embeddings")
+
+_EXPORT_FORMAT = "alice-memory-jsonl"
+_EXPORT_FORMAT_VERSION = 2
+_EXPORT_SCHEMA_VERSION = 1
+_EXPORT_HEADER_TYPE = "export_header"
+_EXPORT_FOOTER_TYPE = "export_footer"
+_EXPORT_FETCH_SIZE = 512
+_EXPORT_INTEGRITY_SCOPE = "canonical-data-record-lines"
+_LEGACY_V2_INTEGRITY_SCOPE = "canonical-header-and-data-record-lines"
+_SQLITE_SIDECAR_SUFFIXES = ("", "-wal", "-shm", "-journal")
+_SQLITE_SNAPSHOT_SUFFIXES = ("", "-wal", "-journal")
+_SQLITE_SNAPSHOT_ATTEMPTS = 3
+_FILE_COPY_CHUNK_SIZE = 1024 * 1024
+
+# ``MEMORY_COLUMNS`` intentionally omits provider-specific embeddings and
+# derived fact keys from ordinary store reads. Embeddings remain excluded
+# from portable backups, but fact keys are part of the user-owned retrieval
+# state and must survive export/import.
+_MEMORY_EXPORT_COLUMNS = (*MEMORY_COLUMNS, "fact_keys")
 
 # The full export/import record surface, in FK-safe insert order: sources
 # before their chunks, memories before revisions and open loops, events
@@ -82,8 +128,12 @@ _EXPORT_ROW_LIMIT = 1_000_000_000
 _RECORD_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
     "source": ("sources", SOURCE_COLUMNS),
     "source_chunk": ("source_chunks", SOURCE_CHUNK_COLUMNS),
-    "memory": ("memories", MEMORY_COLUMNS),
+    "memory": ("memories", _MEMORY_EXPORT_COLUMNS),
     "entity": ("vnext_entities", ENTITY_COLUMNS),
+    "entity_relationship_event": (
+        "entity_relationship_events",
+        ENTITY_RELATIONSHIP_EVENT_COLUMNS,
+    ),
     "graph_edge": ("graph_edges", GRAPH_EDGE_COLUMNS),
     "memory_revision": ("memory_revisions", REVISION_COLUMNS),
     "provenance_link": ("provenance_links", PROVENANCE_COLUMNS),
@@ -91,9 +141,18 @@ _RECORD_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
     "event": ("event_log", EVENT_LOG_COLUMNS),
 }
 
+# Portable records intentionally omit only the provider-specific embedding
+# blob. Unknown physical columns on one of these tables may contain state
+# written by a newer Alice release, so an older exporter must fail closed
+# instead of publishing a superficially complete but lossy backup.
+_PORTABLE_TABLE_EXTRA_COLUMNS: dict[str, frozenset[str]] = {
+    "memories": frozenset({"embedding"}),
+}
+
 _EMBEDDING_NOTE = (
-    "imported without embeddings; configure ALICE_EMBEDDINGS_* and touch or "
-    "re-commit them to restore vector search (FTS keyword recall works immediately)"
+    "imported without embeddings; configure ALICE_EMBEDDINGS_* and run "
+    "'alice-memory reindex-embeddings' to restore vector search "
+    "(FTS keyword recall works immediately)"
 )
 
 
@@ -116,9 +175,442 @@ def sqlite_url_for_path(path: Path) -> str:
     return path.resolve().as_uri().replace("file://", "sqlite://", 1)
 
 
-def bootstrap_database(db_path: Path, *, user_id: UUID, user_email: str) -> None:
+def _paths_alias(first: Path, second: Path) -> bool:
+    """True when paths resolve to, symlink to, or hard-link the same file."""
+    try:
+        if first.resolve(strict=False) == second.resolve(strict=False):
+            return True
+        if first.exists() and second.exists():
+            return os.path.samefile(first, second)
+    except OSError:
+        # The later open will report the actionable filesystem error. Never
+        # turn an uncertain equality check into permission to overwrite the DB.
+        return True
+    return False
+
+
+def _database_family_paths(path: Path) -> tuple[Path, ...]:
+    return tuple(Path(f"{path}{suffix}") for suffix in _SQLITE_SIDECAR_SUFFIXES)
+
+
+def _path_aliases_database_family(candidate: Path, database: Path) -> bool:
+    """Reject lexical and inode aliases to the DB and every SQLite sidecar."""
+    def alias_key(path: Path) -> str:
+        return unicodedata.normalize("NFC", os.fspath(path)).casefold()
+
+    lexical_candidate = Path(os.path.abspath(os.fspath(candidate.expanduser())))
+    # macOS normally uses a case-insensitive filesystem, but normcase() does
+    # not fold case there. Conservatively fold the complete absolute path on
+    # every platform: over-rejecting MEMORY.DB-wal on a case-sensitive volume
+    # is preferable to letting a later WAL creation overwrite a backup.
+    lexical_candidate_key = alias_key(lexical_candidate)
+    try:
+        resolved_candidate_key = alias_key(candidate.resolve(strict=False))
+    except OSError:
+        return True
+    for member in _database_family_paths(database):
+        lexical_member = Path(os.path.abspath(os.fspath(member)))
+        try:
+            resolved_member_key = alias_key(member.resolve(strict=False))
+        except OSError:
+            return True
+        if (
+            lexical_candidate_key == alias_key(lexical_member)
+            or resolved_candidate_key == resolved_member_key
+            or _paths_alias(candidate, member)
+        ):
+            return True
+    return False
+
+
+def _ensure_private_directory(path: Path) -> None:
+    """Create a sensitive-data directory with owner-only permissions."""
+    was_missing = not path.exists()
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if was_missing:
+        os.chmod(path, 0o700)
+
+
+def _secure_sqlite_files(path: Path) -> None:
+    """Make the database and any live SQLite sidecars owner-only."""
+    for candidate in _database_family_paths(path):
+        try:
+            os.chmod(candidate, 0o600)
+        except FileNotFoundError:
+            pass
+
+
+def _fsync_directory(path: Path) -> None:
+    """Persist a same-directory atomic rename where the platform supports it."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        # Some filesystems do not support fsync on directories. The file has
+        # already been fsynced; the atomic rename still preserves old-or-new.
+        pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _best_effort_stderr(message: str) -> None:
+    """Report a post-publication condition without masking committed state."""
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        # The operation is already committed and both output streams may be
+        # closed. The distinct return code remains the machine-readable signal.
+        pass
+
+
+def _remove_sqlite_files(path: Path) -> None:
+    """Best-effort cleanup for a temporary SQLite database and its sidecars."""
+    for candidate in _database_family_paths(path):
+        try:
+            candidate.unlink()
+        except OSError:
+            pass
+
+
+class _BackupError(Exception):
+    """A safe, user-facing SQLite snapshot or restore error."""
+
+
+_BASE_ALICE_TABLES = frozenset({"users", "memories", "sources", "event_log"})
+
+
+def _read_only_sqlite_connection(path: Path) -> sqlite3.Connection:
+    wal_path = Path(f"{path}-wal")
+    shm_path = Path(f"{path}-shm")
+    wal_has_pages = wal_path.exists() and wal_path.stat().st_size > 0
+    if wal_has_pages and not shm_path.exists():
+        raise _BackupError(
+            "database has an uncheckpointed WAL but no shared-memory index; "
+            "open and cleanly close Alice before exporting"
+        )
+    # immutable=1 prevents a clean private snapshot/staged database from
+    # growing fresh -wal/-shm files. A private copy with a live WAL needs
+    # ordinary read-only WAL coordination through its SHM index.
+    immutable = "" if wal_has_pages else "&immutable=1"
+    connection = sqlite3.connect(
+        f"{path.resolve().as_uri()}?mode=ro{immutable}",
+        uri=True,
+    )
+    connection.execute("PRAGMA query_only=ON")
+    return connection
+
+
+@dataclass(frozen=True)
+class _FileFingerprint:
+    device: int
+    inode: int
+    size: int
+    digest: str
+
+
+def _fingerprint_file(path: Path) -> _FileFingerprint:
+    """Read and fingerprint one file, rejecting changes during the read."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        before = os.fstat(stream.fileno())
+        while chunk := stream.read(_FILE_COPY_CHUNK_SIZE):
+            digest.update(chunk)
+        after = os.fstat(stream.fileno())
+    stable_fields_before = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    stable_fields_after = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if stable_fields_before != stable_fields_after:
+        raise _BackupError(f"SQLite source changed while reading {path.name}")
+    return _FileFingerprint(
+        device=after.st_dev,
+        inode=after.st_ino,
+        size=after.st_size,
+        digest=digest.hexdigest(),
+    )
+
+
+def _copy_file_with_fingerprint(source: Path, destination: Path) -> _FileFingerprint:
+    """Copy one source file owner-only and fingerprint the copied bytes."""
+    digest = hashlib.sha256()
+    with source.open("rb") as input_stream, destination.open("xb") as output_stream:
+        os.chmod(destination, 0o600)
+        before = os.fstat(input_stream.fileno())
+        while chunk := input_stream.read(_FILE_COPY_CHUNK_SIZE):
+            output_stream.write(chunk)
+            digest.update(chunk)
+        output_stream.flush()
+        os.fsync(output_stream.fileno())
+        after = os.fstat(input_stream.fileno())
+    stable_fields_before = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    stable_fields_after = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if stable_fields_before != stable_fields_after:
+        raise _BackupError(f"SQLite source changed while copying {source.name}")
+    return _FileFingerprint(
+        device=after.st_dev,
+        inode=after.st_ino,
+        size=after.st_size,
+        digest=digest.hexdigest(),
+    )
+
+
+def _snapshot_source_members(source_path: Path) -> tuple[Path, ...]:
+    """Return the main DB plus WAL/rollback journal files that exist now."""
+    return tuple(
+        member
+        for suffix in _SQLITE_SNAPSHOT_SUFFIXES
+        if (member := Path(f"{source_path}{suffix}")).exists()
+    )
+
+
+def _copy_stable_sqlite_family(source_path: Path, replica_path: Path) -> None:
+    """Take a verified byte-stable DB/WAL replica without opening SQLite.
+
+    An ordinary read-only SQLite connection still writes volatile reader-lock
+    bytes to a live ``-shm`` file. Instead, read the main DB and any WAL or
+    rollback journal three times (fingerprint, copy, fingerprint) and accept
+    the replica only if identity, size, and content stayed unchanged across
+    the complete interval. SQLite reconstructs a private SHM index when the
+    replica is opened. A busy writer gets bounded retries and then a clear
+    failure instead of a torn backup or a source-family mutation.
+    """
+    source_path = source_path.resolve()
+    if not source_path.is_file():
+        raise _BackupError(f"SQLite database file is not readable: {source_path}")
+    last_error: Exception | None = None
+    for _attempt in range(_SQLITE_SNAPSHOT_ATTEMPTS):
+        attempt_dir = Path(
+            tempfile.mkdtemp(prefix="family-", dir=replica_path.parent)
+        )
+        os.chmod(attempt_dir, 0o700)
+        attempt_replica = attempt_dir / replica_path.name
+        try:
+            before_members = _snapshot_source_members(source_path)
+            if not before_members or before_members[0] != source_path:
+                raise _BackupError(f"SQLite database file disappeared: {source_path}")
+            before = {member.name: _fingerprint_file(member) for member in before_members}
+            copied: dict[str, _FileFingerprint] = {}
+            for member in before_members:
+                suffix = member.name.removeprefix(source_path.name)
+                destination = Path(f"{attempt_replica}{suffix}")
+                copied[member.name] = _copy_file_with_fingerprint(member, destination)
+            after_members = _snapshot_source_members(source_path)
+            if tuple(member.name for member in after_members) != tuple(
+                member.name for member in before_members
+            ):
+                raise _BackupError("SQLite source family changed while taking the snapshot")
+            after = {member.name: _fingerprint_file(member) for member in after_members}
+            if before != copied or copied != after:
+                raise _BackupError("SQLite source changed while taking the snapshot")
+            # A prior interrupted move may have left only part of a replica.
+            # Clear every destination member before publishing this complete,
+            # verified attempt so a disappeared WAL/journal cannot survive.
+            for suffix in _SQLITE_SNAPSHOT_SUFFIXES:
+                try:
+                    Path(f"{replica_path}{suffix}").unlink()
+                except FileNotFoundError:
+                    pass
+            for suffix in _SQLITE_SNAPSHOT_SUFFIXES:
+                copied_member = Path(f"{attempt_replica}{suffix}")
+                if copied_member.exists():
+                    copied_member.replace(Path(f"{replica_path}{suffix}"))
+            return
+        except (OSError, _BackupError) as exc:
+            last_error = exc
+        finally:
+            _remove_sqlite_files(attempt_replica)
+            try:
+                attempt_dir.rmdir()
+            except OSError:
+                pass
+    raise _BackupError(
+        "SQLite database did not remain stable long enough to snapshot; "
+        "quiesce writers and retry"
+    ) from last_error
+
+
+def _copy_sqlite_database(source_path: Path, destination_path: Path) -> None:
+    """Copy one consistent SQLite snapshot without opening the source in SQLite."""
+    source: sqlite3.Connection | None = None
+    destination: sqlite3.Connection | None = None
+    with tempfile.TemporaryDirectory(
+        prefix="alice-memory-source-replica-", dir=destination_path.parent
+    ) as raw_dir:
+        replica_dir = Path(raw_dir)
+        os.chmod(replica_dir, 0o700)
+        replica_path = replica_dir / "source.db"
+        try:
+            _copy_stable_sqlite_family(source_path, replica_path)
+            # This is a disposable private replica, so SQLite may safely
+            # rebuild its SHM index or recover a copied rollback journal here.
+            # query_only prevents application-level writes before backup.
+            source = sqlite3.connect(replica_path)
+            source.execute("PRAGMA query_only=ON")
+            destination = sqlite3.connect(destination_path)
+            source.backup(destination, pages=256, sleep=0.01)
+        except sqlite3.Error as exc:
+            raise _BackupError(f"could not read SQLite database snapshot: {exc}") from exc
+        finally:
+            if destination is not None:
+                destination.close()
+            if source is not None:
+                source.close()
+    os.chmod(destination_path, 0o600)
+
+
+def _sqlite_table_names(conn: sqlite3.Connection) -> set[str]:
+    return {
+        str(row[0])
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    }
+
+
+def _validate_alice_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    user_id: UUID | None = None,
+    require_current_schema: bool = False,
+) -> None:
+    quick_check = [str(row[0]) for row in conn.execute("PRAGMA quick_check").fetchall()]
+    if quick_check != ["ok"]:
+        raise _BackupError(f"SQLite integrity check failed: {quick_check}")
+    tables = _sqlite_table_names(conn)
+    missing_base = sorted(_BASE_ALICE_TABLES - tables)
+    if missing_base:
+        raise _BackupError(
+            "unsupported Alice SQLite schema; missing base tables: " + ", ".join(missing_base)
+        )
+    if user_id is not None:
+        user = conn.execute("SELECT 1 FROM users WHERE id = ?", (str(user_id),)).fetchone()
+        if user is None:
+            raise _BackupError(f"database does not contain user {user_id}")
+    table_specs = {table: columns for table, columns in _RECORD_SPECS.values()}
+    for table, portable_columns in table_specs.items():
+        if table not in tables:
+            continue
+        actual_columns = {
+            str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        allowed_columns = set(portable_columns) | set(
+            _PORTABLE_TABLE_EXTRA_COLUMNS.get(table, frozenset())
+        )
+        unknown_columns = sorted(actual_columns - allowed_columns)
+        if unknown_columns:
+            raise _BackupError(
+                f"unsupported newer Alice SQLite schema; {table} has unknown columns: "
+                + ", ".join(unknown_columns)
+            )
+    if not require_current_schema:
+        return
+    for record_type, (table, required_columns) in _RECORD_SPECS.items():
+        if table not in tables:
+            raise _BackupError(
+                f"snapshot upgrade did not produce required table {table} ({record_type})"
+            )
+        actual_columns = set(
+            str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        )
+        missing_columns = sorted(set(required_columns) - actual_columns)
+        if missing_columns:
+            raise _BackupError(
+                f"snapshot upgrade left {table} without columns: {', '.join(missing_columns)}"
+            )
+
+
+@contextmanager
+def _prepared_export_connection(
+    source_path: Path, user_id: UUID
+) -> Iterator[sqlite3.Connection]:
+    """Yield a current-schema private copy while leaving the source untouched."""
+    with tempfile.TemporaryDirectory(prefix="alice-memory-export-snapshot-") as raw_dir:
+        snapshot_dir = Path(raw_dir)
+        os.chmod(snapshot_dir, 0o700)
+        fd, raw_snapshot = tempfile.mkstemp(
+            prefix="snapshot-", suffix=".db", dir=snapshot_dir
+        )
+        os.close(fd)
+        snapshot_path = Path(raw_snapshot)
+        _copy_sqlite_database(source_path, snapshot_path)
+        upgrade = sqlite3.connect(snapshot_path)
+        try:
+            _validate_alice_snapshot(upgrade, user_id=user_id)
+            bootstrap_sqlite_schema(upgrade)
+            upgrade.commit()
+            _validate_alice_snapshot(
+                upgrade,
+                user_id=user_id,
+                require_current_schema=True,
+            )
+        except (sqlite3.Error, ContinuityStoreInvariantError) as exc:
+            raise _BackupError(f"could not upgrade private export snapshot: {exc}") from exc
+        finally:
+            upgrade.close()
+        _secure_sqlite_files(snapshot_path)
+        export_conn = _read_only_sqlite_connection(snapshot_path)
+        try:
+            yield export_conn
+        finally:
+            export_conn.close()
+
+
+def _publish_staged_database(
+    staged_path: Path,
+    target_path: Path,
+    *,
+    pages: int = 256,
+    progress: Callable[[int, int, int], None] | None = None,
+) -> None:
+    """Atomically publish staged pages through SQLite's backup transaction."""
+    source = _read_only_sqlite_connection(staged_path)
+    target = sqlite3.connect(target_path, timeout=5.0)
+    try:
+        target.execute("PRAGMA busy_timeout=5000")
+        source.backup(target, pages=pages, progress=progress, sleep=0.05)
+    finally:
+        target.close()
+        source.close()
+
+
+def bootstrap_database(
+    db_path: Path,
+    *,
+    user_id: UUID,
+    user_email: str,
+    secure_parent: bool = False,
+) -> None:
     """Create the data dir, schema, and local user row (idempotent)."""
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    parent_was_missing = not db_path.parent.exists()
+    db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if parent_was_missing or secure_parent:
+        os.chmod(db_path.parent, 0o700)
     conn = sqlite3.connect(str(db_path))
     try:
         bootstrap_sqlite_schema(conn)
@@ -127,6 +619,7 @@ def bootstrap_database(db_path: Path, *, user_id: UUID, user_email: str) -> None
         conn.commit()
     finally:
         conn.close()
+    _secure_sqlite_files(db_path)
 
 
 def _add_database_arguments(parser: argparse.ArgumentParser) -> None:
@@ -178,15 +671,24 @@ def build_parser() -> argparse.ArgumentParser:
         "export",
         help=(
             "Export the memory graph as JSONL: memories, sources, source chunks, "
-            "entities, graph edges, memory revisions, provenance links, open "
-            "loops, and events."
+            "entities and relationship changes, graph edges, memory revisions, "
+            "provenance links, open loops, and events."
+        ),
+        description=(
+            "Export the portable memory graph as versioned JSONL. Use --out for "
+            "backups. WARNING: never shell-redirect stdout to the SQLite database "
+            "or its -wal, -shm, or -journal sidecars; the shell truncates the "
+            "destination before alice-memory can validate it."
         ),
     )
     _add_database_arguments(export_parser)
     export_parser.add_argument(
         "--out",
         default=None,
-        help="Output file path. Defaults to stdout.",
+        help=(
+            "Private, atomic output file (recommended). Without --out, JSONL is "
+            "written to stdout; never redirect stdout to the database or a sidecar."
+        ),
     )
 
     import_parser = subparsers.add_parser(
@@ -208,10 +710,28 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("skip", "fail"),
         default="skip",
         help=(
-            "Collision handling when a record id already exists: 'skip' keeps "
-            "the existing row and counts the record as skipped (default); "
-            "'fail' aborts the whole import on the first collision. Existing "
-            "rows are never overwritten."
+            "Collision handling when a record id already exists: 'skip' accepts "
+            "only an identical existing row (default); 'fail' aborts on every "
+            "collision. Different content with the same id always aborts, and "
+            "existing rows are never overwritten."
+        ),
+    )
+
+    reindex_parser = subparsers.add_parser(
+        "reindex-embeddings",
+        help=(
+            "Rebuild missing, unsigned, or provider/model-incompatible memory "
+            "embeddings in the local SQLite database."
+        ),
+    )
+    _add_database_arguments(reindex_parser)
+    reindex_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=MAX_EMBEDDINGS_BATCH_SIZE,
+        help=(
+            "Embedding request batch size. Must be between 1 and "
+            f"{MAX_EMBEDDINGS_BATCH_SIZE}."
         ),
     )
     return parser
@@ -228,7 +748,12 @@ def _normalized_argv(argv: list[str]) -> list[str]:
 
 def _run_mcp(args: argparse.Namespace) -> int:
     db_path = resolve_db_path(data_dir=args.data_dir, db=args.db)
-    bootstrap_database(db_path, user_id=args.user_id, user_email=args.user_email)
+    bootstrap_database(
+        db_path,
+        user_id=args.user_id,
+        user_email=args.user_email,
+        secure_parent=args.db is None,
+    )
     database_url = sqlite_url_for_path(db_path)
     # stdout is the MCP protocol channel; the startup notice goes to stderr.
     print(
@@ -256,29 +781,90 @@ def _export_line(record_type: str, row: object) -> str:
 def _decoded_rows(
     conn: sqlite3.Connection, query: str, params: tuple[object, ...]
 ) -> Iterator[dict[str, object]]:
-    """Dict rows with JSON TEXT columns decoded, matching the store's shape."""
+    """Stream dict rows with JSON TEXT decoded, bounded by a fetch batch."""
     cursor = conn.execute(query, params)
     columns = [description[0] for description in cursor.description]
-    for raw in cursor.fetchall():
-        row = dict(raw) if isinstance(raw, dict) else dict(zip(columns, raw))
-        for key, value in row.items():
-            if key in _JSON_COLUMNS and isinstance(value, str):
-                row[key] = json.loads(value)
-        yield row
+    while True:
+        batch = cursor.fetchmany(_EXPORT_FETCH_SIZE)
+        if not batch:
+            return
+        for raw in batch:
+            row = dict(raw) if isinstance(raw, dict) else dict(zip(columns, raw))
+            for key, value in row.items():
+                if key in _JSON_COLUMNS and isinstance(value, str):
+                    row[key] = json.loads(value)
+            yield row
 
 
 def _export_rows(
-    conn: sqlite3.Connection, store: SQLiteVNextStore, user_id: UUID
+    conn: sqlite3.Connection, user_id: UUID
 ) -> Iterator[tuple[str, object]]:
     """Yield ``(record_type, row)`` for the whole memory graph.
 
-    Soft-deleted rows stay out of the export, and so do rows that only
-    reference soft-deleted rows (chunks of deleted sources, revisions of
-    deleted memories, provenance links quoting deleted sources): the
-    import target enforces foreign keys, so the exported set must be
-    closed under its own references.
+    Soft-deleted rows stay out. Dependent rows with mandatory parents are
+    omitted; nullable references are cleared; polymorphic graph edges with
+    omitted known endpoints are excluded. The resulting set is closed under
+    every SQLite foreign key and can be restored into a fresh database.
     """
     uid = str(user_id)
+    memory_select = []
+    for column in _MEMORY_EXPORT_COLUMNS:
+        if column in {"superseded_by", "supersedes"}:
+            memory_select.append(
+                f"""
+                CASE
+                  WHEN m.{column} IS NULL OR EXISTS (
+                    SELECT 1 FROM memories referenced
+                    WHERE referenced.id = m.{column}
+                      AND referenced.user_id = m.user_id
+                      AND referenced.deleted_at IS NULL
+                  ) THEN m.{column}
+                  ELSE NULL
+                END AS {column}
+                """.strip()
+            )
+        else:
+            memory_select.append(f"m.{column}")
+    relationship_select = [f"r.{column}" for column in ENTITY_RELATIONSHIP_EVENT_COLUMNS]
+    relationship_select[ENTITY_RELATIONSHIP_EVENT_COLUMNS.index("source_id")] = """
+        CASE WHEN r.source_id IS NULL OR EXISTS (
+          SELECT 1 FROM sources relationship_source
+          WHERE relationship_source.id = r.source_id
+            AND relationship_source.user_id = r.user_id
+            AND relationship_source.deleted_at IS NULL
+        ) THEN r.source_id ELSE NULL END AS source_id
+    """.strip()
+    provenance_select = [f"p.{column}" for column in PROVENANCE_COLUMNS]
+    provenance_select[PROVENANCE_COLUMNS.index("source_id")] = """
+        CASE WHEN p.source_id IS NULL OR EXISTS (
+          SELECT 1 FROM sources ps
+          WHERE ps.id = p.source_id AND ps.user_id = p.user_id
+            AND ps.deleted_at IS NULL
+        ) THEN p.source_id ELSE NULL END AS source_id
+    """.strip()
+    provenance_select[PROVENANCE_COLUMNS.index("source_chunk_id")] = """
+        CASE WHEN p.source_chunk_id IS NULL OR EXISTS (
+          SELECT 1 FROM source_chunks pc
+          JOIN sources pcs ON pcs.id = pc.source_id AND pcs.user_id = pc.user_id
+          WHERE pc.id = p.source_chunk_id AND pc.user_id = p.user_id
+            AND pcs.deleted_at IS NULL
+        ) THEN p.source_chunk_id ELSE NULL END AS source_chunk_id
+    """.strip()
+    open_loop_select = [f"l.{column}" for column in OPEN_LOOP_COLUMNS]
+    open_loop_select[OPEN_LOOP_COLUMNS.index("memory_id")] = """
+        CASE WHEN l.memory_id IS NULL OR EXISTS (
+          SELECT 1 FROM memories lm
+          WHERE lm.id = l.memory_id AND lm.user_id = l.user_id
+            AND lm.deleted_at IS NULL
+        ) THEN l.memory_id ELSE NULL END AS memory_id
+    """.strip()
+    open_loop_select[OPEN_LOOP_COLUMNS.index("source_id")] = """
+        CASE WHEN l.source_id IS NULL OR EXISTS (
+          SELECT 1 FROM sources ls
+          WHERE ls.id = l.source_id AND ls.user_id = l.user_id
+            AND ls.deleted_at IS NULL
+        ) THEN l.source_id ELSE NULL END AS source_id
+    """.strip()
     # The store has no list_sources method (the core tools never need
     # one), so export reads the sources table directly with the same
     # user scoping and column order the store uses.
@@ -309,7 +895,19 @@ def _export_rows(
             (uid,),
         )
     )
-    yield from (("memory", memory) for memory in store.list_memories())
+    yield from (
+        ("memory", row)
+        for row in _decoded_rows(
+            conn,
+            f"""
+            SELECT {", ".join(memory_select)}
+            FROM memories m
+            WHERE m.user_id = ? AND m.deleted_at IS NULL
+            ORDER BY m.created_at ASC, m.id ASC
+            """,
+            (uid,),
+        )
+    )
     yield from (
         ("entity", row)
         for row in _decoded_rows(
@@ -323,6 +921,20 @@ def _export_rows(
             (uid,),
         )
     )
+    yield from (
+        ("entity_relationship_event", row)
+        for row in _decoded_rows(
+            conn,
+            f"""
+            SELECT {", ".join(relationship_select)}
+            FROM entity_relationship_events r
+            JOIN vnext_entities e ON e.id = r.entity_id AND e.user_id = r.user_id
+            WHERE r.user_id = ? AND e.deleted_at IS NULL
+            ORDER BY r.changed_at ASC, r.id ASC
+            """,
+            (uid,),
+        )
+    )
     # All edges, including closed ones (valid_to set): the temporal
     # history is part of the graph. store.list_edges filters those out.
     yield from (
@@ -330,10 +942,60 @@ def _export_rows(
         for row in _decoded_rows(
             conn,
             f"""
-            SELECT {", ".join(GRAPH_EDGE_COLUMNS)}
-            FROM graph_edges
-            WHERE user_id = ?
-            ORDER BY created_at ASC, id ASC
+            SELECT {", ".join(f"g.{column}" for column in GRAPH_EDGE_COLUMNS)}
+            FROM graph_edges g
+            WHERE g.user_id = ?
+              AND (
+                g.from_type != 'memory' OR EXISTS (
+                  SELECT 1 FROM memories m
+                  WHERE m.id = g.from_id AND m.user_id = g.user_id AND m.deleted_at IS NULL
+                )
+              )
+              AND (
+                g.to_type != 'memory' OR EXISTS (
+                  SELECT 1 FROM memories m
+                  WHERE m.id = g.to_id AND m.user_id = g.user_id AND m.deleted_at IS NULL
+                )
+              )
+              AND (
+                g.from_type != 'entity' OR EXISTS (
+                  SELECT 1 FROM vnext_entities e
+                  WHERE e.id = g.from_id AND e.user_id = g.user_id AND e.deleted_at IS NULL
+                )
+              )
+              AND (
+                g.to_type != 'entity' OR EXISTS (
+                  SELECT 1 FROM vnext_entities e
+                  WHERE e.id = g.to_id AND e.user_id = g.user_id AND e.deleted_at IS NULL
+                )
+              )
+              AND (
+                g.from_type != 'source' OR EXISTS (
+                  SELECT 1 FROM sources s
+                  WHERE s.id = g.from_id AND s.user_id = g.user_id AND s.deleted_at IS NULL
+                )
+              )
+              AND (
+                g.to_type != 'source' OR EXISTS (
+                  SELECT 1 FROM sources s
+                  WHERE s.id = g.to_id AND s.user_id = g.user_id AND s.deleted_at IS NULL
+                )
+              )
+              AND (
+                g.from_type != 'source_chunk' OR EXISTS (
+                  SELECT 1 FROM source_chunks c
+                  JOIN sources s ON s.id = c.source_id AND s.user_id = c.user_id
+                  WHERE c.id = g.from_id AND c.user_id = g.user_id AND s.deleted_at IS NULL
+                )
+              )
+              AND (
+                g.to_type != 'source_chunk' OR EXISTS (
+                  SELECT 1 FROM source_chunks c
+                  JOIN sources s ON s.id = c.source_id AND s.user_id = c.user_id
+                  WHERE c.id = g.to_id AND c.user_id = g.user_id AND s.deleted_at IS NULL
+                )
+              )
+            ORDER BY g.created_at ASC, g.id ASC
             """,
             (uid,),
         )
@@ -357,25 +1019,42 @@ def _export_rows(
         for row in _decoded_rows(
             conn,
             f"""
-            SELECT {", ".join(f"p.{column}" for column in PROVENANCE_COLUMNS)}
+            SELECT {", ".join(provenance_select)}
             FROM provenance_links p
             WHERE p.user_id = ?
               AND (
-                p.source_id IS NULL
-                OR EXISTS (
-                  SELECT 1 FROM sources s
-                  WHERE s.id = p.source_id AND s.user_id = p.user_id
-                    AND s.deleted_at IS NULL
+                p.target_type != 'memory' OR EXISTS (
+                  SELECT 1 FROM memories target_memory
+                  WHERE target_memory.id = p.target_id
+                    AND target_memory.user_id = p.user_id
+                    AND target_memory.deleted_at IS NULL
                 )
               )
               AND (
-                p.source_chunk_id IS NULL
-                OR EXISTS (
-                  SELECT 1
-                  FROM source_chunks c
-                  JOIN sources s2 ON s2.id = c.source_id AND s2.user_id = c.user_id
-                  WHERE c.id = p.source_chunk_id AND c.user_id = p.user_id
-                    AND s2.deleted_at IS NULL
+                p.target_type != 'source' OR EXISTS (
+                  SELECT 1 FROM sources target_source
+                  WHERE target_source.id = p.target_id
+                    AND target_source.user_id = p.user_id
+                    AND target_source.deleted_at IS NULL
+                )
+              )
+              AND (
+                p.target_type != 'entity' OR EXISTS (
+                  SELECT 1 FROM vnext_entities target_entity
+                  WHERE target_entity.id = p.target_id
+                    AND target_entity.user_id = p.user_id
+                    AND target_entity.deleted_at IS NULL
+                )
+              )
+              AND (
+                p.target_type != 'source_chunk' OR EXISTS (
+                  SELECT 1 FROM source_chunks target_chunk
+                  JOIN sources target_chunk_source
+                    ON target_chunk_source.id = target_chunk.source_id
+                   AND target_chunk_source.user_id = target_chunk.user_id
+                  WHERE target_chunk.id = p.target_id
+                    AND target_chunk.user_id = p.user_id
+                    AND target_chunk_source.deleted_at IS NULL
                 )
               )
             ORDER BY p.created_at ASC, p.id ASC
@@ -384,20 +1063,86 @@ def _export_rows(
         )
     )
     yield from (
-        ("open_loop", loop)
-        for loop in store.list_open_loops(status=None, limit=_EXPORT_ROW_LIMIT)
+        ("open_loop", row)
+        for row in _decoded_rows(
+            conn,
+            f"""
+            SELECT {", ".join(open_loop_select)}
+            FROM open_loops l
+            WHERE l.user_id = ?
+            ORDER BY l.created_at ASC, l.id ASC
+            """,
+            (uid,),
+        )
     )
-    yield from (("event", event) for event in store.list_events())
+    yield from (
+        ("event", row)
+        for row in _decoded_rows(
+            conn,
+            f"""
+            SELECT {", ".join(EVENT_LOG_COLUMNS)}
+            FROM event_log
+            WHERE user_id = ?
+            ORDER BY occurred_at ASC, id ASC
+            """,
+            (uid,),
+        )
+    )
+
+
+def _export_schema() -> dict[str, object]:
+    record_types = {
+        record_type: list(columns)
+        for record_type, (_table, columns) in _RECORD_SPECS.items()
+    }
+    canonical = json.dumps(
+        record_types,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return {
+        "version": _EXPORT_SCHEMA_VERSION,
+        "record_types": record_types,
+        "fingerprint": hashlib.sha256(canonical).hexdigest(),
+    }
 
 
 def _write_export(stream: IO[str], *, db_path: Path, user_id: UUID) -> int:
-    written = 0
-    with sqlite_user_connection(db_path, user_id) as conn:
-        store = SQLiteVNextStore(conn, user_id)
-        for record_type, row in _export_rows(conn, store, user_id):
-            stream.write(_export_line(record_type, row) + "\n")
+    """Write a versioned export from a read-only private SQLite snapshot."""
+    with _prepared_export_connection(db_path, user_id) as conn:
+        header = {
+            "format": _EXPORT_FORMAT,
+            "format_version": _EXPORT_FORMAT_VERSION,
+            "application_version": __version__,
+            "exported_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "user_id": str(user_id),
+            "schema": _export_schema(),
+            "integrity": {
+                "algorithm": "sha256",
+                "scope": _EXPORT_INTEGRITY_SCOPE,
+            },
+        }
+        stream.write(_export_line(_EXPORT_HEADER_TYPE, header) + "\n")
+        digest = hashlib.sha256()
+        counts = {record_type: 0 for record_type in _RECORD_SPECS}
+        written = 0
+        for record_type, row in _export_rows(conn, user_id):
+            line = _export_line(record_type, row) + "\n"
+            stream.write(line)
+            digest.update(line.encode("utf-8"))
+            counts[record_type] += 1
             written += 1
-    return written
+
+        footer = {
+            "format": _EXPORT_FORMAT,
+            "format_version": _EXPORT_FORMAT_VERSION,
+            "record_count": written,
+            "record_counts": counts,
+            "sha256": digest.hexdigest(),
+        }
+        stream.write(_export_line(_EXPORT_FOOTER_TYPE, footer) + "\n")
+        return written
 
 
 def _run_export(args: argparse.Namespace) -> int:
@@ -406,13 +1151,66 @@ def _run_export(args: argparse.Namespace) -> int:
         print(f"error: database file does not exist: {db_path}", file=sys.stderr)
         return 1
     if args.out is not None:
-        out_path = Path(args.out).expanduser()
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with out_path.open("w", encoding="utf-8") as stream:
-            written = _write_export(stream, db_path=db_path, user_id=args.user_id)
-        print(f"alice-memory: exported {written} records to {out_path}", file=sys.stderr)
+        requested_out_path = Path(args.out).expanduser()
+        if _path_aliases_database_family(requested_out_path, db_path):
+            print(
+                "error: export output aliases the database or SQLite sidecar: "
+                f"{requested_out_path}",
+                file=sys.stderr,
+            )
+            return 1
+        out_path = requested_out_path.resolve()
+        temp_path: Path | None = None
+        try:
+            _ensure_private_directory(out_path.parent)
+            fd, raw_temp_path = tempfile.mkstemp(
+                prefix=f".{out_path.name}.",
+                suffix=".tmp",
+                dir=out_path.parent,
+                text=True,
+            )
+            temp_path = Path(raw_temp_path)
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                written = _write_export(stream, db_path=db_path, user_id=args.user_id)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_path, out_path)
+            temp_path = None
+            _fsync_directory(out_path.parent)
+        except (
+            _BackupError,
+            OSError,
+            sqlite3.Error,
+            ContinuityStoreInvariantError,
+        ) as exc:
+            print(f"error: export failed: {exc}", file=sys.stderr)
+            return 1
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+        try:
+            print(
+                f"alice-memory: exported {written} records to {out_path}",
+                file=sys.stderr,
+                flush=True,
+            )
+        except (OSError, ValueError):
+            return 2
     else:
-        written = _write_export(sys.stdout, db_path=db_path, user_id=args.user_id)
+        try:
+            _write_export(sys.stdout, db_path=db_path, user_id=args.user_id)
+        except (
+            _BackupError,
+            OSError,
+            sqlite3.Error,
+            ContinuityStoreInvariantError,
+        ) as exc:
+            print(f"error: export failed: {exc}", file=sys.stderr)
+            return 1
     return 0
 
 
@@ -423,41 +1221,193 @@ class _ImportError(Exception):
     """A user-facing import failure; the message names the offending line."""
 
 
-def _parse_import_file(path: Path) -> dict[str, list[tuple[int, dict[str, object]]]]:
-    """Parse an export JSONL file into ``{record_type: [(line_no, record)]}``.
+@dataclass(frozen=True)
+class _ValidatedImport:
+    versioned: bool
+    record_count: int
+    record_counts: dict[str, int]
+    content_sha256: str
+    manifest_sha256: str
 
-    The whole file is validated before anything touches the database, so
-    a malformed line aborts the import with zero rows written. Blank
-    lines are tolerated; anything else must be a ``{"record_type": ...,
-    "record": {...}}`` object with a known record_type.
+
+def _decode_import_envelope(
+    text: str, *, line_no: int
+) -> tuple[str, dict[str, object]]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise _ImportError(f"line {line_no}: invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise _ImportError(
+            f"line {line_no}: expected a JSON object, got {type(payload).__name__}"
+        )
+    record_type = payload.get("record_type")
+    record = payload.get("record")
+    if not isinstance(record_type, str) or not isinstance(record, dict):
+        raise _ImportError(
+            f"line {line_no}: expected {{\"record_type\": str, \"record\": object}}"
+        )
+    return record_type, record
+
+
+def _validate_import_file(path: Path) -> _ValidatedImport:
+    """Validate the complete file before opening or creating the target DB.
+
+    Version 2 exports carry schema, counts, and a canonical SHA-256 footer;
+    a missing footer therefore detects truncation. Legacy headerless JSONL
+    remains accepted, but cannot offer an integrity guarantee it never had.
     """
-    records: dict[str, list[tuple[int, dict[str, object]]]] = {}
+    versioned: bool | None = None
+    footer: dict[str, object] | None = None
+    digest = hashlib.sha256()
+    manifest_sha256 = ""
+    counts = {record_type: 0 for record_type in _RECORD_SPECS}
+    record_count = 0
+    saw_nonblank = False
+    export_user_id: str | None = None
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            for line_no, line in enumerate(stream, start=1):
+                text = line.strip()
+                if not text:
+                    if versioned:
+                        raise _ImportError(
+                            f"line {line_no}: blank lines are not allowed in a versioned export"
+                        )
+                    continue
+                record_type, record = _decode_import_envelope(text, line_no=line_no)
+                if not saw_nonblank:
+                    saw_nonblank = True
+                    versioned = record_type == _EXPORT_HEADER_TYPE
+                    if versioned:
+                        if record.get("format") != _EXPORT_FORMAT:
+                            raise _ImportError(f"line {line_no}: unsupported export format")
+                        if record.get("format_version") != _EXPORT_FORMAT_VERSION:
+                            raise _ImportError(
+                                f"line {line_no}: unsupported export format version "
+                                f"{record.get('format_version')!r}"
+                            )
+                        try:
+                            export_user_id = str(UUID(str(record.get("user_id") or "")))
+                        except ValueError as exc:
+                            raise _ImportError(
+                                f"line {line_no}: export header has an invalid user_id"
+                            ) from exc
+                        if not isinstance(record.get("exported_at"), str) or not isinstance(
+                            record.get("application_version"), str
+                        ):
+                            raise _ImportError(
+                                f"line {line_no}: export header is missing version/timestamp metadata"
+                            )
+                        if record.get("schema") != _export_schema():
+                            raise _ImportError(
+                                f"line {line_no}: export schema is not supported by this Alice version"
+                            )
+                        integrity = record.get("integrity")
+                        if not isinstance(integrity, dict) or integrity.get(
+                            "algorithm"
+                        ) != "sha256" or integrity.get("scope") not in {
+                            _EXPORT_INTEGRITY_SCOPE,
+                            _LEGACY_V2_INTEGRITY_SCOPE,
+                        }:
+                            raise _ImportError(
+                                f"line {line_no}: unsupported export integrity declaration"
+                            )
+                        if integrity["scope"] == _LEGACY_V2_INTEGRITY_SCOPE:
+                            digest.update(
+                                (_export_line(_EXPORT_HEADER_TYPE, record) + "\n").encode(
+                                    "utf-8"
+                                )
+                            )
+                        manifest_sha256 = hashlib.sha256(
+                            _export_line(_EXPORT_HEADER_TYPE, record).encode("utf-8")
+                        ).hexdigest()
+                        continue
+                if record_type == _EXPORT_HEADER_TYPE:
+                    raise _ImportError(f"line {line_no}: export header must be the first record")
+                if record_type == _EXPORT_FOOTER_TYPE:
+                    if not versioned:
+                        raise _ImportError(
+                            f"line {line_no}: export footer appeared without a versioned header"
+                        )
+                    if footer is not None:
+                        raise _ImportError(f"line {line_no}: duplicate export footer")
+                    footer = record
+                    continue
+                if footer is not None:
+                    raise _ImportError(f"line {line_no}: data found after export footer")
+                if record_type not in _RECORD_SPECS:
+                    known = ", ".join(_RECORD_SPECS)
+                    raise _ImportError(
+                        f"line {line_no}: unknown record_type '{record_type}' (known: {known})"
+                    )
+                if not str(record.get("id") or "").strip():
+                    raise _ImportError(
+                        f"line {line_no}: {record_type} record is missing an 'id'"
+                    )
+                expected_columns = set(_RECORD_SPECS[record_type][1])
+                actual_columns = set(record)
+                if versioned:
+                    if actual_columns != expected_columns:
+                        missing = sorted(expected_columns - actual_columns)
+                        unknown = sorted(actual_columns - expected_columns)
+                        raise _ImportError(
+                            f"line {line_no}: {record_type} fields do not match the "
+                            f"declared schema (missing={missing}, unknown={unknown})"
+                        )
+                    if str(record.get("user_id")) != export_user_id:
+                        raise _ImportError(
+                            f"line {line_no}: {record_type} belongs to a different export user"
+                        )
+                else:
+                    unknown_columns = sorted(actual_columns - expected_columns)
+                    if unknown_columns:
+                        raise _ImportError(
+                            f"line {line_no}: legacy {record_type} has unknown fields that "
+                            f"this Alice version cannot restore: {unknown_columns}"
+                        )
+                counts[record_type] += 1
+                record_count += 1
+                digest.update((_export_line(record_type, record) + "\n").encode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise _ImportError(f"file is not valid UTF-8 JSONL: {exc}") from exc
+
+    if not saw_nonblank:
+        raise _ImportError("file is empty")
+    if versioned:
+        if footer is None:
+            raise _ImportError("versioned export is truncated: integrity footer is missing")
+        if footer.get("format") != _EXPORT_FORMAT or footer.get(
+            "format_version"
+        ) != _EXPORT_FORMAT_VERSION:
+            raise _ImportError("export integrity footer has an unsupported format or version")
+        if footer.get("record_count") != record_count:
+            raise _ImportError("export integrity record count does not match its contents")
+        if footer.get("record_counts") != counts:
+            raise _ImportError("export integrity per-type counts do not match its contents")
+        if footer.get("sha256") != digest.hexdigest():
+            raise _ImportError("export integrity SHA-256 does not match its contents")
+    return _ValidatedImport(
+        versioned=bool(versioned),
+        record_count=record_count,
+        record_counts=counts,
+        content_sha256=digest.hexdigest(),
+        manifest_sha256=manifest_sha256,
+    )
+
+
+def _iter_import_records(
+    path: Path, record_type: str
+) -> Iterator[tuple[int, dict[str, object]]]:
+    """Stream one FK-ordered record type after whole-file validation."""
     with path.open("r", encoding="utf-8") as stream:
         for line_no, line in enumerate(stream, start=1):
             text = line.strip()
             if not text:
                 continue
-            try:
-                payload = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise _ImportError(f"line {line_no}: invalid JSON: {exc}") from exc
-            if not isinstance(payload, dict):
-                raise _ImportError(f"line {line_no}: expected a JSON object, got {type(payload).__name__}")
-            record_type = payload.get("record_type")
-            record = payload.get("record")
-            if not isinstance(record_type, str) or not isinstance(record, dict):
-                raise _ImportError(
-                    f"line {line_no}: expected {{\"record_type\": str, \"record\": object}}"
-                )
-            if record_type not in _RECORD_SPECS:
-                known = ", ".join(_RECORD_SPECS)
-                raise _ImportError(
-                    f"line {line_no}: unknown record_type '{record_type}' (known: {known})"
-                )
-            if not str(record.get("id") or "").strip():
-                raise _ImportError(f"line {line_no}: {record_type} record is missing an 'id'")
-            records.setdefault(record_type, []).append((line_no, record))
-    return records
+            parsed_type, record = _decode_import_envelope(text, line_no=line_no)
+            if parsed_type == record_type:
+                yield line_no, record
 
 
 def _encode_column_value(column: str, value: object) -> object:
@@ -467,10 +1417,51 @@ def _encode_column_value(column: str, value: object) -> object:
     return value
 
 
+def _normalized_import_values(
+    store: SQLiteVNextStore,
+    columns: tuple[str, ...],
+    record: dict[str, object],
+) -> tuple[object, ...]:
+    return tuple(
+        store.user_id
+        if column == "user_id"
+        else _encode_column_value(column, record.get(column))
+        for column in columns
+    )
+
+
+def _collision_is_identical(
+    existing: dict[str, object],
+    columns: tuple[str, ...],
+    expected: tuple[object, ...],
+) -> bool:
+    for column, expected_value in zip(columns, expected):
+        existing_value = existing.get(column)
+        if column in _JSON_COLUMNS:
+            try:
+                existing_json = (
+                    json.loads(existing_value)
+                    if isinstance(existing_value, str)
+                    else existing_value
+                )
+                expected_json = (
+                    json.loads(expected_value)
+                    if isinstance(expected_value, str)
+                    else expected_value
+                )
+            except json.JSONDecodeError:
+                return False
+            if json_safe(existing_json) != json_safe(expected_json):
+                return False
+        elif existing_value != expected_value:
+            return False
+    return True
+
+
 def _import_records(
     conn: sqlite3.Connection,
     store: SQLiteVNextStore,
-    records: dict[str, list[tuple[int, dict[str, object]]]],
+    in_path: Path,
     *,
     mode: str,
 ) -> dict[str, dict[str, int]]:
@@ -478,47 +1469,51 @@ def _import_records(
 
     Direct INSERT (not the store ``create_*`` methods) so ids and
     timestamps land exactly as exported and no fresh mutation events are
-    appended. Events go through ``append_event``, which preserves the
-    passed id/occurred_at/integrity_hash. ``user_id`` is rebound to the
-    importing user. Raises ``_ImportError`` on the first collision in
-    ``fail`` mode and on any constraint violation; the caller's
-    transaction rolls back, so a failed import writes nothing.
+    appended. Event rows use the same direct path, preserving occurred_at
+    and integrity_hash text exactly. ``user_id`` is rebound to the importing
+    user. ``skip`` accepts only field-for-field identical collisions;
+    divergent content with the same id is never merged. Raises
+    ``_ImportError`` on the first collision in ``fail`` mode and on any
+    constraint violation; the staged transaction rolls back on failure.
     """
     counts: dict[str, dict[str, int]] = {}
     for record_type, (table, columns) in _RECORD_SPECS.items():
-        for line_no, record in records.get(record_type, []):
+        for line_no, record in _iter_import_records(in_path, record_type):
             tally = counts.setdefault(record_type, {"imported": 0, "skipped": 0})
             row_id = str(record["id"])
-            exists = conn.execute(
-                f"SELECT 1 FROM {table} WHERE id = ?", (row_id,)
+            existing = conn.execute(
+                f"SELECT {', '.join(columns)} FROM {table} WHERE id = ?", (row_id,)
             ).fetchone()
-            if exists is not None:
+            values = _normalized_import_values(store, columns, record)
+            if existing is not None:
                 if mode == "fail":
                     raise _ImportError(
                         f"line {line_no}: {record_type} id {row_id} already exists; "
                         "aborting (--mode fail). Rerun with --mode skip to keep "
                         "existing rows and import only new records."
                     )
+                if not _collision_is_identical(dict(existing), columns, values):
+                    raise _ImportError(
+                        f"line {line_no}: {record_type} id {row_id} has the same id "
+                        "but different content; refusing to combine incompatible backups"
+                    )
                 tally["skipped"] += 1
                 continue
             try:
-                if record_type == "event":
-                    store.append_event(record)
-                else:
-                    values = tuple(
-                        store.user_id
-                        if column == "user_id"
-                        else _encode_column_value(column, record.get(column))
-                        for column in columns
-                    )
-                    conn.execute(
-                        f"""
-                        INSERT INTO {table} ({", ".join(columns)})
-                        VALUES ({", ".join("?" for _ in columns)})
-                        """,
-                        values,
-                    )
-            except (sqlite3.Error, ContinuityStoreInvariantError, KeyError, TypeError, ValueError) as exc:
+                conn.execute(
+                    f"""
+                    INSERT INTO {table} ({", ".join(columns)})
+                    VALUES ({", ".join("?" for _ in columns)})
+                    """,
+                    values,
+                )
+            except (
+                sqlite3.Error,
+                ContinuityStoreInvariantError,
+                KeyError,
+                TypeError,
+                ValueError,
+            ) as exc:
                 raise _ImportError(
                     f"line {line_no}: {record_type} {row_id} could not be imported: {exc}"
                 ) from exc
@@ -547,27 +1542,209 @@ def _print_import_summary(
 
 
 def _run_import(args: argparse.Namespace) -> int:
-    in_path = Path(args.in_path).expanduser()
-    if not in_path.exists():
-        print(f"error: import file does not exist: {in_path}", file=sys.stderr)
+    requested_in_path = Path(args.in_path).expanduser()
+    if not requested_in_path.exists():
+        print(f"error: import file does not exist: {requested_in_path}", file=sys.stderr)
         return 1
+    db_path = resolve_db_path(data_dir=args.data_dir, db=args.db)
+    if _path_aliases_database_family(requested_in_path, db_path):
+        print(
+            "error: import input aliases the database or SQLite sidecar: "
+            f"{requested_in_path}",
+            file=sys.stderr,
+        )
+        return 1
+    in_path = requested_in_path.resolve()
     try:
-        records = _parse_import_file(in_path)
+        validated_import = _validate_import_file(in_path)
     except _ImportError as exc:
         print(f"error: {in_path}: {exc}", file=sys.stderr)
         return 1
-    db_path = resolve_db_path(data_dir=args.data_dir, db=args.db)
-    bootstrap_database(db_path, user_id=args.user_id, user_email=args.user_email)
+    except OSError as exc:
+        print(f"error: could not read import file {in_path}: {exc}", file=sys.stderr)
+        return 1
+
+    target_existed = db_path.exists()
+    working_path: Path | None = None
     try:
-        with sqlite_user_connection(db_path, args.user_id) as conn:
+        _ensure_private_directory(db_path.parent)
+        fd, raw_working_path = tempfile.mkstemp(
+            prefix=f".{db_path.name}.restore.",
+            suffix=".tmp",
+            dir=db_path.parent,
+        )
+        os.close(fd)
+        working_path = Path(raw_working_path)
+        if target_existed:
+            _copy_sqlite_database(db_path, working_path)
+            staged_source = sqlite3.connect(working_path)
+            try:
+                _validate_alice_snapshot(staged_source)
+            finally:
+                staged_source.close()
+        bootstrap_database(
+            working_path,
+            user_id=args.user_id,
+            user_email=args.user_email,
+            secure_parent=args.db is None,
+        )
+        with sqlite_user_connection(working_path, args.user_id) as conn:
             store = SQLiteVNextStore(conn, args.user_id)
-            counts = _import_records(conn, store, records, mode=args.mode)
-    except _ImportError as exc:
+            counts = _import_records(conn, store, in_path, mode=args.mode)
+            if _validate_import_file(in_path) != validated_import:
+                raise _ImportError("import file changed while it was being restored")
+        # Move all committed WAL pages into the staged main file before
+        # atomic publication, then durably persist it.
+        checkpoint = sqlite3.connect(str(working_path))
+        try:
+            checkpoint.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            _validate_alice_snapshot(
+                checkpoint,
+                user_id=args.user_id,
+                require_current_schema=True,
+            )
+        finally:
+            checkpoint.close()
+        with working_path.open("rb") as stream:
+            os.fsync(stream.fileno())
+        os.chmod(working_path, 0o600)
+        if target_existed:
+            # SQLite's backup API publishes the staged pages inside one
+            # destination write transaction. Schema and data therefore
+            # become visible together, or the original target rolls back.
+            _publish_staged_database(working_path, db_path)
+        else:
+            # link() is an atomic no-clobber publish: if another process
+            # created the requested target while validation/import ran, the
+            # restore fails instead of replacing that new database.
+            staged_path = working_path
+            os.link(staged_path, db_path)
+            # link() is the publication point. Cleanup is deliberately
+            # best-effort after switching state so a failed temporary unlink
+            # can never be misreported as a rolled-back restore.
+            working_path = db_path
+            _remove_sqlite_files(staged_path)
+    except (_BackupError, _ImportError, OSError, sqlite3.Error) as exc:
         print(f"error: {in_path}: {exc}", file=sys.stderr)
         print("error: import aborted; no records were written", file=sys.stderr)
         return 1
-    _print_import_summary(counts, in_path=in_path, db_path=db_path)
-    return 0
+    finally:
+        if working_path is not None and working_path != db_path:
+            _remove_sqlite_files(working_path)
+    # A new target is the already-fchmod(0600) staged inode published by
+    # hard link, so no fallible post-publication chmod is needed. Existing
+    # targets keep their inode and need an explicit owner-only hardening pass.
+    # If that pass fails, return a distinct nonzero result without ever
+    # claiming rollback: the imported records have committed.
+    hardening_error: OSError | None = None
+    if target_existed:
+        try:
+            _secure_sqlite_files(db_path)
+        except OSError as exc:
+            hardening_error = exc
+            _best_effort_stderr(
+                "error: restore committed; permissions were not hardened; "
+                f"DO NOT blindly retry; inspect {db_path}: {exc}"
+            )
+    _fsync_directory(db_path.parent)
+    summary_error: OSError | ValueError | None = None
+    try:
+        _print_import_summary(counts, in_path=in_path, db_path=db_path)
+        sys.stdout.flush()
+    except (OSError, ValueError) as exc:
+        summary_error = exc
+        _best_effort_stderr(
+            "error: restore committed; summary output failed; DO NOT blindly retry; "
+            f"inspect {db_path}: {exc}"
+        )
+    return 2 if hardening_error is not None or summary_error is not None else 0
+
+
+def _run_reindex_embeddings(args: argparse.Namespace) -> int:
+    provider = get_embedding_provider()
+    if provider is None:
+        print(
+            "error: embedding provider is not configured; set "
+            f"{EMBEDDINGS_BASE_URL_ENV} and {EMBEDDINGS_MODEL_ENV} "
+            f"(and {EMBEDDINGS_API_KEY_ENV} when required)",
+            file=sys.stderr,
+        )
+        return 1
+    batch_size = args.batch_size
+    if batch_size < 1 or batch_size > MAX_EMBEDDINGS_BATCH_SIZE:
+        print(
+            f"error: --batch-size must be between 1 and {MAX_EMBEDDINGS_BATCH_SIZE}",
+            file=sys.stderr,
+        )
+        return 1
+
+    db_path = resolve_db_path(data_dir=args.data_dir, db=args.db)
+    bootstrap_database(
+        db_path,
+        user_id=args.user_id,
+        user_email=args.user_email,
+        secure_parent=args.db is None,
+    )
+    embedded = 0
+    reindexed_incompatible = 0
+    skipped = 0
+    failed = 0
+    batches = 0
+    with sqlite_user_connection(db_path, args.user_id) as conn:
+        store = SQLiteVNextStore(conn, args.user_id)
+        after_id: str | None = None
+        while True:
+            rows = store.list_memories_missing_embeddings(
+                limit=batch_size,
+                after_id=after_id,
+                embedding_provider=provider.provider,
+                embedding_model=provider.model,
+                embedding_signature_version=EMBEDDING_SIGNATURE_VERSION,
+            )
+            if not rows:
+                break
+            batches += 1
+            after_id = str(rows[-1]["id"])
+            pending = [(row, memory_embedding_text(row)) for row in rows]
+            embeddable = [(row, text) for row, text in pending if text]
+            skipped += len(pending) - len(embeddable)
+            if not embeddable:
+                continue
+            try:
+                vectors = provider.embed_batch([text for _row, text in embeddable])
+            except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
+                failed += len(embeddable)
+                print(f"warning: embedding batch failed: {exc}", file=sys.stderr)
+                continue
+            for (row, _text), vector in zip(embeddable, vectors, strict=True):
+                signature = memory_embedding_signature(row, provider=provider)
+                store.update_memory_embedding(
+                    memory_id=str(row["id"]),
+                    vector=vector,
+                    provider=str(signature["provider"]),
+                    model=str(signature["model"]),
+                    content_sha256=str(signature["content_sha256"]),
+                    signature_version=int(signature["version"]),
+                )
+                if row.get("embedding_present") in (True, 1):
+                    reindexed_incompatible += 1
+                embedded += 1
+    _secure_sqlite_files(db_path)
+    print(
+        json.dumps(
+            {
+                "provider": provider.provider,
+                "model": provider.model,
+                "batches": batches,
+                "embedded": embedded,
+                "reindexed_incompatible": reindexed_incompatible,
+                "skipped": skipped,
+                "failed": failed,
+            },
+            sort_keys=True,
+        )
+    )
+    return 1 if failed else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -578,6 +1755,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_export(args)
     if args.command == "import":
         return _run_import(args)
+    if args.command == "reindex-embeddings":
+        return _run_reindex_embeddings(args)
     return _run_mcp(args)
 
 

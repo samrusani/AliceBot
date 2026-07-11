@@ -102,6 +102,41 @@ def test_policy_requires_review_for_agent_memory_proposals_and_blocks_auto_promo
         ensure_policy_allowed(auto_promotion)
 
 
+def test_memory_proposal_agent_cannot_apply_lifecycle_mutations() -> None:
+    agent = AgentIdentity.from_payload(
+        {
+            "agent_id": "memory-bot",
+            "permission_profile": "memory_proposal_agent",
+            "project_scope": ["Alice"],
+        }
+    )
+    assert agent is not None
+
+    for action in (
+        "memory.confirm",
+        "memory.correct",
+        "memory.forget",
+        "memory.undo",
+        "open_loop.update",
+        "artifact.review",
+    ):
+        decision = evaluate_agent_policy(
+            identity=agent,
+            action=action,
+            project_scope=("Alice",),
+        )
+        assert decision.decision == "blocked", action
+        assert "memory_proposal_agent_cannot_mutate" in decision.reasons, action
+
+    proposal = evaluate_agent_policy(
+        identity=agent,
+        action="memory.propose",
+        domains=("project",),
+        project_scope=("Alice",),
+    )
+    assert proposal.decision == "requires_review"
+
+
 def test_scheduler_policy_distinguishes_project_scoped_trusted_and_admin_agents() -> None:
     openclaw = AgentIdentity.from_payload({"agent_id": "openclaw", "project_scope": ["Alice"]})
     hermes = AgentIdentity.from_payload({"agent_id": "hermes"})

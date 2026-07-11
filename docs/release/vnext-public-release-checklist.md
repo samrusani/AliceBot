@@ -1,6 +1,12 @@
 # vNext Public Release Checklist
 
-Use this checklist before cutting a vNext preview tag or public announcement. Do not publish until every required item is checked with current evidence.
+> Historical evidence only (frozen 2026-05-11). Do not use this checklist to
+> authorize a current tag or publication. The canonical `v0.9.2` gate is
+> [`RELEASING.md`](../../RELEASING.md), which must be run on one exact clean
+> release commit and its built artifacts.
+
+This checklist records the earlier vNext preview milestone and its evidence;
+checked boxes below describe that historical run, not current release status.
 
 ## Docs
 

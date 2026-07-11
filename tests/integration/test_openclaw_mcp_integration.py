@@ -151,7 +151,8 @@ def test_openclaw_imported_data_is_usable_from_shipped_mcp_recall_and_resume_too
     client = start_mcp_client(database_url=migrated_database_urls["app"], user_id=user_id)
     try:
         # Imported OpenClaw data lands in the legacy continuity store, which is
-        # served by the flag-gated debug recall view rather than core recall.
+        # served by the flag-gated debug views rather than the canonical vNext
+        # core recall/resume tools.
         recall_payload = _call_tool(
             client,
             name="alice_recall_debug",
@@ -164,7 +165,7 @@ def test_openclaw_imported_data_is_usable_from_shipped_mcp_recall_and_resume_too
         )
         resume_payload = _call_tool(
             client,
-            name="alice_resume",
+            name="alice_resume_debug",
             arguments={
                 "thread_id": str(THREAD_ID),
                 "max_recent_changes": 10,

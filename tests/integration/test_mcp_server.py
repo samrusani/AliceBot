@@ -236,6 +236,7 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
                 "permission_profile": "trusted_local_agent",
                 "title": "Rollout checklist owner",
                 "canonical_text": "Priya owns the phased rollout checklist for the beta launch.",
+                "memory_type": "decision",
                 "domain": "professional",
                 "sensitivity": "internal",
                 "confidence": 0.96,
@@ -279,7 +280,8 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
                 "max_open_loops": 5,
             },
         )
-        assert resume_before["brief"]["last_decision"]["item"]["id"] == str(legacy_decision["id"])
+        assert resume_before["brief"]["last_decision"]["id"] == committed_memory_id
+        assert resume_before["brief"]["filters_ignored"] == ["thread_id"]
 
         prefetch_before = _call_tool(
             client,
@@ -380,7 +382,10 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
                 "max_open_loops": 5,
             },
         )
-        assert resume_after["brief"]["last_decision"]["item"]["id"] == replacement_id
+        # The correction above exercises the explicitly enabled legacy
+        # surface. Core resume remains canonical vNext and therefore keeps
+        # returning the vNext decision committed at the start of the test.
+        assert resume_after["brief"]["last_decision"]["id"] == committed_memory_id
 
         rejected = _call_tool(
             client,

@@ -92,17 +92,27 @@ order — never what was retrieved or ranked:
 | `contradictions_first` | Contradiction records before everything else | Verification and consistency checks — contradictions survive even when the memories themselves get dropped. |
 | `sources_first` | Sources before memories | Citation-heavy, evidence-first workflows. |
 
-The pack's `budget` report shows where the budget went:
-`{token_budget, token_estimate, truncated, dropped_item_count, strategy,
-allocation}`, where `allocation` is per-section token estimates
-(`relevant_memories`, `open_loops`, `sources`, `supporting_evidence`,
-`contradicting_evidence`) that always sum to `token_estimate`.
+The pack's `budget` report shows where the content budget went and also
+reports `serialized_token_estimate`. `allocation` covers memories, loops,
+sources, evidence, contradictions, recent changes, supersession context,
+entities, grounding, derived values, and item annotations; the report's
+`excluded_sections` names diagnostic and duplicate navigation views outside
+the unique-content budget. `max_tokens` is therefore not a transport cap.
 
 `context_depth` and `budget_strategy` are fields on the context-pack
 request across the service surfaces; the matching `alice_context_pack` MCP
 tool arguments land in the same release — check the server's `tools/list`
 response (the source of truth for input schemas) before passing them, and
 keep tool payloads generic otherwise.
+
+The compact MCP result reports `serialized_token_estimate` for that exact
+compact tool payload. When the compiler also supplied complete-envelope
+accounting, the MCP result preserves it separately as
+`full_pack_serialized_token_estimate` (and
+`full_pack_excluded_token_estimate`) rather than presenting it as the size of
+the smaller response. Temporal `derived_values` are retained because source
+event times can contribute to them and compact memory rows alone cannot
+reconstruct those values.
 
 ### Retrieval configuration (env)
 
@@ -116,6 +126,11 @@ run at all and makes zero network calls.
 | --- | --- | --- | --- |
 | `ALICE_EMBEDDINGS_BASE_URL`, `ALICE_EMBEDDINGS_MODEL`, optional `ALICE_EMBEDDINGS_API_KEY` | Vector search (hybrid recall) | Full-text-only retrieval; trace `vector_stage` says `disabled: no embedding provider configured`. | Query and memory embeddings via any OpenAI-compatible `/embeddings` endpoint (Ollama, LM Studio, vLLM, OpenAI); vector results join rank fusion. |
 | `ALICE_RERANKER_BASE_URL`, `ALICE_RERANKER_MODEL`, optional `ALICE_RERANKER_API_KEY` | Rerank (precision) | Dormant: fused order stands, zero provider calls, no `reranker` trace stage — packs are byte-identical to the fusion-only path. | Provider-side listwise relevance scoring of the fused candidate head (up to 48 memories + 24 sources per pack) via any OpenAI-compatible `/chat/completions` endpoint, reordering candidates before slots and token budget are spent. |
+
+Vectors are stamped with provider, model, content digest, and signature
+version. After upgrading from an unsigned-vector release or changing models,
+run `alicebot vnext memories backfill-embeddings` for PostgreSQL or
+`alice-memory reindex-embeddings` for the local SQLite on-ramp.
 
 Reranker guarantees, in the order they matter:
 
@@ -185,10 +200,10 @@ The body field is `canonical_text` — the same field name as the
 Rules:
 
 - With a valid key, `agent_id` and `permission_profile` come from the key record, not the payload. A payload may claim a lower profile (downgrade), but claiming a different `agent_id` or a higher profile is rejected with `403` and logged as `agent.key_escalation_rejected`.
-- Fresh local installs keep working without keys: while a user has no active keys, keyless agent calls fall back to the self-asserted identity and are audited with `auth: "unauthenticated_local"`.
-- The moment at least one active key exists, keyless agent calls are rejected with `401` until the key is passed as `Authorization: Bearer alice_sk_...`.
+- Fresh local installs keep working without keys: while a user has no active keys, keyless local human and agent calls remain available; self-asserted agents are audited with `auth: "unauthenticated_local"`.
+- The moment at least one active key exists, every protected `/v0/vnext` request requires `Authorization: Bearer alice_sk_...`, including requests that omit agent identity fields. Bare keys are rejected.
 - Manage keys with `alicebot agent keys list` (prefixes only, never hashes) and `alicebot agent keys revoke <key-prefix-or-id>`.
-- MCP servers bind a key the same way: set `ALICE_AGENT_API_KEY` in the MCP server env.
+- MCP servers bind a key by setting `ALICE_AGENT_API_KEY` in the server env. Key-bound MCP runs fail closed to the eleven core tools: legacy tools are neither listed nor callable, even if `ALICE_MCP_LEGACY_TOOLS=1` is also set.
 
 ## Scopes
 
@@ -218,13 +233,18 @@ alicebot agent keys create --agent-id openclaw --profile project_scoped_agent \
 ```
 
 When a key carries `--project-scope`, the resolved identity's project scope
-comes from the key record. A payload may narrow the scope to a subset but
-never widen it — widening is rejected with `403` and audited as
-`agent.key_escalation_rejected` (reason `project_scope_escalation`), the
-same pattern as permission-profile escalation. Write actions that carry a
-`project_id` outside the bound scope are blocked by policy with reason
+comes from the key record. Omitting a project filter inherits the complete
+binding; an explicit filter may narrow to a subset but never widen it.
+Every read and write is checked, including sources, open loops, recent
+changes, evidence, and supersession context. Lifecycle operations authorize
+the persisted target's project rather than trusting a project supplied by
+the caller. Violations are blocked and audited with
 `project_scope_binding_violation`. Keys issued without `--project-scope`
-keep the previous behavior: the payload's `project_scope` is honored as-is.
+keep the prior behavior: the payload's explicit project scope is honored.
+
+`read_only_agent` cannot write. `memory_proposal_agent` can submit a
+review-only proposal but cannot approve, correct, forget, redact, or otherwise
+mutate an existing resource.
 
 ## Explicit Memory Commits
 

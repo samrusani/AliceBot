@@ -106,7 +106,7 @@ The core MCP surface is eleven tools:
 - `alice_memory_commit` — write an explicit "remember this" memory through policy: committed, confirmation-required, review-required, or rejected
 - `alice_recall` — search memory (full-text plus vector, fused ranking; filterable by memory type and project)
 - `alice_resume` — resumption brief for a project or thread
-- `alice_context_pack` — scoped context bundle for a task, with an enforced token budget
+- `alice_context_pack` — project/person/time-scoped context for a task, with a bounded unique-content budget and a complete serialized-size estimate
 - `alice_open_loops` — list and manage open loops
 - `alice_recent_decisions` — recent decision log
 - `alice_memory_review` — inspect items pending review
@@ -116,7 +116,7 @@ The core MCP surface is eleven tools:
 
 Calling directly from a human client (Claude Desktop, an IDE)? `alice_memory_commit` needs only `title` and `canonical_text` — no identity fields. Agent integrations declare `agent_id` and `agent_type`; see [docs/alpha/agent-integration.md](docs/alpha/agent-integration.md).
 
-The write verbs follow one contract — outcomes, audit guarantees, and honest boundaries per verb are documented in the [Memory Operations Protocol](docs/memory-operations-protocol.md). The legacy long-tail tool surface stays available behind `ALICE_MCP_LEGACY_TOOLS=1` for existing integrations.
+The write verbs follow one contract — outcomes, audit guarantees, and honest boundaries per verb are documented in the [Memory Operations Protocol](docs/memory-operations-protocol.md). The legacy long-tail tool surface stays available for unauthenticated local operator compatibility behind `ALICE_MCP_LEGACY_TOOLS=1`; a server bound with `ALICE_AGENT_API_KEY` exposes only the policy-complete core surface.
 
 Custom agents calling the HTTP API authenticate with per-agent API keys. See [docs/alpha/agent-integration.md](docs/alpha/agent-integration.md).
 
@@ -149,7 +149,10 @@ Alice is pre-1.0. What that means in practice:
 - [MCP tools](docs/alpha/mcp-tools.md)
 - [Custom agent guide](docs/alpha/custom-agent-guide.md)
 - [Known limitations](docs/alpha/known-limitations.md)
+- [Backup and restore](docs/alpha/backup-and-restore.md)
 - [Security and privacy](docs/alpha/security-and-privacy.md)
+- [v0.9.2 release-candidate notes](docs/release/v0.9.2-release-notes.md)
+- [Release procedure](RELEASING.md)
 - [Architecture](ARCHITECTURE.md)
 - [Roadmap](ROADMAP.md)
 - [Changelog](CHANGELOG.md)

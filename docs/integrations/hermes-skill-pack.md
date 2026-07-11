@@ -22,7 +22,7 @@ Skills:
 |---|---|
 | `alice-continuity-recall` | `alice_recall`, `alice_recent_decisions` |
 | `alice-resumption` | `alice_resume`, `alice_context_pack` |
-| `alice-open-loop-review` | `alice_open_loops`, `alice_recent_changes` (legacy, needs `ALICE_MCP_LEGACY_TOOLS=1`) |
+| `alice-open-loop-review` | `alice_open_loops`; optional `alice_recent_changes` is keyless-local legacy compatibility (`ALICE_MCP_LEGACY_TOOLS=1`) |
 | `alice-explain-provenance` | `alice_context_pack`, `alice_recall` |
 | `alice-correction-loop` | `alice_memory_review`, `alice_memory_correct`, `alice_recall`/`alice_resume` |
 

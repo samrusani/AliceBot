@@ -2,7 +2,7 @@
 
 Use this instruction block in Hermes when Alice is available.
 
-Note: the explicit `alice_vnext_*` MCP tools referenced below (commit, confirm, ingest) are on the legacy MCP surface and require `ALICE_MCP_LEGACY_TOOLS=1` on the Alice MCP server. The default surface is the nine core tools in [mcp-tools.md](mcp-tools.md).
+Note: the explicit `alice_vnext_*` MCP tools referenced below (commit, confirm, ingest) are keyless-local legacy compatibility only and require `ALICE_MCP_LEGACY_TOOLS=1`. A server bound with `ALICE_AGENT_API_KEY` hides and rejects them; authenticated integrations use the eleven core tools in [mcp-tools.md](mcp-tools.md).
 
 ```text
 You are connected to Alice, the user's local-first memory and continuity layer.

@@ -2,8 +2,262 @@ from __future__ import annotations
 
 from alembic import command
 import psycopg
+from psycopg.rows import dict_row
+import pytest
 
 from alicebot_api.migrations import make_alembic_config
+from alicebot_api.vnext_store import PostgresVNextStore
+
+
+def test_vnext_kernel_upgrade_backfills_data_bearing_append_only_revisions(database_urls):
+    """A real pre-vNext row must survive 0066 -> 0067.
+
+    Revision 0004 installs the append-only trigger, while 0067 has to update
+    those same legacy rows to populate the vNext revision columns. This is the
+    data-bearing upgrade path that an empty-schema migration smoke cannot
+    exercise.
+    """
+    config = make_alembic_config(database_urls["admin"])
+    user_id = "00000000-0000-0000-0000-000000000101"
+    memory_id = "00000000-0000-0000-0000-000000000102"
+    revision_id = "00000000-0000-0000-0000-000000000103"
+
+    command.upgrade(config, "20260416_0066")
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (id, email, display_name) VALUES (%s, %s, %s)",
+                (user_id, "vnext-upgrade@example.com", "vNext Upgrade"),
+            )
+            cur.execute(
+                """
+                INSERT INTO memories (
+                  id, user_id, memory_key, value, status, source_event_ids
+                )
+                VALUES (%s, %s, 'upgrade.seed', '{"text":"before"}'::jsonb,
+                        'active', '[]'::jsonb)
+                """,
+                (memory_id, user_id),
+            )
+            cur.execute(
+                """
+                INSERT INTO memory_revisions (
+                  id, user_id, memory_id, sequence_no, action, memory_key,
+                  previous_value, new_value, source_event_ids, candidate
+                )
+                VALUES (
+                  %s, %s, %s, 1, 'ADD', 'upgrade.seed', NULL,
+                  '{"text":"before"}'::jsonb, '[]'::jsonb, '{}'::jsonb
+                )
+                """,
+                (revision_id, user_id, memory_id),
+            )
+
+    command.upgrade(config, "20260510_0067")
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT revision_number, revision_type, text_before, text_after
+                FROM memory_revisions
+                WHERE id = %s
+                """,
+                (revision_id,),
+            )
+            assert cur.fetchone() == (
+                1,
+                "created",
+                None,
+                '{"text": "before"}',
+            )
+            cur.execute(
+                """
+                SELECT tgname
+                FROM pg_trigger
+                WHERE tgrelid = 'memory_revisions'::regclass
+                  AND NOT tgisinternal
+                """
+            )
+            assert cur.fetchall() == [("memory_revisions_append_only",)]
+
+        with pytest.raises(psycopg.errors.RaiseException, match="memory revisions are append-only"):
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE memory_revisions SET reason = 'must fail' WHERE id = %s",
+                    (revision_id,),
+                )
+
+
+def test_lifecycle_invariant_upgrade_canonicalizes_retry_ids_and_installs_edge_trigger(database_urls):
+    config = make_alembic_config(database_urls["admin"])
+    user_id = "00000000-0000-0000-0000-000000000111"
+    first_id = "00000000-0000-0000-0000-000000000112"
+    second_id = "00000000-0000-0000-0000-000000000113"
+    edge_id = "00000000-0000-0000-0000-000000000114"
+    command.upgrade(config, "20260707_0082")
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (id, email, display_name) VALUES (%s, %s, %s)",
+                (user_id, "lifecycle-upgrade@example.com", "Lifecycle Upgrade"),
+            )
+            for memory_id, key, created_at in (
+                (first_id, "retry.first", "2026-01-01T00:00:00Z"),
+                (second_id, "retry.second", "2026-01-02T00:00:00Z"),
+            ):
+                cur.execute(
+                    """
+                    INSERT INTO memories (
+                      id, user_id, memory_key, value, status, source_event_ids,
+                      memory_type, canonical_text, commit_digest,
+                      confirmation_id, metadata_json, created_at, updated_at
+                    )
+                    VALUES (
+                      %s, %s, %s, '{"text":"same retry"}'::jsonb, 'active',
+                      '[]'::jsonb, 'semantic', 'Same retry', 'duplicate-digest',
+                      'duplicate-confirmation',
+                      '{"agentic_memory":{"idempotency_key":"duplicate-digest","confirmation":{"confirmation_id":"duplicate-confirmation"}}}'::jsonb,
+                      %s::timestamptz, %s::timestamptz
+                    )
+                    """,
+                    (memory_id, user_id, key, created_at, created_at),
+                )
+            cur.execute(
+                """
+                INSERT INTO graph_edges (
+                  id, user_id, from_type, from_id, to_type, to_id,
+                  edge_type, created_by
+                )
+                VALUES (%s, %s, 'memory', %s, 'entity', %s, 'mentions', 'test')
+                """,
+                (edge_id, user_id, first_id, "00000000-0000-0000-0000-000000000115"),
+            )
+
+    command.upgrade(config, "20260711_0083")
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id::text, commit_digest, confirmation_id, metadata_json
+                FROM memories
+                WHERE id IN (%s, %s)
+                ORDER BY created_at, id
+                """,
+                (first_id, second_id),
+            )
+            rows = cur.fetchall()
+            assert rows[0][0:3] == (first_id, "duplicate-digest", "duplicate-confirmation")
+            assert rows[1][0:3] == (second_id, None, None)
+            assert rows[1][3]["lifecycle_migration"][
+                "duplicate_commit_digest_canonical_memory_id"
+            ] == first_id
+            cur.execute(
+                "UPDATE memories SET canonical_text = 'Changed text' WHERE id = %s",
+                (first_id,),
+            )
+            cur.execute("SELECT valid_to IS NOT NULL FROM graph_edges WHERE id = %s", (edge_id,))
+            assert cur.fetchone() == (True,)
+
+
+def test_lifecycle_upgrade_promotes_and_reads_legacy_nested_multi_project_scope(database_urls):
+    config = make_alembic_config(database_urls["admin"])
+    user_id = "00000000-0000-0000-0000-000000000121"
+    memory_id = "00000000-0000-0000-0000-000000000122"
+    canonical_memory_id = "00000000-0000-0000-0000-000000000123"
+    command.upgrade(config, "20260707_0082")
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (id, email, display_name) VALUES (%s, %s, %s)",
+                (user_id, "legacy-scope@example.com", "Legacy Scope"),
+            )
+            cur.execute(
+                """
+                INSERT INTO memories (
+                  id, user_id, memory_key, value, status, source_event_ids,
+                  memory_type, canonical_text, domain, sensitivity, metadata_json
+                )
+                VALUES (
+                  %s, %s, 'legacy.nested.scope', '{}'::jsonb, 'active',
+                  '[]'::jsonb, 'semantic', 'Legacy nested scope memory',
+                  'project', 'internal',
+                  '{"agentic_memory":{"project_scope":[" alicebot ","hermes","alicebot"]}}'::jsonb
+                )
+                """,
+                (memory_id, user_id),
+            )
+            cur.execute(
+                """
+                INSERT INTO memories (
+                  id, user_id, memory_key, value, status, source_event_ids,
+                  memory_type, canonical_text, domain, sensitivity, project_id,
+                  metadata_json
+                )
+                VALUES (
+                  %s, %s, 'canonical.scope', '{}'::jsonb, 'active',
+                  '[]'::jsonb, 'semantic', 'Legacy nested scope canonical guard',
+                  'project', 'internal', 'alicebot',
+                  '{"project_scope":["alicebot"],"agentic_memory":{"project_scope":["alicebot","hermes"]}}'::jsonb
+                )
+                """,
+                (canonical_memory_id, user_id),
+            )
+
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        legacy_store = PostgresVNextStore(conn)
+        legacy_row = legacy_store.get_memory(memory_id)
+        assert legacy_row is not None
+        assert legacy_row["project_scope"] == ["alicebot", "hermes"]
+        assert [
+            str(row["id"])
+            for row in legacy_store.search_memories(
+                query="legacy nested scope",
+                projects=("hermes",),
+            )
+        ] == [memory_id]
+
+    command.upgrade(config, "20260711_0083")
+
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT project_id, metadata_json FROM memories WHERE id = %s",
+                (memory_id,),
+            )
+            persisted = cur.fetchone()
+            assert persisted is not None
+            assert persisted["project_id"] is None
+            assert persisted["metadata_json"]["project_scope"] == ["alicebot", "hermes"]
+            cur.execute(
+                "SELECT metadata_json FROM memories WHERE id = %s",
+                (canonical_memory_id,),
+            )
+            canonical_persisted = cur.fetchone()
+            assert canonical_persisted is not None
+            assert canonical_persisted["metadata_json"]["project_scope"] == ["alicebot"]
+
+        store = PostgresVNextStore(conn)
+        upgraded = store.get_memory(memory_id)
+        assert upgraded is not None
+        assert upgraded["project_scope"] == ["alicebot", "hermes"]
+        assert [
+            str(row["id"])
+            for row in store.search_memories(
+                query="legacy nested scope",
+                projects=("hermes",),
+            )
+        ] == [memory_id]
+        assert (
+            store.search_memories(
+                query="legacy nested scope",
+                projects=("unrelated",),
+            )
+            == []
+        )
 
 
 def test_tool_execution_task_step_linkage_migration_backfills_existing_rows(database_urls):

@@ -22,6 +22,7 @@ import random
 import time
 from typing import Sequence
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 
@@ -42,6 +43,24 @@ class ChatCompletionError(RuntimeError):
     """Raised when the chat endpoint fails after all retries."""
 
 
+def redacted_base_url(value: str) -> str:
+    """Endpoint identity without credentials, query tokens, or fragments."""
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        if not parsed.scheme or hostname is None:
+            raise ValueError("endpoint must be an absolute URL")
+        host = f"[{hostname}]" if ":" in hostname else hostname
+        netloc = f"{host}:{parsed.port}" if parsed.port is not None else host
+        return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+    except ValueError:
+        # Keep malformed/local adapter strings attributable without exposing
+        # their content in an evidence artifact.
+        import hashlib
+
+        return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()[:16]}"
+
+
 @dataclass(frozen=True, slots=True)
 class ChatModelConfig:
     base_url: str
@@ -54,10 +73,10 @@ class ChatModelConfig:
     def redacted(self) -> dict[str, object]:
         """Config for reports: never includes the API key."""
         return {
-            "base_url": self.base_url,
+            "base_url": redacted_base_url(self.base_url),
             "model": self.model,
             "api_key_configured": self.api_key is not None,
-        }
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +144,15 @@ def chat_completion(
     temperature: float = 0.0,
     max_tokens: int | None = None,
 ) -> ChatCompletionResult:
+    safe_base_url = redacted_base_url(config.base_url)
+
+    def sanitized_error_text(value: object) -> str:
+        text = str(value)
+        # urllib exceptions and provider error bodies can echo the configured
+        # endpoint. Never let URL userinfo, query tokens, or fragments reach a
+        # checkpoint through the runner's generic exception serialization.
+        return text.replace(config.base_url, safe_base_url)
+
     body: dict[str, object] = {
         "model": config.model,
         "messages": list(messages),
@@ -157,11 +185,13 @@ def chat_completion(
                 retries=attempt,
             )
         except HTTPError as exc:
-            last_error = f"HTTP {exc.code} from {config.base_url}"
+            last_error = f"HTTP {exc.code} from {safe_base_url}"
             if exc.code not in _RETRYABLE_HTTP_CODES or attempt == config.max_retries:
                 detail = ""
                 try:
-                    detail = exc.read().decode("utf-8", errors="replace")[:500]
+                    detail = sanitized_error_text(
+                        exc.read().decode("utf-8", errors="replace")[:500]
+                    )
                 except OSError:  # pragma: no cover - best-effort error body
                     pass
                 raise ChatCompletionError(f"{last_error}: {detail}") from exc
@@ -172,7 +202,7 @@ def chat_completion(
             )
             time.sleep(delay)
         except (URLError, TimeoutError, json.JSONDecodeError) as exc:
-            last_error = f"chat request failed: {exc}"
+            last_error = f"chat request to {safe_base_url} failed: {sanitized_error_text(exc)}"
             if attempt == config.max_retries:
                 raise ChatCompletionError(last_error) from exc
             time.sleep(_retry_delay_seconds(attempt, base=config.retry_base_seconds, retry_after=None))
@@ -193,4 +223,5 @@ __all__ = [
     "judge_config_from_env",
     "model_config_from_env",
     "parse_chat_completion_payload",
+    "redacted_base_url",
 ]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from dataclasses import replace
 from datetime import UTC, datetime
 import hmac
 import hashlib
@@ -18,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from fastapi.responses import JSONResponse
 import psycopg
 from psycopg.rows import dict_row
+from starlette.routing import Match
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 try:
     import redis
@@ -28,6 +30,7 @@ except Exception:  # pragma: no cover - optional dependency for local-only test 
     class RedisError(Exception):
         """Fallback Redis error used when redis package is unavailable."""
 
+from alicebot_api import __version__
 from alicebot_api.compiler import compile_and_persist_trace, compile_resumption_brief
 from alicebot_api.config import Settings, get_settings
 from alicebot_api.continuity_brief import (
@@ -470,12 +473,13 @@ from alicebot_api.vnext_agent_control import (
     agent_metadata,
     append_policy_events,
     evaluate_agent_policy,
+    resource_project_scope,
     summarize_agent_policy_telemetry,
 )
 from alicebot_api.vnext_agent_keys import (
     AgentKeyAuthenticationError,
     agent_key_from_authorization,
-    resolve_agent_identity,
+    resolve_protected_agent_identity,
 )
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService, VNextBrainValidationError
 from alicebot_api.vnext_capture import VNextCaptureService, VNextCaptureValidationError
@@ -502,6 +506,7 @@ from alicebot_api.mcp_tools import redact_memory_flow
 from alicebot_api.vnext_memory_commit import (
     VNextMemoryCommitService,
     VNextMemoryCommitValidationError,
+    is_pending_consolidation_candidate,
     memory_commit_request_from_payload,
 )
 from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
@@ -831,7 +836,7 @@ from alicebot_api.traces import (
 LOGGER = logging.getLogger(__name__)
 
 
-app = FastAPI(title="AliceBot API", version="0.5.1")
+app = FastAPI(title="AliceBot API", version=__version__)
 provider_adapter_registry = make_provider_adapter_registry()
 HealthStatus = Literal["ok", "degraded"]
 ServiceStatus = Literal["ok", "unreachable", "not_checked"]
@@ -1897,7 +1902,7 @@ def _vnext_authenticated_agent_identity(
     payload = request.model_dump(mode="json")
     if payload.get("agent_identity") is None and isinstance(payload.get("agent"), dict):
         payload["agent_identity"] = payload["agent"]
-    return resolve_agent_identity(
+    return resolve_protected_agent_identity(
         store,
         user_id=user_id,
         raw_key=agent_key_from_authorization(authorization),
@@ -1919,6 +1924,199 @@ def _vnext_permission_response(decision: PolicyDecision) -> JSONResponse:
             }
         ),
     )
+
+
+_VNEXT_ROUTE_LOCAL_POLICY = frozenset(
+    {
+        ("POST", "/v0/vnext/sources"),
+        ("POST", "/v0/vnext/agents/ingest-output"),
+        ("POST", "/v0/vnext/artifacts/{artifact_id}/insight-feedback"),
+        ("GET", "/v0/vnext/artifacts/{artifact_id}"),
+        ("GET", "/v0/vnext/traces/artifacts/{artifact_id}"),
+        ("POST", "/v0/vnext/artifacts/{artifact_id}/export"),
+        ("POST", "/v0/vnext/context-packs"),
+        ("POST", "/v0/vnext/memories/{memory_id}/review"),
+        ("POST", "/v0/vnext/memory-proposals"),
+        ("POST", "/v0/vnext/memories/commit"),
+        ("POST", "/v0/vnext/memories/confirm"),
+        ("POST", "/v0/vnext/memories/undo"),
+        ("POST", "/v0/vnext/memories/correct"),
+        ("POST", "/v0/vnext/memories/forget"),
+        ("POST", "/v0/vnext/memories/expire"),
+        ("POST", "/v0/vnext/memories/unexpire"),
+        ("POST", "/v0/vnext/memories/accept-consolidation"),
+        ("POST", "/v0/vnext/memories/redact"),
+        ("POST", "/v0/vnext/artifacts/generate/daily-brief"),
+        ("POST", "/v0/vnext/artifacts/generate/weekly-synthesis"),
+        ("POST", "/v0/vnext/artifacts/generate/connections"),
+        ("POST", "/v0/vnext/artifacts/generate/contradictions"),
+        ("POST", "/v0/vnext/queue/tasks"),
+        ("POST", "/v0/vnext/artifacts/{artifact_id}/review"),
+        ("POST", "/v0/vnext/artifacts/{artifact_id}/quality-ratings"),
+        ("POST", "/v0/vnext/projects/update-candidates"),
+        ("POST", "/v0/vnext/open-loops"),
+        ("PATCH", "/v0/vnext/scheduler/workflows/{workflow_type}"),
+        ("POST", "/v0/vnext/scheduler/workflows/{workflow_type}/run-now"),
+        ("POST", "/v0/vnext/scheduler/run-due"),
+        ("POST", "/v0/vnext/scheduler/pause"),
+        ("POST", "/v0/vnext/scheduler/resume"),
+        ("POST", "/v0/vnext/open-loops/{loop_id}/review"),
+    }
+)
+
+# Routes without a target/scope-specific policy are the operator-console
+# surface.  Keep this inventory explicit: adding a route without classifying
+# it must fail closed at runtime and fail the route-inventory regression.
+_VNEXT_CENTRAL_OPERATOR_ROUTES = frozenset(
+    {
+        ("DELETE", "/v0/vnext/sources/{source_id}"),
+        ("GET", "/v0/vnext/agents/policy-telemetry"),
+        ("GET", "/v0/vnext/artifacts"),
+        ("GET", "/v0/vnext/beliefs/{belief_id}/state"),
+        ("GET", "/v0/vnext/connectors"),
+        ("GET", "/v0/vnext/connectors/health"),
+        ("GET", "/v0/vnext/connectors/{connector_name}/status"),
+        ("GET", "/v0/vnext/context-tree"),
+        ("GET", "/v0/vnext/doctor"),
+        ("GET", "/v0/vnext/dogfooding"),
+        ("GET", "/v0/vnext/graph/neighborhood/{target_id}"),
+        ("GET", "/v0/vnext/memories/recent-commits"),
+        ("GET", "/v0/vnext/memories/{memory_id}/audit"),
+        ("GET", "/v0/vnext/projects"),
+        ("GET", "/v0/vnext/projects/{project_id}/dashboard"),
+        ("GET", "/v0/vnext/quality-evals"),
+        ("GET", "/v0/vnext/scheduler/failures"),
+        ("GET", "/v0/vnext/scheduler/runs"),
+        ("GET", "/v0/vnext/scheduler/status"),
+        ("GET", "/v0/vnext/settings/brain-charter"),
+        ("GET", "/v0/vnext/sources/{source_id}"),
+        ("GET", "/v0/vnext/traces/sources/{source_id}"),
+        ("GET", "/v0/vnext/workspace"),
+        ("PATCH", "/v0/vnext/connectors/{connector_name}/config"),
+        ("POST", "/v0/vnext/beliefs/{belief_id}/review"),
+        ("POST", "/v0/vnext/connectors/browser-clipper/capture"),
+        ("POST", "/v0/vnext/connectors/local-folder/sync"),
+        ("POST", "/v0/vnext/connectors/telegram/sync"),
+        ("POST", "/v0/vnext/connectors/{connector_name}/sync"),
+        ("POST", "/v0/vnext/doctor/run"),
+        ("POST", "/v0/vnext/graph/edges/{edge_id}/review"),
+        ("POST", "/v0/vnext/open-loops/extract"),
+        ("POST", "/v0/vnext/projects"),
+        ("POST", "/v0/vnext/projects/update-candidates/{artifact_id}/review"),
+        ("POST", "/v0/vnext/queue/process-next"),
+        ("POST", "/v0/vnext/sources/{source_id}/review"),
+        ("PUT", "/v0/vnext/settings/brain-charter"),
+    }
+)
+
+
+def _matched_vnext_route_path(request: Request) -> str:
+    for route in app.router.routes:
+        match, _child_scope = route.matches(request.scope)
+        if match is Match.FULL:
+            return str(getattr(route, "path", request.url.path))
+    return request.url.path
+
+
+def _vnext_central_route_policy(
+    *,
+    identity: AgentIdentity | None,
+    method: str,
+    route_path: str,
+) -> PolicyDecision | None:
+    """Authorize one classified local-policy or central-operator route."""
+
+    route_key = (method.upper(), route_path)
+    if route_key in _VNEXT_ROUTE_LOCAL_POLICY:
+        return None
+    if route_key not in _VNEXT_CENTRAL_OPERATOR_ROUTES:
+        return PolicyDecision(
+            decision="blocked",
+            action="http.route.unclassified",
+            permission_profile=(
+                identity.permission_profile if identity is not None else "user_or_system"
+            ),
+            reasons=("vnext_route_not_classified",),
+        )
+    if identity is None:
+        # Zero-key local installs retain their explicit human/operator path.
+        return None
+    return evaluate_agent_policy(identity=identity, action="http.operator.access")
+
+
+async def _vnext_protected_http_auth(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    """Authenticate the complete protected ``/v0/vnext`` route surface."""
+
+    if not request.url.path.startswith("/v0/vnext"):
+        return await call_next(request)
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    payload: dict[str, object] = {}
+    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        try:
+            candidate = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            candidate = None
+        if isinstance(candidate, dict):
+            payload = candidate
+
+    query_user_id = request.query_params.get("user_id")
+    body_user_id = payload.get("user_id")
+    if query_user_id is not None and body_user_id is not None and str(body_user_id) != query_user_id:
+        return _vnext_public_error_response(
+            status_code=400,
+            detail="vNext user_id values do not match",
+        )
+    raw_user_id = body_user_id if body_user_id is not None else query_user_id
+    if raw_user_id is None:
+        return _vnext_public_error_response(
+            status_code=400,
+            detail="protected vNext requests require user_id",
+        )
+    try:
+        user_id = UUID(str(raw_user_id))
+    except ValueError:
+        return _vnext_public_error_response(status_code=400, detail="vNext user_id is invalid")
+
+    try:
+        settings = get_settings()
+        with user_connection(settings.database_url, user_id) as conn:
+            store = PostgresVNextStore(conn)
+            identity = resolve_protected_agent_identity(
+                store,
+                user_id=user_id,
+                raw_key=agent_key_from_authorization(request.headers.get("authorization")),
+                payload=payload,
+            )
+            route_path = _matched_vnext_route_path(request)
+            route_decision = _vnext_central_route_policy(
+                identity=identity,
+                method=request.method,
+                route_path=route_path,
+            )
+            if route_decision is not None and route_decision.decision == "blocked":
+                append_policy_events(
+                    store,
+                    identity=identity,
+                    decision=route_decision,
+                    target_type="http_route",
+                    target_id=route_path,
+                )
+                return _vnext_permission_response(route_decision)
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    request.state.vnext_agent_identity = identity
+    return await call_next(request)
+
+
+app.middleware("http")(_vnext_protected_http_auth)
 
 
 def _vnext_agent_actor(identity: AgentIdentity | None, *, fallback: str = "user") -> tuple[str, str | None]:
@@ -1957,6 +2155,7 @@ def _vnext_policy_checked(
     write_policy: str | None = None,
     target_type: str | None = None,
     target_id: str | None = None,
+    require_explicit_project_scope: bool = False,
 ) -> PolicyDecision:
     _vnext_agent_record(store, identity)
     decision = evaluate_agent_policy(
@@ -1967,9 +2166,85 @@ def _vnext_policy_checked(
         project_scope=project_scope,
         workflow_type=workflow_type,
         write_policy=write_policy,
+        require_explicit_project_scope=require_explicit_project_scope,
     )
     append_policy_events(store, identity=identity, decision=decision, target_type=target_type, target_id=target_id)
     return decision
+
+
+def _vnext_exact_resource_policy(
+    *,
+    identity: AgentIdentity | None,
+    action: str,
+    resource: dict[str, object],
+) -> PolicyDecision:
+    domain = " ".join(str(resource.get("domain") or "unknown").split()).strip() or "unknown"
+    sensitivity = (
+        " ".join(str(resource.get("sensitivity") or "unknown").split()).strip()
+        or "unknown"
+    )
+    decision = evaluate_agent_policy(
+        identity=identity,
+        action=action,
+        domains=(domain,),
+        sensitivity_allowed=(sensitivity,),
+        project_scope=resource_project_scope(resource),
+        require_explicit_project_scope=bool(
+            identity is not None and identity.project_scope_locked
+        ),
+    )
+    if decision.decision == "allowed_with_filtering":
+        decision = replace(
+            decision,
+            decision="blocked",
+            reasons=tuple(
+                dict.fromkeys((*decision.reasons, "exact_target_filtering_not_permitted"))
+            ),
+        )
+    return decision
+
+
+def _vnext_authorized_artifact(
+    *,
+    store: PostgresVNextStore,
+    identity: AgentIdentity | None,
+    artifact_id: str,
+    action: str,
+    for_update: bool,
+) -> tuple[dict[str, object], PolicyDecision]:
+    """Load and authorize a persisted artifact before any content is returned.
+
+    Side-effecting handlers lock the target first so the project/domain/
+    sensitivity attributes used for authorization remain stable through the
+    mutation.  A single artifact cannot be partially filtered: if policy
+    removes its domain or sensitivity, access is denied rather than returning
+    the unfiltered row.
+    """
+
+    artifact = (
+        store.get_artifact_for_update(artifact_id)
+        if for_update
+        else store.get_artifact(artifact_id)
+    )
+    if artifact is None:
+        raise VNextQueueNotFoundError(f"artifact {artifact_id} was not found")
+
+    _vnext_agent_record(store, identity)
+    decision = _vnext_exact_resource_policy(
+        identity=identity,
+        action=action,
+        resource=artifact,
+    )
+    append_policy_events(
+        store,
+        identity=identity,
+        decision=decision,
+        target_type="artifact",
+        target_id=artifact_id,
+    )
+    if decision.decision == "blocked":
+        raise AgentPolicyBlockedError(decision)
+    return artifact, decision
 
 
 def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
@@ -6696,8 +6971,10 @@ def ingest_vnext_agent_output(
                 target_id="agent_output",
                 write_policy="proposal_only" if request.propose_memory else None,
             )
+            ingest_payload = request.model_dump(mode="json")
+            ingest_payload["project_scope"] = list(decision.effective_project_scope)
             payload = VNextConnectorService(store).ingest_agent_output(
-                request.model_dump(mode="json"),
+                ingest_payload,
                 policy_decision=decision.to_record(),
             ).to_record()
     except AgentKeyAuthenticationError as exc:
@@ -6747,8 +7024,14 @@ def record_vnext_artifact_insight_feedback(
             identity = _vnext_authenticated_agent_identity(
                 store, request, user_id=request.user_id, authorization=authorization
             )
+            _artifact, _decision = _vnext_authorized_artifact(
+                store=store,
+                identity=identity,
+                artifact_id=str(artifact_id),
+                action="artifact.feedback",
+                for_update=True,
+            )
             actor_type, actor_id = _vnext_agent_actor(identity)
-            _vnext_agent_record(store, identity)
             payload = VNextDogfoodingService(store).record_insight_feedback(
                 artifact_id=str(artifact_id),
                 useful_insight=request.useful_insight,
@@ -6759,6 +7042,10 @@ def record_vnext_artifact_insight_feedback(
             )
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
+    except VNextQueueNotFoundError:
+        return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
     except ValueError:
         return _vnext_public_error_response(status_code=400, detail="vNext artifact insight feedback request is invalid")
     return JSONResponse(status_code=201, content=jsonable_encoder(payload))
@@ -6824,6 +7111,12 @@ def review_vnext_source(source_id: UUID, request: VNextSourceReviewRequest) -> J
         }
         if request.project_id is not None:
             metadata["project_id"] = request.project_id
+            if action == "assign_project":
+                # project_scope is the canonical, overlap-aware scope used by
+                # retrieval.  Replace it together with the singular legacy
+                # pointer so a reassignment cannot leave the source readable
+                # through its previous project.
+                metadata["project_scope"] = [request.project_id]
         patch: dict[str, object] = {"metadata_json": metadata}
         if request.title is not None:
             patch["title"] = request.title
@@ -6891,19 +7184,63 @@ def get_vnext_source_trace(source_id: UUID, user_id: UUID) -> JSONResponse:
 
 
 @app.get("/v0/vnext/traces/artifacts/{artifact_id}")
-def get_vnext_artifact_trace(artifact_id: UUID, user_id: UUID) -> JSONResponse:
+def get_vnext_artifact_trace(
+    artifact_id: UUID,
+    user_id: UUID,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
-    with user_connection(settings.database_url, user_id) as conn:
-        store = PostgresVNextStore(conn)
-        artifact = store.get_artifact(str(artifact_id))
-        if artifact is None:
-            return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
-        payload = _vnext_artifact_trace(
-            artifact=artifact,
-            sources=store.list_sources(limit=100),
-            quality_evals=store.list_artifact_quality_ratings(artifact_id=str(artifact_id), limit=100),
-            events=store.list_events(limit=100),
-        )
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            store = PostgresVNextStore(conn)
+            identity = resolve_protected_agent_identity(
+                store,
+                user_id=user_id,
+                raw_key=agent_key_from_authorization(authorization),
+                payload={},
+            )
+            artifact, _decision = _vnext_authorized_artifact(
+                store=store,
+                identity=identity,
+                artifact_id=str(artifact_id),
+                action="artifact.lookup",
+                for_update=False,
+            )
+            metadata = _vnext_metadata(artifact)
+            source_refs = _vnext_ref_values(metadata.get("source_refs")) + _vnext_ref_values(
+                metadata.get("source_ids")
+            )
+            authorized_sources: list[dict[str, object]] = []
+            for source in store.list_sources(limit=100):
+                source_id = str(source.get("id"))
+                if source_id not in source_refs and f"source:{source_id}" not in source_refs:
+                    continue
+                source_decision = _vnext_exact_resource_policy(
+                    identity=identity,
+                    action="artifact.lookup",
+                    resource=source,
+                )
+                append_policy_events(
+                    store,
+                    identity=identity,
+                    decision=source_decision,
+                    target_type="source",
+                    target_id=source_id,
+                )
+                if source_decision.decision != "blocked":
+                    authorized_sources.append(source)
+            payload = _vnext_artifact_trace(
+                artifact=artifact,
+                sources=authorized_sources,
+                quality_evals=store.list_artifact_quality_ratings(artifact_id=str(artifact_id), limit=100),
+                events=store.list_events(limit=100),
+            )
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
+    except VNextQueueNotFoundError:
+        return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
@@ -6989,7 +7326,7 @@ def create_vnext_context_pack(
                 VNextRetrievalRequest(
                     query=retrieval_request.query,
                     domains=decision.effective_domains,
-                    projects=retrieval_request.projects,
+                    projects=decision.effective_project_scope,
                     people=retrieval_request.people,
                     time_window=retrieval_request.time_window,
                     sensitivity_allowed=decision.effective_sensitivity_allowed,
@@ -7049,21 +7386,130 @@ def get_vnext_context_tree(
 
 
 @app.post("/v0/vnext/memories/{memory_id}/review")
-def review_vnext_memory(memory_id: UUID, request: VNextMemoryReviewRequest) -> JSONResponse:
+def review_vnext_memory(
+    memory_id: UUID,
+    request: VNextMemoryReviewRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     action = request.action.strip().casefold()
     if action not in {"accept", "edit", "reject", "private", "assign_project", "promote"}:
         return _vnext_public_error_response(status_code=400, detail="vNext memory review action is invalid")
 
+    try:
+        _vnext_agent_identity(request)
+        with user_connection(settings.database_url, request.user_id) as conn:
+            auth_store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                auth_store,
+                request,
+                user_id=request.user_id,
+                authorization=authorization,
+            )
+            target = auth_store.get_memory(str(memory_id))
+            if target is None:
+                return _vnext_public_error_response(status_code=404, detail="vNext memory was not found")
+            target_scope = resource_project_scope(target)
+            if action == "assign_project" and request.project_id is not None:
+                target_scope = tuple(dict.fromkeys((*target_scope, request.project_id)))
+            decision = _vnext_policy_checked(
+                store=auth_store,
+                identity=identity,
+                action="memory.review",
+                domains=(str(target.get("domain") or "unknown"),),
+                sensitivity_allowed=(str(target.get("sensitivity") or "unknown"),),
+                project_scope=target_scope,
+                target_type="memory",
+                target_id=str(memory_id),
+                require_explicit_project_scope=True,
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
+
+    actor_type, actor_id = _vnext_agent_actor(identity, fallback="user")
+
     with user_connection(settings.database_url, request.user_id) as conn:
         store = PostgresVNextStore(conn)
-        existing = store.get_memory(str(memory_id))
+        get_memory_for_update = getattr(store, "get_memory_for_update", None)
+        existing = (
+            get_memory_for_update(str(memory_id))
+            if callable(get_memory_for_update)
+            else store.get_memory(str(memory_id))
+        )
         if existing is None:
             return _vnext_public_error_response(status_code=404, detail="vNext memory was not found")
+        # Re-authorize the locked record so a concurrent reassignment cannot
+        # move it outside the bound agent project between the first check and
+        # this mutation.
+        locked_scope = resource_project_scope(existing)
+        if action == "assign_project" and request.project_id is not None:
+            locked_scope = tuple(dict.fromkeys((*locked_scope, request.project_id)))
+        locked_decision = _vnext_policy_checked(
+            store=store,
+            identity=identity,
+            action="memory.review",
+            domains=(str(existing.get("domain") or "unknown"),),
+            sensitivity_allowed=(str(existing.get("sensitivity") or "unknown"),),
+            project_scope=locked_scope,
+            target_type="memory",
+            target_id=str(memory_id),
+            require_explicit_project_scope=True,
+        )
+        if locked_decision.decision == "blocked":
+            return _vnext_permission_response(locked_decision)
+        if str(existing.get("status") or "") in {"archived", "rejected", "superseded"}:
+            return _vnext_public_error_response(
+                status_code=409,
+                detail=f"vNext memory cannot be reviewed from status '{existing.get('status')}'",
+            )
+        if is_pending_consolidation_candidate(existing):
+            if action == "edit" or any(
+                value is not None
+                for value in (
+                    request.title,
+                    request.canonical_text,
+                    request.summary,
+                    request.domain,
+                    request.sensitivity,
+                    request.project_id,
+                )
+            ):
+                return _vnext_public_error_response(
+                    status_code=400,
+                    detail=(
+                        "pending consolidation candidates cannot be edited during approval; "
+                        "regenerate the candidate or accept it unchanged"
+                    ),
+                )
+            if action in {"accept", "promote"}:
+                try:
+                    acceptance = VNextMemoryCommitService(store).accept_consolidation_candidate(
+                        str(memory_id),
+                        reason=request.reason or "Approved through vNext memory review.",
+                        identity=identity,
+                    )
+                except AgentPolicyBlockedError as exc:
+                    return _vnext_permission_response(exc.decision)
+                except VNextMemoryCommitValidationError as exc:
+                    return _vnext_public_error_response(status_code=400, detail=str(exc))
+                return JSONResponse(
+                    status_code=200,
+                    content=jsonable_encoder(
+                        {
+                            "memory": acceptance["memory"],
+                            "consolidation_acceptance": acceptance,
+                        }
+                    ),
+                )
 
         existing_metadata = existing.get("metadata_json") if isinstance(existing.get("metadata_json"), dict) else {}
+        reviewed_at = datetime.now(UTC).isoformat()
         patch: dict[str, object] = {
-            "last_reviewed_at": datetime.now(UTC).isoformat(),
+            "last_reviewed_at": reviewed_at,
         }
         revision_type = "edited"
         if action == "accept":
@@ -7082,13 +7528,39 @@ def review_vnext_memory(memory_id: UUID, request: VNextMemoryReviewRequest) -> J
         elif action == "assign_project":
             if request.project_id is None:
                 return _vnext_public_error_response(status_code=400, detail="project_id is required")
+            # Keep every current scope representation in the same UPDATE.  A
+            # metadata-only project_id write leaves an older project_scope in
+            # place, and canonical retrieval correctly gives that array
+            # precedence over the legacy singular fallback.
+            patch["project_id"] = request.project_id
             patch["metadata_json"] = {
                 **existing_metadata,
                 "project_id": request.project_id,
+                "project_scope": [request.project_id],
                 "assigned_from": "vnext_workspace",
             }
         else:
             patch["status"] = "active"
+
+        if action in {"accept", "edit", "promote"}:
+            accepted_metadata = {**existing_metadata, "review_required": False}
+            agentic_raw = accepted_metadata.get("agentic_memory")
+            if isinstance(agentic_raw, dict):
+                accepted_metadata["agentic_memory"] = {
+                    **agentic_raw,
+                    "status": "committed",
+                    "write_mode": "commit",
+                    "lifecycle_status": "dashboard_review_accepted",
+                    "confirmed_at": reviewed_at,
+                    "requires_dashboard_review": False,
+                }
+            patch.update(
+                {
+                    "confirmation_status": "confirmed",
+                    "last_confirmed_at": reviewed_at,
+                    "metadata_json": accepted_metadata,
+                }
+            )
 
         if request.title is not None:
             patch["title"] = request.title
@@ -7105,9 +7577,13 @@ def review_vnext_memory(memory_id: UUID, request: VNextMemoryReviewRequest) -> J
         if request.sensitivity is not None:
             patch["sensitivity"] = request.sensitivity
 
-        updated = store.update_memory(memory_id=str(memory_id), patch=patch, actor_type="user")
-        if action in ("accept", "promote"):
-            _link_reviewed_memory_entities(store, updated)
+        updated = store.update_memory(memory_id=str(memory_id), patch=patch, actor_type=actor_type)
+        if action in ("accept", "edit", "promote"):
+            VNextMemoryCommitService(store).refresh_memory_derived_state(
+                updated,
+                identity=identity,
+                stage=f"http_review_{action}",
+            )
         if action == "assign_project" and request.project_id is not None:
             store.create_edge(
                 {
@@ -7121,7 +7597,7 @@ def review_vnext_memory(memory_id: UUID, request: VNextMemoryReviewRequest) -> J
                     "created_by": "user",
                     "metadata_json": {"review_action": action},
                 },
-                actor_type="user",
+                actor_type=actor_type,
             )
         store.append_revision(
             {
@@ -7135,10 +7611,11 @@ def review_vnext_memory(memory_id: UUID, request: VNextMemoryReviewRequest) -> J
                 "text_before": existing.get("canonical_text"),
                 "text_after": str(updated.get("canonical_text", "")),
                 "reason": request.reason or f"vNext workspace memory review action: {action}",
-                "actor_type": "user",
+                "actor_type": actor_type,
+                "actor_id": actor_id,
                 "metadata_json": {"action": action, "project_id": request.project_id},
             },
-            actor_type="user",
+            actor_type=actor_type,
         )
         review_event = {
             "accept": "review.item_accepted",
@@ -7151,7 +7628,8 @@ def review_vnext_memory(memory_id: UUID, request: VNextMemoryReviewRequest) -> J
         append_event(
             store,
             event_type=review_event,
-            actor_type="user",
+            actor_type=actor_type,
+            actor_id=actor_id,
             target_type="memory",
             target_id=str(memory_id),
             payload={"action": action, "project_id": request.project_id},
@@ -7209,7 +7687,7 @@ def create_vnext_memory_proposal(
                 "proposal_id": proposal_id,
                 "proposal_type": request.proposal_type,
                 "source_refs": request.source_refs,
-                "project_scope": list(request.project_scope),
+                "project_scope": list(decision.effective_project_scope),
                 "rationale": request.rationale,
                 "review_required": True,
                 **agent_metadata(identity, decision),
@@ -7225,6 +7703,11 @@ def create_vnext_memory_proposal(
                         "rationale": request.rationale,
                     },
                     "status": "candidate",
+                    "project_id": (
+                        decision.effective_project_scope[0]
+                        if len(decision.effective_project_scope) == 1
+                        else None
+                    ),
                     "confidence": request.confidence,
                     "title": request.title,
                     "canonical_text": request.canonical_text,
@@ -7331,14 +7814,6 @@ def confirm_vnext_memory(
             identity = _vnext_authenticated_agent_identity(
                 store, request, user_id=request.user_id, authorization=authorization
             )
-            decision = _vnext_policy_checked(
-                store=store,
-                identity=identity,
-                action="memory.confirm",
-                project_scope=tuple(request.project_scope),
-            )
-            if decision.decision == "blocked":
-                return _vnext_permission_response(decision)
             payload = VNextMemoryCommitService(store).confirm(
                 identity=identity,
                 confirmation_id=request.confirmation_id,
@@ -7348,6 +7823,8 @@ def confirm_vnext_memory(
             )
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
     except VNextMemoryCommitValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
 
@@ -7371,14 +7848,6 @@ def undo_vnext_memory(
             identity = _vnext_authenticated_agent_identity(
                 store, request, user_id=request.user_id, authorization=authorization
             )
-            decision = _vnext_policy_checked(
-                store=store,
-                identity=identity,
-                action="memory.undo",
-                project_scope=tuple(request.project_scope),
-            )
-            if decision.decision == "blocked":
-                return _vnext_permission_response(decision)
             payload = VNextMemoryCommitService(store).undo(
                 identity=identity,
                 memory_id=str(request.memory_id) if request.memory_id is not None else None,
@@ -7386,6 +7855,8 @@ def undo_vnext_memory(
             )
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
     except VNextMemoryCommitValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
 
@@ -7409,14 +7880,6 @@ def correct_vnext_memory(
             identity = _vnext_authenticated_agent_identity(
                 store, request, user_id=request.user_id, authorization=authorization
             )
-            decision = _vnext_policy_checked(
-                store=store,
-                identity=identity,
-                action="memory.correct",
-                project_scope=tuple(request.project_scope),
-            )
-            if decision.decision == "blocked":
-                return _vnext_permission_response(decision)
             payload = VNextMemoryCommitService(store).correct(
                 identity=identity,
                 memory_id=str(request.memory_id),
@@ -7425,6 +7888,8 @@ def correct_vnext_memory(
             )
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
     except VNextMemoryCommitValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
 
@@ -7448,14 +7913,6 @@ def forget_vnext_memory(
             identity = _vnext_authenticated_agent_identity(
                 store, request, user_id=request.user_id, authorization=authorization
             )
-            decision = _vnext_policy_checked(
-                store=store,
-                identity=identity,
-                action="memory.forget",
-                project_scope=tuple(request.project_scope),
-            )
-            if decision.decision == "blocked":
-                return _vnext_permission_response(decision)
             payload = VNextMemoryCommitService(store).forget(
                 identity=identity,
                 memory_id=str(request.memory_id),
@@ -7463,6 +7920,8 @@ def forget_vnext_memory(
             )
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
     except VNextMemoryCommitValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
 
@@ -7591,23 +8050,17 @@ def redact_vnext_memory(
             identity = _vnext_authenticated_agent_identity(
                 store, request, user_id=request.user_id, authorization=authorization
             )
-            # Redaction has no commit-service seam, so the destructive-action
-            # policy (memory.redact: human or admin agent only) is checked
-            # here, mirroring the undo/forget endpoints.
-            decision = _vnext_policy_checked(
-                store=store,
-                identity=identity,
-                action="memory.redact",
-                project_scope=tuple(request.project_scope),
-            )
-            if decision.decision == "blocked":
-                return _vnext_permission_response(decision)
-            payload = redact_memory_flow(
-                store,
-                memory_id=str(request.memory_id),
-                reason=request.reason,
-                identity=identity,
-            )
+            if store.get_memory(str(request.memory_id)) is None:
+                return _vnext_public_error_response(status_code=404, detail="vNext memory was not found")
+            try:
+                payload = redact_memory_flow(
+                    store,
+                    memory_id=str(request.memory_id),
+                    reason=request.reason,
+                    identity=identity,
+                )
+            except AgentPolicyBlockedError as exc:
+                return _vnext_permission_response(exc.decision)
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except VNextMemoryCommitValidationError as exc:
@@ -7927,14 +8380,34 @@ def list_vnext_artifacts(user_id: UUID, artifact_type: str | None = None, limit:
 
 
 @app.get("/v0/vnext/artifacts/{artifact_id}")
-def get_vnext_artifact(artifact_id: UUID, user_id: UUID) -> JSONResponse:
+def get_vnext_artifact(
+    artifact_id: UUID,
+    user_id: UUID,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
-
-    with user_connection(settings.database_url, user_id) as conn:
-        payload = PostgresVNextStore(conn).get_artifact(str(artifact_id))
-
-    if payload is None:
-        return JSONResponse(status_code=404, content={"detail": f"vNext artifact {artifact_id} was not found"})
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            store = PostgresVNextStore(conn)
+            identity = resolve_protected_agent_identity(
+                store,
+                user_id=user_id,
+                raw_key=agent_key_from_authorization(authorization),
+                payload={},
+            )
+            payload, _decision = _vnext_authorized_artifact(
+                store=store,
+                identity=identity,
+                artifact_id=str(artifact_id),
+                action="artifact.lookup",
+                for_update=False,
+            )
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
+    except VNextQueueNotFoundError:
+        return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
 
     return JSONResponse(
         status_code=200,
@@ -7960,15 +8433,13 @@ def review_vnext_artifact(
             identity = _vnext_authenticated_agent_identity(
                 store, request, user_id=request.user_id, authorization=authorization
             )
-            decision = _vnext_policy_checked(
+            _artifact, _decision = _vnext_authorized_artifact(
                 store=store,
                 identity=identity,
+                artifact_id=str(artifact_id),
                 action="artifact.review",
-                target_type="artifact",
-                target_id=str(artifact_id),
+                for_update=True,
             )
-            if decision.decision == "blocked":
-                return _vnext_permission_response(decision)
             payload = VNextQueueService(store).review_artifact(
                 artifact_id=str(artifact_id),
                 action=request.action,
@@ -8009,18 +8480,13 @@ def rate_vnext_artifact_quality(
             identity = _vnext_authenticated_agent_identity(
                 store, request, user_id=request.user_id, authorization=authorization
             )
-            existing = store.get_artifact(str(artifact_id))
-            if existing is None:
-                return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
-            decision = _vnext_policy_checked(
+            existing, decision = _vnext_authorized_artifact(
                 store=store,
                 identity=identity,
-                action="artifact.review",
-                target_type="artifact",
-                target_id=str(artifact_id),
+                artifact_id=str(artifact_id),
+                action="artifact.feedback",
+                for_update=True,
             )
-            if decision.decision == "blocked":
-                return _vnext_permission_response(decision)
             actor_type, actor_id = _vnext_agent_actor(identity, fallback="user")
             payload = store.create_artifact_quality_rating(
                 {
@@ -8049,6 +8515,8 @@ def rate_vnext_artifact_quality(
             )
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
+    except VNextQueueNotFoundError:
+        return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -8090,12 +8558,27 @@ def list_vnext_quality_evals(user_id: UUID, artifact_id: UUID | None = None, lim
 
 
 @app.post("/v0/vnext/artifacts/{artifact_id}/export")
-def export_vnext_artifact(artifact_id: UUID, request: VNextArtifactExportRequest) -> JSONResponse:
+def export_vnext_artifact(
+    artifact_id: UUID,
+    request: VNextArtifactExportRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            output_path = VNextQueueService(PostgresVNextStore(conn)).export_artifact_markdown(
+            store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
+            _artifact, _decision = _vnext_authorized_artifact(
+                store=store,
+                identity=identity,
+                artifact_id=str(artifact_id),
+                action="artifact.export",
+                for_update=True,
+            )
+            output_path = VNextQueueService(store).export_artifact_markdown(
                 artifact_id=str(artifact_id),
                 output_dir=request.output_dir,
             )
@@ -8103,6 +8586,10 @@ def export_vnext_artifact(artifact_id: UUID, request: VNextArtifactExportRequest
         return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
     except VNextQueueValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext artifact export request is invalid")
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
 
     return JSONResponse(
         status_code=200,
@@ -8635,12 +9122,40 @@ def extract_vnext_open_loops(request: VNextProjectAutomationRequest) -> JSONResp
 
 
 @app.post("/v0/vnext/open-loops/{loop_id}/review")
-def review_vnext_open_loop(loop_id: str, request: VNextOpenLoopReviewRequest) -> JSONResponse:
+def review_vnext_open_loop(
+    loop_id: str,
+    request: VNextOpenLoopReviewRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
 
     try:
+        _vnext_agent_identity(request)
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload = VNextProjectService(PostgresVNextStore(conn)).review_open_loop(
+            store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store,
+                request,
+                user_id=request.user_id,
+                authorization=authorization,
+            )
+            target = store.get_open_loop(loop_id)
+            if target is None:
+                return _vnext_public_error_response(status_code=404, detail="vNext open loop was not found")
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="open_loop.update",
+                domains=(str(target.get("domain") or "unknown"),),
+                sensitivity_allowed=(str(target.get("sensitivity") or "unknown"),),
+                project_scope=resource_project_scope(target),
+                target_type="open_loop",
+                target_id=loop_id,
+                require_explicit_project_scope=True,
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            payload = VNextProjectService(store).review_open_loop(
                 loop_id=loop_id,
                 action=request.action,
                 title=request.title,
@@ -8649,6 +9164,12 @@ def review_vnext_open_loop(loop_id: str, request: VNextOpenLoopReviewRequest) ->
                 priority=request.priority,
                 resolution_note=request.resolution_note,
             )
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
     except VNextProjectValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext open-loop review request is invalid")
 

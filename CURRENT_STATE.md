@@ -1,32 +1,58 @@
 # Current State
 
-This file is a synced repo-root copy for planning visibility.
-Canonical handoff state lives at [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURRENT_STATE.md).
-
 ## Snapshot
-- `v0.9.0` is the latest release: the completed Memory Operations Protocol, Context API v2, temporal graph memory + entity resolution, and the full export/import round-trip, on top of the `v0.8.0` memory-frontier baseline.
-- Alice is positioned as the continuity layer for AI agents; agent developers are the customer. Collaborative posture: a layer, not a lock-in — designed to run alongside other memory tools.
 
-## What `v0.9.0` Adds
-- **Complete Memory Operations Protocol** — all ten verbs are real, including `merge` via consolidation-candidate acceptance, `expire`/`unexpire`, and true `redact` (trigger-guarded content expunging with a surviving proof trail); wired across MCP, HTTP, and CLI.
-- **Context API v2** — per-section token allocation, five packing strategies, deterministic depth tiers; the default agent loop centers one context call.
-- **Temporal graph memory + entity resolution** — the `vnext_entities` substrate with canonicalization, aliases, and append-only relationship history; deterministic entity extraction; entity-hop graph retrieval fused into RRF; belief-evolution timelines in `alice_explain`; two new eval suites (`entity_resolution`, `graph_hop_retrieval`) — six live suites total.
-- **Full export/import round-trip** — all nine record types, id/timestamp-exact, never overwrites, all-or-nothing.
-- **Scale envelope published** — `docs/benchmarks/scale/`: SQLite commits flat at 2.3ms through 100k memories; Postgres ~20ms commits, ~400ms recall at 100k.
+- `v0.9.1` is the latest published release.
+- `v0.9.2` is the current security and release-hardening candidate. It has
+  not been tagged or published.
+- Alice is a local-first continuity layer for AI agents. Agent developers
+  are the primary customer.
 
-## What `v0.8.0` Contains
-- **LongMemEval_s 64.6%** — official judge protocol, full per-question evidence and reproduction script in `docs/benchmarks/longmemeval/`; knowledge-update 74.4%; multi-session synthesis (45.1%) is the top roadmap item.
-- **Budgeted, opinionated context packs** — enforced `max_tokens` with truncation reporting; contradictions and recent changes populated; staleness notes per memory.
-- **Typed, staleness-aware retrieval** — `memory_types`/`projects`/`created_by_agents` filters end-to-end; expired facts excluded by default; `stale` status plus the daily `staleness_sweep` review workflow.
-- **Agentic write protocol on the core MCP surface** — 11 tools including `alice_memory_commit` and `alice_memory_manage`; the Memory Operations Protocol is documented with audit guarantees and honest boundaries.
-- **Real scopes** — `project_id`/`created_by_agent_id`/`run_id` columns, key-bound project scope (narrow-only), policy-blocked out-of-scope writes.
-- **Merging consolidation** — embedding clustering to merge/dedup candidates through the review gate; grounding-gated model merges with structured refusals; never automatic supersession.
-- **Temporal slice** — edge event time, first-class supersession pointers, as-of queries, supersession chains in `alice_explain`, graph substrate on the SQLite on-ramp.
-- **Verification** — 1,460 unit and 377/377 integration tests green; four live eval suites on both backends; migrations 0075–0077 additive and reversible.
+## What `v0.9.2` Targets
 
-## Boundaries That Hold
-- Review-governed writes: agent memory commits resolve to commit, confirm, review, or reject through policy; no direct database writes by agents.
-- Local-first, single-user; no hosted service; no OAuth connectors; no automatic capture from arbitrary conversation.
+- **Agent authorization** — key-bound project scope is inherited when omitted
+  and enforced on reads and writes; lifecycle authorization uses the
+  persisted target; read-only and proposal-only profiles cannot mutate
+  accepted memory.
+- **Safe local ownership** — versioned, integrity-checked SQLite
+  export/import with consistent snapshots, atomic file replacement,
+  collision equality checks, a foreign-key-closed portable record set, and
+  owner-only default filesystem permissions. Embedding vectors are rebuilt
+  explicitly after restore.
+- **Upgrade safety** — data-bearing PostgreSQL and SQLite upgrade fixtures
+  cover old revision triggers and legacy status constraints.
+- **Lifecycle coherence** — corrections and review decisions reconcile
+  status, confirmation state, fact keys, embeddings, entity links,
+  revisions, provenance, and supersession without resurrecting retired
+  rows.
+- **Truthful retrieval contracts** — project, person, and time filters apply
+  across pack sections; multi-project scopes match by overlap; request sizes
+  are bounded; budget reports distinguish charged unique content from an
+  exact fixed-point estimate of the final serialized response.
+- **Release integrity** — patched web dependencies, installed-artifact
+  smokes, version/tag/artifact gates, protected publication guidance, and
+  corrected benchmark documentation.
 
-## Not Current State
-- No npm packages, no hosted offering, no SLA.
+## Published Evidence
+
+- The historical LongMemEval_s result is **79.4% (397/500)** from one run on
+  2026-07-07. Per-question rows and protocol receipts are committed under
+  `docs/benchmarks/longmemeval/`.
+- The result has not been replicated and is not a v0.9.2 release-candidate
+  measurement.
+- The scale envelope is a single-machine synthetic benchmark, not a
+  concurrent load test.
+
+## Release Boundary
+
+The candidate is ready only when the canonical release check passes on the
+exact clean source SHA and the reviewer reports no remaining release blocker.
+No tag, GitHub release, or PyPI publication has occurred for v0.9.2.
+
+## Product Boundaries
+
+- Local-first, single-user, self-hosted.
+- No hosted service or SLA.
+- No managed OAuth connectors.
+- No silent capture from arbitrary conversations.
+- Durable agent writes remain policy-checked and reviewable.

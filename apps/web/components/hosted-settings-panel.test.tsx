@@ -28,6 +28,14 @@ describe("HostedSettingsPanel", () => {
     expect(screen.getByText(/does not claim beta admin dashboards/i)).toBeInTheDocument();
   });
 
+  it("rejects insecure non-loopback hosted API configuration", () => {
+    render(<HostedSettingsPanel apiBaseUrl="http://api.example.com" />);
+
+    expect(screen.getByRole("button", { name: "Start Telegram link" })).toBeDisabled();
+    expect(screen.getByText(/require HTTPS for remote APIs/i)).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("starts telegram link challenge from hosted controls", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
@@ -46,7 +54,9 @@ describe("HostedSettingsPanel", () => {
       ),
     );
 
-    render(<HostedSettingsPanel apiBaseUrl="https://api.example.com" />);
+    render(
+      <HostedSettingsPanel apiBaseUrl="https://api.example.com?token=secret#fragment" />,
+    );
 
     fireEvent.change(screen.getByLabelText(/Hosted session token/i), {
       target: { value: "session-token-123" },
@@ -59,7 +69,9 @@ describe("HostedSettingsPanel", () => {
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toContain("/v1/channels/telegram/link/start");
-    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer session-token-123");
+    expect(url).not.toContain("token=secret");
+    expect(url).not.toContain("#fragment");
+    expect(new Headers(init.headers).get("Authorization")).toBe("Bearer session-token-123");
     expect(screen.getAllByText(/\/link CODE2026/).length).toBeGreaterThan(0);
   });
 });

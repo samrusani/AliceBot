@@ -30,7 +30,7 @@ Optional:
 - `ALICE_EMBEDDINGS_BASE_URL`, `ALICE_EMBEDDINGS_MODEL`,
   `ALICE_EMBEDDINGS_API_KEY` — enable semantic vector search in
   `alice_recall` and `alice_context_pack` (full-text-only without them)
-- `ALICE_MCP_LEGACY_TOOLS=1` — expose the legacy long-tail tool surface
+- `ALICE_MCP_LEGACY_TOOLS=1` — expose the legacy long-tail tool surface only for an unbound local-operator server; ignored when `ALICE_AGENT_API_KEY` is set
 
 ## Default Tool Surface
 
@@ -54,6 +54,8 @@ Details and examples: [docs/alpha/mcp-tools.md](../alpha/mcp-tools.md).
 With `ALICE_MCP_LEGACY_TOOLS=1`, the 65 legacy tools are listed alongside
 the eleven core tools (76 total). The legacy surface requires Postgres —
 on the SQLite backend the legacy tools are listed but their calls fail.
+It also requires `ALICE_AGENT_API_KEY` to be unset. Key-bound servers list
+and accept only the policy-complete core tools.
 The long tail covers briefs, timeline, state-at-time, capture pipelines,
 queue/graph/belief/scheduler controls, provider runtime tools, and the
 `alice_vnext_*` agentic control-plane contract, including

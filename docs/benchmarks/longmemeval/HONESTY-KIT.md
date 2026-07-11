@@ -44,11 +44,13 @@ All published numbers use the post-2025/09 cleaned release:
 
 ## 3. Config fingerprints of every published run
 
-Each run's checkpoint rows carry a `fingerprint_digest` over the run
+Historical checkpoint rows carry a `fingerprint_digest` over most run
 configuration (models, temperature, budgets, reading style, dataset hash,
-question subset). The digest fingerprints the **configuration knobs**, not
-the code build — the code is identified by the commit noted alongside each
-run in the README and evidence files.
+question subset). The historical format did **not** cover the source tree or
+reranker configuration. Starting with the v0.9.2 harness, fingerprints also
+record the source commit, a digest of any tracked diff, embedding endpoint,
+reranker model and prompt digest. These new fields do not retroactively make
+older checkpoints more complete.
 
 | Run | Result | Digest | Evidence |
 |---|---|---|---|
@@ -57,9 +59,11 @@ run in the README and evidence files.
 | Stage-1 slice, retrieval-only change | net +7 on 172 q | `348ad3edf2524b24` | [uplift-evidence/stage1-runA-retrieval-only-checkpoint.jsonl](uplift-evidence/stage1-runA-retrieval-only-checkpoint.jsonl) |
 | Stage-1 slice, full config | net +18 on 172 q (64.5%→75.0%) | `60d226be0161cc45` | [uplift-evidence/stage1-runB-full-config-checkpoint.jsonl](uplift-evidence/stage1-runB-full-config-checkpoint.jsonl) |
 
-Checkpoint files are append-only evidence: quota-outage retries and resume
-passes are retained, and aggregation dedupes by `question_id` keeping the
-last row. The 79.4% headline is a **single run**; the prior campaign's
+Checkpoint files are append-only evidence: quota-outage retries are retained,
+and aggregation dedupes by `question_id` keeping the last row. v0.9.2 resume
+fails closed when completed rows have a different fingerprint; the older
+harness only warned and could produce mixed reports. The 79.4% headline is a
+**single run**; the prior campaign's
 three-run variance band on a fixed config was 63.0–64.6, so treat any
 single-run delta under ~2 points as noise.
 
@@ -76,28 +80,28 @@ Things we built or measured that did **not** work, with the numbers:
   2026-07-07 run includes a −3 on the 30-question abstention subset
   (25/30 → 22/30): CoT makes the model more willing to answer when memory
   lacks the fact. Disclosed, not netted away.
-- **Retrieval coverage is saturated; buying more of it bought nothing.**
-  On a fixed 172-question slice, all-evidence coverage measured 86.6%
-  without vectors and 95.3% with vectors enabled — and the corresponding
-  scored arms did not beat the same-slice baseline (73.8%). Above ~85%
-  coverage, the residue is answer-side: stale-value selection, date
-  arithmetic, and counting — not missing evidence.
+- **More retrieval experiments did not improve this development slice.** On
+  a fixed 172-question slice, an unscored FTS-only probe measured 86.6%
+  all-evidence-session coverage and a vector probe measured 95.3%. The scored
+  historical baseline already used vectors, so those coverage numbers and
+  the answer deltas are not a paired causal experiment. Seven committed
+  candidate checkpoints range from -14 to +3 net; none is statistically
+  significant. This does not establish a retrieval ceiling.
 - **Round-5 pack/retrieval variants were flat to sharply negative.** Four
   scored arms on the paired 172-question slice landed at net −14, −11, 0,
-  and +3. The −14 arm (checkpoint `lme5s`, round 5's first slice) ran
-  vectors + the LLM reranker + review-accepted loose-clustering roll-up
-  cards rendered into the pack; the −11 arm (`lme5s2`) was the same
-  configuration with the cards rejected in review — isolating the **LLM
-  reranking stage itself as the −11**, and the loose-clustering roll-up
-  cards' pack rendering as the remaining **−3** (the run-C-era
-  rollup-cards-in-pack finding from that first slice). The net-0 arm
-  (`lme5s3`) was the **clean vectors-only control** — no reranker, cards
-  rejected — not a clustering variant. **Every** arm lost
+  and +3. Working notes label the −14 and −11 checkpoints as differing in
+  roll-up-card acceptance, but their retained contexts match on only 30 of
+  171 scored questions and the historical fingerprints omitted reranker
+  configuration. They therefore do **not** isolate a reranker effect or a
+  separate −3 card effect. The net-0 arm was recorded as a vectors-only
+  control, but these component labels remain historical working
+  interpretations rather than independently replayable causal evidence.
+  **Every** arm lost
   knowledge-update net flips (−9, −8, −4, −3), and their measured
   stale-pick rates (see §5) were 25.0%, 31.3%, 12.5%, 12.5% against the
-  published run's 3.4%. Those checkpoints are retained working artifacts;
-  the committed runs in §5 reproduce the same metric from in-repo files
-  alone.
+  published run's 3.4%. The four-arm stale-pick table is a retained working
+  artifact, not fully reproduced by the four-row committed baseline file in
+  §5; it must not be presented as an independently replayable release claim.
 
 ## 5. The stale-pick metric (judge-free)
 
@@ -123,8 +127,8 @@ measures exactly that with no LLM and no judge:
   `no_chain`, never silently dropped).
 - **Validation against the official judge:** on the two full published runs
   the metric's GOLD/not-GOLD split agrees with the LLM judge on 94.9% and
-  96.6% of classified questions, and across all eight runs we replayed,
-  **zero** answers classified STALE-VALUE were judged correct.
+  96.6% of classified questions. Broader working-arm results need a complete
+  committed replay manifest before they are release evidence.
 
 Baseline table over the committed runs (replayable offline from this repo;
 also committed as
@@ -174,11 +178,13 @@ answer path; `test_stale_pick_module_is_posthoc_only` pins that.
   cannot honor one of these, the run does not get published.
 
 
-## Protocol sensitivity: our answers under three grading regimes
+## Protocol-sensitivity working artifacts
 
-To quantify how much of a score is protocol rather than performance, we replayed
-the published run's 500 cached answers (no new generation) through three grading
-regimes. Replay costs under $1 and the script is committed.
+Two JSON summaries record an earlier replay of the published answers through
+alternative graders. The repository does not contain the replay script,
+model/prompt manifest, source-answer digest, or raw grader responses needed
+to audit those summaries independently. They are listed for transparency,
+but are not release evidence and support no protocol-robustness claim.
 
 | Grading protocol | Score |
 |---|---|
@@ -186,9 +192,6 @@ regimes. Replay costs under $1 and the script is committed.
 | Grader-model swap: GPT-4.1, official prompts | 76.8% (384/500) |
 | Generic lenient prompt ("conveys the right information"), GPT-4.1 | 79.2% (396/500) |
 
-Two findings. First, our result is protocol-robust: a ±2.6-point band across
-graders and prompts — honest answers barely care who grades them. Second, the
-official prompts are not the lenient option: swapping in a newer grader model
-under the official prompts made the score go *down*. Numbers published without
-the official judge protocol, per-question evidence, or a reproduction script are
-not comparable to numbers published with them — in either direction.
+The official 79.4% row remains supported by its per-question checkpoint and
+report. The other two rows should be re-generated with complete receipts
+before they are interpreted.

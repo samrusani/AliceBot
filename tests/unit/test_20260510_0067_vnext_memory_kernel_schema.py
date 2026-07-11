@@ -117,6 +117,31 @@ def test_vnext_schema_keeps_legacy_memory_types_while_adding_vnext_types() -> No
         assert column_name in memory_sql
 
 
+def test_data_bearing_revision_backfill_temporarily_suspends_append_only_trigger() -> None:
+    module = load_migration_module()
+    statements = module._UPGRADE_REVISION_COMPAT_STATEMENTS
+    joined_sql = "\n".join(statements)
+
+    drop_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "DROP TRIGGER IF EXISTS memory_revisions_append_only" in statement
+    )
+    update_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "UPDATE memory_revisions" in statement
+    )
+    create_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "CREATE TRIGGER memory_revisions_append_only" in statement
+    )
+
+    assert drop_index < update_index < create_index
+    assert "app.reject_memory_revision_mutation()" in joined_sql
+
+
 def test_vnext_event_log_is_append_only_and_rls_scoped() -> None:
     module = load_migration_module()
 

@@ -261,11 +261,13 @@ from alicebot_api.vnext_embeddings import (
     EMBEDDINGS_API_KEY_ENV,
     EMBEDDINGS_BASE_URL_ENV,
     EMBEDDINGS_MODEL_ENV,
+    EMBEDDING_SIGNATURE_VERSION,
     MAX_EMBEDDINGS_BATCH_SIZE,
     VNextEmbeddingConfigurationError,
     VNextEmbeddingProviderError,
     get_embedding_provider,
     memory_embedding_text,
+    memory_embedding_signature,
 )
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_json import json_safe
@@ -1735,13 +1737,20 @@ def _run_vnext_memories_backfill_embeddings(ctx: CLIContext, args: argparse.Name
     if batch_size < 1 or batch_size > MAX_EMBEDDINGS_BATCH_SIZE:
         raise ValueError(f"--batch-size must be between 1 and {MAX_EMBEDDINGS_BATCH_SIZE}")
     embedded = 0
+    reindexed_incompatible = 0
     skipped = 0
     failed = 0
     batches = 0
     with _vnext_store_context(ctx) as store:
         after_id: str | None = None
         while True:
-            rows = store.list_memories_missing_embeddings(limit=batch_size, after_id=after_id)
+            rows = store.list_memories_missing_embeddings(
+                limit=batch_size,
+                after_id=after_id,
+                embedding_provider=provider.provider,
+                embedding_model=provider.model,
+                embedding_signature_version=EMBEDDING_SIGNATURE_VERSION,
+            )
             if not rows:
                 break
             batches += 1
@@ -1758,7 +1767,17 @@ def _run_vnext_memories_backfill_embeddings(ctx: CLIContext, args: argparse.Name
                 print(f"warning: embedding batch failed: {exc}", file=sys.stderr)
                 continue
             for (row, _text), vector in zip(embeddable, vectors):
-                store.update_memory_embedding(memory_id=str(row["id"]), vector=vector)
+                signature = memory_embedding_signature(row, provider=provider)
+                store.update_memory_embedding(
+                    memory_id=str(row["id"]),
+                    vector=vector,
+                    provider=str(signature["provider"]),
+                    model=str(signature["model"]),
+                    content_sha256=str(signature["content_sha256"]),
+                    signature_version=int(signature["version"]),
+                )
+                if row.get("embedding_present") is True:
+                    reindexed_incompatible += 1
                 embedded += 1
     return _json_dumps(
         {
@@ -1766,6 +1785,7 @@ def _run_vnext_memories_backfill_embeddings(ctx: CLIContext, args: argparse.Name
             "model": provider.model,
             "batches": batches,
             "embedded": embedded,
+            "reindexed_incompatible": reindexed_incompatible,
             "skipped": skipped,
             "failed": failed,
         }
@@ -5331,7 +5351,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     vnext_memory_backfill_parser = vnext_memories_subparsers.add_parser(
         "backfill-embeddings",
-        help="Embed memories that do not yet have an embedding vector.",
+        help="Embed memories with missing, unsigned, or provider/model-incompatible vectors.",
     )
     vnext_memory_backfill_parser.add_argument(
         "--batch-size",

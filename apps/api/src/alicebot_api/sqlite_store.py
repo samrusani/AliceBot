@@ -34,10 +34,16 @@ import numpy as np
 
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.store import ContinuityStoreInvariantError
-from alicebot_api.vnext_embeddings import EMBEDDING_VECTOR_DIMENSIONS, pad_embedding_vector
+from alicebot_api.vnext_embeddings import (
+    EMBEDDING_SIGNATURE_METADATA_KEY,
+    EMBEDDING_VECTOR_DIMENSIONS,
+    memory_embedding_signature_is_current,
+    pad_embedding_vector,
+)
 from alicebot_api.vnext_entity_names import ENTITY_IMMUTABLE_PATCH_FIELDS, normalize_entity_name
 from alicebot_api.vnext_event_log import build_event_log_record
 from alicebot_api.vnext_json import json_safe
+from alicebot_api.vnext_project_scope import canonical_memory_metadata, expose_memory_project_scope
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_store import (
     FTS_QUERY_STOPWORDS as _FTS_QUERY_STOPWORDS,
@@ -290,16 +296,6 @@ _JSON_COLUMNS = frozenset(
 # vnext_store._MEMORY_SEARCHABLE_STATUSES_SQL; keep the two in sync.
 _MEMORY_SEARCHABLE_STATUSES_SQL = "('active', 'accepted')"
 
-# The memories.project_id column (sqlite_schema additive column, mirroring
-# Postgres migration 20260704_0076) is the real project scope; the
-# json_extract fallback covers rows written before the column existed or by
-# writers that still stash project_id in metadata only (e.g. capture-created
-# candidates). Drop the COALESCE once a follow-up backfill retires the
-# metadata-only writers.
-_MEMORY_PROJECT_ID_SQL_TEMPLATE = (
-    "COALESCE({prefix}project_id, json_extract({prefix}metadata_json, '$.project_id'))"
-)
-
 # _FTS_QUERY_STOPWORDS (imported above): the snowball English stopword
 # list the Postgres 'english' text-search configuration applies inside
 # websearch_to_tsquery(). FTS5 has no stopword support of its own, so
@@ -503,7 +499,7 @@ class SQLiteVNextStore:
                 decoded[key] = json.loads(value)
             else:
                 decoded[key] = value
-        return decoded
+        return expose_memory_project_scope(decoded)
 
     def _fetch_one(
         self,
@@ -602,9 +598,25 @@ class SQLiteVNextStore:
         if not projects:
             return "", []
         values = list(projects)
-        project_id_sql = _MEMORY_PROJECT_ID_SQL_TEMPLATE.format(prefix=prefix)
-        clause = f" AND {project_id_sql} IN ({self._placeholders(values)})"
-        return clause, list(values)
+        placeholders = self._placeholders(values)
+        clause = (
+            " AND (CASE"
+            f" WHEN json_type({prefix}metadata_json, '$.project_scope') = 'array'"
+            f" AND json_array_length({prefix}metadata_json, '$.project_scope') > 0"
+            f" THEN EXISTS (SELECT 1 FROM json_each({prefix}metadata_json, '$.project_scope')"
+            f" AS scoped_project WHERE CAST(scoped_project.value AS TEXT) IN ({placeholders}))"
+            f" WHEN json_type({prefix}metadata_json, '$.agentic_memory.project_scope') = 'array'"
+            f" AND json_array_length({prefix}metadata_json, '$.agentic_memory.project_scope') > 0"
+            f" THEN EXISTS (SELECT 1 FROM json_each("
+            f"{prefix}metadata_json, '$.agentic_memory.project_scope')"
+            f" AS legacy_scoped_project WHERE CAST(legacy_scoped_project.value AS TEXT)"
+            f" IN ({placeholders}))"
+            f" WHEN {prefix}project_id IS NOT NULL"
+            f" THEN {prefix}project_id IN ({placeholders})"
+            f" ELSE json_extract({prefix}metadata_json, '$.project_id') IN ({placeholders})"
+            " END)"
+        )
+        return clause, [*values, *values, *values, *values]
 
     def _created_by_clause(
         self,
@@ -1005,6 +1017,9 @@ class SQLiteVNextStore:
                   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
+                ON CONFLICT(user_id, commit_digest)
+                  WHERE commit_digest IS NOT NULL
+                  DO NOTHING
                 """,
             (
                 memory_id,
@@ -1035,7 +1050,7 @@ class SQLiteVNextStore:
                 _iso_or_now(memory.get("first_seen_at")),
                 _iso_or_now(memory.get("last_seen_at")),
                 _iso_or_none(memory.get("last_reviewed_at")),
-                _json_object_text(memory.get("metadata_json")),
+                _json_object_text(canonical_memory_metadata(memory)),
                 memory.get("commit_digest"),
                 memory.get("confirmation_id"),
                 memory.get("project_id"),
@@ -1067,6 +1082,49 @@ class SQLiteVNextStore:
                   AND deleted_at IS NULL
                 """,
             (str(memory_id), self.user_id),
+        )
+
+    def get_memory_for_update(self, memory_id: str) -> VNextRow | None:
+        """Acquire SQLite's writer lock before a review/lifecycle decision."""
+        if not self.conn.in_transaction:
+            self.conn.execute("BEGIN IMMEDIATE")
+        return self.get_memory(memory_id)
+
+    def list_pending_derived_candidates_for_member(
+        self,
+        *,
+        member_id: str,
+        exclude_memory_id: str | None = None,
+    ) -> list[VNextRow]:
+        """Return pending derived candidates whose reviewed input is member_id.
+
+        ``get_memory_for_update`` acquires SQLite's database writer lock on
+        lifecycle paths before this query runs, so the returned candidates
+        stay stable for the enclosing transaction.
+        """
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM memories AS candidate
+                WHERE candidate.user_id = ?
+                  AND candidate.deleted_at IS NULL
+                  AND candidate.status IN ('candidate', 'needs_review')
+                  AND (? IS NULL OR candidate.id <> ?)
+                  AND EXISTS (
+                    SELECT 1
+                    FROM json_each(
+                      CASE
+                        WHEN json_valid(candidate.metadata_json)
+                        THEN candidate.metadata_json
+                        ELSE '{{}}'
+                      END,
+                      '$.consolidation.member_snapshots'
+                    ) AS snapshot
+                    WHERE CAST(json_extract(snapshot.value, '$.id') AS TEXT) = ?
+                  )
+                ORDER BY candidate.id
+                """,
+            (self.user_id, exclude_memory_id, exclude_memory_id, str(member_id)),
         )
 
     def get_memory_by_commit_digest(self, commit_digest: str) -> VNextRow | None:
@@ -1126,19 +1184,193 @@ class SQLiteVNextStore:
             (str(confirmation_id), self.user_id),
         )
 
-    def list_memories(self, *, status: str | None = None) -> list[VNextRow]:
+    def list_memories(
+        self,
+        *,
+        status: str | None = None,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int | None = None,
+    ) -> list[VNextRow]:
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be positive")
         status_sql = ""
         params: list[object] = [self.user_id]
         if status is not None:
             status_sql = " AND status = ?"
             params.append(status)
+        domains_sql = ""
+        if domains:
+            domain_placeholders = ", ".join("?" for _domain in domains)
+            domains_sql = f" AND (domain IN ({domain_placeholders}) OR domain = 'unknown')"
+            params.extend(domains)
+        sensitivity_sql = ""
+        if sensitivity_allowed is not None:
+            if not sensitivity_allowed:
+                return []
+            sensitivity_placeholders = ", ".join("?" for _sensitivity in sensitivity_allowed)
+            sensitivity_sql = f" AND COALESCE(sensitivity, 'unknown') IN ({sensitivity_placeholders})"
+            params.extend(sensitivity_allowed)
+        limit_sql = ""
+        if limit is not None:
+            limit_sql = " LIMIT ?"
+            params.append(limit)
         return self._fetch_all(
             f"""
                 SELECT {", ".join(MEMORY_COLUMNS)}
                 FROM memories
                 WHERE user_id = ?{status_sql}
                   AND deleted_at IS NULL
+                  {domains_sql}
+                  {sensitivity_sql}
                 ORDER BY updated_at DESC, created_at DESC, id DESC
+                {limit_sql}
+                """,
+            tuple(params),
+        )
+
+    def list_rollup_input_memories(
+        self,
+        *,
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        excluded_candidate_kind: str,
+        limit: int,
+    ) -> list[VNextRow]:
+        """Return the newest bounded roll-up inputs, excluding cards in SQL."""
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        if not sensitivity_allowed:
+            return []
+        params: list[object] = [self.user_id, excluded_candidate_kind]
+        domains_sql = ""
+        if domains:
+            placeholders = ", ".join("?" for _domain in domains)
+            domains_sql = f" AND (domain IN ({placeholders}) OR domain = 'unknown')"
+            params.extend(domains)
+        sensitivity_placeholders = ", ".join("?" for _value in sensitivity_allowed)
+        params.extend(sensitivity_allowed)
+        params.append(limit)
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM memories
+                WHERE user_id = ?
+                  AND deleted_at IS NULL
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}
+                  AND COALESCE(json_extract(metadata_json, '$.candidate_kind'), '') <> ?
+                  {domains_sql}
+                  AND COALESCE(sensitivity, 'unknown') IN ({sensitivity_placeholders})
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+            tuple(params),
+        )
+
+    def list_pending_rollup_candidates(
+        self,
+        *,
+        rollup_digests: tuple[str, ...],
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        candidate_kind: str,
+        limit: int,
+    ) -> list[VNextRow]:
+        """Return at most one newest pending candidate per requested digest."""
+        unique_digests = tuple(sorted(set(rollup_digests)))
+        if not unique_digests or not sensitivity_allowed:
+            return []
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        bounded_limit = min(limit, len(unique_digests))
+        digest_placeholders = ", ".join("?" for _digest in unique_digests)
+        params: list[object] = [self.user_id, candidate_kind, *unique_digests]
+        domains_sql = ""
+        if domains:
+            placeholders = ", ".join("?" for _domain in domains)
+            domains_sql = f" AND (domain IN ({placeholders}) OR domain = 'unknown')"
+            params.extend(domains)
+        sensitivity_placeholders = ", ".join("?" for _value in sensitivity_allowed)
+        params.extend(sensitivity_allowed)
+        params.append(bounded_limit)
+        return self._fetch_all(
+            f"""
+                WITH ranked_rollups AS (
+                  SELECT {", ".join(MEMORY_COLUMNS)},
+                         ROW_NUMBER() OVER (
+                           PARTITION BY json_extract(metadata_json, '$.rollup_digest')
+                           ORDER BY updated_at DESC, created_at DESC, id DESC
+                         ) AS rollup_rank
+                  FROM memories
+                  WHERE user_id = ?
+                    AND deleted_at IS NULL
+                    AND status = 'candidate'
+                    AND json_extract(metadata_json, '$.candidate_kind') = ?
+                    AND json_extract(metadata_json, '$.rollup_digest') IN ({digest_placeholders})
+                    {domains_sql}
+                    AND COALESCE(sensitivity, 'unknown') IN ({sensitivity_placeholders})
+                )
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM ranked_rollups
+                WHERE rollup_rank = 1
+                ORDER BY json_extract(metadata_json, '$.rollup_digest'), updated_at DESC, id DESC
+                LIMIT ?
+                """,
+            tuple(params),
+        )
+
+    def list_accepted_rollup_cards(
+        self,
+        *,
+        rollup_keys: tuple[str, ...],
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        candidate_kind: str,
+        limit: int,
+    ) -> list[VNextRow]:
+        """Return at most one active/accepted card per requested roll-up key."""
+        unique_keys = tuple(sorted(set(rollup_keys)))
+        if not unique_keys or not sensitivity_allowed:
+            return []
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        bounded_limit = min(limit, len(unique_keys))
+        key_placeholders = ", ".join("?" for _key in unique_keys)
+        params: list[object] = [self.user_id, candidate_kind, *unique_keys]
+        domains_sql = ""
+        if domains:
+            placeholders = ", ".join("?" for _domain in domains)
+            domains_sql = f" AND (domain IN ({placeholders}) OR domain = 'unknown')"
+            params.extend(domains)
+        sensitivity_placeholders = ", ".join("?" for _value in sensitivity_allowed)
+        params.extend(sensitivity_allowed)
+        params.append(bounded_limit)
+        return self._fetch_all(
+            f"""
+                WITH ranked_rollups AS (
+                  SELECT {", ".join(MEMORY_COLUMNS)},
+                         ROW_NUMBER() OVER (
+                           PARTITION BY json_extract(metadata_json, '$.rollup_key')
+                           ORDER BY
+                             CASE WHEN status = 'active' THEN 0 ELSE 1 END,
+                             updated_at DESC,
+                             created_at DESC,
+                             id DESC
+                         ) AS rollup_rank
+                  FROM memories
+                  WHERE user_id = ?
+                    AND deleted_at IS NULL
+                    AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}
+                    AND json_extract(metadata_json, '$.candidate_kind') = ?
+                    AND json_extract(metadata_json, '$.rollup_key') IN ({key_placeholders})
+                    {domains_sql}
+                    AND COALESCE(sensitivity, 'unknown') IN ({sensitivity_placeholders})
+                )
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM ranked_rollups
+                WHERE rollup_rank = 1
+                ORDER BY json_extract(metadata_json, '$.rollup_key'), updated_at DESC, id DESC
+                LIMIT ?
                 """,
             tuple(params),
         )
@@ -1171,6 +1403,7 @@ class SQLiteVNextStore:
                     last_seen_at = COALESCE(?, last_seen_at),
                     last_reviewed_at = COALESCE(?, last_reviewed_at),
                     metadata_json = COALESCE(?, metadata_json),
+                    project_id = COALESCE(?, project_id),
                     superseded_by = COALESCE(?, superseded_by),
                     supersedes = COALESCE(?, supersedes),
                     updated_at = ?,
@@ -1207,6 +1440,7 @@ class SQLiteVNextStore:
                 _iso_or_none(patch.get("last_seen_at")),
                 _iso_or_none(patch.get("last_reviewed_at")),
                 _json_object_text(patch["metadata_json"]) if "metadata_json" in patch else None,
+                patch.get("project_id"),
                 _uuid_text(patch.get("superseded_by")),
                 _uuid_text(patch.get("supersedes")),
                 _utc_now_iso(),
@@ -1371,6 +1605,9 @@ class SQLiteVNextStore:
         created_by_agent_ids: tuple[str, ...] = (),
         run_id: str | None = None,
         include_expired: bool = False,
+        embedding_provider: str | None = None,
+        embedding_model: str | None = None,
+        embedding_signature_version: int | None = None,
     ) -> list[VNextRow]:
         if not query_vector:
             raise ContinuityStoreInvariantError("embedding vectors must not be empty")
@@ -1384,6 +1621,33 @@ class SQLiteVNextStore:
         created_by_sql, created_by_params = self._created_by_clause(created_by_agent_ids)
         run_sql, run_params = self._run_clause(run_id)
         expiry_sql, expiry_params = self._expiry_clause(include_expired)
+        signature_sql = ""
+        signature_params: list[object] = []
+        if embedding_provider is not None or embedding_model is not None:
+            if not embedding_provider or not embedding_model:
+                raise ContinuityStoreInvariantError(
+                    "embedding_provider and embedding_model must be supplied together"
+                )
+            signature_sql = (
+                " AND json_extract(metadata_json, ?) = ?"
+                " AND json_extract(metadata_json, ?) = ?"
+            )
+            signature_params.extend(
+                (
+                    f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.provider",
+                    embedding_provider,
+                    f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.model",
+                    embedding_model,
+                )
+            )
+            if embedding_signature_version is not None:
+                signature_sql += " AND json_extract(metadata_json, ?) = ?"
+                signature_params.extend(
+                    (
+                        f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.version",
+                        embedding_signature_version,
+                    )
+                )
         params: list[object] = [self.user_id]
         params.extend(domain_params)
         params.extend(sensitivity_params)
@@ -1392,6 +1656,7 @@ class SQLiteVNextStore:
         params.extend(created_by_params)
         params.extend(run_params)
         params.extend(expiry_params)
+        params.extend(signature_params)
         candidates = self._fetch_all(
             f"""
                 SELECT {", ".join(MEMORY_COLUMNS)}, embedding
@@ -1399,12 +1664,14 @@ class SQLiteVNextStore:
                 WHERE user_id = ?
                   AND deleted_at IS NULL
                   AND embedding IS NOT NULL
-                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{created_by_sql}{run_sql}{expiry_sql}
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{created_by_sql}{run_sql}{expiry_sql}{signature_sql}
                 """,
             tuple(params),
         )
         scored: list[VNextRow] = []
         for row in candidates:
+            if signature_sql and not memory_embedding_signature_is_current(row):
+                continue
             blob = cast(bytes, row.pop("embedding"))
             vector = np.frombuffer(blob, dtype=np.float32)
             if vector.size != EMBEDDING_VECTOR_DIMENSIONS:
@@ -1514,20 +1781,87 @@ class SQLiteVNextStore:
             tuple(params),
         )
 
-    def update_memory_embedding(self, *, memory_id: str, vector: list[float]) -> VNextRow | None:
+    def update_memory_embedding(
+        self,
+        *,
+        memory_id: str,
+        vector: list[float],
+        provider: str | None = None,
+        model: str | None = None,
+        content_sha256: str | None = None,
+        signature_version: int = 1,
+    ) -> VNextRow | None:
         if not vector:
             raise ContinuityStoreInvariantError("embedding vectors must not be empty")
         padded = pad_embedding_vector(vector)
         blob = np.asarray(padded, dtype=np.float32).tobytes()
-        cursor = self._execute(
+        signature_values = (provider, model, content_sha256)
+        if any(value is not None for value in signature_values):
+            if not all(isinstance(value, str) and value for value in signature_values):
+                raise ContinuityStoreInvariantError(
+                    "embedding provider, model, and content_sha256 must be supplied together"
+                )
+            signature_metadata = {
+                "version": signature_version,
+                "provider": provider,
+                "model": model,
+                "content_sha256": content_sha256,
+            }
+            cursor = self._execute(
+                """
+                    UPDATE memories
+                    SET embedding = ?,
+                        metadata_json = json_set(metadata_json, ?, json(?))
+                    WHERE id = ?
+                      AND user_id = ?
+                      AND deleted_at IS NULL
+                    """,
+                (
+                    blob,
+                    f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}",
+                    json.dumps(signature_metadata, sort_keys=True, separators=(",", ":")),
+                    str(memory_id),
+                    self.user_id,
+                ),
+            )
+        else:
+            cursor = self._execute(
+                """
+                    UPDATE memories
+                    SET embedding = ?
+                    WHERE id = ?
+                      AND user_id = ?
+                      AND deleted_at IS NULL
+                    """,
+                (blob, str(memory_id), self.user_id),
+            )
+        if cursor.rowcount == 0:
+            return None
+        return self._fetch_optional_one(
             """
+                SELECT id
+                FROM memories
+                WHERE id = ?
+                  AND user_id = ?
+                """,
+            (str(memory_id), self.user_id),
+        )
+
+    def clear_memory_embedding(self, *, memory_id: str) -> VNextRow | None:
+        """Invalidate an embedding derived from text that is about to change."""
+        cursor = self._execute(
+            f"""
                 UPDATE memories
-                SET embedding = ?
+                SET embedding = NULL,
+                    metadata_json = json_remove(
+                      metadata_json,
+                      '$.{EMBEDDING_SIGNATURE_METADATA_KEY}'
+                    )
                 WHERE id = ?
                   AND user_id = ?
                   AND deleted_at IS NULL
                 """,
-            (blob, str(memory_id), self.user_id),
+            (str(memory_id), self.user_id),
         )
         if cursor.rowcount == 0:
             return None
@@ -1539,6 +1873,64 @@ class SQLiteVNextStore:
                   AND user_id = ?
                 """,
             (str(memory_id), self.user_id),
+        )
+
+    def list_memories_missing_embeddings(
+        self,
+        *,
+        limit: int = 100,
+        after_id: str | None = None,
+        embedding_provider: str | None = None,
+        embedding_model: str | None = None,
+        embedding_signature_version: int | None = None,
+    ) -> list[VNextRow]:
+        """Rows missing a vector or carrying an incompatible signature."""
+        if limit < 1:
+            raise ContinuityStoreInvariantError("embedding backfill limit must be positive")
+        signature_sql = ""
+        signature_params: list[object] = []
+        if embedding_provider is not None or embedding_model is not None:
+            if not embedding_provider or not embedding_model:
+                raise ContinuityStoreInvariantError(
+                    "embedding_provider and embedding_model must be supplied together"
+                )
+            signature_sql = (
+                " OR json_extract(metadata_json, ?) IS NOT ?"
+                " OR json_extract(metadata_json, ?) IS NOT ?"
+            )
+            signature_params.extend(
+                (
+                    f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.provider",
+                    embedding_provider,
+                    f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.model",
+                    embedding_model,
+                )
+            )
+            if embedding_signature_version is not None:
+                signature_sql += " OR json_extract(metadata_json, ?) IS NOT ?"
+                signature_params.extend(
+                    (
+                        f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.version",
+                        embedding_signature_version,
+                    )
+                )
+        params: list[object] = [self.user_id, *signature_params, after_id, after_id, limit]
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)},
+                  (embedding IS NOT NULL) AS embedding_present
+                FROM memories
+                WHERE user_id = ?
+                  AND deleted_at IS NULL
+                  AND (
+                    embedding IS NULL
+                    {signature_sql}
+                  )
+                  AND (? IS NULL OR id > ?)
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+            tuple(params),
         )
 
     def update_memory_fact_keys(self, *, memory_id: str, fact_keys: str | None) -> VNextRow | None:
@@ -1594,24 +1986,9 @@ class SQLiteVNextStore:
     def append_revision(self, revision: JsonObject, *, actor_type: str = "system") -> VNextRow:
         revision_id = _new_id(revision.get("id"))
         memory_id = _uuid_text(revision["memory_id"])
-        next_numbers = self._fetch_one(
-            "append_revision",
-            """
-                SELECT
-                  COALESCE(MAX(sequence_no) + 1, 1) AS next_sequence_no,
-                  COALESCE(MAX(revision_number) + 1, 1) AS next_revision_number
-                FROM memory_revisions
-                WHERE memory_id = ?
-                  AND user_id = ?
-                """,
-            (memory_id, self.user_id),
-        )
-        sequence_no = revision.get("sequence_no")
-        if sequence_no is None:
-            sequence_no = next_numbers["next_sequence_no"]
-        revision_number = revision.get("revision_number")
-        if revision_number is None:
-            revision_number = next_numbers["next_revision_number"]
+        # Allocate both counters inside the INSERT statement. SQLite
+        # serializes writers before a write statement evaluates its SELECT,
+        # avoiding the former read-MAX / later-INSERT race across connections.
         self._execute(
             """
                 INSERT INTO memory_revisions (
@@ -1635,20 +2012,28 @@ class SQLiteVNextStore:
                   metadata_json,
                   created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                SELECT
+                  ?, ?, ?,
+                  COALESCE(?, COALESCE(MAX(sequence_no) + 1, 1)),
+                  ?, ?, ?, ?, ?, ?,
+                  COALESCE(?, COALESCE(MAX(revision_number) + 1, 1)),
+                  ?, ?, ?, ?, ?, ?, ?, ?
+                FROM memory_revisions
+                WHERE memory_id = ?
+                  AND user_id = ?
                 """,
             (
                 revision_id,
                 self.user_id,
                 memory_id,
-                sequence_no,
+                revision.get("sequence_no"),
                 revision.get("action", "UPDATE"),
                 revision["memory_key"],
                 _json_object_text(revision["previous_value"]) if "previous_value" in revision else None,
                 _json_object_text(revision.get("new_value")),
                 _json_list_text(revision.get("source_event_ids")),
                 _json_object_text(revision.get("candidate")),
-                revision_number,
+                revision.get("revision_number"),
                 revision.get("revision_type", "edited"),
                 revision.get("text_before"),
                 revision.get("text_after", ""),
@@ -1657,6 +2042,8 @@ class SQLiteVNextStore:
                 revision.get("actor_id"),
                 _json_object_text(revision.get("metadata_json")),
                 _utc_now_iso(),
+                memory_id,
+                self.user_id,
             ),
         )
         row = self._get_row("append_revision", "memory_revisions", REVISION_COLUMNS, revision_id)
@@ -1987,6 +2374,30 @@ class SQLiteVNextStore:
                 """,
             (self.user_id, from_id, from_id, to_id, to_id),
         )
+
+    def expire_edge(self, *, edge_id: str, actor_type: str = "system") -> VNextRow:
+        now = _utc_now_iso()
+        cursor = self._execute(
+            """
+                UPDATE graph_edges
+                SET valid_to = ?
+                WHERE id = ?
+                  AND user_id = ?
+                  AND valid_to IS NULL
+                """,
+            (now, str(edge_id), self.user_id),
+        )
+        if cursor.rowcount == 0:
+            raise ContinuityStoreInvariantError("expire_edge did not update an active edge")
+        row = self._get_row("expire_edge", "graph_edges", GRAPH_EDGE_COLUMNS, str(edge_id))
+        self._append_mutation_event(
+            event_type="graph_edge.expired",
+            actor_type=actor_type,
+            target_type="graph_edge",
+            target_id=row["id"],
+            payload={"operation": "expire"},
+        )
+        return row
 
     def list_edges_as_of(self, at: object, *, limit: int = 50) -> list[VNextRow]:
         """Edges that were in effect at ``at``: valid_from <= at < valid_to.
