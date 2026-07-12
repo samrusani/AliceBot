@@ -2125,6 +2125,20 @@ class PostgresVNextStore:
             tuple(params),
         )
 
+    def lock_graph_mutation(self) -> None:
+        """Serialize supersession-graph mutation per user for this transaction.
+
+        A transaction-scoped advisory lock keyed on the current user so two
+        concurrent supersessions cannot each pass an unlocked cycle check and
+        together close a cycle. Released automatically at commit/rollback.
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_advisory_xact_lock("
+                "hashtext('vnext_supersession'), "
+                "hashtext(app.current_user_id()::text))"
+            )
+
     def list_memory_ids_with_embeddings(self, ids: "Sequence[str]") -> set[str]:
         """Exact-ID embedding-presence read for a specific set of memory IDs.
 

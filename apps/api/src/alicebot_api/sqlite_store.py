@@ -1957,6 +1957,12 @@ class SQLiteVNextStore:
             tuple(params),
         )
 
+    def lock_graph_mutation(self) -> None:
+        """No-op: SQLite serializes writes with a single writer, so there is no
+        concurrent supersession to guard against. Present for store parity with
+        the Postgres advisory lock."""
+        return None
+
     def list_memory_ids_with_embeddings(self, ids: "Sequence[str]") -> set[str]:
         """Exact-ID embedding-presence read for a specific set of memory IDs.
 

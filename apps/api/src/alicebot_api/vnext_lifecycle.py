@@ -191,12 +191,23 @@ def supersession_would_cycle(
     successor is itself a descendant whose supersession chain leads back to the
     row being retired. Walking that chain (bounded, cycle-safe) detects the
     ``A -> B -> A`` case the flat status table cannot.
+
+    Raises :class:`LifecycleTransitionError` when the chain does not terminate
+    within ``max_depth`` hops: the walk cannot confirm acyclicity, so the
+    supersession must be rejected (fail CLOSED) rather than allowed.
     """
     target = str(memory_id)
     current: Mapping[str, object] | None = successor
     seen: set[str] = set()
     depth = 0
-    while current is not None and depth < max_depth:
+    while current is not None:
+        if depth >= max_depth:
+            # Depth exhausted before the chain terminated: acyclicity is
+            # unverifiable, so fail closed instead of allowing a possible cycle.
+            raise LifecycleTransitionError(
+                f"supersession chain exceeds {max_depth} hops; cannot verify "
+                "acyclicity, rejecting the supersession to fail closed"
+            )
         current_id = str(current["id"])
         if current_id == target:
             return True
