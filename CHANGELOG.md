@@ -2,13 +2,27 @@
 
 ## Unreleased
 
-## v0.9.3 — 2026-07-12
+## v0.9.4 — 2026-07-12
 
-- Lifecycle correctness: all memory lifecycle mutations (confirm, review, correct, undo, forget, expire/unexpire, supersession) now route through one central transition table (`vnext_lifecycle`) that rejects invalid transitions — a rejected or superseded row can no longer be confirmed back to active, `correct()` no longer promotes rows while leaving them unconfirmed/review-required, supersession `A → B → A` cycles are blocked, and `unexpire` cannot report active while the row stays stale.
-- Expire/unexpire now lock the row before policy evaluation, so a concurrent correction or supersession can no longer be overwritten by a stale snapshot (audit P1 #2).
-- Migration `20260712_0084`: corrects the migration-`0083` bug where retry/confirmation identifiers could be stranded on a deleted tombstone (leaving the live row unfindable and the key unusable); dedup now prefers the active row, and 0084 repairs databases already mis-upgraded by v0.9.2. SQLite bootstrap gets the same fix plus a corrective pass. `0083` is left unchanged.
-- Project-scoped capture now persists its effective scope: a project-scoped agent's captured memory is retrievable by that project's filtered recall and excluded from other projects (audit P1 #4 — the scope was validated but never stored).
-- Hard people/time retrieval filters no longer erase valid results: the retriever over-fetches (bounded) so a scoped row ranked behind a full decoy window is still found instead of returning an empty pack (audit P1 #5).
+`v0.9.3` was an internal security-hotfix candidate; a follow-up external audit
+returned NO-GO, so it was withdrawn and never published. `v0.9.4` supersedes it:
+it carries the original five fixes plus resolves all nine P1 findings from the
+second audit. Each fix was written reproduction-first.
+
+- Lifecycle correctness: all memory lifecycle mutations (confirm, review, correct, undo, forget, expire/unexpire, supersession) route through one central transition table (`vnext_lifecycle`) that rejects invalid transitions — a rejected or superseded row can no longer be confirmed back to active, `correct()` no longer promotes rows while leaving them unconfirmed/review-required, supersession `A → B → A` cycles are blocked, and `unexpire` cannot report active while the row stays stale.
+- Supersession graph mutation is serialized per user with a transaction-scoped advisory lock, and the cycle guard now fails closed when it cannot verify acyclicity within its hop bound — so concurrent supersessions on disjoint row pairs can no longer each pass an unlocked check and together close a cycle (audit 2 P1 #1).
+- Expire/unexpire lock the row before policy evaluation, so a concurrent correction or supersession can no longer be overwritten by a stale snapshot.
+- Migration `20260712_0084`: corrects the migration-`0083` bug where retry/confirmation identifiers could be stranded on a deleted tombstone; dedup now prefers the active row, and 0084 repairs databases already mis-upgraded by v0.9.2. `0083` is left unchanged.
+- Content dedupe is now scope-aware: the content hash folds in the project scope, so identical text captured under a different project keeps its own scoped source and candidate instead of being silently skipped; browser-clip and agent-output proposals now propagate project scope (audit 2 P1 #2).
+- Hard people/time retrieval filters deepen the ranked scan (bounded) until enough scoped rows survive, so a valid row ranked behind a full decoy window — including time-window scopes — is still surfaced (audit 2 P1 #3).
+- Embedding signatures now include an endpoint fingerprint, so two endpoints sharing a provider/model label but serving different coordinate spaces are never pooled or ranked against each other (audit 2 P1 #4).
+- Consolidation and semantic roll-ups determine embedding presence by an exact read of the selected row IDs instead of a global nearest-neighbor probe, so embedded rows are no longer missed when unrelated neighbors dominate (audit 2 P1 #5).
+- Roll-up cards persist their full authoritative membership rather than the truncated display subset, so a group larger than the per-card instance cap no longer re-proposes a revision on every run (audit 2 P1 #6).
+- Filtered PostgreSQL vector search enables iterative HNSW scan, so lifecycle/scope/signature filters no longer silently under-return valid rows (audit 2 P1 #7).
+- The canonical release eval runs with `--release-gate`: a run that never exercises the vector stage reports `pass_fts_only` and exits non-zero, and eval failure now propagates to the process exit code, so the gate cannot be green without measuring semantic retrieval quality (audit 2 P1 #8).
+- Release finalization is honest: `release_check --require-finalized-release-docs` rejects premature-publication claims (present-tense "published to PyPI", or a checksums file referenced before it exists), not just stale-candidate phrases (audit 2 P1 #9).
+
+**Upgrade:** `alembic upgrade head` applies migration `0084` (idempotent). Because embedding signatures gained an endpoint fingerprint, run `alicebot vnext memories backfill-embeddings` after upgrade to re-embed existing vectors under the new signature; until then those rows fall back to full-text retrieval.
 
 ## v0.9.2 — 2026-07-11
 

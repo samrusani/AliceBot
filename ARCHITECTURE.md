@@ -2,7 +2,7 @@
 
 ## Scope Boundary
 - **Shipped baseline:** `v0.9.2` is the latest published pre-1.0 release. It hardens project-bound authorization, lifecycle consistency, backup/restore, installed-database upgrades, retrieval contracts, web dependencies, packaging, and release evidence, and carries the round-2..6 retrieval and memory features already in the changelog. It is tagged and published on PyPI and GitHub.
-- **Current execution posture:** `v0.9.3` is the current release candidate: a security and reliability hotfix over v0.9.2 (central lifecycle transition table, expire/unexpire row-locking, corrective migration 0084 for the migration-0083 identifier-reservation bug, project-scoped capture persistence, and hard people/time filter pagination). No `v0.9.3` work has shipped yet.
+- **Current execution posture:** `v0.9.4` is the current release candidate: a security and reliability hotfix over v0.9.2 that supersedes the withdrawn `v0.9.3` candidate. It carries the original five v0.9.3 fixes (central lifecycle transition table, expire/unexpire row-locking, corrective migration 0084 for the migration-0083 identifier-reservation bug, project-scoped capture persistence, and hard people/time filter pagination) and additionally resolves all nine P1 findings from the follow-up external audit that returned NO-GO on `v0.9.3` (serialized supersession-graph mutation with advisory lock and depth-fail-closed cycle guard, scope-aware content dedupe with connector/proposal scope propagation, deeper people/time filter scans, endpoint-fingerprinted embedding signatures, exact-ID embedding-presence reads for consolidation/rollups, authoritative rollup membership, iterative HNSW scan for filtered PostgreSQL vector search, a release eval that fails closed and propagates failure to the exit code, and a finalized-release-docs check). `v0.9.3` was an internal security-hotfix candidate that was withdrawn and never published; no `v0.9.3` or `v0.9.4` work has shipped yet.
 
 ## Current System Overview
 Alice is the continuity layer for AI agents: a modular continuity platform with shared continuity semantics across local, hosted, provider-runtime, CLI, MCP, Hermes-integrated, and imported-workflow surfaces.
@@ -162,7 +162,7 @@ Alice is the continuity layer for AI agents: a modular continuity platform with 
 - docs verification is part of feature completion, not cleanup work
 
 ## Current Architectural Posture
-- `v0.9.2` is the active published release boundary.
-- `v0.9.3` is the current release candidate. Release requires the canonical gates to pass against one exact clean source SHA and its installed artifacts.
+- `v0.9.2` is the active published release boundary and remains the latest published release until `v0.9.4` publishes.
+- `v0.9.4` is the current release candidate, superseding the withdrawn `v0.9.3` candidate. Release requires the canonical gates to pass against one exact clean source SHA and its installed artifacts.
 - Alice is now a broader continuity platform with provider/runtime portability, model packs, runnable external-builder integrations, pilot launch/admin support, and safe local logging defaults.
 - The continuity substrate remains the same system of record; the delivered work packages that substrate into practical adoption paths without changing the core continuity semantics.
