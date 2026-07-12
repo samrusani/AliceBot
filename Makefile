@@ -98,5 +98,13 @@ release-artifacts:
 
 # Canonical pre-publication gate. PostgreSQL must be available with the same
 # role-separated environment used by tests/integration.
+#
+# The release eval runs with --release-gate: a run that never exercises the
+# vector stage reports pass_fts_only and exits non-zero (fail closed), so the
+# gate cannot go green without measuring semantic/paraphrase retrieval quality.
+# Point ALICEBOT_EVAL_DATABASE_URL at a pgvector database and set the
+# ALICE_EMBEDDINGS_* provider variables so the vector stage actually runs; the
+# default in-memory SQLite URL is a fail-closed smoke only.
+ALICEBOT_EVAL_DATABASE_URL ?= sqlite:///:memory:
 release-check: release-identity release-static test-python test-longmemeval test-web release-artifacts
-	ALICEBOT_EVAL_DATABASE_URL=sqlite:///:memory: $(PYTHON) -m alicebot_api eval run --suite all
+	ALICEBOT_EVAL_DATABASE_URL=$(ALICEBOT_EVAL_DATABASE_URL) $(PYTHON) -m alicebot_api eval run --suite all --release-gate
