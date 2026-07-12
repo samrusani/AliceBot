@@ -1963,6 +1963,24 @@ class VNextRetrievalService:
             memory_candidate_limit *= vnext_coverage_query.COVERAGE_POOL_MULTIPLIER
         # ---- coverage mode (aggregation intent) end ----------------------
 
+        # People/time scope filters cannot all be pushed into the store query
+        # (people resolve through link edges + free-form metadata; the event
+        # window spans many row keys), so they run in Python over the store's
+        # top-N candidates (see _filter_rows_for_scope). With only a
+        # 2 * max_items window, a valid scoped row ranked behind a full window
+        # of non-matching decoys is never fetched, erasing a real result
+        # (audit P1 #5). Deepen the candidate window to the bounded
+        # scoped-overfetch cap when a scope is active — mirroring the
+        # sources/open-loop/contradiction stages — so post-filter survivors
+        # remain; _fused_candidates below still selects only max_items. The
+        # no-filter path (scope inactive) is untouched, so unscoped packs stay
+        # byte-identical.
+        if scope.active:
+            memory_candidate_limit = min(
+                SCOPED_ROW_OVERFETCH_LIMIT,
+                max(memory_candidate_limit, SCOPED_ROW_OVERFETCH_LIMIT),
+            )
+
         fts_rows, fts_source = self._memory_fts_rows(
             query=request.query,
             domains=domains,
