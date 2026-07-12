@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.9.3 — 2026-07-12
+
 - Lifecycle correctness: all memory lifecycle mutations (confirm, review, correct, undo, forget, expire/unexpire, supersession) now route through one central transition table (`vnext_lifecycle`) that rejects invalid transitions — a rejected or superseded row can no longer be confirmed back to active, `correct()` no longer promotes rows while leaving them unconfirmed/review-required, supersession `A → B → A` cycles are blocked, and `unexpire` cannot report active while the row stays stale.
 - Expire/unexpire now lock the row before policy evaluation, so a concurrent correction or supersession can no longer be overwritten by a stale snapshot (audit P1 #2).
 - Migration `20260712_0084`: corrects the migration-`0083` bug where retry/confirmation identifiers could be stranded on a deleted tombstone (leaving the live row unfindable and the key unusable); dedup now prefers the active row, and 0084 repairs databases already mis-upgraded by v0.9.2. SQLite bootstrap gets the same fix plus a corrective pass. `0083` is left unchanged.

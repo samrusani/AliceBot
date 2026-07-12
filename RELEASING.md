@@ -25,8 +25,13 @@ readback:
 
 1. Protect the `pypi` environment with required reviewers and a deployment
    branch policy limited to `main` or protected branches.
-2. Remove routine admin/bypass paths from the stable release route. Emergency
-   bypasses must be explicit and audited.
+2. Keep the required `main` status checks strict — tests, security scans, and
+   the protected-path guardrail — so no release commit reaches `main` without
+   passing them. This is a single-maintainer repository: the maintainer merges
+   release pull requests by administrative merge after those checks pass, which
+   is the audited release route. The controls below gate *what publishes*, not
+   *who approves the merge*; the attestation vouches for those controls, not
+   for a second-reviewer approval path.
 3. Protect stable `v*` tags from mutation or deletion.
 4. Enable immutable GitHub releases for the repository.
 5. Keep the required `main` checks strict, including tests, security scans,
@@ -35,10 +40,15 @@ readback:
    transcript, revoke and replace it at the provider. Do not paste or print the
    old or replacement value while checking that local `.env` files remain
    ignored by Git.
-7. After verifying items 1-6 by readback, set the repository variable
-   `ALICE_RELEASE_CONTROLS_ATTESTATION` to `v1`. The publish workflow fails
-   closed when this attestation is absent or different. Change or remove it if
-   the verified control state later changes.
+7. After verifying items 1 and 3-6 by readback, set the repository variable
+   `ALICE_RELEASE_CONTROLS_ATTESTATION` to `v1`. It vouches that the *enforced*
+   controls are in place — a protected `pypi` environment (required reviewer
+   plus deployment branch/tag policy), `v*` tag protection, immutable releases,
+   strict `main` checks, and the exact-SHA release check — and that no provider
+   credential remains exposed. It does not assert a bypass-free, multi-reviewer
+   merge path (see item 2). The publish workflow fails closed when this
+   attestation is absent or different. Change or remove it if the verified
+   control state later changes.
 
 The workflow cannot create these repository settings itself. An unprotected
 PyPI environment is a release blocker even when the YAML is correct.
@@ -109,8 +119,14 @@ new patch version rather than reusing the version.
 
 ## After Publication
 
-Verify the GitHub release, PyPI file hashes, and a clean install from PyPI.
-Then update remaining active control-document status language to say that the
-version is published. That truth change belongs in a separate, evidence-backed
-post-publication commit; the tagged changelog and release notes were already
-finalized before the tag and must not have claimed publication early.
+Verify the GitHub release, a clean install from PyPI, and the published file
+hashes against PyPI's integrity attestations (which bind each file to this
+repository, the tag, the workflow, the exact commit, the release event, and
+the `pypi` environment). Because immutable releases cannot take assets after
+publication, the durable checksum record lives in the repository: record the
+published wheel and sdist SHA-256 digests in
+`docs/release/vX.Y.Z-checksums.txt` as part of the post-publication commit,
+which also updates remaining active control-document status language to say
+the version is published. That truth change is a separate, evidence-backed
+commit; the tagged changelog and release notes were already finalized before
+the tag and must not have claimed publication early.
