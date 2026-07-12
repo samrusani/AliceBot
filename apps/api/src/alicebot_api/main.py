@@ -6728,6 +6728,7 @@ def create_vnext_source(
                 title=request.title,
                 domain=request.domain,
                 sensitivity=request.sensitivity,
+                project_scope=decision.effective_project_scope,
             ).to_record()
             if identity is not None:
                 append_policy_events(store, identity=identity, decision=decision, target_type="source", target_id=str(payload.get("source_id")))

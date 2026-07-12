@@ -175,6 +175,150 @@ def test_bootstrap_canonicalizes_legacy_duplicate_retry_identifiers() -> None:
         )
 
 
+def test_bootstrap_keeps_duplicate_retry_identifiers_on_live_row_over_tombstone() -> None:
+    """Audit P1 #3: dedup must not strand identifiers on a deleted row.
+
+    A legacy file may hold an older archived/deleted row and a newer active
+    row that share a retry (commit_digest) and confirmation (confirmation_id)
+    identifier. Runtime lookups filter ``deleted_at IS NULL``, so the live row
+    must retain the identifiers; the earliest-row rule strands them on the
+    tombstone where nothing can read them while the unique index blocks reuse.
+    """
+    conn = sqlite3.connect(":memory:")
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    conn.execute("DROP INDEX memories_user_commit_digest_unique_idx")
+    conn.execute("DROP INDEX memories_user_confirmation_id_unique_idx")
+    user_id = "00000000-0000-0000-0000-000000000241"
+    tombstone_id = "00000000-0000-0000-0000-000000000242"
+    live_id = "00000000-0000-0000-0000-000000000243"
+    conn.execute(
+        "INSERT INTO users (id, email) VALUES (?, ?)",
+        (user_id, "tombstone-retry@example.com"),
+    )
+    for memory_id, key, created_at, status, deleted_at in (
+        (tombstone_id, "retry.old", "2026-01-01T00:00:00Z", "archived", "2026-01-01T01:00:00Z"),
+        (live_id, "retry.new", "2026-01-02T00:00:00Z", "active", None),
+    ):
+        conn.execute(
+            """
+            INSERT INTO memories (
+              id, user_id, memory_key, value, status, source_event_ids,
+              memory_type, canonical_text, commit_digest, confirmation_id,
+              metadata_json, created_at, updated_at, deleted_at
+            )
+            VALUES (?, ?, ?, '{"text":"same retry"}', ?, '[]',
+                    'semantic', 'Same retry', 'duplicate-digest',
+                    'duplicate-confirmation',
+                    '{"agentic_memory":{"idempotency_key":"duplicate-digest","confirmation":{"confirmation_id":"duplicate-confirmation"}}}',
+                    ?, ?, ?)
+            """,
+            (memory_id, user_id, key, status, created_at, created_at, deleted_at),
+        )
+    conn.commit()
+
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+
+    # The live (non-deleted) row must keep the retry/confirmation identifiers.
+    live_digest, live_confirmation = conn.execute(
+        "SELECT commit_digest, confirmation_id FROM memories WHERE id = ?", (live_id,)
+    ).fetchone()
+    assert (live_digest, live_confirmation) == ("duplicate-digest", "duplicate-confirmation")
+    # The tombstone relinquishes them and records the live canonical row id.
+    tombstone_digest, tombstone_confirmation, tombstone_metadata = conn.execute(
+        "SELECT commit_digest, confirmation_id, metadata_json FROM memories WHERE id = ?",
+        (tombstone_id,),
+    ).fetchone()
+    assert (tombstone_digest, tombstone_confirmation) == (None, None)
+    assert live_id in tombstone_metadata
+
+
+def test_bootstrap_repairs_identifiers_left_on_tombstone_by_prior_bootstrap() -> None:
+    """The corrective pass repairs a file already mis-deduplicated by v0.9.2.
+
+    Simulates the state the shipped (buggy) dedup produced: the older deleted
+    row keeps the identifiers while the newer live row was cleared and points
+    back to the tombstone. Re-opening the file must move the identifiers to the
+    live row without needing the non-unique legacy indexes to still be present.
+    """
+    conn = sqlite3.connect(":memory:")
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    user_id = "00000000-0000-0000-0000-000000000251"
+    tombstone_id = "00000000-0000-0000-0000-000000000252"
+    live_id = "00000000-0000-0000-0000-000000000253"
+    conn.execute(
+        "INSERT INTO users (id, email) VALUES (?, ?)",
+        (user_id, "repair-retry@example.com"),
+    )
+    # Older archived row still holding the identifiers (the mis-assignment).
+    conn.execute(
+        """
+        INSERT INTO memories (
+          id, user_id, memory_key, value, status, source_event_ids,
+          memory_type, canonical_text, commit_digest, confirmation_id,
+          metadata_json, created_at, updated_at, deleted_at
+        )
+        VALUES (?, ?, 'retry.old', '{"text":"same retry"}', 'archived', '[]',
+                'semantic', 'Same retry', 'duplicate-digest',
+                'duplicate-confirmation',
+                '{"agentic_memory":{"idempotency_key":"duplicate-digest","confirmation":{"confirmation_id":"duplicate-confirmation"}}}',
+                '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z')
+        """,
+        (tombstone_id, user_id),
+    )
+    # Newer live row that the buggy dedup cleared, pointing back to the tombstone.
+    conn.execute(
+        """
+        INSERT INTO memories (
+          id, user_id, memory_key, value, status, source_event_ids,
+          memory_type, canonical_text, commit_digest, confirmation_id,
+          metadata_json, created_at, updated_at, deleted_at
+        )
+        VALUES (?, ?, 'retry.new', '{"text":"same retry"}', 'active', '[]',
+                'semantic', 'Same retry', NULL, NULL,
+                ?, '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z', NULL)
+        """,
+        (
+            live_id,
+            user_id,
+            json.dumps(
+                {
+                    "agentic_memory": {"confirmation": {}},
+                    "lifecycle_migration": {
+                        "duplicate_commit_digest_canonical_memory_id": tombstone_id,
+                        "duplicate_confirmation_id_canonical_memory_id": tombstone_id,
+                    },
+                }
+            ),
+        ),
+    )
+    conn.commit()
+
+    def _assert_repaired() -> None:
+        live_digest, live_confirmation, live_metadata = conn.execute(
+            "SELECT commit_digest, confirmation_id, metadata_json FROM memories WHERE id = ?",
+            (live_id,),
+        ).fetchone()
+        assert (live_digest, live_confirmation) == ("duplicate-digest", "duplicate-confirmation")
+        # The live canonical row no longer points at a tombstone.
+        live_meta = json.loads(live_metadata)
+        assert "duplicate_commit_digest_canonical_memory_id" not in live_meta.get(
+            "lifecycle_migration", {}
+        )
+        assert "duplicate_confirmation_id_canonical_memory_id" not in live_meta.get(
+            "lifecycle_migration", {}
+        )
+        tombstone_digest, tombstone_confirmation = conn.execute(
+            "SELECT commit_digest, confirmation_id FROM memories WHERE id = ?", (tombstone_id,)
+        ).fetchone()
+        assert (tombstone_digest, tombstone_confirmation) == (None, None)
+
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    _assert_repaired()
+    # Re-opening the repaired file is a safe no-op.
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    _assert_repaired()
+
+
 def test_bootstrap_promotes_and_reads_legacy_nested_multi_project_scope() -> None:
     conn = sqlite3.connect(":memory:")
     sqlite_schema.bootstrap_sqlite_schema(conn)

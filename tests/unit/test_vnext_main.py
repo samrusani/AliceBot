@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 from pathlib import Path
+import sqlite3
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -10,7 +11,10 @@ import anyio
 
 import apps.api.src.alicebot_api.main as main_module
 from alicebot_api.config import Settings
+from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
+from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_memory_version import memory_version_snapshot
+from alicebot_api.vnext_project_scope import memory_project_scope
 
 
 class FakeVNextStore:
@@ -824,6 +828,55 @@ def test_create_vnext_source_endpoint_captures_text(monkeypatch) -> None:
     assert payload["candidate_memory_count"] == 1
     assert list(store.sources.values())[0]["domain"] == "project"
     assert store.memories[0]["canonical_text"] == "vNext source API preserves provenance."
+
+
+def _sqlite_vnext_store() -> SQLiteVNextStore:
+    conn = sqlite3.connect(":memory:")
+    bootstrap_sqlite_schema(conn)
+    user_id = str(uuid4())
+    ensure_sqlite_user(conn, user_id, "capture-scope@example.com")
+    return SQLiteVNextStore(conn, user_id)
+
+
+def test_create_vnext_source_threads_project_scope_into_captured_memory(monkeypatch) -> None:
+    # Audit P1 #4: the HTTP handler validates the request's project scope but,
+    # before the fix, dropped it on the way into capture -- the memory persisted
+    # with an empty scope, so the owning project's filtered recall found nothing
+    # while unscoped recall found it. Uses the real SQLite store so the recall
+    # filter (search_memories_fts projects clause) is exercised end to end.
+    store = _sqlite_vnext_store()
+    _install_fake_vnext_store(monkeypatch, store)
+
+    response = main_module.create_vnext_source(
+        main_module.VNextSourceCaptureRequest(
+            user_id=uuid4(),
+            raw_text="Decision: The Helios launch ships behind a staged rollout flag.",
+            title="Helios launch decision",
+            domain="project",
+            sensitivity="internal",
+            project_scope=["project-helios"],
+        )
+    )
+    assert response.status_code == 201
+    assert json.loads(response.body)["status"] == "imported"
+
+    candidates = store.list_memories(status="candidate")
+    assert candidates, "capture must promote at least one candidate memory"
+    assert memory_project_scope(candidates[0]) == ("project-helios",)
+    for memory in candidates:
+        store.update_memory(memory_id=str(memory["id"]), patch={"status": "active"}, actor_type="system")
+
+    owning = store.search_memories_fts(
+        query="Helios staged rollout", projects=("project-helios",), limit=10
+    )
+    other = store.search_memories_fts(
+        query="Helios staged rollout", projects=("project-decoy",), limit=10
+    )
+    unscoped = store.search_memories_fts(query="Helios staged rollout", limit=10)
+
+    assert len(owning) == 1, "the owning project's filtered recall must retrieve the captured memory"
+    assert len(other) == 0, "another project must not see the captured memory"
+    assert len(unscoped) == 1
 
 
 def test_vnext_connector_endpoints_list_and_sync_payloads(monkeypatch) -> None:

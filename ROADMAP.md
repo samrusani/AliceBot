@@ -22,17 +22,17 @@
 
 ## Release Candidate
 
-- `v0.10.0`: current development-cycle candidate. It opens the next feature
-  cycle — the memory frontier: typed consolidation cards, embedding
-  quantization for the SQLite on-ramp, a local-embeddings preset, a CPU
-  cross-encoder pack compressor, and the provenance-grounded-memory technical
-  report follow-through. No `v0.10.0` work has shipped yet; it is not tagged
-  or published until one exact clean SHA passes the canonical release check
-  and review.
+- `v0.9.3`: current release candidate — a security and reliability hotfix
+  over v0.9.2. It fixes lifecycle state-machine defects (one central
+  transition table), expire/unexpire row-locking races, a migration-0083
+  identifier-reservation bug (corrective migration 0084), project-scoped
+  capture persistence, and hard people/time filter pagination. No `v0.9.3`
+  work has shipped yet; it is not tagged or published until one exact clean
+  SHA passes the canonical release check and review.
 
 ## Next
 
-In rough priority order for and beyond v0.10.0:
+In rough priority order for and beyond v0.9.3:
 
 1. **Multi-session synthesis** — still the weakest published LongMemEval
    category at 58.6%. Aggregation-aware retrieval now ships; the next work is

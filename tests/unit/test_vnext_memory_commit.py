@@ -1608,3 +1608,160 @@ def test_expire_and_unexpire_validation_failures_leave_no_writes() -> None:
     assert store.revisions == []
     for row in store.memories.values():
         assert row.get("valid_to") is None
+
+
+# -- lifecycle transition table: reproductions for audit P1 #1 / #2 ------------
+#
+# A single centrally enforced transition table (vnext_lifecycle) must reject
+# impossible/reversible transitions on every backend. Each test below first
+# reproduces the audit's exact scenario against the pre-fix code (where it
+# fails), then locks in the corrected behavior.
+
+
+def test_confirm_refuses_a_row_a_review_already_rejected() -> None:
+    """Audit #1(a): confirmation_required -> rejected -> confirm must NOT reactivate.
+
+    A dashboard/review rejection retires the row (status -> rejected) but the
+    nested inline-confirmation flag is left ``pending`` (mcp_tools.py:2081).
+    confirm() must verify the row's lifecycle status, not just the flag.
+    """
+    store = _live_sqlite_store()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+
+    pending = service.commit(
+        identity=identity,
+        request=_request(domain="health", sensitivity="confidential", confidence=0.95),
+    )
+    assert pending["status"] == "confirmation_required"
+    memory_id = str(pending["memory"]["id"])
+    confirmation_id = pending["confirmation_id"]
+
+    # Review rejection retires the row while leaving the nested flag pending.
+    store.update_memory(memory_id=memory_id, patch={"status": "rejected"}, actor_type="user")
+
+    with pytest.raises(VNextMemoryCommitValidationError):
+        service.confirm(identity=identity, confirmation_id=confirmation_id)
+    assert store.get_memory(memory_id)["status"] == "rejected"
+
+
+def test_confirm_refuses_a_superseded_row_and_never_yields_two_active_memories() -> None:
+    """Audit #1(b): confirmation_required -> superseded -> confirm must NOT reactivate.
+
+    Otherwise the superseded row and its replacement are both active and
+    contradictory.
+    """
+    store = _live_sqlite_store()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+
+    pending = service.commit(
+        identity=identity,
+        request=_request(domain="health", sensitivity="confidential", confidence=0.95),
+    )
+    assert pending["status"] == "confirmation_required"
+    pending_id = str(pending["memory"]["id"])
+    confirmation_id = pending["confirmation_id"]
+
+    replacement_id = _commit_active(
+        service, identity, title="Replacement", text="The confirmed replacement fact."
+    )
+    # Review supersede retires the pending row, leaving the nested flag pending.
+    store.update_memory(
+        memory_id=pending_id,
+        patch={"status": "superseded", "superseded_by": replacement_id},
+        actor_type="user",
+    )
+
+    with pytest.raises(VNextMemoryCommitValidationError):
+        service.confirm(identity=identity, confirmation_id=confirmation_id)
+
+    assert store.get_memory(pending_id)["status"] == "superseded"
+    active_ids = {str(row["id"]) for row in store.list_memories(status="active")}
+    assert pending_id not in active_ids
+    assert replacement_id in active_ids
+
+
+def test_correct_promoting_a_review_candidate_confirms_it_and_clears_review() -> None:
+    """Audit #1: correct() must not leave a promoted row unconfirmed / review_required.
+
+    A dashboard-review candidate corrected into ``active`` must also carry a
+    consistent confirmed/reviewed state.
+    """
+    store = _live_sqlite_store()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+
+    review = service.commit(
+        identity=identity,
+        request=_request(
+            domain="professional", sensitivity="internal", source_type="browser_clip"
+        ),
+    )
+    assert review["status"] == "review_required"
+    memory_id = str(review["memory"]["id"])
+    seeded = store.get_memory(memory_id)
+    assert seeded["status"] == "candidate"
+    assert seeded["confirmation_status"] == "unconfirmed"
+    assert seeded["metadata_json"]["review_required"] is True
+
+    corrected = service.correct(
+        identity=identity,
+        memory_id=memory_id,
+        canonical_text="Corrected and reviewed fact.",
+        reason="Reviewer rewrote the candidate.",
+    )
+    assert corrected["memory"]["status"] == "active"
+    row = store.get_memory(memory_id)
+    assert row["confirmation_status"] == "confirmed"
+    assert row["metadata_json"].get("review_required") is False
+
+
+def test_undo_cannot_supersede_back_to_an_ancestor() -> None:
+    """Audit #1: supersession must not permit A -> B -> A cycles."""
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+    a_id = _commit_active(service, identity, title="A", text="Version A of the fact.")
+    b_id = _commit_active(service, identity, title="B", text="Version B of the fact.")
+
+    service.undo(identity=identity, memory_id=a_id, superseded_by_memory_id=b_id)
+
+    # Re-superseding B back to its own predecessor A would close an A<->B cycle.
+    with pytest.raises(VNextMemoryCommitValidationError):
+        service.undo(identity=identity, memory_id=b_id, superseded_by_memory_id=a_id)
+
+    assert store.memories[b_id]["status"] == "active"
+    assert store.memories[a_id]["status"] == "superseded"
+
+
+def test_unexpire_restores_a_stale_expired_row_to_active_and_retrievable() -> None:
+    """Audit #2: unexpire must not report ``active`` while the row stays stale.
+
+    The staleness sweep marks long-expired rows ``stale`` (unretrievable).
+    Clearing the validity window must bring the row back to a retrievable
+    ``active`` state that matches the reported status.
+    """
+    store = _live_sqlite_store()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+    memory_id = _commit_active(
+        service, identity, title="Cadence", text="Weekly planning cadence on Mondays."
+    )
+    service.expire(memory_id, reason="Paused after the reorg.")
+    # The staleness sweep marks the expired row stale; it is now unretrievable.
+    store.update_memory(memory_id=memory_id, patch={"status": "stale"}, actor_type="scheduler")
+    assert not any(
+        str(hit["id"]) == memory_id
+        for hit in store.search_memories(query="weekly planning cadence mondays")
+    )
+
+    restored = service.unexpire(memory_id, reason="Cadence reinstated.")
+
+    assert restored["status"] == "active"
+    row = store.get_memory(memory_id)
+    assert row["status"] == "active"
+    assert any(
+        str(hit["id"]) == memory_id
+        for hit in store.search_memories(query="weekly planning cadence mondays")
+    )

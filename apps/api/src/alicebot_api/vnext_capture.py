@@ -23,6 +23,7 @@ from alicebot_api.vnext_entities import (
     store_supports_entity_linking,
 )
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_project_scope import normalize_project_scope
 from alicebot_api.vnext_repositories import JsonObject
 
 
@@ -118,6 +119,11 @@ class SourceCaptureInput:
     external_id: str | None = None
     domain: str = "unknown"
     sensitivity: str = "unknown"
+    # Effective project scope for the capture. Persisted onto the source and
+    # every promoted candidate memory so the owning project's filtered recall
+    # retrieves it and other projects are scoped out. Empty means unscoped,
+    # which keeps the byte-identical pre-scope metadata shape.
+    project_scope: tuple[str, ...] = ()
     captured_at: str | None = None
     source_created_at: str | None = None
     source_modified_at: str | None = None
@@ -504,6 +510,7 @@ class VNextCaptureService:
         title: str | None = None,
         domain: str = "unknown",
         sensitivity: str = "unknown",
+        project_scope: tuple[str, ...] = (),
         metadata_json: JsonObject | None = None,
     ) -> CaptureResult:
         return self.capture_source(
@@ -513,6 +520,7 @@ class VNextCaptureService:
                 raw_text=raw_text,
                 domain=domain,
                 sensitivity=sensitivity,
+                project_scope=tuple(project_scope),
                 metadata_json=metadata_json or {},
             )
         )
@@ -551,6 +559,16 @@ class VNextCaptureService:
         try:
             normalized_text = normalize_text(source_input.raw_text)
             content_hash = content_hash_for_text(normalized_text)
+            # Effective project scope, from the dedicated field with a
+            # fallback to any scope already carried in metadata_json (the
+            # connector path historically threads scope there). Empty scope
+            # injects no key, keeping scope-free captures byte-identical.
+            project_scope = normalize_project_scope(
+                source_input.project_scope or source_input.metadata_json.get("project_scope")
+            )
+            project_scope_metadata: JsonObject = (
+                {"project_scope": list(project_scope)} if project_scope else {}
+            )
             duplicate = self.store.get_source_by_content_hash(content_hash)
             if duplicate is not None:
                 source_id = str(duplicate["id"])
@@ -588,6 +606,7 @@ class VNextCaptureService:
                     "sensitivity": source_input.sensitivity,
                     "metadata_json": {
                         **source_input.metadata_json,
+                        **project_scope_metadata,
                         "generated_by": self.actor_type,
                         "agent_identity": self.agent_identity,
                         "agent_id": self.actor_id if self.actor_type == "agent" else None,
@@ -670,6 +689,7 @@ class VNextCaptureService:
                             "extraction_rule": candidate.extraction_rule,
                             "capture_content_hash": content_hash,
                             **provenance_metadata,
+                            **project_scope_metadata,
                             "generated_by": self.actor_type,
                             "agent_identity": self.agent_identity,
                             "agent_id": self.actor_id if self.actor_type == "agent" else None,
