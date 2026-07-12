@@ -14,11 +14,14 @@ import alicebot_api.mcp_server as mcp_server
 import alicebot_api.mcp_tools as mcp_tools_module
 import alicebot_api.vnext_retrieval as vnext_retrieval_module
 from alicebot_api.mcp_tools import MCPRuntimeContext, MCPToolError, MCPToolNotFoundError, call_mcp_tool, list_mcp_tools
+from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
+from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_embeddings import (
     EMBEDDINGS_API_KEY_ENV,
     EMBEDDINGS_BASE_URL_ENV,
     EMBEDDINGS_MODEL_ENV,
 )
+from alicebot_api.vnext_project_scope import memory_project_scope
 from alicebot_api.vnext_retrieval import VECTOR_STAGE_DISABLED_NO_PROVIDER, VECTOR_STAGE_ENABLED
 
 
@@ -2229,6 +2232,56 @@ def test_alice_capture_stores_reviewable_source_evidence(monkeypatch, core_surfa
     assert payload["chunk_count"] >= 1
     assert store.sources[0]["title"] == "MCP surface decision"
     assert any(event["event_type"] == "source.captured" for event in store.events)
+
+
+def _sqlite_mcp_store() -> SQLiteVNextStore:
+    conn = sqlite3.connect(":memory:")
+    bootstrap_sqlite_schema(conn)
+    user_id = str(uuid4())
+    ensure_sqlite_user(conn, user_id, "capture-scope-mcp@example.com")
+    return SQLiteVNextStore(conn, user_id)
+
+
+def test_alice_capture_threads_project_scoped_agent_scope_into_recall(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    # Audit P1 #4: a project-scoped agent's alice_capture validated the bound
+    # scope but, before the fix, dropped it into capture -- the memory persisted
+    # with an empty scope, so the owning project's filtered recall found nothing.
+    # A real SQLite store exercises the recall filter end to end.
+    store = _sqlite_mcp_store()
+    _patch_vnext_store(monkeypatch, store)
+    context = _resolved_scoped_agent_context(profile="project_scoped_agent", project="project-helios")
+
+    payload = call_mcp_tool(
+        context,
+        name="alice_capture",
+        arguments={
+            "raw_text": "Decision: The Helios launch ships behind a staged rollout flag.",
+            "title": "Helios launch decision",
+            "domain": "project",
+            "sensitivity": "internal",
+        },
+    )
+    assert payload["status"] == "imported"
+
+    candidates = store.list_memories(status="candidate")
+    assert candidates, "capture must promote at least one candidate memory"
+    assert memory_project_scope(candidates[0]) == ("project-helios",)
+    for memory in candidates:
+        store.update_memory(memory_id=str(memory["id"]), patch={"status": "active"}, actor_type="system")
+
+    owning = store.search_memories_fts(
+        query="Helios staged rollout", projects=("project-helios",), limit=10
+    )
+    other = store.search_memories_fts(
+        query="Helios staged rollout", projects=("project-decoy",), limit=10
+    )
+    unscoped = store.search_memories_fts(query="Helios staged rollout", limit=10)
+
+    assert len(owning) == 1, "the owning project's filtered recall must retrieve the captured memory"
+    assert len(other) == 0, "another project must not see the captured memory"
+    assert len(unscoped) == 1
 
 
 def test_alice_open_loops_lists_and_manages_loops(monkeypatch, core_surface) -> None:

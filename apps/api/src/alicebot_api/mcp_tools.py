@@ -3262,6 +3262,10 @@ def _handle_alice_vnext_capture(context: MCPRuntimeContext, arguments: Mapping[s
                 title=_parse_optional_text(arguments, "title"),
                 domain=domain,
                 sensitivity=sensitivity,
+                # Thread the validated effective project scope into capture so
+                # a project-scoped agent's memory is retrievable by that
+                # project's filtered recall (audit P1 #4).
+                project_scope=decision.effective_project_scope,
             ).to_record()
     if blocked_decision is not None:
         _raise_mcp_policy_blocked(blocked_decision)
