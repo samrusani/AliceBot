@@ -1,6 +1,6 @@
 # Releasing Alice
 
-`v0.9.1` is the latest published release. `v0.9.2` is a release candidate
+`v0.9.2` is the latest published release. `v0.10.0` is a release candidate
 until the procedure below has completed on one exact commit. Preparing a
 candidate does not authorize a tag, GitHub release, or PyPI upload.
 
