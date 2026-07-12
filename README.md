@@ -151,7 +151,7 @@ Alice is pre-1.0. What that means in practice:
 - [Known limitations](docs/alpha/known-limitations.md)
 - [Backup and restore](docs/alpha/backup-and-restore.md)
 - [Security and privacy](docs/alpha/security-and-privacy.md)
-- [v0.9.2 release-candidate notes](docs/release/v0.9.2-release-notes.md)
+- [v0.9.2 release notes](docs/release/v0.9.2-release-notes.md)
 - [Release procedure](RELEASING.md)
 - [Architecture](ARCHITECTURE.md)
 - [Roadmap](ROADMAP.md)
