@@ -20,6 +20,7 @@ from alicebot_api.vnext_capture import (
     order_candidates_for_promotion,
 )
 from alicebot_api.vnext_entities import ENTITY_MENTION_EDGE_TYPE
+from alicebot_api.vnext_project_scope import memory_project_scope
 
 
 class InMemoryVNextCaptureStore:
@@ -624,3 +625,78 @@ def test_cross_batch_dedupe_degrades_when_store_lacks_list_memories() -> None:
     second = service.capture_text(f"Chat session s9 on 2026/07/08.\n\n{_OMEGA_LINE}\n\nExtra line.")
 
     assert first.status == "imported" and second.status == "imported"
+
+
+# -- project-scoped capture threads its effective scope end-to-end (audit P1 #4) ------
+#
+# A project-scoped capture must persist its effective project scope onto the
+# source and every promoted candidate memory so the owning project's filtered
+# recall retrieves it while other projects are scoped out. Before the
+# capture-scope fix ``SourceCaptureInput`` carried no project field, so the
+# scope was silently dropped: the memory persisted with an empty project
+# scope, project-filtered recall returned 0, and only unscoped recall found it.
+
+_PROJECT_SCOPE_LINE = "Decision: The Helios launch ships behind a staged rollout flag."
+
+
+def test_project_scoped_capture_persists_scope_onto_source_and_memory() -> None:
+    store = _sqlite_store()
+    service = VNextCaptureService(store)
+
+    result = service.capture_text(
+        _PROJECT_SCOPE_LINE,
+        title="Helios launch decision",
+        domain="project",
+        sensitivity="internal",
+        project_scope=("project-helios",),
+    )
+
+    assert result.status == "imported"
+    assert result.candidate_memory_count == 1
+
+    source = store.get_source(result.source_id)
+    assert memory_project_scope(source) == ("project-helios",)
+
+    memory = store.list_memories(status="candidate")[0]
+    assert memory_project_scope(memory) == ("project-helios",)
+
+
+def test_project_scoped_capture_is_recallable_by_its_project_and_scoped_out_of_others() -> None:
+    store = _sqlite_store()
+    service = VNextCaptureService(store)
+
+    service.capture_text(
+        _PROJECT_SCOPE_LINE,
+        title="Helios launch decision",
+        domain="project",
+        sensitivity="internal",
+        project_scope=("project-helios",),
+    )
+    for memory in store.list_memories(status="candidate"):
+        store.update_memory(memory_id=str(memory["id"]), patch={"status": "active"}, actor_type="system")
+
+    owning = store.search_memories_fts(
+        query="Helios staged rollout", projects=("project-helios",), limit=10
+    )
+    other = store.search_memories_fts(
+        query="Helios staged rollout", projects=("project-other",), limit=10
+    )
+    unscoped = store.search_memories_fts(query="Helios staged rollout", limit=10)
+
+    assert len(owning) == 1, "the owning project's filtered recall must retrieve its captured memory"
+    assert len(other) == 0, "a different project's filtered recall must not see the memory"
+    assert len(unscoped) == 1
+
+
+def test_capture_without_project_scope_keeps_empty_scope_metadata() -> None:
+    """Scope-free captures stay byte-identical: no project_scope key is injected."""
+    store = _sqlite_store()
+    service = VNextCaptureService(store)
+
+    result = service.capture_text(_PROJECT_SCOPE_LINE, title="Helios launch decision")
+
+    source = store.get_source(result.source_id)
+    memory = store.list_memories(status="candidate")[0]
+    assert "project_scope" not in source["metadata_json"]
+    assert "project_scope" not in memory["metadata_json"]
+    assert memory_project_scope(memory) == ()
