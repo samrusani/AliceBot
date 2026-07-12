@@ -2090,7 +2090,13 @@ class VNextRollupService:
         generated_by: str,
         trace_id: str | None,
     ) -> JsonObject:
-        member_ids = [str(instance["memory_id"]) for instance in instances]
+        # Authoritative membership is the FULL group, not the truncated display
+        # instances. Persisting only the displayed subset (max_instances_per_card)
+        # as cluster_member_ids made the stable-identity comparison recompute the
+        # full set every run, so any group larger than the display cap never
+        # matched its accepted card and re-proposed a revision (and collided on
+        # the digest-keyed memory_key) forever (audit 2 P1 #6).
+        member_ids = [str(member.get("id")) for member in group.members]
         members_by_id = {str(member.get("id")): member for member in group.members}
         member_snapshots = [
             memory_version_snapshot(members_by_id[member_id])
