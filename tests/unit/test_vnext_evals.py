@@ -80,6 +80,31 @@ def _hopeless_retrieval_fn(query: str, *, limit: int) -> dict[str, object]:
     return {"ranked_memory_keys": [], "vector_stage": "enabled"}
 
 
+def _fts_only_retrieval_fn(corpus: dict[str, object]):
+    """Mimic a no-embedding-provider run: lexical hits land, paraphrases miss.
+
+    The ``vector_stage`` marker matches production's disabled label so the
+    suite classifies the run as ``fts_only``.
+    """
+    expected_by_query = {
+        str(query["query"]): (
+            str(query["expected_memory_key"]),
+            str(query.get("subset", SUBSET_LEXICAL_OVERLAP)),
+        )
+        for query in corpus["queries"]
+    }
+
+    def _retrieve(query: str, *, limit: int) -> dict[str, object]:
+        expected_key, subset = expected_by_query[query]
+        ranked = [expected_key] if subset == SUBSET_LEXICAL_OVERLAP else []
+        return {
+            "ranked_memory_keys": ranked,
+            "vector_stage": "disabled: no embedding provider configured",
+        }
+
+    return _retrieve
+
+
 # --------------------------------------------------------------------------
 # Corpus properties
 # --------------------------------------------------------------------------
@@ -232,6 +257,47 @@ def test_paraphrase_target_not_enforced_when_vector_stage_degraded() -> None:
     # The degraded paraphrase numbers are still reported, not hidden.
     assert suite["metrics"]["subsets"][SUBSET_PARAPHRASE]["recall_at_5"] == 0.0
     assert suite["status"] == "pass"  # lexical subset met its target
+
+
+def test_release_gate_fts_only_is_not_reported_as_unqualified_pass() -> None:
+    # Reproduction for audit P1 #8: without the vector stage the
+    # release-designated eval must NOT masquerade as a full "pass". The
+    # dev-facing run stays "pass" (lexical targets met), but the canonical
+    # release gate downgrades to "pass_fts_only" because paraphrase/semantic
+    # quality was never measured.
+    corpus = {
+        "queries": [
+            {"query_key": "q-1", "query": "alpha", "expected_memory_key": "m-1", "subset": SUBSET_LEXICAL_OVERLAP},
+            {"query_key": "q-2", "query": "gamma", "expected_memory_key": "m-3", "subset": SUBSET_PARAPHRASE},
+        ]
+    }
+    retrieval_fn = _fts_only_retrieval_fn(corpus)
+
+    dev = run_retrieval_quality_eval(None, retrieval_fn=retrieval_fn, corpus=corpus)
+    gated = run_retrieval_quality_eval(None, retrieval_fn=retrieval_fn, corpus=corpus, release_gate=True)
+
+    # Dev-facing behavior is preserved: an fts_only lexical-only run is a pass.
+    assert dev["status"] == "pass"
+    # The canonical release gate refuses to call it an unqualified pass.
+    assert gated["status"] != "pass"
+    assert gated["status"] == "pass_fts_only"
+    assert gated["metrics"]["paraphrase_targets_enforced"] is False
+    # Per-case fields are preserved.
+    case_statuses = {case["case_key"]: case["status"] for case in gated["cases"]}
+    assert case_statuses == {"q-1": "pass", "q-2": "fail"}
+
+
+def test_run_vnext_evals_release_gate_downgrades_fts_only_aggregate() -> None:
+    corpus = generate_vnext_benchmark_corpus()
+    retrieval_fn = _fts_only_retrieval_fn(corpus)
+
+    dev = run_vnext_evals(suite="retrieval_quality", retrieval_fn=retrieval_fn)
+    gated = run_vnext_evals(suite="retrieval_quality", retrieval_fn=retrieval_fn, release_gate=True)
+
+    # Dev aggregate keeps the legacy fts_only "pass"; the release gate does not.
+    assert dev["status"] == "pass"
+    assert gated["status"] != "pass"
+    assert gated["status"] == "pass_fts_only"
 
 
 # --------------------------------------------------------------------------

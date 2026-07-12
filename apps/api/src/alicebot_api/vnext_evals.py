@@ -806,6 +806,7 @@ def run_retrieval_quality_eval(
     corpus: JsonObject | None = None,
     recall_limit: int = RETRIEVAL_QUALITY_RECALL_LIMIT,
     backend: str | None = None,
+    release_gate: bool = False,
 ) -> JsonObject:
     """Execute the retrieval-quality suite against the production pipeline.
 
@@ -817,6 +818,13 @@ def run_retrieval_quality_eval(
     ``backend`` labels the run in the metrics ("postgres" / "sqlite");
     when omitted it is inferred from the store type, and injected
     ``retrieval_fn`` runs are labelled "injected".
+
+    ``release_gate`` marks a canonical/release-designated run. In that mode a
+    run that never exercised the vector stage (so the paraphrase/semantic
+    target was not enforced) is reported as ``"pass_fts_only"`` instead of an
+    unqualified ``"pass"`` -- the release gate cannot be green without
+    measuring semantic retrieval quality. Dev-facing runs (the default) keep
+    their existing ``"pass"`` semantics.
     """
     resolved_corpus = corpus if corpus is not None else generate_vnext_benchmark_corpus()
     queries = [
@@ -920,6 +928,7 @@ def run_retrieval_quality_eval(
         "vector_stages": sorted(vector_stages),
         "retrieval_mode": retrieval_mode,
         "paraphrase_targets_enforced": vector_stage_active,
+        "release_gate": release_gate,
         "subsets": {
             SUBSET_LEXICAL_OVERLAP: lexical_metrics,
             SUBSET_PARAPHRASE: paraphrase_metrics,
@@ -929,10 +938,17 @@ def run_retrieval_quality_eval(
     if seeding is not None:
         metrics["seeding"] = seeding
 
+    if all(checks.values()):
+        # A release-designated run that never exercised the vector stage did not
+        # measure paraphrase/semantic quality, so it cannot claim a full pass.
+        status = "pass_fts_only" if (release_gate and not vector_stage_active) else "pass"
+    else:
+        status = "fail"
+
     return {
         "suite_key": RETRIEVAL_QUALITY_SUITE_KEY,
         "title": "Retrieval quality (production hybrid pipeline)",
-        "status": "pass" if all(checks.values()) else "fail",
+        "status": status,
         "targets": deepcopy(RETRIEVAL_QUALITY_TARGETS),
         "metrics": metrics,
         "cases": cases,
@@ -1027,12 +1043,17 @@ def _run_retrieval_quality_suite(
     corpus: JsonObject,
     store: object | None,
     retrieval_fn: RetrievalFn | None,
+    release_gate: bool = False,
 ) -> JsonObject:
     if store is not None or retrieval_fn is not None:
-        return run_retrieval_quality_eval(store, retrieval_fn=retrieval_fn, corpus=corpus)
+        return run_retrieval_quality_eval(
+            store, retrieval_fn=retrieval_fn, corpus=corpus, release_gate=release_gate
+        )
 
     def _run(live_store: object, *, backend: str | None = None) -> JsonObject:
-        return run_retrieval_quality_eval(live_store, corpus=corpus, backend=backend)
+        return run_retrieval_quality_eval(
+            live_store, corpus=corpus, backend=backend, release_gate=release_gate
+        )
 
     return _run_suite_against_live_store(run_with_store=_run, skipped=_skipped_retrieval_suite)
 
@@ -2693,12 +2714,20 @@ def run_vnext_evals(
     store: object | None = None,
     retrieval_fn: RetrievalFn | None = None,
     now_fn: Callable[[], datetime] | None = None,
+    release_gate: bool = False,
 ) -> JsonObject:
     """Run the vNext eval suites and assemble an honest report.
 
     Overall ``status`` is ``"pass"`` only when every *executed* suite passed;
     skipped suites are listed separately and never counted as a pass. When no
     suite could execute at all the report status is ``"skipped"``.
+
+    ``release_gate`` marks a canonical/release-designated run. In that mode the
+    retrieval-quality suite refuses to report an unqualified ``"pass"`` when the
+    vector/paraphrase gate never ran (it reports ``"pass_fts_only"``), and the
+    aggregate status is ``"pass_fts_only"`` whenever an executed suite carries
+    that status and none hard-failed -- so the release gate can never be green
+    without measuring semantic retrieval quality.
     """
     corpus = load_vnext_benchmark_corpus(corpus_path)
     if corpus.get("schema_version") != VNEXT_EVAL_CORPUS_SCHEMA_VERSION:
@@ -2710,18 +2739,27 @@ def run_vnext_evals(
     suites: list[JsonObject] = []
     for suite_key in suite_keys:
         if suite_key == RETRIEVAL_QUALITY_SUITE_KEY:
-            suites.append(_run_retrieval_quality_suite(corpus=corpus, store=store, retrieval_fn=retrieval_fn))
+            suites.append(
+                _run_retrieval_quality_suite(
+                    corpus=corpus, store=store, retrieval_fn=retrieval_fn, release_gate=release_gate
+                )
+            )
         elif suite_key in _MEMORY_QUALITY_SUITE_RUNNERS:
             suites.append(_run_memory_quality_suite(suite_key, store=store))
 
     executed_suites = [suite_report for suite_report in suites if suite_report["status"] != "skipped"]
     skipped_suites = [suite_report for suite_report in suites if suite_report["status"] == "skipped"]
+    executed_statuses = [suite_report["status"] for suite_report in executed_suites]
     if corpus_validation["status"] != "pass":
         status = "fail"
     elif not executed_suites:
         status = "skipped"
-    elif all(suite_report["status"] == "pass" for suite_report in executed_suites):
+    elif all(suite_status == "pass" for suite_status in executed_statuses):
         status = "pass"
+    elif all(suite_status in {"pass", "pass_fts_only"} for suite_status in executed_statuses):
+        # No hard failures, but at least one suite could not measure semantic
+        # quality (fts_only under the release gate): not an unqualified pass.
+        status = "pass_fts_only"
     else:
         status = "fail"
 
@@ -2737,6 +2775,7 @@ def run_vnext_evals(
         "generated_at": _generated_at(now_fn),
         "suite": requested_suite,
         "status": status,
+        "release_gate": release_gate,
         "targets": deepcopy(VNEXT_ACCEPTANCE_TARGETS),
         "corpus": {
             "schema_version": corpus.get("schema_version"),

@@ -813,6 +813,52 @@ def test_agent_keys_cli_revoke_rejects_unknown_and_already_revoked_keys(monkeypa
     assert "already revoked" in capsys.readouterr().err
 
 
+def _stub_eval_report(status: str) -> dict[str, object]:
+    return {
+        "schema_version": "vnext_eval_report_v1",
+        "status": status,
+        "suites": [],
+        "summary": {"status": status},
+    }
+
+
+def test_eval_run_cli_exits_nonzero_when_report_status_is_fail(monkeypatch, capsys) -> None:
+    # Reproduction for audit P1 #8: `alice eval run` must not exit 0 when the
+    # emitted report status is "fail".
+    monkeypatch.setattr(cli_module, "run_vnext_evals", lambda **kwargs: _stub_eval_report("fail"))
+
+    exit_code = cli_module.main(["eval", "run", "--suite", "all"])
+
+    assert exit_code == 1
+    # JSON output contract is preserved: the report still prints to stdout.
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["report"]["status"] == "fail"
+
+
+def test_eval_run_cli_release_gate_fts_only_exits_nonzero(monkeypatch, capsys) -> None:
+    def _fake_run(**kwargs):
+        assert kwargs.get("release_gate") is True
+        return _stub_eval_report("pass_fts_only")
+
+    monkeypatch.setattr(cli_module, "run_vnext_evals", _fake_run)
+
+    exit_code = cli_module.main(["eval", "run", "--suite", "all", "--release-gate"])
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["report"]["status"] == "pass_fts_only"
+
+
+def test_eval_run_cli_exits_zero_on_pass(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli_module, "run_vnext_evals", lambda **kwargs: _stub_eval_report("pass"))
+
+    exit_code = cli_module.main(["eval", "run", "--suite", "all"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["report"]["status"] == "pass"
+
+
 def test_vnext_connector_cli_lists_and_ingests_payload_file(monkeypatch, tmp_path: Path) -> None:
     store = FakeVNextCliStore()
     payload_path = tmp_path / "clips.json"
