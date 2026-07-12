@@ -2,7 +2,7 @@
 
 ## Scope Boundary
 - **Shipped baseline:** `v0.9.2` is the latest published pre-1.0 release. It hardens project-bound authorization, lifecycle consistency, backup/restore, installed-database upgrades, retrieval contracts, web dependencies, packaging, and release evidence, and carries the round-2..6 retrieval and memory features already in the changelog. It is tagged and published on PyPI and GitHub.
-- **Current execution posture:** `v0.10.0` is the current development-cycle candidate. Its scope is the next feature cycle and no `v0.10.0` work has shipped yet.
+- **Current execution posture:** `v0.9.3` is the current release candidate: a security and reliability hotfix over v0.9.2 (central lifecycle transition table, expire/unexpire row-locking, corrective migration 0084 for the migration-0083 identifier-reservation bug, project-scoped capture persistence, and hard people/time filter pagination). No `v0.9.3` work has shipped yet.
 
 ## Current System Overview
 Alice is the continuity layer for AI agents: a modular continuity platform with shared continuity semantics across local, hosted, provider-runtime, CLI, MCP, Hermes-integrated, and imported-workflow surfaces.
@@ -163,6 +163,6 @@ Alice is the continuity layer for AI agents: a modular continuity platform with 
 
 ## Current Architectural Posture
 - `v0.9.2` is the active published release boundary.
-- `v0.10.0` is the current development-cycle candidate. Release requires the canonical gates to pass against one exact clean source SHA and its installed artifacts.
+- `v0.9.3` is the current release candidate. Release requires the canonical gates to pass against one exact clean source SHA and its installed artifacts.
 - Alice is now a broader continuity platform with provider/runtime portability, model packs, runnable external-builder integrations, pilot launch/admin support, and safe local logging defaults.
 - The continuity substrate remains the same system of record; the delivered work packages that substrate into practical adoption paths without changing the core continuity semantics.
