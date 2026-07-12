@@ -1662,6 +1662,68 @@ def test_context_pack_applies_people_scope_to_memories_sources_and_loops() -> No
     assert [row["id"] for row in pack["open_loops"]] == ["loop-sam"]
 
 
+def test_people_scope_surfaces_valid_row_ranked_behind_a_full_decoy_window() -> None:
+    """A people-scoped hit must survive even when it ranks behind a full
+    ``2 * max_items`` window of non-matching decoys.
+
+    The people filter runs in Python over the store's top-N, so if the
+    candidate window is only ``2 * max_items`` the store returns nothing but
+    decoys and the one valid row (ranked below the window) is never fetched,
+    erasing a real result. Regression for audit P1 #5.
+    """
+    decoys = [
+        _memory_row(
+            f"memory-decoy-{index:02d}",
+            "Quarterly planning person-scoped fact.",
+            metadata_json={"people": ["Alex"]},
+        )
+        for index in range(16)
+    ]
+    valid_row = _memory_row(
+        "memory-sam",
+        "Quarterly planning person-scoped fact.",
+        metadata_json={"people": ["Sam"]},
+    )
+    store = InMemoryVNextRetrievalStore(memories=[*decoys, valid_row], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="quarterly planning", people=("Sam",), max_items=8)
+    )
+
+    assert [row["id"] for row in pack["relevant_memories"]] == ["memory-sam"]
+
+
+def test_time_window_surfaces_valid_row_ranked_behind_a_full_decoy_window() -> None:
+    """A time-window hit must survive even when it ranks behind a full
+    ``2 * max_items`` window of out-of-window decoys (audit P1 #5)."""
+    reference_time = datetime(2026, 7, 10, tzinfo=UTC)
+    decoys = [
+        _memory_row(
+            f"memory-old-{index:02d}",
+            "Time-window deployment fact.",
+            valid_from="2026-06-01T00:00:00Z",
+        )
+        for index in range(16)
+    ]
+    valid_row = _memory_row(
+        "memory-new",
+        "Time-window deployment fact.",
+        valid_from="2026-07-08T00:00:00Z",
+    )
+    store = InMemoryVNextRetrievalStore(memories=[*decoys, valid_row], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="time-window deployment",
+            time_window="7d",
+            reference_time=reference_time,
+            max_items=8,
+        )
+    )
+
+    assert [row["id"] for row in pack["relevant_memories"]] == ["memory-new"]
+
+
 def test_context_pack_applies_relative_time_window_to_every_content_section() -> None:
     reference_time = datetime(2026, 7, 10, tzinfo=UTC)
     store = InMemoryVNextRetrievalStore(
