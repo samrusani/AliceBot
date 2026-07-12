@@ -77,6 +77,16 @@ Twine checks, and installed wheel/sdist smokes for all four public
 entrypoints. It first fetches `origin/main`, and writes `dist/SHA256SUMS` only
 after both artifacts pass.
 
+The gate also runs the canonical retrieval-quality eval with `--release-gate`.
+That flag fails closed: a run that never exercises the vector stage reports
+`pass_fts_only` and exits non-zero, so the gate cannot go green without
+measuring semantic/paraphrase retrieval quality. Point
+`ALICEBOT_EVAL_DATABASE_URL` at a `pgvector` database and set the
+`ALICE_EMBEDDINGS_*` provider variables before running `make release-check`;
+the default in-memory SQLite URL exists only as a fail-closed smoke. CI runs
+this eval model-free on purpose and asserts it fails closed — CI green is not
+the release gate.
+
 CI must pass on the exact candidate SHA. Do not treat a green parent commit,
 branch name, or locally rebuilt artifact as equivalent evidence.
 

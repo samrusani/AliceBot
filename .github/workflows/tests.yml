@@ -39,7 +39,12 @@ jobs:
           tests/unit/test_vnext_retrieval.py::test_context_pack_fuses_vector_results_with_rrf_when_provider_is_configured
           tests/unit/test_vnext_evals.py::test_retrieval_quality_metrics_against_known_rankings
           -q
-      - name: "Live eval battery on sqlite in-memory"
+      - name: "Live eval battery on sqlite in-memory (model-free, fts_only)"
+        # Model-free plumbing check: every suite runs against a live sqlite
+        # store with NO embedding provider, so retrieval is fts_only. This is
+        # NOT the canonical release gate -- it cannot measure semantic
+        # (paraphrase) retrieval quality. The release gate is the fail-closed
+        # step below.
         env:
           ALICEBOT_EVAL_DATABASE_URL: "sqlite:///:memory:"
         run: |
@@ -51,6 +56,36 @@ jobs:
           print("suites:", suites)
           assert report["status"] == "pass", f"eval battery failed: {report['status']}"
           assert len(suites) >= 4, f"expected >=4 executed suites, got {list(suites)}"
+          # Honest labeling: without an embedding provider this run is fts_only
+          # and did NOT enforce the paraphrase gate, so it must never be
+          # mistaken for the release gate.
+          retrieval = next(s for s in report["suites"] if s["suite_key"] == "retrieval_quality")
+          assert retrieval["metrics"]["retrieval_mode"] == "fts_only", retrieval["metrics"]["retrieval_mode"]
+          assert retrieval["metrics"]["paraphrase_targets_enforced"] is False
+          EOF
+      - name: "Canonical release gate fails closed without a vector provider"
+        # The release-designated eval must measure semantic/paraphrase quality.
+        # With no embedding provider configured it runs fts_only and MUST NOT
+        # report a full pass: it reports `pass_fts_only` and exits nonzero, so
+        # "the release eval is green" can never mean less than measured semantic
+        # quality. A real release run supplies ALICE_EMBEDDINGS_* + pgvector so
+        # the vector/paraphrase gate actually executes.
+        env:
+          ALICEBOT_EVAL_DATABASE_URL: "sqlite:///:memory:"
+        run: |
+          set +e
+          python -m alicebot_api eval run --suite all --release-gate > /tmp/eval_gate.json
+          code=$?
+          set -e
+          test "$code" -ne 0 || { echo "release gate did not fail closed (exit $code)"; exit 1; }
+          python - <<'EOF'
+          import json
+          report = json.load(open("/tmp/eval_gate.json"))["report"]
+          print("release-gate status:", report["status"])
+          assert report["status"] == "pass_fts_only", report["status"]
+          retrieval = next(s for s in report["suites"] if s["suite_key"] == "retrieval_quality")
+          assert retrieval["status"] == "pass_fts_only", retrieval["status"]
+          assert retrieval["metrics"]["paraphrase_targets_enforced"] is False
           EOF
 
   python-quality:

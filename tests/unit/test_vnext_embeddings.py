@@ -13,6 +13,7 @@ from alicebot_api.vnext_embeddings import (
     VNextEmbeddingProviderError,
     attach_memory_embedding,
     get_embedding_provider,
+    memory_embedding_signature,
     memory_embedding_text,
     pad_embedding_vector,
 )
@@ -159,6 +160,31 @@ def test_memory_embedding_text_joins_title_canonical_text_and_summary() -> None:
     assert memory_embedding_text({"title": None, "canonical_text": "  "}) == ""
 
 
+def test_embedding_signature_distinguishes_endpoints_with_same_labels() -> None:
+    # Two endpoints with identical provider+model labels but different base_urls
+    # are different coordinate spaces. Their signatures must differ so retrieval
+    # never pools vectors from one endpoint against a query embedded by another.
+    memory = {"title": "Fact", "canonical_text": "Fact text."}
+    endpoint_a = OpenAICompatibleEmbeddingProvider(
+        base_url="https://a.example/v1", model="text-embed"
+    )
+    endpoint_b = OpenAICompatibleEmbeddingProvider(
+        base_url="https://b.example/v1", model="text-embed"
+    )
+
+    sig_a = memory_embedding_signature(memory, provider=endpoint_a)
+    sig_b = memory_embedding_signature(memory, provider=endpoint_b)
+
+    assert sig_a.get("endpoint"), "signature must carry an endpoint fingerprint"
+    assert sig_a["endpoint"] != sig_b["endpoint"]
+    assert sig_a != sig_b
+    # Same endpoint + same labels remains stable (so re-embeds are idempotent).
+    endpoint_a_again = OpenAICompatibleEmbeddingProvider(
+        base_url="https://a.example/v1/", model="text-embed"
+    )
+    assert memory_embedding_signature(memory, provider=endpoint_a_again)["endpoint"] == sig_a["endpoint"]
+
+
 class _AttachStore:
     def __init__(self) -> None:
         self.embeddings: list[tuple[str, list[float]]] = []
@@ -172,6 +198,7 @@ class _AttachStore:
         vector: list[float],
         provider: str | None = None,
         model: str | None = None,
+        endpoint: str | None = None,
         content_sha256: str | None = None,
         signature_version: int = 1,
     ) -> dict[str, object]:
@@ -180,6 +207,7 @@ class _AttachStore:
             {
                 "provider": provider,
                 "model": model,
+                "endpoint": endpoint,
                 "content_sha256": content_sha256,
                 "version": signature_version,
             }
@@ -235,8 +263,9 @@ def test_attach_memory_embedding_writes_vector_with_provider() -> None:
         {
             "provider": "stub",
             "model": "stub-embedding",
+            "endpoint": "",
             "content_sha256": "059865dccf302f203a30b051d86bc76007a8c7c006702182189d42ea9fbf48b7",
-            "version": 1,
+            "version": 2,
         }
     ]
 

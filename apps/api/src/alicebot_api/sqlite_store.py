@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1607,6 +1607,7 @@ class SQLiteVNextStore:
         include_expired: bool = False,
         embedding_provider: str | None = None,
         embedding_model: str | None = None,
+        embedding_endpoint: str | None = None,
         embedding_signature_version: int | None = None,
     ) -> list[VNextRow]:
         if not query_vector:
@@ -1640,6 +1641,17 @@ class SQLiteVNextStore:
                     embedding_model,
                 )
             )
+            if embedding_endpoint is not None:
+                # Only compare vectors from the same endpoint fingerprint, so
+                # distinct coordinate spaces sharing provider/model labels are
+                # never pooled.
+                signature_sql += " AND json_extract(metadata_json, ?) = ?"
+                signature_params.extend(
+                    (
+                        f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.endpoint",
+                        embedding_endpoint,
+                    )
+                )
             if embedding_signature_version is not None:
                 signature_sql += " AND json_extract(metadata_json, ?) = ?"
                 signature_params.extend(
@@ -1788,6 +1800,7 @@ class SQLiteVNextStore:
         vector: list[float],
         provider: str | None = None,
         model: str | None = None,
+        endpoint: str | None = None,
         content_sha256: str | None = None,
         signature_version: int = 1,
     ) -> VNextRow | None:
@@ -1805,6 +1818,7 @@ class SQLiteVNextStore:
                 "version": signature_version,
                 "provider": provider,
                 "model": model,
+                "endpoint": endpoint if isinstance(endpoint, str) else "",
                 "content_sha256": content_sha256,
             }
             cursor = self._execute(
@@ -1882,6 +1896,7 @@ class SQLiteVNextStore:
         after_id: str | None = None,
         embedding_provider: str | None = None,
         embedding_model: str | None = None,
+        embedding_endpoint: str | None = None,
         embedding_signature_version: int | None = None,
     ) -> list[VNextRow]:
         """Rows missing a vector or carrying an incompatible signature."""
@@ -1906,6 +1921,15 @@ class SQLiteVNextStore:
                     embedding_model,
                 )
             )
+            if embedding_endpoint is not None:
+                # Re-embed rows whose stored endpoint differs from the current one.
+                signature_sql += " OR json_extract(metadata_json, ?) IS NOT ?"
+                signature_params.extend(
+                    (
+                        f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.endpoint",
+                        embedding_endpoint,
+                    )
+                )
             if embedding_signature_version is not None:
                 signature_sql += " OR json_extract(metadata_json, ?) IS NOT ?"
                 signature_params.extend(
@@ -1932,6 +1956,40 @@ class SQLiteVNextStore:
                 """,
             tuple(params),
         )
+
+    def lock_graph_mutation(self) -> None:
+        """No-op: SQLite serializes writes with a single writer, so there is no
+        concurrent supersession to guard against. Present for store parity with
+        the Postgres advisory lock."""
+        return None
+
+    def list_memory_ids_with_embeddings(self, ids: "Sequence[str]") -> set[str]:
+        """Exact-ID embedding-presence read for a specific set of memory IDs.
+
+        Consolidation and rollups must know which *selected* rows have stored
+        vectors; a global ANN probe returns nearest neighbors, not a presence
+        test. This reads presence directly by ID, chunked to stay within
+        SQLite's bound-parameter limit.
+        """
+        id_list = [str(value) for value in ids if str(value)]
+        present: set[str] = set()
+        chunk_size = 400
+        for start in range(0, len(id_list), chunk_size):
+            chunk = id_list[start : start + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._fetch_all(
+                f"""
+                    SELECT id
+                    FROM memories
+                    WHERE user_id = ?
+                      AND deleted_at IS NULL
+                      AND embedding IS NOT NULL
+                      AND id IN ({placeholders})
+                    """,
+                (self.user_id, *chunk),
+            )
+            present.update(str(row["id"]) for row in rows)
+        return present
 
     def update_memory_fact_keys(self, *, memory_id: str, fact_keys: str | None) -> VNextRow | None:
         """Store derived retrieval keys; the FTS sync triggers re-index them.

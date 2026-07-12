@@ -57,12 +57,12 @@ env seam embed-on-write uses) AND the store carries stored vectors, a
 third grouping pass runs over the members the entity/lexical passes left
 unclaimed:
 
-- embedding access reuses the consolidation pass's exact pattern
-  (``provider_reembed_plus_vector_search_probe``): each remaining row's
-  vector is re-derived from ``memory_embedding_text`` and one
-  ``search_memories_vector`` probe is the read surface for which rows
-  actually HAVE stored embeddings — rows without a stored vector never
-  participate;
+- embedding access reuses the consolidation pass's pattern
+  (``provider_reembed_plus_exact_id_presence_read``): each remaining row's
+  vector is re-derived from ``memory_embedding_text`` and an exact presence
+  read by the selected row IDs (``list_memory_ids_with_embeddings``) is the
+  read surface for which rows actually HAVE stored embeddings — rows without
+  a stored vector never participate;
 - remaining rows are agglomerated by pairwise cosine (single-linkage
   connected components) at one threshold chosen from a conservative sweep
   (``SEMANTIC_SWEEP_THRESHOLDS``) by a silhouette-style internal
@@ -1857,17 +1857,18 @@ class VNextRollupService:
         unclaimed: ``(clusters, disclosure_record)`` where each cluster is
         ``(members sorted like every group, mean pairwise cosine)``.
 
-        Embedding access mirrors the consolidation pass exactly
-        (``provider_reembed_plus_vector_search_probe``): vectors are
+        Embedding access mirrors the consolidation pass
+        (``provider_reembed_plus_exact_id_presence_read``): vectors are
         re-derived from ``memory_embedding_text`` through the configured
-        provider, and one ``search_memories_vector`` probe call is the
-        read surface for which rows actually carry STORED embeddings —
-        rows the probe does not return never join a cluster. Every early
-        exit lands in the record's ``skipped`` list (the caller also
-        mirrors them into the outcome's skip lines)."""
+        provider, and an exact presence read by the selected row IDs
+        (``list_memory_ids_with_embeddings``) is the read surface for which
+        rows actually carry STORED embeddings — rows absent from that read
+        never join a cluster. Every early exit lands in the record's
+        ``skipped`` list (the caller also mirrors them into the outcome's
+        skip lines)."""
         provider = self.embedding_provider
         record: JsonObject = {
-            "embedding_access": "provider_reembed_plus_vector_search_probe",
+            "embedding_access": "provider_reembed_plus_exact_id_presence_read",
             "provider": getattr(provider, "provider", None),
             "model": getattr(provider, "model", None),
             "ungrouped_rows": len(remaining),
@@ -1888,9 +1889,11 @@ class VNextRollupService:
         if len(remaining) < usable_min:
             record["skipped"].append("fewer_ungrouped_rows_than_min_members")
             return [], record
-        search_memories_vector = getattr(self.store, "search_memories_vector", None)
-        if not callable(search_memories_vector):
-            record["skipped"].append("store_lacks_vector_search")
+        list_memory_ids_with_embeddings = getattr(
+            self.store, "list_memory_ids_with_embeddings", None
+        )
+        if not callable(list_memory_ids_with_embeddings):
+            record["skipped"].append("store_lacks_embedding_presence_read")
             return [], record
         embeddable = [(row, memory_embedding_text(row)) for row in remaining]
         embeddable = [(row, text) for row, text in embeddable if text]
@@ -1909,17 +1912,15 @@ class VNextRollupService:
         except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
             record["skipped"].append(f"embedding_provider_failed: {exc}")
             return [], record
+        # Exact presence read by the selected IDs, not a global ANN probe: an
+        # ANN query returns nearest neighbors, so embedded selected rows are
+        # missed when unrelated neighbors dominate the top-K (audit 2 P1 #5).
+        selected_ids = [str(row.get("id")) for row, _ in embeddable]
         try:
-            probe_rows = search_memories_vector(
-                query_vector=vectors[0],
-                domains=domains,
-                sensitivity_allowed=sensitivity_allowed,
-                limit=options.max_groupable_memories,
-            )
+            embedded_ids = set(list_memory_ids_with_embeddings(selected_ids))
         except Exception as exc:  # noqa: BLE001 - store backends raise driver-specific errors
-            record["skipped"].append(f"vector_search_failed: {exc}")
+            record["skipped"].append(f"embedding_presence_read_failed: {exc}")
             return [], record
-        embedded_ids = {str(row.get("id")) for row in probe_rows if row.get("id") is not None}
         members = [
             (row, vector)
             for (row, _), vector in zip(embeddable, vectors, strict=True)
@@ -2089,7 +2090,13 @@ class VNextRollupService:
         generated_by: str,
         trace_id: str | None,
     ) -> JsonObject:
-        member_ids = [str(instance["memory_id"]) for instance in instances]
+        # Authoritative membership is the FULL group, not the truncated display
+        # instances. Persisting only the displayed subset (max_instances_per_card)
+        # as cluster_member_ids made the stable-identity comparison recompute the
+        # full set every run, so any group larger than the display cap never
+        # matched its accepted card and re-proposed a revision (and collided on
+        # the digest-keyed memory_key) forever (audit 2 P1 #6).
+        member_ids = [str(member.get("id")) for member in group.members]
         members_by_id = {str(member.get("id")): member for member in group.members}
         member_snapshots = [
             memory_version_snapshot(members_by_id[member_id])

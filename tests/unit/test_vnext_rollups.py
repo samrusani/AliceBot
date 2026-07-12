@@ -429,6 +429,71 @@ def test_candidate_and_rollup_card_rows_never_rejoin_grouping() -> None:
     assert covered and covered[0]["accepted_memory_id"] == str(card["id"])
 
 
+def _seed_entity_group(store) -> list[JsonObject]:
+    """Five distinct memories that all mention one entity (one entity group)."""
+    texts = (
+        "Type3 Capital closed the seed round in March",
+        "Type3 Capital moved the quarterly review to October",
+        "Type3 Capital is hiring two analysts this fall",
+        "Type3 Capital signed a new lease near the harbor",
+        "Type3 Capital published its annual letter in December",
+    )
+    rows: list[JsonObject] = []
+    for index, text in enumerate(texts):
+        rows.append(
+            store.create_memory(
+                {
+                    "memory_key": f"memory.type3-{index}",
+                    "value": {"text": text},
+                    "status": "active",
+                    "memory_type": "project_fact",
+                    "title": text[:80],
+                    "canonical_text": text,
+                    "summary": text[:80],
+                    "domain": "project",
+                    "sensitivity": "internal",
+                    "metadata_json": {},
+                }
+            )
+        )
+    return rows
+
+
+def test_rollup_membership_beyond_display_cap_is_full_and_stable() -> None:
+    # Audit 2 P1 #6: a group larger than max_instances_per_card must persist its
+    # FULL membership as authoritative, not the truncated display set. Before the
+    # fix, the accepted card stored only the displayed subset, so the recomputed
+    # full set never matched and a revision was re-proposed on every run (and
+    # collided on the digest-keyed memory_key). Here 5 members with a display cap
+    # of 3 exercise the same truncation the 40/500 defaults hit at scale.
+    store = FakeRollupStore()
+    members = _seed_entity_group(store)
+    options = RollupOptions(max_instances_per_card=3)
+    service = VNextRollupService(store)
+    service.propose_rollups(options=options)
+
+    candidates = _rollup_candidates(store)
+    assert len(candidates) == 1
+    card = candidates[0]
+    consolidation = card["metadata_json"]["consolidation"]
+    assert len(consolidation["cluster_member_ids"]) == 5
+    assert sorted(consolidation["cluster_member_ids"]) == sorted(str(row["id"]) for row in members)
+    assert {snap["id"] for snap in consolidation["member_snapshots"]} == {str(row["id"]) for row in members}
+    assert card["value"]["rollup"]["member_count"] == 5
+    # Display instances stay bounded to the per-card cap.
+    assert len(card["value"]["rollup"]["instances"]) == 3
+
+    # Accept it (a rollup card flips to active) and rerun: a stable group larger
+    # than the display cap must NOT re-propose a revision.
+    for row in store.memories:
+        if row["id"] == card["id"]:
+            row["status"] = "active"
+    second = service.propose_rollups(options=options)
+    assert second.proposals == []
+    covered = [group for group in second.groups if group["state"] == "already_covered_by_accepted"]
+    assert covered and covered[0]["accepted_memory_id"] == str(card["id"])
+
+
 def test_create_candidate_memories_false_reports_without_writes() -> None:
     store = FakeRollupStore()
     _seed_game_memories(store)

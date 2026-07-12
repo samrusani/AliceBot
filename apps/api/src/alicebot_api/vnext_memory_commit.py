@@ -630,13 +630,29 @@ class VNextMemoryCommitService:
 
         Re-superseding a row back to one of its own predecessors would create
         an ``A -> B -> A`` supersession cycle and corrupt the audit chain.
+
+        Concurrent supersessions on disjoint row pairs could each pass an
+        unlocked cycle check and together close a cycle (e.g. ``A->B`` and
+        ``C->D`` committing over pre-existing ``B->C`` and ``D->A``). A
+        per-user, transaction-scoped advisory lock serializes graph mutation so
+        the second supersession's check sees the first's committed edge. The
+        lock is held through the edge write in the same transaction. The chain
+        walk also fails closed when it cannot verify acyclicity within its hop
+        bound (audit 2 P1 #1).
         """
-        if supersession_would_cycle(
-            memory_id=str(memory["id"]),
-            successor=successor,
-            load_memory=self.store.get_memory,
-            read_pointer=_supersession_pointer,
-        ):
+        lock_graph_mutation = getattr(self.store, "lock_graph_mutation", None)
+        if callable(lock_graph_mutation):
+            lock_graph_mutation()
+        try:
+            would_cycle = supersession_would_cycle(
+                memory_id=str(memory["id"]),
+                successor=successor,
+                load_memory=self.store.get_memory,
+                read_pointer=_supersession_pointer,
+            )
+        except LifecycleTransitionError as exc:
+            raise VNextMemoryCommitValidationError(str(exc)) from exc
+        if would_cycle:
             raise VNextMemoryCommitValidationError(
                 "cannot supersede a memory with one of its own predecessors; "
                 "that would create a supersession cycle"

@@ -265,6 +265,7 @@ from alicebot_api.vnext_embeddings import (
     MAX_EMBEDDINGS_BATCH_SIZE,
     VNextEmbeddingConfigurationError,
     VNextEmbeddingProviderError,
+    endpoint_fingerprint,
     get_embedding_provider,
     memory_embedding_text,
     memory_embedding_signature,
@@ -289,6 +290,19 @@ DEFAULT_MAINTENANCE_REPORT_PATH = (
 DEFAULT_VNEXT_DEMO_DATASET_PATH = Path(__file__).resolve().parents[4] / "fixtures" / "vnext" / "demo_dataset.json"
 REVIEW_STATUS_CHOICES = ("correction_ready", "active", "stale", "superseded", "deleted", "all")
 DEMO_SECRET_MARKERS = ("sk-", "xoxb-", "ghp_", "password", "access_token", "refresh_token", "@gmail.com")
+
+
+class EvalGateFailure(Exception):
+    """A handler produced a report whose status is not a pass.
+
+    Carries the already-serialized JSON ``output`` so ``main()`` can still honor
+    the output contract (JSON to stdout) while mapping the failure to a nonzero
+    process exit code -- decoupling the eval verdict from a hard-coded exit 0.
+    """
+
+    def __init__(self, output: str) -> None:
+        super().__init__("eval report status is not a pass")
+        self.output = output
 
 
 @dataclass(frozen=True, slots=True)
@@ -1749,6 +1763,7 @@ def _run_vnext_memories_backfill_embeddings(ctx: CLIContext, args: argparse.Name
                 after_id=after_id,
                 embedding_provider=provider.provider,
                 embedding_model=provider.model,
+                embedding_endpoint=endpoint_fingerprint(getattr(provider, "base_url", "")),
                 embedding_signature_version=EMBEDDING_SIGNATURE_VERSION,
             )
             if not rows:
@@ -4526,6 +4541,7 @@ def _run_vnext_eval_run(_ctx: CLIContext, args: argparse.Namespace) -> str:
     report = run_vnext_evals(
         suite=args.suite,
         corpus_path=args.corpus_path,
+        release_gate=args.release_gate,
     )
     payload: dict[str, object] = {"report": report}
     if args.report_path is not None:
@@ -4535,7 +4551,14 @@ def _run_vnext_eval_run(_ctx: CLIContext, args: argparse.Namespace) -> str:
                 report_path=args.report_path,
             )
         )
-    return json.dumps(payload, indent=2, sort_keys=True)
+    output = json.dumps(payload, indent=2, sort_keys=True)
+    # Propagate the report verdict to the process exit code. A "fail" (any
+    # suite failed) or "pass_fts_only" (release gate never measured semantic
+    # quality) must not exit 0. "skipped" and "pass" stay green. The JSON is
+    # still emitted -- EvalGateFailure carries it so main() prints it verbatim.
+    if report.get("status") not in {"pass", "skipped"}:
+        raise EvalGateFailure(output)
+    return output
 
 
 def _run_vnext_eval_report(_ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -6069,6 +6092,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional output path for the vNext eval report JSON.",
     )
+    vnext_eval_run_parser.add_argument(
+        "--release-gate",
+        action="store_true",
+        help=(
+            "Run as the canonical release gate: a run that never exercised the "
+            "vector/paraphrase stage reports 'pass_fts_only' (not a full pass) "
+            "and exits nonzero, so the gate cannot be green without measuring "
+            "semantic retrieval quality (requires ALICE_EMBEDDINGS_* + pgvector)."
+        ),
+    )
     vnext_eval_run_parser.set_defaults(handler=_run_vnext_eval_run)
 
     vnext_eval_report_parser = vnext_eval_subparsers.add_parser(
@@ -6338,6 +6371,11 @@ def main(argv: list[str] | None = None) -> int:
         TrustedFactPromotionNotFoundError,
     ) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except EvalGateFailure as exc:
+        # Honor the JSON output contract (report to stdout) while signaling a
+        # nonzero exit for a failing / not-fully-passing eval report.
+        print(exc.output)
         return 1
 
     print(output)

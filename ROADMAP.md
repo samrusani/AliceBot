@@ -22,17 +22,27 @@
 
 ## Release Candidate
 
-- `v0.9.3`: current release candidate — a security and reliability hotfix
-  over v0.9.2. It fixes lifecycle state-machine defects (one central
+- `v0.9.4`: current release candidate — a security and reliability hotfix
+  over v0.9.2 that supersedes the withdrawn `v0.9.3` candidate. It carries the
+  original five v0.9.3 fixes — lifecycle state-machine defects (one central
   transition table), expire/unexpire row-locking races, a migration-0083
   identifier-reservation bug (corrective migration 0084), project-scoped
-  capture persistence, and hard people/time filter pagination. No `v0.9.3`
-  work has shipped yet; it is not tagged or published until one exact clean
-  SHA passes the canonical release check and review.
+  capture persistence, and hard people/time filter pagination — and
+  additionally resolves all nine P1 findings from the follow-up external audit
+  that returned NO-GO on `v0.9.3` (serialized supersession-graph mutation with
+  advisory lock and cycle guard, scope-aware dedupe and scope propagation,
+  deeper people/time filter scans, endpoint-fingerprinted embedding
+  signatures, exact-ID embedding-presence reads for consolidation/rollups,
+  authoritative rollup membership, iterative HNSW scan for filtered vector
+  search, a release eval that fails closed, and a finalized-release-docs
+  check). `v0.9.3` was an internal security-hotfix candidate; it was withdrawn
+  and never published. No `v0.9.3` or `v0.9.4` work has shipped yet; `v0.9.4`
+  is not tagged or published until one exact clean SHA passes the canonical
+  release check and review.
 
 ## Next
 
-In rough priority order for and beyond v0.9.3:
+In rough priority order for and beyond v0.9.4:
 
 1. **Multi-session synthesis** — still the weakest published LongMemEval
    category at 58.6%. Aggregation-aware retrieval now ships; the next work is

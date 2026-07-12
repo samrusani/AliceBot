@@ -1735,6 +1735,30 @@ def test_undo_cannot_supersede_back_to_an_ancestor() -> None:
     assert store.memories[a_id]["status"] == "superseded"
 
 
+def test_supersession_acquires_the_graph_mutation_lock() -> None:
+    """Audit 2 P1 #1: the cycle guard must serialize graph mutation through the
+    store's advisory lock before checking/writing the supersession edge, so two
+    concurrent supersessions on disjoint pairs cannot together close a cycle."""
+
+    class LockRecordingStore(TargetedLookupStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.graph_locks = 0
+
+        def lock_graph_mutation(self) -> None:
+            self.graph_locks += 1
+
+    store = LockRecordingStore()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+    a_id = _commit_active(service, identity, title="A", text="Version A of the fact.")
+    b_id = _commit_active(service, identity, title="B", text="Version B of the fact.")
+
+    service.undo(identity=identity, memory_id=a_id, superseded_by_memory_id=b_id)
+
+    assert store.graph_locks >= 1
+
+
 def test_unexpire_restores_a_stale_expired_row_to_active_and_retrievable() -> None:
     """Audit #2: unexpire must not report ``active`` while the row stays stale.
 

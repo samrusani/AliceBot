@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -1818,6 +1818,7 @@ class PostgresVNextStore:
         include_expired: bool = False,
         embedding_provider: str | None = None,
         embedding_model: str | None = None,
+        embedding_endpoint: str | None = None,
         embedding_signature_version: int | None = None,
     ) -> list[VNextRow]:
         vector_param = _vector_literal(query_vector)
@@ -1836,6 +1837,14 @@ class PostgresVNextStore:
                   AND metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'model' = %s
             """
             signature_params.extend((embedding_provider, embedding_model))
+            if embedding_endpoint is not None:
+                # Vectors carry an endpoint fingerprint; only pool those from the
+                # same endpoint as the query so distinct coordinate spaces that
+                # share provider/model labels are never compared.
+                signature_sql += f"""
+                  AND metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'endpoint' = %s
+                """
+                signature_params.append(embedding_endpoint)
             if embedding_signature_version is not None:
                 signature_sql += f"""
                   AND metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'version' = %s
@@ -1859,6 +1868,14 @@ class PostgresVNextStore:
         params.extend(signature_params)
         candidate_limit = max(limit, min(limit * 4, 1000)) if signature_sql else limit
         params.extend((include_expired, vector_param, candidate_limit))
+        # Enable iterative HNSW scan so the lifecycle/scope/signature filters
+        # applied alongside the approximate ORDER BY do not silently underfill
+        # the result set (a plain filtered HNSW scan can return far fewer than
+        # LIMIT valid rows). ``hnsw.iterative_scan`` is a dotted custom GUC, so
+        # this is a harmless no-op on pgvector < 0.8 rather than an error, and
+        # SET LOCAL scopes it to the current transaction.
+        with self.conn.cursor() as cur:
+            cur.execute("SET LOCAL hnsw.iterative_scan = 'strict_order'")
         rows = self._fetch_all(
             f"""
                 SELECT {MEMORY_COLUMNS},
@@ -1989,6 +2006,7 @@ class PostgresVNextStore:
         vector: list[float],
         provider: str | None = None,
         model: str | None = None,
+        endpoint: str | None = None,
         content_sha256: str | None = None,
         signature_version: int = 1,
     ) -> VNextRow | None:
@@ -2002,6 +2020,7 @@ class PostgresVNextStore:
                 "version": signature_version,
                 "provider": provider,
                 "model": model,
+                "endpoint": endpoint if isinstance(endpoint, str) else "",
                 "content_sha256": content_sha256,
             }
             return self._fetch_optional_one(
@@ -2057,6 +2076,7 @@ class PostgresVNextStore:
         after_id: str | None = None,
         embedding_provider: str | None = None,
         embedding_model: str | None = None,
+        embedding_endpoint: str | None = None,
         embedding_signature_version: int | None = None,
     ) -> list[VNextRow]:
         signature_sql = ""
@@ -2073,6 +2093,14 @@ class PostgresVNextStore:
                        IS DISTINCT FROM %s
             """
             signature_params.extend((embedding_provider, embedding_model))
+            if embedding_endpoint is not None:
+                # A vector embedded via a different endpoint is stale and must be
+                # re-embedded for the current endpoint's coordinate space.
+                signature_sql += f"""
+                  OR metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'endpoint'
+                       IS DISTINCT FROM %s
+                """
+                signature_params.append(embedding_endpoint)
             if embedding_signature_version is not None:
                 signature_sql += f"""
                   OR metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'version'
@@ -2096,6 +2124,43 @@ class PostgresVNextStore:
                 """,
             tuple(params),
         )
+
+    def lock_graph_mutation(self) -> None:
+        """Serialize supersession-graph mutation per user for this transaction.
+
+        A transaction-scoped advisory lock keyed on the current user so two
+        concurrent supersessions cannot each pass an unlocked cycle check and
+        together close a cycle. Released automatically at commit/rollback.
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_advisory_xact_lock("
+                "hashtext('vnext_supersession'), "
+                "hashtext(app.current_user_id()::text))"
+            )
+
+    def list_memory_ids_with_embeddings(self, ids: "Sequence[str]") -> set[str]:
+        """Exact-ID embedding-presence read for a specific set of memory IDs.
+
+        Consolidation and rollups must know which *selected* rows have stored
+        vectors. A global ANN probe returns nearest neighbors, not a presence
+        test, so selected rows can be missed when unrelated neighbors dominate.
+        This reads presence directly by ID.
+        """
+        id_list = [str(value) for value in ids if str(value)]
+        if not id_list:
+            return set()
+        rows = self._fetch_all(
+            """
+                SELECT id
+                FROM memories
+                WHERE id = ANY(%s::uuid[])
+                  AND deleted_at IS NULL
+                  AND embedding_vector IS NOT NULL
+                """,
+            (id_list,),
+        )
+        return {str(row["id"]) for row in rows}
 
     def update_memory_fact_keys(self, *, memory_id: str, fact_keys: str | None) -> VNextRow | None:
         """Store derived retrieval keys; the generated ``search_tsv`` column

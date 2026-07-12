@@ -6,7 +6,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import re
-from typing import Protocol
+from typing import Protocol, Sequence
 
 from alicebot_api.memory_provenance import (
     ASSERTION_CLASS_USER_ASSERTED,
@@ -137,8 +137,15 @@ def normalize_text(raw_text: str) -> str:
     return normalized
 
 
-def content_hash_for_text(raw_text: str) -> str:
+def content_hash_for_text(raw_text: str, project_scope: Sequence[str] = ()) -> str:
     normalized = normalize_text(raw_text)
+    scope = tuple(sorted(project_scope))
+    if scope:
+        # Fold project scope into the content identity so the same text captured
+        # under different project scopes is NOT deduped away: each scope keeps
+        # its own source and scoped candidate (audit 2 P1 #2). Empty scope hashes
+        # exactly as before, so global/unscoped captures stay byte-identical.
+        normalized = normalized + "\x00project_scope:" + "\x00".join(scope)
     return "sha256:" + sha256(normalized.encode("utf-8")).hexdigest()
 
 
@@ -558,7 +565,6 @@ class VNextCaptureService:
     def capture_source(self, source_input: SourceCaptureInput) -> CaptureResult:
         try:
             normalized_text = normalize_text(source_input.raw_text)
-            content_hash = content_hash_for_text(normalized_text)
             # Effective project scope, from the dedicated field with a
             # fallback to any scope already carried in metadata_json (the
             # connector path historically threads scope there). Empty scope
@@ -569,6 +575,11 @@ class VNextCaptureService:
             project_scope_metadata: JsonObject = (
                 {"project_scope": list(project_scope)} if project_scope else {}
             )
+            # Dedupe is scope-aware: the content hash folds in the project scope
+            # so identical text captured under a different project keeps its own
+            # scoped source and candidate instead of being silently skipped as a
+            # global duplicate (audit 2 P1 #2).
+            content_hash = content_hash_for_text(normalized_text, project_scope)
             duplicate = self.store.get_source_by_content_hash(content_hash)
             if duplicate is not None:
                 source_id = str(duplicate["id"])
