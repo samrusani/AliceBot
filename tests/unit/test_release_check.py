@@ -164,6 +164,72 @@ def test_finalized_release_docs_require_dated_changelog_and_final_title(tmp_path
     assert any("release-candidate status language" in issue for issue in issues)
 
 
+def _seed_finalized_docs(tmp_path: Path, notes_verify_section: str) -> Path:
+    release_dir = tmp_path / "docs" / "release"
+    release_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## Unreleased\n\n## v1.2.3 — 2026-07-11\n\n- Ready.\n",
+        encoding="utf-8",
+    )
+    notes = release_dir / "v1.2.3-release-notes.md"
+    notes.write_text(
+        "# Alice v1.2.3 Release Notes\n\nReady.\n\n"
+        "## Verifying this release\n\n" + notes_verify_section + "\n",
+        encoding="utf-8",
+    )
+    return notes
+
+
+def test_finalized_release_docs_reject_premature_publication_claim(tmp_path: Path) -> None:
+    # The finalized notes are committed BEFORE the tag and publication, so a
+    # present-tense assertion that artifacts are already on PyPI is false at
+    # tag time and must be rejected by the gate.
+    _seed_finalized_docs(
+        tmp_path,
+        "The wheel and source distribution are published to PyPI through GitHub "
+        "Trusted Publishing and carry PyPI's integrity attestations.",
+    )
+
+    issues = release_check.validate_release_document_state(
+        tmp_path, version="1.2.3", require_finalized=True
+    )
+
+    assert any("publication" in issue.lower() for issue in issues), issues
+
+
+def test_finalized_release_docs_reject_claiming_absent_checksums_recorded(tmp_path: Path) -> None:
+    # The per-release checksums file is written only in the post-publication
+    # commit. Claiming digests "are recorded" in it while it does not exist is
+    # a premature/false reference and must be rejected.
+    _seed_finalized_docs(
+        tmp_path,
+        "The exact SHA-256 digests of the published artifacts are recorded in "
+        "`docs/release/v1.2.3-checksums.txt` in this repository.",
+    )
+
+    issues = release_check.validate_release_document_state(
+        tmp_path, version="1.2.3", require_finalized=True
+    )
+
+    assert any("checksums" in issue.lower() for issue in issues), issues
+
+
+def test_finalized_release_docs_accept_forward_looking_verification(tmp_path: Path) -> None:
+    # Honest forward-looking wording (publication described as forthcoming, and
+    # the checksums file as something that WILL be recorded) must pass.
+    _seed_finalized_docs(
+        tmp_path,
+        "Alice publishes to PyPI through GitHub Trusted Publishing. "
+        "Once published, the artifacts carry PyPI's integrity attestations. "
+        "Their exact SHA-256 digests will be recorded in "
+        "`docs/release/v1.2.3-checksums.txt` as part of the post-publication commit.",
+    )
+
+    assert release_check.validate_release_document_state(
+        tmp_path, version="1.2.3", require_finalized=True
+    ) == []
+
+
 def test_finalized_release_docs_require_empty_unreleased_section(tmp_path: Path) -> None:
     release_dir = tmp_path / "docs" / "release"
     release_dir.mkdir(parents=True)

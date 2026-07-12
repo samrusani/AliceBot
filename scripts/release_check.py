@@ -124,6 +124,41 @@ def validate_release_document_state(
         )
         if any(phrase in normalized_notes for phrase in stale_status_phrases):
             issues.append("release notes still contain release-candidate status language")
+
+        # The finalized notes are committed BEFORE the tag and before the PyPI
+        # publish job runs, so they must not assert that publication has already
+        # happened. RELEASING.md requires finalization to "finalize the release
+        # text without claiming that publication has already happened."
+        premature_publication_phrases = (
+            "are published to pypi",
+            "have been published to pypi",
+            "was published to pypi",
+            "were published to pypi",
+            "now available on pypi",
+            "already on pypi",
+        )
+        if any(phrase in normalized_notes for phrase in premature_publication_phrases):
+            issues.append(
+                "release notes assert publication has already happened; finalize "
+                "without claiming publication (see RELEASING.md)"
+            )
+
+        # The per-release checksums file is written only in the post-publication
+        # commit. If the notes reference it, they must describe it as forthcoming
+        # (e.g. "will be recorded"); a present-tense claim that digests "are
+        # recorded" in a file that does not yet exist is a premature falsehood.
+        checksums_name = f"v{version}-checksums.txt"
+        checksums_exists = (root_dir / "docs" / "release" / checksums_name).exists()
+        if checksums_name in normalized_notes and not checksums_exists:
+            if re.search(
+                r"(?:are|is|have been|has been|were|was)\s+recorded",
+                normalized_notes,
+            ):
+                issues.append(
+                    f"release notes claim digests are already recorded in "
+                    f"docs/release/{checksums_name}, but that file does not exist "
+                    "yet (it is written in the post-publication commit)"
+                )
     return issues
 
 
