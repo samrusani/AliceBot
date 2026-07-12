@@ -166,6 +166,9 @@ class SemanticFakeStore:
         self.embeddings[str(memory_id)] = [float(value) for value in vector]
         return {"id": str(memory_id)}
 
+    def list_memory_ids_with_embeddings(self, ids) -> set[str]:
+        return {str(value) for value in ids if str(value) in self.embeddings}
+
     def search_memories_vector(
         self,
         *,
@@ -199,9 +202,9 @@ class SemanticFakeStore:
 
 
 class PlainFakeStore(SemanticFakeStore):
-    """Same rows/embeddings, but WITHOUT the vector-search read surface."""
+    """Same rows/embeddings, but WITHOUT the embedding-presence read surface."""
 
-    search_memories_vector = None  # type: ignore[assignment]
+    list_memory_ids_with_embeddings = None  # type: ignore[assignment]
 
 
 class MappedEmbeddingProvider:
@@ -376,7 +379,7 @@ def test_anchorless_kitchen_items_form_exactly_one_gated_topical_card() -> None:
     metadata = outcome.to_metadata()
     assert metadata["grouping"] == "deterministic_entity_and_lexical_topic_plus_semantic_embedding"
     record = metadata["semantic_grouping"]
-    assert record["embedding_access"] == "provider_reembed_plus_vector_search_probe"
+    assert record["embedding_access"] == "provider_reembed_plus_exact_id_presence_read"
     assert record["provider"] == "test_embeddings"
     assert record["embedded_rows"] == 6
     assert record["clusters_formed"] == 1
@@ -570,9 +573,9 @@ def test_dormant_without_provider_is_byte_identical(monkeypatch) -> None:
     assert not any("semantic" in reason for reason in ambient_outcome.skipped)
 
 
-def test_store_without_vector_search_discloses_and_adds_nothing() -> None:
-    """Provider configured but the store has no vector read surface: the
-    tier discloses the skip and proposes nothing semantic."""
+def test_store_without_embedding_presence_read_discloses_and_adds_nothing() -> None:
+    """Provider configured but the store has no embedding-presence read
+    surface: the tier discloses the skip and proposes nothing semantic."""
     store = PlainFakeStore()
     mapping: dict[str, list[float]] = {}
     _seed(store, mapping, KITCHEN_SPECS, KITCHEN_VECTORS)
@@ -580,8 +583,10 @@ def test_store_without_vector_search_discloses_and_adds_nothing() -> None:
 
     assert _semantic_proposals(outcome) == []
     assert outcome.semantic is not None
-    assert "store_lacks_vector_search" in outcome.semantic["skipped"]
-    assert any("semantic_tier: store_lacks_vector_search" in reason for reason in outcome.skipped)
+    assert "store_lacks_embedding_presence_read" in outcome.semantic["skipped"]
+    assert any(
+        "semantic_tier: store_lacks_embedding_presence_read" in reason for reason in outcome.skipped
+    )
 
 
 def test_rows_without_stored_embeddings_never_join_a_cluster() -> None:

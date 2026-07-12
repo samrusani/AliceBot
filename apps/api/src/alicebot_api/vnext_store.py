@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -2124,6 +2124,29 @@ class PostgresVNextStore:
                 """,
             tuple(params),
         )
+
+    def list_memory_ids_with_embeddings(self, ids: "Sequence[str]") -> set[str]:
+        """Exact-ID embedding-presence read for a specific set of memory IDs.
+
+        Consolidation and rollups must know which *selected* rows have stored
+        vectors. A global ANN probe returns nearest neighbors, not a presence
+        test, so selected rows can be missed when unrelated neighbors dominate.
+        This reads presence directly by ID.
+        """
+        id_list = [str(value) for value in ids if str(value)]
+        if not id_list:
+            return set()
+        rows = self._fetch_all(
+            """
+                SELECT id
+                FROM memories
+                WHERE id = ANY(%s::uuid[])
+                  AND deleted_at IS NULL
+                  AND embedding_vector IS NOT NULL
+                """,
+            (id_list,),
+        )
+        return {str(row["id"]) for row in rows}
 
     def update_memory_fact_keys(self, *, memory_id: str, fact_keys: str | None) -> VNextRow | None:
         """Store derived retrieval keys; the generated ``search_tsv`` column

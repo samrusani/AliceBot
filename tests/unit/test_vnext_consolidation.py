@@ -186,6 +186,9 @@ class FakeConsolidationStore:
         self.embeddings[str(memory_id)] = [float(value) for value in vector]
         return {"id": str(memory_id)}
 
+    def list_memory_ids_with_embeddings(self, ids) -> set[str]:
+        return {str(value) for value in ids if str(value) in self.embeddings}
+
     def search_memories_vector(
         self,
         *,
@@ -430,7 +433,7 @@ def test_near_duplicates_produce_one_dedup_candidate_with_correct_members() -> N
     assert metadata["input_counts"]["clusters"] == 1
     assert metadata["input_counts"]["proposals"] == 1
     assert metadata["candidate_memory_ids"] == [str(candidate["id"])]
-    assert metadata["consolidation"]["embedding_access"] == "provider_reembed_plus_vector_search_probe"
+    assert metadata["consolidation"]["embedding_access"] == "provider_reembed_plus_exact_id_presence_read"
     resource_guard = metadata["consolidation"]["resource_guard"]
     assert resource_guard == {
         "matrix_dtype": "float32",
@@ -476,6 +479,28 @@ def test_without_embedding_provider_clustering_is_skipped_review_only() -> None:
     assert _consolidation_candidates(store) == []
     assert "no_embedding_provider_configured" in artifact["metadata_json"]["consolidation"]["skipped"]
     assert "no_embedding_provider_configured" in artifact["content_markdown"]
+
+
+def test_embedded_rows_are_counted_even_when_the_ann_probe_misses_them() -> None:
+    # Audit 2 P1 #5: embedding presence must come from an exact-ID read, not a
+    # global ANN probe. Here the probe surfaces nothing (older, unrelated
+    # neighbors dominated the top-K), yet every selected near-duplicate has a
+    # stored embedding and must still cluster.
+    class AnnBlindStore(FakeConsolidationStore):
+        def search_memories_vector(self, **kwargs):  # type: ignore[override]
+            return []
+
+    store = AnnBlindStore()
+    mapping: dict[str, list[float]] = {}
+    near_dups, _distinct = _seed_six_memories(store, mapping)
+    artifact = _service(store, mapping).generate_memory_consolidation(MemoryConsolidationRequest())
+
+    candidates = _consolidation_candidates(store)
+    assert len(candidates) == 1
+    assert candidates[0]["metadata_json"]["consolidation"]["cluster_member_ids"] == sorted(
+        str(row["id"]) for row in near_dups
+    )
+    assert artifact["metadata_json"]["input_counts"]["embedded_memories"] == 6
 
 
 def test_memories_without_stored_embeddings_are_excluded() -> None:

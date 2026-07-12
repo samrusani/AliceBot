@@ -487,6 +487,12 @@ class VNextConsolidationService:
         if not callable(search_memories_vector):
             outcome.skipped.append("store_lacks_vector_search")
             return outcome
+        list_memory_ids_with_embeddings = getattr(
+            self.store, "list_memory_ids_with_embeddings", None
+        )
+        if not callable(list_memory_ids_with_embeddings):
+            outcome.skipped.append("store_lacks_embedding_presence_read")
+            return outcome
 
         embeddable = [(row, memory_embedding_text(row)) for row in active_rows]
         embeddable = [(row, text) for row, text in embeddable if text]
@@ -502,10 +508,21 @@ class VNextConsolidationService:
             outcome.skipped.append(f"embedding_provider_failed: {exc}")
             return outcome
 
-        # The stores never expose raw embedding values; a single vector-search
-        # probe is the read surface that tells us which rows have stored
-        # embeddings (and how far the probe row's stored vector drifted from
-        # its re-derived one).
+        # Which selected rows actually have stored vectors: an exact read by the
+        # selected IDs. A global ANN probe returns nearest neighbors — when older
+        # unrelated neighbors dominate the top-K, embedded selected rows are
+        # missed and clustering is wrongly skipped (audit 2 P1 #5).
+        selected_ids = [str(row.get("id")) for row, _ in embeddable]
+        try:
+            embedded_ids = set(list_memory_ids_with_embeddings(selected_ids))
+        except Exception as exc:  # noqa: BLE001 - store backends raise driver-specific errors
+            outcome.skipped.append(f"embedding_presence_read_failed: {exc}")
+            return outcome
+        # Best-effort drift diagnostic ONLY (never presence): a single probe
+        # seeded by the most-recent selected row's re-derived vector reports how
+        # far that row's stored vector drifted. A probe failure or a miss simply
+        # leaves probe_self_distance unset.
+        probe_row_id = str(embeddable[0][0].get("id"))
         try:
             probe_rows = search_memories_vector(
                 query_vector=vectors[0],
@@ -513,11 +530,8 @@ class VNextConsolidationService:
                 sensitivity_allowed=sensitivity,
                 limit=options.max_embedded_memories,
             )
-        except Exception as exc:  # noqa: BLE001 - store backends raise driver-specific errors
-            outcome.skipped.append(f"vector_search_failed: {exc}")
-            return outcome
-        embedded_ids = {str(row.get("id")) for row in probe_rows if row.get("id") is not None}
-        probe_row_id = str(embeddable[0][0].get("id"))
+        except Exception:  # noqa: BLE001 - diagnostic only; presence already resolved
+            probe_rows = []
         for row in probe_rows:
             if str(row.get("id")) == probe_row_id and isinstance(row.get("vector_distance"), (int, float)):
                 outcome.probe_self_distance = float(row["vector_distance"])
@@ -938,7 +952,7 @@ class VNextConsolidationService:
             "consolidation_digest": run_digest,
             "candidate_memory_ids": candidate_ids,
             "consolidation": {
-                "embedding_access": "provider_reembed_plus_vector_search_probe",
+                "embedding_access": "provider_reembed_plus_exact_id_presence_read",
                 "similarity_threshold": options.similarity_threshold,
                 "min_cluster_size": options.min_cluster_size,
                 "max_embedded_memories": options.max_embedded_memories,

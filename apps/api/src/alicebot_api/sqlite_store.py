@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1956,6 +1956,34 @@ class SQLiteVNextStore:
                 """,
             tuple(params),
         )
+
+    def list_memory_ids_with_embeddings(self, ids: "Sequence[str]") -> set[str]:
+        """Exact-ID embedding-presence read for a specific set of memory IDs.
+
+        Consolidation and rollups must know which *selected* rows have stored
+        vectors; a global ANN probe returns nearest neighbors, not a presence
+        test. This reads presence directly by ID, chunked to stay within
+        SQLite's bound-parameter limit.
+        """
+        id_list = [str(value) for value in ids if str(value)]
+        present: set[str] = set()
+        chunk_size = 400
+        for start in range(0, len(id_list), chunk_size):
+            chunk = id_list[start : start + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._fetch_all(
+                f"""
+                    SELECT id
+                    FROM memories
+                    WHERE user_id = ?
+                      AND deleted_at IS NULL
+                      AND embedding IS NOT NULL
+                      AND id IN ({placeholders})
+                    """,
+                (self.user_id, *chunk),
+            )
+            present.update(str(row["id"]) for row in rows)
+        return present
 
     def update_memory_fact_keys(self, *, memory_id: str, fact_keys: str | None) -> VNextRow | None:
         """Store derived retrieval keys; the FTS sync triggers re-index them.
