@@ -31,6 +31,21 @@ from alicebot_api.vnext_entities import (
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_fact_keys import attach_memory_fact_keys
 from alicebot_api.vnext_json import json_safe
+from alicebot_api.vnext_lifecycle import (
+    CONFIRM_ACCEPT,
+    CONFIRM_REJECT,
+    CORRECT,
+    EXPIRE,
+    FORGET,
+    LIVE_STATUSES as _LIFECYCLE_LIVE_STATUSES,
+    RETIRED_STATUSES as _LIFECYCLE_RETIRED_STATUSES,
+    SUPERSEDE_MEMBER,
+    UNDO,
+    UNEXPIRE,
+    LifecycleTransitionError,
+    resolve_transition,
+    supersession_would_cycle,
+)
 from alicebot_api.vnext_memory_version import memory_matches_snapshot
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.store import ContinuityStoreInvariantError
@@ -56,6 +71,12 @@ MEMORY_STATUSES = (
     "needs_review",
     "private_only",
     "stale",
+)
+# The lifecycle transition table partitions this same vocabulary into
+# retired/live; keep the two in lockstep so a new status can never slip past
+# the centrally-enforced transitions.
+assert set(MEMORY_STATUSES) == (_LIFECYCLE_LIVE_STATUSES | _LIFECYCLE_RETIRED_STATUSES), (
+    "MEMORY_STATUSES and vnext_lifecycle status partitions have diverged"
 )
 VNEXT_DOMAINS = (
     "professional",
@@ -179,7 +200,10 @@ EXPLICIT_MEMORY_INTENTS = {
 CONSOLIDATION_ACCEPTABLE_STATUSES = ("candidate", "needs_review")
 DERIVED_CONSOLIDATION_CANDIDATE_KINDS = frozenset({"memory_consolidation", "memory_rollup"})
 # Rows in these statuses are already retired; expiring or unexpiring them
-# would corrupt the supersession/review audit trail.
+# would corrupt the supersession/review audit trail. Retained for backward
+# compatibility only -- the authoritative expire/unexpire preconditions now
+# live in the central transition table (vnext_lifecycle.EXPIRE / UNEXPIRE,
+# which also block the ``archived`` terminal status).
 EXPIRE_BLOCKED_STATUSES = ("superseded", "rejected")
 # update_memory in both live stores COALESCEs every column, so a NULL
 # valid_to can never be written back through the patch surface. unexpire()
@@ -589,6 +613,35 @@ class VNextMemoryCommitService:
     def __init__(self, store: PostgresVNextStore):
         self.store = store
 
+    def _require_transition(self, operation: str, current_status: str) -> str:
+        """Route a lifecycle mutation through the central transition table.
+
+        Returns the resulting row status and raises the service's own
+        validation error (so every interface surfaces a consistent type) when
+        the transition is illegal from ``current_status``.
+        """
+        try:
+            return resolve_transition(operation, current_status)
+        except LifecycleTransitionError as exc:
+            raise VNextMemoryCommitValidationError(str(exc)) from exc
+
+    def _guard_supersession_acyclic(self, *, memory: VNextRow, successor: VNextRow) -> None:
+        """Reject recording ``memory`` superseded-by ``successor`` when cyclic.
+
+        Re-superseding a row back to one of its own predecessors would create
+        an ``A -> B -> A`` supersession cycle and corrupt the audit chain.
+        """
+        if supersession_would_cycle(
+            memory_id=str(memory["id"]),
+            successor=successor,
+            load_memory=self.store.get_memory,
+            read_pointer=_supersession_pointer,
+        ):
+            raise VNextMemoryCommitValidationError(
+                "cannot supersede a memory with one of its own predecessors; "
+                "that would create a supersession cycle"
+            )
+
     def evaluate_policy(
         self,
         *,
@@ -680,6 +733,15 @@ class VNextMemoryCommitService:
             if replay is not None:
                 return replay
             raise VNextMemoryCommitValidationError("confirmation is not pending")
+
+        # The nested flag says "pending"; the row's lifecycle status must
+        # independently agree that this row still awaits confirmation. A review
+        # rejection/supersession that retired the row (while leaving the flag
+        # pending) must not be confirmable back to active.
+        self._require_transition(
+            CONFIRM_REJECT if normalized_action == "reject" else CONFIRM_ACCEPT,
+            str(memory.get("status") or ""),
+        )
 
         expires_at_raw = confirmation.get("expires_at")
         if isinstance(expires_at_raw, str):
@@ -918,6 +980,7 @@ class VNextMemoryCommitService:
         return self._transition_memory(
             identity=identity,
             memory=memory,
+            operation=UNDO,
             lifecycle_status="undone",
             next_status="superseded",
             event_type="agent.memory_undone",
@@ -944,11 +1007,10 @@ class VNextMemoryCommitService:
         if memory is None:
             raise VNextMemoryCommitValidationError("memory was not found")
         self._policy_checked_write(identity=identity, action="memory.correct", memory=memory)
-        current_status = str(memory.get("status") or "")
-        if current_status in {"superseded", "rejected", "archived"}:
-            raise VNextMemoryCommitValidationError(
-                f"cannot correct a retired {current_status} memory; create a replacement instead"
-            )
+        # Retirement is terminal: correcting a superseded/rejected/archived row
+        # is rejected here through the central transition table (which also
+        # keeps the message stable for callers that match on it).
+        self._require_transition(CORRECT, str(memory.get("status") or ""))
         metadata = _memory_metadata(memory)
         if is_pending_consolidation_candidate(memory):
             raise VNextMemoryCommitValidationError(
@@ -967,17 +1029,23 @@ class VNextMemoryCommitService:
         history.append(correction)
         agentic["corrections"] = history
         agentic["lifecycle_status"] = "corrected"
+        # A correction that promotes a candidate/needs_review row to active is
+        # an explicit accept of the new text: the row must not stay unconfirmed
+        # or review_required, or later gates see an inconsistent active state.
+        agentic["requires_dashboard_review"] = False
+        next_metadata: JsonObject = {**metadata, "review_required": False, "agentic_memory": agentic}
         actor_type = "agent" if identity is not None else "user"
         actor_id = identity.agent_id if identity is not None else None
         updated = self.store.update_memory(
             memory_id=str(memory["id"]),
             patch={
                 "status": "active",
+                "confirmation_status": "confirmed",
                 "title": next_text[:120],
                 "canonical_text": next_text,
                 "summary": next_text[:280],
                 "value": {**(memory.get("value") if isinstance(memory.get("value"), dict) else {}), "text": next_text},
-                "metadata_json": {**metadata, "agentic_memory": agentic},
+                "metadata_json": next_metadata,
                 # A correction is an explicit accept of the new text, so it
                 # refreshes the staleness sweep's freshness signal.
                 "last_confirmed_at": now,
@@ -1040,6 +1108,7 @@ class VNextMemoryCommitService:
         return self._transition_memory(
             identity=identity,
             memory=memory,
+            operation=FORGET,
             lifecycle_status="forgotten",
             next_status="superseded",
             event_type="agent.memory_forgotten",
@@ -1210,6 +1279,7 @@ class VNextMemoryCommitService:
             self._transition_memory(
                 identity=identity,
                 memory=member,
+                operation=SUPERSEDE_MEMBER,
                 lifecycle_status="superseded_by_consolidation",
                 next_status="superseded",
                 event_type="agent.memory_superseded",
@@ -1327,14 +1397,22 @@ class VNextMemoryCommitService:
         Audited with an 'edited' revision noting 'expired' plus an
         ``agent.memory_expired`` event, and policy checked like undo/forget
         when an agent identity is present.
+
+        The row is locked (``SELECT ... FOR UPDATE`` on Postgres, the writer
+        lock on SQLite) BEFORE policy evaluation and metadata derivation, so a
+        concurrent correction/supersession cannot be overwritten by a stale
+        snapshot.
         """
-        memory = self.store.get_memory(memory_id)
+        get_memory_for_update = getattr(self.store, "get_memory_for_update", None)
+        memory = (
+            get_memory_for_update(memory_id)
+            if callable(get_memory_for_update)
+            else self.store.get_memory(memory_id)
+        )
         if memory is None:
             raise VNextMemoryCommitValidationError("memory was not found")
         decision = self._policy_checked_write(identity=identity, action="memory.expire", memory=memory)
-        status = str(memory.get("status") or "")
-        if status in EXPIRE_BLOCKED_STATUSES:
-            raise VNextMemoryCommitValidationError(f"cannot expire a {status} memory")
+        self._require_transition(EXPIRE, str(memory.get("status") or ""))
         reason_text = _normalized_text(reason, field_name="reason")
         valid_to_iso = _valid_to_iso(valid_to)
         actor_type = "agent" if identity is not None else "user"
@@ -1405,8 +1483,19 @@ class VNextMemoryCommitService:
         is written instead (read-path equivalent to NULL) and noted in
         ``metadata_json.validity.unbounded_sentinel``. A row that is not
         expired replays as a no-op with a note.
+
+        The row is locked BEFORE policy evaluation and metadata derivation so a
+        concurrent correction/supersession cannot be overwritten by a stale
+        snapshot. A row the staleness sweep marked ``stale`` for an expired
+        window is restored to a retrievable ``active`` state, so the reported
+        status matches reality rather than leaving it stale and unretrievable.
         """
-        memory = self.store.get_memory(memory_id)
+        get_memory_for_update = getattr(self.store, "get_memory_for_update", None)
+        memory = (
+            get_memory_for_update(memory_id)
+            if callable(get_memory_for_update)
+            else self.store.get_memory(memory_id)
+        )
         if memory is None:
             raise VNextMemoryCommitValidationError("memory was not found")
         decision = self._policy_checked_write(
@@ -1415,8 +1504,7 @@ class VNextMemoryCommitService:
             memory=memory,
         )
         status = str(memory.get("status") or "")
-        if status in EXPIRE_BLOCKED_STATUSES:
-            raise VNextMemoryCommitValidationError(f"cannot unexpire a {status} memory")
+        restored_status = self._require_transition(UNEXPIRE, status)
         reason_text = _normalized_text(reason, field_name="reason")
         current_valid_to = memory.get("valid_to")
         if not current_valid_to or _is_unbounded_valid_to(current_valid_to):
@@ -1436,13 +1524,19 @@ class VNextMemoryCommitService:
         history.append({"op": "unexpired", "at": now, "reason": reason_text, "actor_id": actor_id})
         validity.update({"state": "cleared", "unexpired_at": now, "valid_to": None, "history": history})
         validity.pop("unbounded_sentinel", None)
+        unexpire_patch: JsonObject = {
+            "valid_to": None,
+            "last_reviewed_at": now,
+            "metadata_json": {**metadata, "validity": validity},
+        }
+        # A row swept ``stale`` by an expired window is retrievable again once
+        # the window is cleared, so restore it to ``active`` to match the
+        # reported status instead of leaving it stale and unretrievable.
+        if restored_status != status:
+            unexpire_patch["status"] = restored_status
         updated = self.store.update_memory(
             memory_id=str(memory["id"]),
-            patch={
-                "valid_to": None,
-                "last_reviewed_at": now,
-                "metadata_json": {**metadata, "validity": validity},
-            },
+            patch=unexpire_patch,
             actor_type=actor_type,
         )
         if updated.get("valid_to") and not _is_unbounded_valid_to(updated.get("valid_to")):
@@ -2410,6 +2504,7 @@ class VNextMemoryCommitService:
         *,
         identity: AgentIdentity | None,
         memory: VNextRow,
+        operation: str,
         lifecycle_status: str,
         next_status: str,
         event_type: str,
@@ -2420,6 +2515,11 @@ class VNextMemoryCommitService:
         set_successor_pointer: bool = True,
         exclude_derived_candidate_id: str | None = None,
     ) -> JsonObject:
+        # Central enforcement: reject undoing/forgetting/superseding a row that
+        # is already retired, and reject re-superseding back to an ancestor.
+        self._require_transition(operation, str(memory.get("status") or ""))
+        if superseded_by is not None:
+            self._guard_supersession_acyclic(memory=memory, successor=superseded_by)
         metadata = _memory_metadata(memory)
         agentic = _agentic_metadata(memory)
         history = list(agentic.get("lifecycle_history") if isinstance(agentic.get("lifecycle_history"), list) else [])

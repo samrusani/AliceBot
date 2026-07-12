@@ -2031,6 +2031,121 @@ def test_alice_memory_manage_confirm_with_text_records_a_correction(
     assert store.revisions[-1]["reason"] == "User rephrased the fact"
 
 
+def _seed_pending_inline_confirmation(store: FakeVNextMCPStore) -> tuple[str, str]:
+    """Seed a row shaped exactly like ``_create_confirmation`` output.
+
+    The review path requires UUID ids, so this mirrors the commit service's
+    inline-confirmation row (status ``needs_review``, nested confirmation flag
+    ``pending``) with a real UUID.
+    """
+    memory_id = str(uuid4())
+    confirmation_id = f"confirm-{uuid4()}"
+    text = "A fact that awaits inline confirmation."
+    store.memories.append(
+        {
+            "id": memory_id,
+            "memory_key": f"capture.pending.{uuid4().hex[:8]}",
+            "value": {"text": text},
+            "source_event_ids": [],
+            "status": "needs_review",
+            "confirmation_status": "unconfirmed",
+            "confirmation_id": confirmation_id,
+            "memory_type": "semantic",
+            "confidence": 0.7,
+            "title": "Pending fact",
+            "canonical_text": text,
+            "summary": text,
+            "domain": "professional",
+            "sensitivity": "internal",
+            "project_id": None,
+            "metadata_json": {
+                "agentic_memory": {
+                    "kind": "agentic_memory_commit",
+                    "status": "confirmation_required",
+                    "write_mode": "confirm_inline",
+                    "lifecycle_status": "pending_inline_confirmation",
+                    "confirmation": {
+                        "confirmation_id": confirmation_id,
+                        "status": "pending",
+                        "expires_at": "2099-01-01T00:00:00Z",
+                        "proposed_text": text,
+                    },
+                }
+            },
+        }
+    )
+    return memory_id, confirmation_id
+
+
+def test_review_rejection_then_confirm_cannot_reactivate_the_memory(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    """Audit #1(a) end-to-end: a review rejection must not be undone by confirm."""
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory_id, confirmation_id = _seed_pending_inline_confirmation(store)
+
+    rejected = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_correct",
+        arguments={
+            "review_item_id": memory_id,
+            "action": "reject",
+            "reason": "Reviewer rejected the pending fact.",
+        },
+    )
+    assert rejected["memory"]["status"] == "rejected"
+
+    # Confirming the rejected row must be impossible.
+    with pytest.raises(MCPToolError):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_memory_manage",
+            arguments={
+                "action": "confirm",
+                "confirmation_id": confirmation_id,
+            },
+        )
+    assert store.get_memory(memory_id)["status"] == "rejected"
+
+
+def test_review_supersede_then_confirm_cannot_create_two_active_memories(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    """Audit #1(b) end-to-end: a superseded row must not be reconfirmed to active."""
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory_id, confirmation_id = _seed_pending_inline_confirmation(store)
+
+    superseded = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_correct",
+        arguments={
+            "review_item_id": memory_id,
+            "action": "supersede-existing",
+            "replacement_title": "Fresh fact",
+            "replacement_body": {"text": "The corrected replacement value."},
+            "reason": "Reviewer replaced the pending fact.",
+        },
+    )
+    assert superseded["memory"]["status"] == "superseded"
+    replacement_id = superseded["replacement_object"]["id"]
+
+    with pytest.raises(MCPToolError):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_memory_manage",
+            arguments={
+                "action": "confirm",
+                "confirmation_id": confirmation_id,
+            },
+        )
+    assert store.get_memory(memory_id)["status"] == "superseded"
+    active_ids = {row["id"] for row in store.memories if row.get("status") == "active"}
+    assert memory_id not in active_ids
+    assert replacement_id in active_ids
+
+
 def test_alice_memory_manage_undo_and_forget_keep_the_audit_trail(
     monkeypatch, core_surface, no_embedding_provider
 ) -> None:
