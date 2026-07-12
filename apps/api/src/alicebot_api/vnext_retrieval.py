@@ -38,7 +38,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 import json
 import re
-from typing import Mapping, Protocol, Sequence
+from typing import Callable, Mapping, Protocol, Sequence
 from uuid import uuid4
 
 # Read-only reuse of the contradiction-detection machinery that backs
@@ -102,6 +102,13 @@ DEFAULT_SOURCE_LIMIT = 8
 DEFAULT_OPEN_LOOP_LIMIT = 8
 DEFAULT_RECENT_CHANGES_LIMIT = 5
 SCOPED_ROW_OVERFETCH_LIMIT = 200
+# Hard ceiling on how deep a scoped ranked scan will page before giving up.
+# People/time scope filters run in Python over ranked candidates, so a fixed
+# over-fetch only moves the "valid row erased behind a decoy window" cliff to
+# its size. The scan deepens progressively up to this bound so a genuine match
+# ranked past the first window is still surfaced, while unbounded scans are
+# prevented.
+SCOPED_ROW_SCAN_CEILING = 4_000
 DEFAULT_SENSITIVITY_ALLOWED = ("public", "internal", "private", "unknown")
 STRATEGIC_QUERY_TYPES = {"strategic_synthesis", "contradiction_check", "project_status", "agent_context"}
 RRF_K = 60
@@ -752,6 +759,38 @@ def _filter_rows_for_scope(
             person_linked_memory_ids=person_linked_memory_ids,
         )
     ]
+
+
+def _fetch_scope_filtered(
+    fetch: "Callable[[int], tuple[list[JsonObject], object]]",
+    *,
+    scope: _ResolvedRetrievalScope,
+    person_linked_memory_ids: frozenset[str],
+    target: int,
+    ceiling: int = SCOPED_ROW_SCAN_CEILING,
+) -> tuple[list[JsonObject], object]:
+    """Fetch a ranked list and scope-filter it, deepening until enough survive.
+
+    ``fetch(limit)`` returns ``(rows, source)`` ranked best-first. Because
+    people/time scope filters run in Python over these ranked rows, a valid row
+    ranked behind a full window of non-matching candidates would be dropped by a
+    fixed over-fetch. Grow the fetch limit (doubling) until at least ``target``
+    filtered rows survive, the store is exhausted (returned fewer than asked),
+    or the hard scan ceiling is reached. When the scope is inactive this makes a
+    single fetch at ``target`` so unscoped packs stay byte-identical.
+    """
+    if not scope.active:
+        rows, source = fetch(target)
+        return list(rows), source
+    limit = min(max(target, SCOPED_ROW_OVERFETCH_LIMIT), ceiling)
+    while True:
+        rows, source = fetch(limit)
+        filtered = _filter_rows_for_scope(
+            rows, scope, person_linked_memory_ids=person_linked_memory_ids
+        )
+        if len(filtered) >= target or len(rows) < limit or limit >= ceiling:
+            return filtered, source
+        limit = min(limit * 2, ceiling)
 
 
 _GRAPH_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -1970,35 +2009,35 @@ class VNextRetrievalService:
         # People/time scope filters cannot all be pushed into the store query
         # (people resolve through link edges + free-form metadata; the event
         # window spans many row keys), so they run in Python over the store's
-        # top-N candidates (see _filter_rows_for_scope). With only a
-        # 2 * max_items window, a valid scoped row ranked behind a full window
-        # of non-matching decoys is never fetched, erasing a real result
-        # (audit P1 #5). Deepen the candidate window to the bounded
-        # scoped-overfetch cap when a scope is active — mirroring the
-        # sources/open-loop/contradiction stages — so post-filter survivors
-        # remain; _fused_candidates below still selects only max_items. The
-        # no-filter path (scope inactive) is untouched, so unscoped packs stay
-        # byte-identical.
+        # ranked candidates (see _filter_rows_for_scope). A fixed over-fetch only
+        # moves the "valid row erased behind a decoy window" cliff to its size
+        # (audit 2 P1 #3). ``scope_target`` is the number of post-filter
+        # survivors we want; the ranked FTS and vector arms deepen their scan
+        # (bounded by SCOPED_ROW_SCAN_CEILING) until that many survive, the store
+        # is exhausted, or the ceiling is hit. The scope-inactive path makes a
+        # single fetch, so unscoped packs stay byte-identical. Non-ranked/graph
+        # arms keep the fixed scoped over-fetch cap below.
+        scope_target = memory_candidate_limit
         if scope.active:
             memory_candidate_limit = min(
                 SCOPED_ROW_OVERFETCH_LIMIT,
                 max(memory_candidate_limit, SCOPED_ROW_OVERFETCH_LIMIT),
             )
 
-        fts_rows, fts_source = self._memory_fts_rows(
-            query=request.query,
-            domains=domains,
-            sensitivity_allowed=sensitivity_allowed,
-            limit=memory_candidate_limit,
-            memory_types=memory_types,
-            projects=projects,
-            created_by_agent_ids=created_by_agent_ids,
-            run_id=filter_run_id,
-        )
-        fts_rows = _filter_rows_for_scope(
-            fts_rows,
-            scope,
+        fts_rows, fts_source = _fetch_scope_filtered(
+            lambda n: self._memory_fts_rows(
+                query=request.query,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                limit=n,
+                memory_types=memory_types,
+                projects=projects,
+                created_by_agent_ids=created_by_agent_ids,
+                run_id=filter_run_id,
+            ),
+            scope=scope,
             person_linked_memory_ids=person_linked_memory_ids,
+            target=scope_target,
         )
         if depth == CONTEXT_DEPTH_MINIMAL:
             # The cheapest useful call: FTS only. No query embedding, no
@@ -2006,20 +2045,20 @@ class VNextRetrievalService:
             vector_rows, vector_stage = [], STAGE_DISABLED_MINIMAL
             graph_rows, graph_stage, matched_entities = [], STAGE_DISABLED_MINIMAL, []
         else:
-            vector_rows, vector_stage = self._memory_vector_rows(
-                query=str(interpretation["query"]),
-                domains=domains,
-                sensitivity_allowed=sensitivity_allowed,
-                limit=memory_candidate_limit,
-                memory_types=memory_types,
-                projects=projects,
-                created_by_agent_ids=created_by_agent_ids,
-                run_id=filter_run_id,
-            )
-            vector_rows = _filter_rows_for_scope(
-                vector_rows,
-                scope,
+            vector_rows, vector_stage = _fetch_scope_filtered(
+                lambda n: self._memory_vector_rows(
+                    query=str(interpretation["query"]),
+                    domains=domains,
+                    sensitivity_allowed=sensitivity_allowed,
+                    limit=n,
+                    memory_types=memory_types,
+                    projects=projects,
+                    created_by_agent_ids=created_by_agent_ids,
+                    run_id=filter_run_id,
+                ),
+                scope=scope,
                 person_linked_memory_ids=person_linked_memory_ids,
+                target=scope_target,
             )
             graph_rows, graph_stage, matched_entities = self._memory_graph_rows(
                 query=" ".join((request.query, *request.people)),
