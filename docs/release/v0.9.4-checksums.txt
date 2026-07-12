@@ -1,0 +1,11 @@
+# Alice v0.9.4 — published artifact SHA-256 digests
+#
+# These are the exact digests of the wheel and source distribution published
+# to PyPI for v0.9.4 through GitHub Trusted Publishing. They also appear on the
+# project's PyPI page and are bound to this repository, the v0.9.4 tag, the
+# publishing workflow, the exact commit, the release event, and the protected
+# pypi environment by PyPI's integrity attestations (the /provenance endpoints).
+# Verify with:  sha256sum -c v0.9.4-checksums.txt  (against downloaded files)
+#
+fe92b77a9ee5239a9157c199826bcc043021f74060d4d96397920f03c028e1a7  alice_memory-0.9.4-py3-none-any.whl
+c77c1bb16f4d5a320471b771e530a61921a9de386ab1dc765120d4d4039347ef  alice_memory-0.9.4.tar.gz
