@@ -1868,6 +1868,14 @@ class PostgresVNextStore:
         params.extend(signature_params)
         candidate_limit = max(limit, min(limit * 4, 1000)) if signature_sql else limit
         params.extend((include_expired, vector_param, candidate_limit))
+        # Enable iterative HNSW scan so the lifecycle/scope/signature filters
+        # applied alongside the approximate ORDER BY do not silently underfill
+        # the result set (a plain filtered HNSW scan can return far fewer than
+        # LIMIT valid rows). ``hnsw.iterative_scan`` is a dotted custom GUC, so
+        # this is a harmless no-op on pgvector < 0.8 rather than an error, and
+        # SET LOCAL scopes it to the current transaction.
+        with self.conn.cursor() as cur:
+            cur.execute("SET LOCAL hnsw.iterative_scan = 'strict_order'")
         rows = self._fetch_all(
             f"""
                 SELECT {MEMORY_COLUMNS},

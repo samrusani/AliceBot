@@ -1264,7 +1264,7 @@ def test_vector_search_orders_by_cosine_distance_and_skips_null_embeddings() -> 
     )
 
     assert rows[0]["id"] == "memory-1"
-    query, params = cursor.executed[0]
+    query, params = next((q, p) for q, p in cursor.executed if "vector_distance" in q)
     assert "FROM memories" in query
     assert "embedding_vector IS NOT NULL" in query
     assert "status IN ('active', 'accepted')" in query
@@ -1307,11 +1307,30 @@ def test_vector_search_can_require_matching_embedding_signature() -> None:
         embedding_signature_version=1,
     )
 
-    query, params = cursor.executed[0]
+    query, params = next((q, p) for q, p in cursor.executed if "vector_distance" in q)
     assert "metadata_json -> '_alice_embedding' ->> 'provider' = %s" in query
     assert "metadata_json -> '_alice_embedding' ->> 'model' = %s" in query
     assert "->> 'version' = %s" in query
     assert params[-6:-3] == ("openai_compatible", "embed-v1", "1")
+
+
+def test_vector_search_enables_iterative_hnsw_scan() -> None:
+    # Filters applied alongside an approximate HNSW ORDER BY can silently
+    # underfill; the store must enable iterative index scan so a filtered
+    # vector search still returns up to LIMIT valid rows.
+    cursor = RecordingCursor(fetchone_results=[], fetchall_result=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.search_memories_vector(query_vector=[1.0, 0.0], limit=20)
+
+    statements = [q for q, _ in cursor.executed]
+    assert any(
+        "hnsw.iterative_scan" in q and "strict_order" in q for q in statements
+    ), statements
+    # The iterative-scan setting must precede the vector SELECT.
+    set_index = next(i for i, q in enumerate(statements) if "hnsw.iterative_scan" in q)
+    select_index = next(i for i, q in enumerate(statements) if "vector_distance" in q)
+    assert set_index < select_index
 
 
 def test_vector_search_discards_stale_content_signatures_after_database_read() -> None:
@@ -1342,7 +1361,8 @@ def test_vector_search_discards_stale_content_signatures_after_database_read() -
     )
 
     assert [row["id"] for row in rows] == ["memory-current"]
-    assert cursor.executed[0][1][-1] == 4
+    _query, select_params = next((q, p) for q, p in cursor.executed if "vector_distance" in q)
+    assert select_params[-1] == 4
 
 
 def test_update_memory_embedding_and_missing_embedding_listing() -> None:
