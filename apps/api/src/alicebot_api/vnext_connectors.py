@@ -20,6 +20,7 @@ from uuid import uuid4
 from alicebot_api.telegram_channels import normalize_telegram_update
 from alicebot_api.vnext_capture import SourceCaptureInput, VNextCaptureService, VNextCaptureStore
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_project_scope import normalize_project_scope
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_secrets import SecretProvider, default_secret_provider, redact_secret_fields
 
@@ -606,6 +607,11 @@ def _normalize_browser_clip_item(payload: JsonObject) -> NormalizedConnectorItem
             "captured_from_browser": True,
             "selection": selected_text,
             "html": _as_optional_text(payload.get("html")),
+            # Promote clipper-provided project scope to the top level so
+            # capture_source (which reads metadata_json["project_scope"])
+            # actually applies it, instead of it being lost inside raw_payload
+            # (audit 2 P1 #2).
+            "project_scope": payload.get("project_scope") if isinstance(payload.get("project_scope"), list) else [],
             "untrusted_source_material": True,
             "raw_evidence_preserved": True,
         },
@@ -1547,6 +1553,14 @@ class VNextConnectorService:
             )
 
         if bool(payload.get("propose_memory")):
+            # Carry the agent's project scope onto the proposed memory so the
+            # owning project can retrieve it and other projects are excluded.
+            # Without this the candidate was unscoped for canonical retrieval
+            # even though the source was scoped (audit 2 P1 #2).
+            proposal_scope = normalize_project_scope(
+                item.metadata_json.get("project_scope")
+                or (agent_identity.get("project_scope") if isinstance(agent_identity, dict) else None)
+            )
             memory = self.store.create_memory(
                 {
                     "memory_key": f"vnext.agent_output.{sha256((item.external_id + item.raw_text).encode('utf-8')).hexdigest()[:16]}",
@@ -1565,6 +1579,7 @@ class VNextConnectorService:
                     "summary": _as_optional_text(payload.get("rationale")) or item.raw_text[:280],
                     "domain": _as_optional_text(payload.get("domain")) or "project",
                     "sensitivity": _as_optional_text(payload.get("sensitivity")) or "private",
+                    "project_scope": list(proposal_scope),
                     "metadata_json": {
                         "connector_name": "agent_output",
                         "agent_identity": agent_identity,
@@ -1572,6 +1587,7 @@ class VNextConnectorService:
                         "artifact_id": artifact_id,
                         "review_required": True,
                         "policy_decision": policy_decision,
+                        **({"project_scope": list(proposal_scope)} if proposal_scope else {}),
                     },
                 },
                 actor_type="agent",

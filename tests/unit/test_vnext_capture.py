@@ -12,6 +12,7 @@ from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_capture import (
     USER_ASSERTED_VALUE_CONFIDENCE,
     USER_ASSERTED_VALUE_RULE,
+    SourceCaptureInput,
     VNextCaptureService,
     VNextCaptureValidationError,
     chunk_text,
@@ -135,6 +136,33 @@ def test_capture_text_deduplicates_existing_content_by_hash() -> None:
     assert len(store.sources) == 1
     assert len(store.chunks) == 1
     assert [event["event_type"] for event in store.events if event["event_type"] == "source.duplicate_skipped"]
+
+
+def test_identical_text_in_different_projects_is_not_deduped() -> None:
+    # Audit 2 P1 #2: global text-only dedupe skipped the second project's
+    # identical capture, so it got no scoped source or candidate. Dedupe is now
+    # scope-aware: each project keeps its own scoped source; same-project repeats
+    # still dedupe.
+    store = InMemoryVNextCaptureStore()
+    service = VNextCaptureService(store)
+    text = "Fact: Quarterly revenue grew twelve percent this period."
+
+    alpha = service.capture_source(
+        SourceCaptureInput(source_type="note", raw_text=text, title="A", project_scope=("Alpha",))
+    )
+    beta = service.capture_source(
+        SourceCaptureInput(source_type="note", raw_text=text, title="B", project_scope=("Beta",))
+    )
+    alpha_again = service.capture_source(
+        SourceCaptureInput(source_type="note", raw_text=text, title="A2", project_scope=("Alpha",))
+    )
+
+    assert alpha.duplicate is False
+    assert beta.duplicate is False  # NOT a duplicate of Alpha's source
+    assert alpha.source_id != beta.source_id
+    assert alpha_again.duplicate is True  # same scope + same text still dedupes
+    assert alpha_again.source_id == alpha.source_id
+    assert len({str(source["id"]) for source in store.sources}) == 2
 
 
 def test_import_markdown_folder_imports_100_files_without_batch_duplicates(tmp_path: Path) -> None:
