@@ -146,6 +146,13 @@ from alicebot_api.vnext_context_tree import ContextTreeRequest, VNextContextTree
 from alicebot_api.vnext_connectors import VNextConnectorService
 from alicebot_api.vnext_contradictions import ContradictionFinderRequest, VNextContradictionService
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_lifecycle import (
+    REVIEW_APPROVE,
+    REVIEW_REJECT,
+    REVIEW_SUPERSEDE,
+    LifecycleTransitionError,
+    resolve_transition,
+)
 from alicebot_api.vnext_memory_commit import (
     VNextMemoryCommitService,
     VNextMemoryCommitValidationError,
@@ -1913,6 +1920,35 @@ def _accepted_review_metadata(
     return metadata
 
 
+def _retired_review_metadata(memory: Mapping[str, object], *, outcome: str) -> JsonObject:
+    """Metadata for a review rejection/supersession, closing any pending flag.
+
+    A row proposed via inline confirmation carries a nested
+    ``agentic_memory.confirmation`` flag. When a review retires the row, that
+    flag must not be left ``pending`` -- otherwise a later confirm() would try
+    to reactivate a rejected/superseded row. confirm() independently verifies
+    the row's lifecycle status, but clearing the flag here keeps the audit
+    record honest and closes the hole at its source.
+    """
+    metadata = (
+        dict(cast(Mapping[str, object], memory.get("metadata_json")))
+        if isinstance(memory.get("metadata_json"), Mapping)
+        else {}
+    )
+    agentic_raw = metadata.get("agentic_memory")
+    if isinstance(agentic_raw, Mapping):
+        agentic = dict(agentic_raw)
+        confirmation_raw = agentic.get("confirmation")
+        if isinstance(confirmation_raw, Mapping) and confirmation_raw.get("status") == "pending":
+            confirmation = dict(confirmation_raw)
+            confirmation["status"] = outcome
+            agentic["confirmation"] = confirmation
+        agentic["lifecycle_status"] = f"review_{outcome}"
+        agentic["requires_dashboard_review"] = False
+        metadata["agentic_memory"] = agentic
+    return metadata
+
+
 def _vnext_review_revision(
     store: object,
     *,
@@ -2039,10 +2075,20 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
         )
         if locked_decision.decision == "blocked":
             _raise_mcp_policy_blocked(locked_decision)
-        if str(memory.get("status") or "") in {"archived", "rejected", "superseded"}:
+        # Route the retired-status guard through the central transition table so
+        # a review cannot approve/reject/supersede an already-retired row.
+        _review_operation = {
+            "confirm": REVIEW_APPROVE,
+            "edit": REVIEW_APPROVE,
+            "delete": REVIEW_REJECT,
+            "supersede": REVIEW_SUPERSEDE,
+        }[resolved_action]
+        try:
+            resolve_transition(_review_operation, str(memory.get("status") or ""))
+        except LifecycleTransitionError as exc:
             raise MCPToolError(
                 f"memory {memory_id} cannot be reviewed from status '{memory.get('status')}'"
-            )
+            ) from exc
         if is_pending_consolidation_candidate(memory):
             raise MCPToolError(
                 "memory became a pending consolidation candidate during review; retry the approval"
@@ -2081,7 +2127,11 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
         elif resolved_action == "delete":
             updated = store.update_memory(
                 memory_id=memory_id,
-                patch={"status": "rejected", "last_reviewed_at": now_iso},
+                patch={
+                    "status": "rejected",
+                    "last_reviewed_at": now_iso,
+                    "metadata_json": _retired_review_metadata(memory, outcome="rejected"),
+                },
                 actor_type=actor_type,
             )
             _vnext_review_revision(
@@ -2200,11 +2250,7 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
                         },
                         actor_type=actor_type,
                     )
-            existing_metadata = (
-                dict(cast(Mapping[str, object], memory.get("metadata_json")))
-                if isinstance(memory.get("metadata_json"), Mapping)
-                else {}
-            )
+            existing_metadata = _retired_review_metadata(memory, outcome="superseded")
             updated = store.update_memory(
                 memory_id=memory_id,
                 patch={
