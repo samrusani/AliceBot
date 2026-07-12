@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Lifecycle correctness: all memory lifecycle mutations (confirm, review, correct, undo, forget, expire/unexpire, supersession) now route through one central transition table (`vnext_lifecycle`) that rejects invalid transitions — a rejected or superseded row can no longer be confirmed back to active, `correct()` no longer promotes rows while leaving them unconfirmed/review-required, supersession `A → B → A` cycles are blocked, and `unexpire` cannot report active while the row stays stale.
+- Expire/unexpire now lock the row before policy evaluation, so a concurrent correction or supersession can no longer be overwritten by a stale snapshot (audit P1 #2).
+- Migration `20260712_0084`: corrects the migration-`0083` bug where retry/confirmation identifiers could be stranded on a deleted tombstone (leaving the live row unfindable and the key unusable); dedup now prefers the active row, and 0084 repairs databases already mis-upgraded by v0.9.2. SQLite bootstrap gets the same fix plus a corrective pass. `0083` is left unchanged.
+- Project-scoped capture now persists its effective scope: a project-scoped agent's captured memory is retrievable by that project's filtered recall and excluded from other projects (audit P1 #4 — the scope was validated but never stored).
+- Hard people/time retrieval filters no longer erase valid results: the retriever over-fetches (bounded) so a scoped row ranked behind a full decoy window is still found instead of returning an empty pack (audit P1 #5).
+
 ## v0.9.2 — 2026-07-11
 
 - Release hardening for the `v0.9.2` candidate: project-bound agent keys now inherit scope on omitted reads; every lifecycle mutation authorizes the persisted target and locked review targets are rechecked; all 70 `/v0/vnext` routes authenticate centrally and routes without resource-aware policy fail closed for scoped or restricted keys; key-bound MCP exposes only the policy-complete core surface; read-only and proposal-only profiles cannot mutate memory.
