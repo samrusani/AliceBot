@@ -162,6 +162,166 @@ def test_lifecycle_invariant_upgrade_canonicalizes_retry_ids_and_installs_edge_t
             assert cur.fetchone() == (True,)
 
 
+def _seed_tombstone_and_live_duplicate(conn, *, user_id, tombstone_id, live_id):
+    """Older archived/deleted row and newer active row sharing identifiers."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO users (id, email, display_name) VALUES (%s, %s, %s)",
+            (user_id, "tombstone-lifecycle@example.com", "Tombstone Lifecycle"),
+        )
+        for memory_id, key, created_at, status, deleted_at in (
+            (tombstone_id, "retry.old", "2026-01-01T00:00:00Z", "archived", "2026-01-01T01:00:00Z"),
+            (live_id, "retry.new", "2026-01-02T00:00:00Z", "active", None),
+        ):
+            cur.execute(
+                """
+                INSERT INTO memories (
+                  id, user_id, memory_key, value, status, source_event_ids,
+                  memory_type, canonical_text, commit_digest, confirmation_id,
+                  metadata_json, created_at, updated_at, deleted_at
+                )
+                VALUES (
+                  %s, %s, %s, '{"text":"same retry"}'::jsonb, %s,
+                  '[]'::jsonb, 'semantic', 'Same retry', 'duplicate-digest',
+                  'duplicate-confirmation',
+                  '{"agentic_memory":{"idempotency_key":"duplicate-digest","confirmation":{"confirmation_id":"duplicate-confirmation"}}}'::jsonb,
+                  %s::timestamptz, %s::timestamptz, %s::timestamptz
+                )
+                """,
+                (memory_id, user_id, key, status, created_at, created_at, deleted_at),
+            )
+
+
+def test_lifecycle_invariant_upgrade_keeps_identifiers_on_live_row_over_tombstone(database_urls):
+    """Audit P1 #3: a duplicate identifier must land on the live row, not a tombstone.
+
+    Runtime replay (``get_memory_by_commit_digest`` / ``_by_confirmation_id``)
+    filters ``deleted_at IS NULL``. When an older archived/deleted row and a
+    newer active row share an identifier, the upgrade must keep it on the live
+    row; stranding it on the tombstone makes replay return nothing while the
+    partial unique index blocks re-insertion of the same key.
+    """
+    config = make_alembic_config(database_urls["admin"])
+    user_id = "00000000-0000-0000-0000-000000000131"
+    tombstone_id = "00000000-0000-0000-0000-000000000132"
+    live_id = "00000000-0000-0000-0000-000000000133"
+    command.upgrade(config, "20260707_0082")
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        _seed_tombstone_and_live_duplicate(
+            conn, user_id=user_id, tombstone_id=tombstone_id, live_id=live_id
+        )
+
+    command.upgrade(config, "head")
+
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id::text AS id, commit_digest, confirmation_id, metadata_json
+                FROM memories
+                WHERE id IN (%s, %s)
+                """,
+                (tombstone_id, live_id),
+            )
+            by_id = {row["id"]: row for row in cur.fetchall()}
+        assert by_id[live_id]["commit_digest"] == "duplicate-digest"
+        assert by_id[live_id]["confirmation_id"] == "duplicate-confirmation"
+        assert by_id[tombstone_id]["commit_digest"] is None
+        assert by_id[tombstone_id]["confirmation_id"] is None
+        assert (
+            by_id[tombstone_id]["metadata_json"]["lifecycle_migration"][
+                "duplicate_commit_digest_canonical_memory_id"
+            ]
+            == live_id
+        )
+
+        store = PostgresVNextStore(conn)
+        replay = store.get_memory_by_commit_digest("duplicate-digest")
+        assert replay is not None and str(replay["id"]) == live_id
+        confirmed = store.get_memory_by_confirmation_id("duplicate-confirmation")
+        assert confirmed is not None and str(confirmed["id"]) == live_id
+
+
+def test_lifecycle_identifier_repair_corrects_database_mis_upgraded_by_0083(database_urls):
+    """The corrective follow-up repairs a database the shipped 0083 mis-upgraded.
+
+    0083 already shipped in v0.9.2, so a database may already carry the
+    mis-assignment (identifier stranded on the tombstone). Migration 0084 must
+    move it onto the oldest live row, and be safe to re-run on already-corrected
+    data.
+    """
+    config = make_alembic_config(database_urls["admin"])
+    user_id = "00000000-0000-0000-0000-000000000141"
+    tombstone_id = "00000000-0000-0000-0000-000000000142"
+    live_id = "00000000-0000-0000-0000-000000000143"
+    command.upgrade(config, "20260707_0082")
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        _seed_tombstone_and_live_duplicate(
+            conn, user_id=user_id, tombstone_id=tombstone_id, live_id=live_id
+        )
+
+    # Apply only the shipped (buggy) 0083 and document the mis-assignment.
+    command.upgrade(config, "20260711_0083")
+
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id::text AS id, commit_digest, confirmation_id, metadata_json
+                FROM memories
+                WHERE id IN (%s, %s)
+                """,
+                (tombstone_id, live_id),
+            )
+            mis = {row["id"]: row for row in cur.fetchall()}
+        assert mis[tombstone_id]["commit_digest"] == "duplicate-digest"
+        assert mis[tombstone_id]["confirmation_id"] == "duplicate-confirmation"
+        assert mis[live_id]["commit_digest"] is None
+        assert (
+            mis[live_id]["metadata_json"]["lifecycle_migration"][
+                "duplicate_commit_digest_canonical_memory_id"
+            ]
+            == tombstone_id
+        )
+
+    def _assert_corrected() -> None:
+        with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id::text AS id, commit_digest, confirmation_id, metadata_json
+                    FROM memories
+                    WHERE id IN (%s, %s)
+                    """,
+                    (tombstone_id, live_id),
+                )
+                fixed = {row["id"]: row for row in cur.fetchall()}
+            assert fixed[live_id]["commit_digest"] == "duplicate-digest"
+            assert fixed[live_id]["confirmation_id"] == "duplicate-confirmation"
+            assert fixed[tombstone_id]["commit_digest"] is None
+            assert fixed[tombstone_id]["confirmation_id"] is None
+            assert "duplicate_commit_digest_canonical_memory_id" not in fixed[live_id][
+                "metadata_json"
+            ].get("lifecycle_migration", {})
+            store = PostgresVNextStore(conn)
+            assert str(store.get_memory_by_commit_digest("duplicate-digest")["id"]) == live_id
+            assert (
+                str(store.get_memory_by_confirmation_id("duplicate-confirmation")["id"]) == live_id
+            )
+
+    # Corrective follow-up moves the identifiers onto the live row.
+    command.upgrade(config, "head")
+    _assert_corrected()
+
+    # Safe re-run: downgrade (a no-op that keeps the corrected data) then
+    # re-upgrade must leave the corrected state unchanged.
+    command.downgrade(config, "20260711_0083")
+    command.upgrade(config, "head")
+    _assert_corrected()
+
+
 def test_lifecycle_upgrade_promotes_and_reads_legacy_nested_multi_project_scope(database_urls):
     config = make_alembic_config(database_urls["admin"])
     user_id = "00000000-0000-0000-0000-000000000121"

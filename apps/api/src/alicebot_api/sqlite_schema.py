@@ -1263,9 +1263,16 @@ def _deduplicate_memory_lookup_values(conn: sqlite3.Connection) -> None:
     """Preserve rows while making retry/confirmation identifiers unique.
 
     Old files could contain duplicates because their lookup indexes were not
-    unique. The earliest row remains the canonical replay target; later rows
-    keep their content and audit history but relinquish the ambiguous lookup
-    value, with the canonical row id recorded in metadata.
+    unique. The oldest *active* (non-deleted) row remains the canonical replay
+    target; later rows keep their content and audit history but relinquish the
+    ambiguous lookup value, with the canonical row id recorded in metadata.
+
+    Preferring an active row matters because the runtime replay lookups
+    (``get_memory_by_commit_digest`` / ``get_memory_by_confirmation_id``) filter
+    ``deleted_at IS NULL``. Keeping the identifier on an older tombstone would
+    make replay return nothing while the partial unique index still blocks
+    re-inserting the same key. Only when every duplicate is deleted does the
+    oldest surviving (deleted) row keep the value.
     """
     index_rows = conn.execute("PRAGMA index_list(memories)").fetchall()
     unique_indexes: set[str] = set()
@@ -1308,7 +1315,7 @@ def _deduplicate_memory_lookup_values(conn: sqlite3.Connection) -> None:
                 {column} AS lookup_value,
                 ROW_NUMBER() OVER (
                   PARTITION BY user_id, {column}
-                  ORDER BY created_at ASC, id ASC
+                  ORDER BY (deleted_at IS NOT NULL), created_at ASC, id ASC
                 ) AS duplicate_rank,
                 COUNT(*) OVER (PARTITION BY user_id, {column}) AS duplicate_count
               FROM memories
@@ -1345,6 +1352,100 @@ def _deduplicate_memory_lookup_values(conn: sqlite3.Connection) -> None:
                     str(user_id),
                     value,
                     str(canonical_id),
+                ),
+            )
+
+
+def _repair_tombstone_lookup_value_holders(conn: sqlite3.Connection) -> None:
+    """Move retry/confirmation identifiers off tombstones onto the live row.
+
+    The dedup shipped in v0.9.2 kept the *earliest* duplicate regardless of
+    deletion, so a file already opened under that version can have the
+    identifier stranded on an older deleted row while the newer active row was
+    cleared. This corrective pass runs on every bootstrap and repairs that
+    exact shape: for any deleted row still holding an identifier whose cleared
+    sibling (recorded via the ``lifecycle_migration`` back-pointer) is live, it
+    releases the identifier from the tombstone and restores it onto the oldest
+    such live row. It is idempotent — a healthy file matches nothing and no row
+    is touched. The move is done as release-then-restore so the partial unique
+    index is never momentarily violated when it is already in place.
+    """
+    specifications = (
+        (
+            "commit_digest",
+            "$.agentic_memory.idempotency_key",
+            "$.lifecycle_migration.duplicate_commit_digest_canonical_memory_id",
+        ),
+        (
+            "confirmation_id",
+            "$.agentic_memory.confirmation.confirmation_id",
+            "$.lifecycle_migration.duplicate_confirmation_id_canonical_memory_id",
+        ),
+    )
+    for column, mirror_path, pointer_path in specifications:
+        repairs = conn.execute(
+            f"""
+            SELECT holder_id, holder_value, candidate_id
+            FROM (
+              SELECT
+                holder.id AS holder_id,
+                holder.{column} AS holder_value,
+                (
+                  SELECT candidate.id
+                  FROM memories AS candidate
+                  WHERE candidate.user_id = holder.user_id
+                    AND candidate.deleted_at IS NULL
+                    AND candidate.{column} IS NULL
+                    AND json_extract(candidate.metadata_json, ?) = holder.id
+                  ORDER BY candidate.created_at ASC, candidate.id ASC
+                  LIMIT 1
+                ) AS candidate_id
+              FROM memories AS holder
+              WHERE holder.{column} IS NOT NULL
+                AND holder.deleted_at IS NOT NULL
+            ) AS ranked
+            WHERE candidate_id IS NOT NULL
+            """,
+            (pointer_path,),
+        ).fetchall()
+        for row in repairs:
+            if isinstance(row, dict):
+                holder_id = row["holder_id"]
+                holder_value = row["holder_value"]
+                candidate_id = row["candidate_id"]
+            else:
+                holder_id, holder_value, candidate_id = row
+            # Release the identifier from the tombstone and repoint it at the
+            # new live canonical row.
+            conn.execute(
+                f"""
+                UPDATE memories
+                SET {column} = NULL,
+                    metadata_json = json_set(metadata_json, ?, ?)
+                WHERE id = ?
+                """,
+                (pointer_path, str(candidate_id), str(holder_id)),
+            )
+            # Restore the identifier onto the live row, drop its stale
+            # back-pointer, and re-populate the mirrored metadata value so the
+            # repaired row matches a correctly-deduplicated canonical row.
+            conn.execute(
+                f"""
+                UPDATE memories
+                SET {column} = ?,
+                    metadata_json = json_set(
+                      json_remove(metadata_json, ?),
+                      ?,
+                      ?
+                    )
+                WHERE id = ?
+                """,
+                (
+                    holder_value,
+                    pointer_path,
+                    mirror_path,
+                    str(holder_value),
+                    str(candidate_id),
                 ),
             )
 
@@ -1399,6 +1500,9 @@ def bootstrap_sqlite_schema(conn: sqlite3.Connection) -> None:
     _ensure_additive_columns(conn)
     _backfill_legacy_memory_project_scopes(conn)
     _deduplicate_memory_lookup_values(conn)
+    # Corrective pass for files a buggy v0.9.2 dedup already stranded an
+    # identifier on a tombstone (audit P1 #3); a no-op on healthy files.
+    _repair_tombstone_lookup_value_holders(conn)
     # The redaction flag row must exist before the append-only triggers
     # reference it, and it must be OFF: a crashed process must never leave
     # a database file with redaction mode stuck open.
