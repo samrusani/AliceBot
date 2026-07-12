@@ -228,7 +228,7 @@ describe("VNextPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Generate weekly synthesis" }));
     expect(screen.getAllByText("Demo weekly artifact generated.").length).toBeGreaterThan(0);
-  });
+  }, 30000); // heavy multi-action page test; CI runners need more than 5s
 
   it("updates governed scheduler fixture state", async () => {
     await renderVNextPage();
@@ -246,7 +246,7 @@ describe("VNextPage", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Run now" })[0]);
     expect(screen.getAllByText("Demo scheduler action applied: run_now.").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/scheduler-run-demo-1/).length).toBeGreaterThan(0);
-  });
+  }, 30000); // heavy multi-action page test; CI runners need more than 5s
 
   it("saves Brain Charter settings and keeps connector settings visible", async () => {
     await renderVNextPage();
