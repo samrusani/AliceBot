@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.9.2 — 2026-07-11
+
 - Release hardening for the `v0.9.2` candidate: project-bound agent keys now inherit scope on omitted reads; every lifecycle mutation authorizes the persisted target and locked review targets are rechecked; all 70 `/v0/vnext` routes authenticate centrally and routes without resource-aware policy fail closed for scoped or restricted keys; key-bound MCP exposes only the policy-complete core surface; read-only and proposal-only profiles cannot mutate memory.
 - Data integrity hardening: versioned and checksummed SQLite backup/restore with atomic secure files and tamper/collision defenses; safe data-bearing 0067 upgrades; new 0083 uniqueness and derived-edge invariants; content edits refresh derived state; stale consolidation acceptance is rejected.
 - Retrieval and performance hardening: hard project/person/time filters across context sections, service-authoritative request caps and honest serialized-budget disclosure, embedding compatibility signatures plus reindex recovery, and consolidation capped at 2,000 memories / 16 MB / 1,999,000 comparisons.
