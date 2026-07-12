@@ -1818,6 +1818,7 @@ class PostgresVNextStore:
         include_expired: bool = False,
         embedding_provider: str | None = None,
         embedding_model: str | None = None,
+        embedding_endpoint: str | None = None,
         embedding_signature_version: int | None = None,
     ) -> list[VNextRow]:
         vector_param = _vector_literal(query_vector)
@@ -1836,6 +1837,14 @@ class PostgresVNextStore:
                   AND metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'model' = %s
             """
             signature_params.extend((embedding_provider, embedding_model))
+            if embedding_endpoint is not None:
+                # Vectors carry an endpoint fingerprint; only pool those from the
+                # same endpoint as the query so distinct coordinate spaces that
+                # share provider/model labels are never compared.
+                signature_sql += f"""
+                  AND metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'endpoint' = %s
+                """
+                signature_params.append(embedding_endpoint)
             if embedding_signature_version is not None:
                 signature_sql += f"""
                   AND metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'version' = %s
@@ -1989,6 +1998,7 @@ class PostgresVNextStore:
         vector: list[float],
         provider: str | None = None,
         model: str | None = None,
+        endpoint: str | None = None,
         content_sha256: str | None = None,
         signature_version: int = 1,
     ) -> VNextRow | None:
@@ -2002,6 +2012,7 @@ class PostgresVNextStore:
                 "version": signature_version,
                 "provider": provider,
                 "model": model,
+                "endpoint": endpoint if isinstance(endpoint, str) else "",
                 "content_sha256": content_sha256,
             }
             return self._fetch_optional_one(
@@ -2057,6 +2068,7 @@ class PostgresVNextStore:
         after_id: str | None = None,
         embedding_provider: str | None = None,
         embedding_model: str | None = None,
+        embedding_endpoint: str | None = None,
         embedding_signature_version: int | None = None,
     ) -> list[VNextRow]:
         signature_sql = ""
@@ -2073,6 +2085,14 @@ class PostgresVNextStore:
                        IS DISTINCT FROM %s
             """
             signature_params.extend((embedding_provider, embedding_model))
+            if embedding_endpoint is not None:
+                # A vector embedded via a different endpoint is stale and must be
+                # re-embedded for the current endpoint's coordinate space.
+                signature_sql += f"""
+                  OR metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'endpoint'
+                       IS DISTINCT FROM %s
+                """
+                signature_params.append(embedding_endpoint)
             if embedding_signature_version is not None:
                 signature_sql += f"""
                   OR metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'version'

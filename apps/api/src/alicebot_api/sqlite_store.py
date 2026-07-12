@@ -1607,6 +1607,7 @@ class SQLiteVNextStore:
         include_expired: bool = False,
         embedding_provider: str | None = None,
         embedding_model: str | None = None,
+        embedding_endpoint: str | None = None,
         embedding_signature_version: int | None = None,
     ) -> list[VNextRow]:
         if not query_vector:
@@ -1640,6 +1641,17 @@ class SQLiteVNextStore:
                     embedding_model,
                 )
             )
+            if embedding_endpoint is not None:
+                # Only compare vectors from the same endpoint fingerprint, so
+                # distinct coordinate spaces sharing provider/model labels are
+                # never pooled.
+                signature_sql += " AND json_extract(metadata_json, ?) = ?"
+                signature_params.extend(
+                    (
+                        f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.endpoint",
+                        embedding_endpoint,
+                    )
+                )
             if embedding_signature_version is not None:
                 signature_sql += " AND json_extract(metadata_json, ?) = ?"
                 signature_params.extend(
@@ -1788,6 +1800,7 @@ class SQLiteVNextStore:
         vector: list[float],
         provider: str | None = None,
         model: str | None = None,
+        endpoint: str | None = None,
         content_sha256: str | None = None,
         signature_version: int = 1,
     ) -> VNextRow | None:
@@ -1805,6 +1818,7 @@ class SQLiteVNextStore:
                 "version": signature_version,
                 "provider": provider,
                 "model": model,
+                "endpoint": endpoint if isinstance(endpoint, str) else "",
                 "content_sha256": content_sha256,
             }
             cursor = self._execute(
@@ -1882,6 +1896,7 @@ class SQLiteVNextStore:
         after_id: str | None = None,
         embedding_provider: str | None = None,
         embedding_model: str | None = None,
+        embedding_endpoint: str | None = None,
         embedding_signature_version: int | None = None,
     ) -> list[VNextRow]:
         """Rows missing a vector or carrying an incompatible signature."""
@@ -1906,6 +1921,15 @@ class SQLiteVNextStore:
                     embedding_model,
                 )
             )
+            if embedding_endpoint is not None:
+                # Re-embed rows whose stored endpoint differs from the current one.
+                signature_sql += " OR json_extract(metadata_json, ?) IS NOT ?"
+                signature_params.extend(
+                    (
+                        f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.endpoint",
+                        embedding_endpoint,
+                    )
+                )
             if embedding_signature_version is not None:
                 signature_sql += " OR json_extract(metadata_json, ?) IS NOT ?"
                 signature_params.extend(

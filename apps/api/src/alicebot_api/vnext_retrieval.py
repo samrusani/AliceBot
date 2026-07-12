@@ -76,6 +76,7 @@ from alicebot_api.vnext_embeddings import (
     EmbeddingProvider,
     VNextEmbeddingConfigurationError,
     VNextEmbeddingProviderError,
+    endpoint_fingerprint,
     get_embedding_provider,
 )
 from alicebot_api.vnext_event_log import append_event
@@ -1582,6 +1583,9 @@ class VNextRetrievalService:
                     **search_kwargs,
                     embedding_provider=self.embedding_provider.provider,
                     embedding_model=self.embedding_provider.model,
+                    embedding_endpoint=endpoint_fingerprint(
+                        getattr(self.embedding_provider, "base_url", "")
+                    ),
                     embedding_signature_version=EMBEDDING_SIGNATURE_VERSION,
                 )
             except TypeError as exc:

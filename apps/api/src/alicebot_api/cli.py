@@ -265,6 +265,7 @@ from alicebot_api.vnext_embeddings import (
     MAX_EMBEDDINGS_BATCH_SIZE,
     VNextEmbeddingConfigurationError,
     VNextEmbeddingProviderError,
+    endpoint_fingerprint,
     get_embedding_provider,
     memory_embedding_text,
     memory_embedding_signature,
@@ -1749,6 +1750,7 @@ def _run_vnext_memories_backfill_embeddings(ctx: CLIContext, args: argparse.Name
                 after_id=after_id,
                 embedding_provider=provider.provider,
                 embedding_model=provider.model,
+                embedding_endpoint=endpoint_fingerprint(getattr(provider, "base_url", "")),
                 embedding_signature_version=EMBEDDING_SIGNATURE_VERSION,
             )
             if not rows:

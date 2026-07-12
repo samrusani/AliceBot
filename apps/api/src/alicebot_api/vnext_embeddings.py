@@ -18,7 +18,10 @@ EMBEDDINGS_API_KEY_ENV = "ALICE_EMBEDDINGS_API_KEY"
 DEFAULT_EMBEDDINGS_TIMEOUT_SECONDS = 30
 MAX_EMBEDDINGS_BATCH_SIZE = 128
 EMBEDDING_SIGNATURE_METADATA_KEY = "_alice_embedding"
-EMBEDDING_SIGNATURE_VERSION = 1
+# Version 2 adds the endpoint fingerprint to the signature. Bumping invalidates
+# pre-endpoint (v1) vectors so they are re-embedded rather than silently pooled
+# across endpoints that share provider/model labels.
+EMBEDDING_SIGNATURE_VERSION = 2
 
 
 class VNextEmbeddingConfigurationError(ValueError):
@@ -32,10 +35,28 @@ class VNextEmbeddingProviderError(RuntimeError):
 class EmbeddingProvider(Protocol):
     provider: str
     model: str
+    base_url: str
 
     def embed_text(self, text: str) -> list[float]: ...
 
     def embed_batch(self, texts: Sequence[str]) -> list[list[float]]: ...
+
+
+def endpoint_fingerprint(base_url: object) -> str:
+    """Stable, non-secret identity for an embedding endpoint.
+
+    Two endpoints that share a provider/model label but serve different
+    coordinate spaces (e.g. distinct hosts) must not have their vectors pooled.
+    The base_url is hashed rather than stored verbatim so internal endpoint
+    URLs never leak into memory metadata. Providers without a base_url yield an
+    empty fingerprint (there is no endpoint to distinguish).
+    """
+    if not isinstance(base_url, str):
+        return ""
+    normalized = base_url.strip().rstrip("/").lower()
+    if normalized == "":
+        return ""
+    return sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
 def pad_embedding_vector(
@@ -205,6 +226,7 @@ def memory_embedding_signature(
         "version": EMBEDDING_SIGNATURE_VERSION,
         "provider": provider.provider,
         "model": provider.model,
+        "endpoint": endpoint_fingerprint(getattr(provider, "base_url", "")),
         "content_sha256": memory_embedding_content_sha256(memory),
     }
 
@@ -242,6 +264,7 @@ def attach_memory_embedding(
                 vector=vector,
                 provider=str(signature["provider"]),
                 model=str(signature["model"]),
+                endpoint=str(signature["endpoint"]),
                 content_sha256=str(signature["content_sha256"]),
                 signature_version=int(signature["version"]),
             )
@@ -280,6 +303,7 @@ __all__ = [
     "EMBEDDING_SIGNATURE_METADATA_KEY",
     "EMBEDDING_SIGNATURE_VERSION",
     "EmbeddingProvider",
+    "endpoint_fingerprint",
     "MAX_EMBEDDINGS_BATCH_SIZE",
     "OpenAICompatibleEmbeddingProvider",
     "VNextEmbeddingConfigurationError",

@@ -1397,6 +1397,7 @@ def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> 
         vector=[1.0, 0.0],
         provider="openai_compatible",
         model="embed-v1",
+        endpoint="host-a",
         content_sha256=memory_embedding_content_sha256(memory),
         signature_version=1,
     ) is not None
@@ -1405,6 +1406,7 @@ def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> 
         query_vector=[1.0, 0.0],
         embedding_provider="openai_compatible",
         embedding_model="embed-v1",
+        embedding_endpoint="host-a",
         embedding_signature_version=1,
     )
     mismatched = store.search_memories_vector(
@@ -1413,9 +1415,18 @@ def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> 
         embedding_model="embed-v2",
         embedding_signature_version=1,
     )
+    # Same provider/model but a different endpoint must not be pooled.
+    mismatched_endpoint = store.search_memories_vector(
+        query_vector=[1.0, 0.0],
+        embedding_provider="openai_compatible",
+        embedding_model="embed-v1",
+        embedding_endpoint="host-b",
+        embedding_signature_version=1,
+    )
 
     assert [row["id"] for row in matching] == [memory["id"]]
     assert mismatched == []
+    assert mismatched_endpoint == []
     assert store.list_memories_missing_embeddings(
         embedding_provider="openai_compatible",
         embedding_model="embed-v1",
@@ -1436,6 +1447,7 @@ def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> 
         "content_sha256": memory_embedding_content_sha256(memory),
         "model": "embed-v1",
         "provider": "openai_compatible",
+        "endpoint": "host-a",
         "version": 1,
     }
 
