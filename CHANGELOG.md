@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v0.10.2 — 2026-07-13
+
+Supersedes the tagged-but-unpublished `v0.10.1` candidate, whose publish
+workflow installed the package after the step that validates the semantic-eval
+attestation, so `release_check` could not import `alicebot_api` and the publish
+job failed closed before uploading anything. All `v0.10.1` remediation is
+carried forward.
+
+- Fixed the PyPI publish workflow to install release dependencies before the
+  release-check steps that import first-party modules, so the credential-free
+  semantic-eval attestation validation runs against the installed package.
+
 ## v0.10.1 — 2026-07-13
 
 Supersedes the tagged-but-unpublished `v0.10.0` candidate, whose protected
