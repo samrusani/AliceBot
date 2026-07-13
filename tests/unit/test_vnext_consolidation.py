@@ -14,6 +14,7 @@ from alicebot_api.vnext_consolidation import (
     MAX_EMBEDDED_MEMORIES_HARD_CAP,
     MAX_PAIRWISE_COMPARISONS,
     MAX_SIMILARITY_MATRIX_BYTES,
+    SIMILARITY_BLOCK_ROWS,
     MemoryConsolidationRequest,
     VNextConsolidationService,
     VNextConsolidationValidationError,
@@ -83,6 +84,20 @@ class FakeConsolidationStore:
         if limit is not None:
             rows = rows[:limit]
         return [dict(row) for row in rows]
+
+    def count_memories(
+        self,
+        *,
+        status: str | None = None,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+    ) -> int:
+        rows = [row for row in self.memories if status is None or row.get("status") == status]
+        if domains:
+            rows = [row for row in rows if row.get("domain") in {*domains, "unknown"}]
+        if sensitivity_allowed is not None:
+            rows = [row for row in rows if row.get("sensitivity", "unknown") in sensitivity_allowed]
+        return len(rows)
 
     def list_rollup_input_memories(
         self,
@@ -227,11 +242,15 @@ class MappedEmbeddingProvider:
 
     def __init__(self, mapping: dict[str, list[float]]) -> None:
         self.mapping = mapping
+        self.batch_calls = 0
+        self.batch_texts: list[str] = []
 
     def embed_text(self, text: str) -> list[float]:
         return list(self.mapping[text])
 
     def embed_batch(self, texts) -> list[list[float]]:
+        self.batch_calls += 1
+        self.batch_texts.extend(str(text) for text in texts)
         return [self.embed_text(text) for text in texts]
 
 
@@ -398,7 +417,10 @@ def test_near_duplicates_produce_one_dedup_candidate_with_correct_members() -> N
     store = FakeConsolidationStore()
     mapping: dict[str, list[float]] = {}
     near_dups, distinct = _seed_six_memories(store, mapping)
-    artifact = _service(store, mapping).generate_memory_consolidation(MemoryConsolidationRequest())
+    provider = MappedEmbeddingProvider(mapping)
+    artifact = VNextConsolidationService(store, embedding_provider=provider).generate_memory_consolidation(
+        MemoryConsolidationRequest()
+    )
 
     candidates = _consolidation_candidates(store)
     assert len(candidates) == 1
@@ -433,16 +455,19 @@ def test_near_duplicates_produce_one_dedup_candidate_with_correct_members() -> N
     assert metadata["input_counts"]["clusters"] == 1
     assert metadata["input_counts"]["proposals"] == 1
     assert metadata["candidate_memory_ids"] == [str(candidate["id"])]
-    assert metadata["consolidation"]["embedding_access"] == "provider_reembed_plus_exact_id_presence_read"
+    assert (
+        metadata["consolidation"]["embedding_access"]
+        == "exact_id_presence_read_then_provider_reembed_reused_by_rollups"
+    )
+    assert metadata["consolidation"]["clustering"] == "complete_link_all_pairs_at_threshold"
     resource_guard = metadata["consolidation"]["resource_guard"]
-    assert resource_guard == {
-        "matrix_dtype": "float32",
-        "matrix_bytes": 6 * 6 * 4,
-        "matrix_bytes_hard_cap": MAX_SIMILARITY_MATRIX_BYTES,
-        "pairwise_comparisons": 15,
-        "pairwise_comparisons_hard_cap": MAX_PAIRWISE_COMPARISONS,
-        "pair_index_materialization": False,
-    }
+    assert resource_guard["matrix_dtype"] == "float32"
+    assert resource_guard["matrix_materialization"] is False
+    assert resource_guard["peak_similarity_block_bytes"] == 6 * 6 * 4
+    assert resource_guard["matrix_bytes_hard_cap"] == MAX_SIMILARITY_MATRIX_BYTES
+    assert resource_guard["pairwise_comparisons"] == 15
+    assert resource_guard["pairwise_comparisons_hard_cap"] == MAX_PAIRWISE_COMPARISONS
+    assert resource_guard["pair_index_materialization"] is False
     assert "## Near-Duplicate Clusters" in artifact["content_markdown"]
     assert "## Merge / Dedup Proposals" in artifact["content_markdown"]
     assert "## Skipped / Bounds" in artifact["content_markdown"]
@@ -451,6 +476,72 @@ def test_near_duplicates_produce_one_dedup_candidate_with_correct_members() -> N
     # distinct memories must not appear in the cluster
     for row in distinct:
         assert str(row["id"]) not in consolidation["cluster_member_ids"]
+
+
+def test_consolidation_never_admits_a_single_link_bridge_chain() -> None:
+    store = FakeConsolidationStore()
+    mapping: dict[str, list[float]] = {}
+    rows = [
+        _seed_memory(
+            store,
+            mapping,
+            vector=vector,
+            title=f"Chain {index}",
+            canonical_text=f"Bridge chain memory {index}",
+        )
+        for index, vector in enumerate(
+            (
+                [1.0, 0.0],
+                [0.7071, 0.7071],
+                [0.0, 1.0],
+            )
+        )
+    ]
+
+    artifact = _service(store, mapping).generate_memory_consolidation(
+        MemoryConsolidationRequest(
+            similarity_threshold=0.70,
+            create_candidate_memories=False,
+            propose_rollups=False,
+        )
+    )
+
+    memberships = artifact["metadata_json"]["consolidation"]["cluster_membership"]
+    assert len(memberships) == 1
+    assert len(memberships[0]) == 2
+    assert set(memberships[0]) < {str(row["id"]) for row in rows}
+    proposal = artifact["metadata_json"]["consolidation"]["proposals"][0]
+    assert proposal["similarity_stats"]["min"] >= 0.70
+    assert proposal["similarity_stats"]["cohesion"] == "complete_link_all_pairs_at_threshold"
+
+
+def test_similarity_work_uses_float32_blocks_instead_of_a_dense_matrix() -> None:
+    store = FakeConsolidationStore()
+    mapping: dict[str, list[float]] = {}
+    member_count = SIMILARITY_BLOCK_ROWS + 12
+    for index in range(member_count):
+        _seed_memory(
+            store,
+            mapping,
+            vector=[1.0, 0.0, 0.0, 0.0],
+            title=f"Memory {index}",
+            canonical_text=f"Repeated but versioned memory {index}",
+        )
+
+    artifact = _service(store, mapping).generate_memory_consolidation(
+        MemoryConsolidationRequest(
+            max_embedded_memories=member_count,
+            create_candidate_memories=False,
+            propose_rollups=False,
+        )
+    )
+
+    guard = artifact["metadata_json"]["consolidation"]["resource_guard"]
+    assert guard["matrix_dtype"] == "float32"
+    assert guard["matrix_materialization"] is False
+    assert guard["similarity_block_rows"] == SIMILARITY_BLOCK_ROWS
+    assert guard["peak_similarity_block_bytes"] == SIMILARITY_BLOCK_ROWS * member_count * 4
+    assert guard["peak_similarity_block_bytes"] < member_count * member_count * 4
 
 
 def test_rerun_with_same_input_set_creates_no_duplicate_candidate() -> None:
@@ -493,7 +584,10 @@ def test_embedded_rows_are_counted_even_when_the_ann_probe_misses_them() -> None
     store = AnnBlindStore()
     mapping: dict[str, list[float]] = {}
     near_dups, _distinct = _seed_six_memories(store, mapping)
-    artifact = _service(store, mapping).generate_memory_consolidation(MemoryConsolidationRequest())
+    provider = MappedEmbeddingProvider(mapping)
+    artifact = VNextConsolidationService(store, embedding_provider=provider).generate_memory_consolidation(
+        MemoryConsolidationRequest()
+    )
 
     candidates = _consolidation_candidates(store)
     assert len(candidates) == 1
@@ -521,13 +615,18 @@ def test_memories_without_stored_embeddings_are_excluded() -> None:
         canonical_text="Sam usually orders oat milk lattes",
         with_embedding=False,
     )
-    artifact = _service(store, mapping).generate_memory_consolidation(MemoryConsolidationRequest())
+    provider = MappedEmbeddingProvider(mapping)
+    artifact = VNextConsolidationService(store, embedding_provider=provider).generate_memory_consolidation(
+        MemoryConsolidationRequest()
+    )
     candidates = _consolidation_candidates(store)
     assert len(candidates) == 1
     assert candidates[0]["metadata_json"]["consolidation"]["cluster_member_ids"] == sorted(
         str(row["id"]) for row in kept
     )
     assert artifact["metadata_json"]["input_counts"]["embedded_memories"] == 2
+    assert len(provider.batch_texts) == 2
+    assert all("usually orders" not in text for text in provider.batch_texts)
 
 
 def test_cap_bound_is_applied_and_logged(caplog: pytest.LogCaptureFixture) -> None:
@@ -539,6 +638,8 @@ def test_cap_bound_is_applied_and_logged(caplog: pytest.LogCaptureFixture) -> No
             MemoryConsolidationRequest(max_embedded_memories=2)
         )
     assert artifact["metadata_json"]["consolidation"]["bounded"] is True
+    assert artifact["metadata_json"]["input_counts"]["active_memories"] == 6
+    assert artifact["metadata_json"]["input_counts"]["active_memories_exact"] is True
     assert any("bounded" in record.message for record in caplog.records)
     assert "bounded" in artifact["content_markdown"]
     clustering_calls = [

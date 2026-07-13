@@ -2,8 +2,9 @@
 
 Pipeline (all review-only, nothing is promoted or superseded automatically):
 
-1. Fetch the user's active/accepted memories (bounded, logged) and cluster
-   near-duplicates by pairwise cosine over their embeddings.
+1. Count the user's active/accepted memories exactly, fetch a disclosed
+   bounded subset, and cluster near-duplicates by cohesive all-pairs cosine
+   admission over their embeddings.
 2. Per cluster, build a merge (model-backed) or dedup (deterministic)
    proposal as a *candidate* memory carrying cluster membership, similarity
    stats, provenance, and per-member ``proposed_supersede`` markers.
@@ -19,18 +20,17 @@ Pipeline (all review-only, nothing is promoted or superseded automatically):
 Embedding access path
 ---------------------
 Store rows never expose the raw embedding column (``MEMORY_COLUMNS`` excludes
-it in both stores) and there is no bulk embeddings read. This service
-therefore re-derives each memory's vector from the exact text the
-embed-on-write path used (``memory_embedding_text``) via the configured
-``EmbeddingProvider`` — reproducing the stored vector for unmodified rows —
-and uses one ``search_memories_vector`` probe call as the read surface for
-"which memories actually have stored embeddings" plus a self-distance drift
-check. Without an embedding provider, clustering is skipped with an explicit
-reason in the artifact.
+it in both stores). This service first reads exact embedding presence by
+selected ID, then re-derives only present rows from ``memory_embedding_text``
+through the configured provider. The compact float32 vectors are retained for
+the roll-up phase in the same run, avoiding duplicate provider calls. Optional
+``search_memories_vector`` use is only a drift diagnostic. Without an embedding
+provider, clustering is skipped with an explicit reason in the artifact.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -38,7 +38,7 @@ from hashlib import sha256
 from inspect import Parameter, signature
 import json
 import logging
-from typing import Protocol
+from typing import Protocol, cast
 
 import numpy as np
 
@@ -63,7 +63,12 @@ from alicebot_api.vnext_model_intelligence import (
     resolve_model_route,
 )
 from alicebot_api.vnext_repositories import JsonObject
-from alicebot_api.vnext_rollups import RollupOptions, RollupOutcome, VNextRollupService
+from alicebot_api.vnext_rollups import (
+    RollupOptions,
+    RollupOutcome,
+    VNextRollupService,
+    VNextRollupStore,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -79,6 +84,7 @@ DEFAULT_MAX_CLUSTERS = 20
 MAX_EMBEDDED_MEMORIES_HARD_CAP = 2000
 MAX_SIMILARITY_MATRIX_BYTES = 16_000_000
 MAX_PAIRWISE_COMPARISONS = 1_999_000
+SIMILARITY_BLOCK_ROWS = 128
 PREFERENCE_MEMORY_TYPES = frozenset({"preference", "routine"})
 REINFORCED_PREFERENCE_MIN_DISTINCT = 3
 DEFAULT_SENSITIVITY_ALLOWED = ("public", "internal", "private", "unknown")
@@ -98,7 +104,7 @@ class VNextConsolidationValidationError(ValueError):
     """Raised when a memory-consolidation request is invalid."""
 
 
-class VNextConsolidationStore(Protocol):
+class VNextConsolidationStore(VNextRollupStore, Protocol):
     """Required store surface. ``search_memories_vector``, ``search_sources``,
     ``list_artifacts`` and ``list_artifact_quality_ratings`` are used when
     present (checked via ``getattr``) so slimmer stores still work."""
@@ -119,6 +125,14 @@ class VNextConsolidationStore(Protocol):
     ) -> list[JsonObject]: ...
 
     def list_events(self, **kwargs) -> list[JsonObject]: ...
+
+    def count_memories(
+        self,
+        *,
+        status: str | None = None,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+    ) -> int: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +193,7 @@ class _ClusteringOutcome:
     pairwise_comparisons: int = 0
     probe_self_distance: float | None = None
     skipped: list[str] = field(default_factory=list)
+    embedding_vectors: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
 
 
 def _validate_request(request: MemoryConsolidationRequest) -> None:
@@ -250,6 +265,7 @@ def _list_memories_bounded(
     """
 
     list_memories = store.list_memories
+    parameters: Mapping[str, Parameter]
     try:
         parameters = signature(list_memories).parameters
     except (TypeError, ValueError):
@@ -397,20 +413,73 @@ def _existing_cluster_candidates(store: VNextConsolidationStore) -> dict[str, st
     return existing
 
 
-class _UnionFind:
-    def __init__(self, size: int) -> None:
-        self.parent = list(range(size))
+def _cohesive_clusters(
+    normalized: np.ndarray,
+    member_rows: list[JsonObject],
+    *,
+    threshold: float,
+    min_cluster_size: int,
+) -> list[list[int]]:
+    """Build deterministic complete-link groups without a dense N x N matrix.
 
-    def find(self, index: int) -> int:
-        while self.parent[index] != index:
-            self.parent[index] = self.parent[self.parent[index]]
-            index = self.parent[index]
-        return index
+    A row joins a group only when it clears ``threshold`` against every
+    current member. This prevents the A~B~C single-link chain from turning A
+    and C into one destructive dedup proposal when A and C are not similar.
+    """
 
-    def union(self, left: int, right: int) -> None:
-        root_left, root_right = self.find(left), self.find(right)
-        if root_left != root_right:
-            self.parent[max(root_left, root_right)] = min(root_left, root_right)
+    remaining = sorted(range(len(member_rows)), key=lambda index: str(member_rows[index].get("id")))
+    clusters: list[list[int]] = []
+    while remaining:
+        seed, *candidates = remaining
+        group = [seed]
+        rejected: list[int] = []
+        for candidate in candidates:
+            clears_group = True
+            for start in range(0, len(group), SIMILARITY_BLOCK_ROWS):
+                block = group[start : start + SIMILARITY_BLOCK_ROWS]
+                similarities = normalized[block] @ normalized[candidate]
+                if not bool(np.all(similarities >= threshold)):
+                    clears_group = False
+                    break
+            if clears_group:
+                group.append(candidate)
+            else:
+                rejected.append(candidate)
+        if len(group) >= min_cluster_size:
+            clusters.append(group)
+        remaining = rejected
+    clusters.sort(
+        key=lambda indices: (
+            -len(indices),
+            min(str(member_rows[index].get("id")) for index in indices),
+        )
+    )
+    return clusters
+
+
+def _cohesive_pair_stats(normalized: np.ndarray, indices: list[int]) -> JsonObject:
+    """Exact pair stats with O(cluster-size) temporary memory."""
+
+    pair_count = 0
+    pair_total = 0.0
+    pair_min = float("inf")
+    pair_max = float("-inf")
+    for position, left in enumerate(indices[:-1]):
+        right_indices = indices[position + 1 :]
+        values = normalized[right_indices] @ normalized[left]
+        if values.size == 0:
+            continue
+        pair_count += int(values.size)
+        pair_total += float(values.sum(dtype=np.float64))
+        pair_min = min(pair_min, float(values.min()))
+        pair_max = max(pair_max, float(values.max()))
+    return {
+        "pair_count": pair_count,
+        "min": round(pair_min, 4),
+        "max": round(pair_max, 4),
+        "mean": round(pair_total / pair_count, 4),
+        "cohesion": "complete_link_all_pairs_at_threshold",
+    }
 
 
 class VNextConsolidationService:
@@ -438,8 +507,27 @@ class VNextConsolidationService:
         options: _ClusteringOptions,
     ) -> _ClusteringOutcome:
         outcome = _ClusteringOutcome()
-        # Fetch one look-ahead row per status so the report can disclose that
-        # the count is a lower bound when either query itself was truncated.
+        count_memories = getattr(self.store, "count_memories", None)
+        count_is_authoritative = False
+        if callable(count_memories):
+            try:
+                outcome.active_count = sum(
+                    int(
+                        count_memories(
+                            status=status,
+                            domains=domains,
+                            sensitivity_allowed=sensitivity,
+                        )
+                    )
+                    for status in ("active", "accepted")
+                )
+                count_is_authoritative = True
+            except Exception:  # noqa: BLE001 - legacy adapters may expose a narrower count shape
+                pass
+        outcome.active_count_exact = count_is_authoritative
+
+        # Fetch one look-ahead row per status. Bundled stores report the exact
+        # total above; legacy adapters retain an explicit lower-bound fallback.
         status_query_limit = options.max_embedded_memories + 1
         active_status_rows = _list_memories_bounded(
             self.store,
@@ -459,22 +547,32 @@ class VNextConsolidationService:
             *active_status_rows,
             *accepted_status_rows,
         ]
-        outcome.active_count_exact = not (
-            len(active_status_rows) == status_query_limit
-            or len(accepted_status_rows) == status_query_limit
-        )
+        if count_is_authoritative and outcome.active_count < len(active_rows):
+            # A concurrent insert between count and bounded read must never
+            # make the report claim an impossible exact total.
+            count_is_authoritative = False
+            outcome.active_count_exact = False
+        if not count_is_authoritative:
+            outcome.active_count_exact = not (
+                len(active_status_rows) == status_query_limit
+                or len(accepted_status_rows) == status_query_limit
+            )
         active_rows.sort(
             key=lambda row: (str(row.get("updated_at") or row.get("created_at") or ""), str(row.get("id"))),
             reverse=True,
         )
-        outcome.active_count = len(active_rows)
-        if len(active_rows) > options.max_embedded_memories:
+        if not count_is_authoritative:
+            outcome.active_count = len(active_rows)
+        if (
+            len(active_rows) > options.max_embedded_memories
+            or (count_is_authoritative and outcome.active_count > options.max_embedded_memories)
+        ):
             outcome.bounded = True
             logger.info(
                 "memory consolidation bounded to %d most recently updated of %s%d active memories",
                 options.max_embedded_memories,
                 "at least " if not outcome.active_count_exact else "",
-                len(active_rows),
+                outcome.active_count,
             )
             active_rows = active_rows[: options.max_embedded_memories]
         if not active_rows:
@@ -484,9 +582,6 @@ class VNextConsolidationService:
             outcome.skipped.append("no_embedding_provider_configured")
             return outcome
         search_memories_vector = getattr(self.store, "search_memories_vector", None)
-        if not callable(search_memories_vector):
-            outcome.skipped.append("store_lacks_vector_search")
-            return outcome
         list_memory_ids_with_embeddings = getattr(
             self.store, "list_memory_ids_with_embeddings", None
         )
@@ -499,121 +594,108 @@ class VNextConsolidationService:
         if not embeddable:
             outcome.skipped.append("no_embeddable_memory_text")
             return outcome
-        texts = [text for _, text in embeddable]
-        vectors: list[list[float]] = []
-        try:
-            for start in range(0, len(texts), MAX_EMBEDDINGS_BATCH_SIZE):
-                vectors.extend(self.embedding_provider.embed_batch(texts[start : start + MAX_EMBEDDINGS_BATCH_SIZE]))
-        except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
-            outcome.skipped.append(f"embedding_provider_failed: {exc}")
-            return outcome
 
-        # Which selected rows actually have stored vectors: an exact read by the
-        # selected IDs. A global ANN probe returns nearest neighbors — when older
-        # unrelated neighbors dominate the top-K, embedded selected rows are
-        # missed and clustering is wrongly skipped (audit 2 P1 #5).
+        # Presence MUST be resolved before provider work. Re-embedding rows
+        # that have no stored vector wastes provider quota and cannot affect
+        # clustering because those rows are ineligible by protocol.
         selected_ids = [str(row.get("id")) for row, _ in embeddable]
         try:
             embedded_ids = set(list_memory_ids_with_embeddings(selected_ids))
         except Exception as exc:  # noqa: BLE001 - store backends raise driver-specific errors
             outcome.skipped.append(f"embedding_presence_read_failed: {exc}")
             return outcome
+        embedded_rows_and_text = [
+            (row, text)
+            for row, text in embeddable
+            if str(row.get("id")) in embedded_ids
+        ]
+        outcome.embedded_count = len(embedded_rows_and_text)
+        if len(embedded_rows_and_text) < options.min_cluster_size:
+            outcome.skipped.append("fewer_embedded_memories_than_min_cluster_size")
+            return outcome
+
+        derived_vectors: list[np.ndarray] = []
+        try:
+            for start in range(0, len(embedded_rows_and_text), MAX_EMBEDDINGS_BATCH_SIZE):
+                batch = embedded_rows_and_text[start : start + MAX_EMBEDDINGS_BATCH_SIZE]
+                batch_vectors = self.embedding_provider.embed_batch([text for _row, text in batch])
+                if len(batch_vectors) != len(batch):
+                    outcome.skipped.append("embedding_provider_returned_wrong_batch_size")
+                    return outcome
+                derived_vectors.extend(np.asarray(vector, dtype=np.float32) for vector in batch_vectors)
+        except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
+            outcome.skipped.append(f"embedding_provider_failed: {exc}")
+            return outcome
+
         # Best-effort drift diagnostic ONLY (never presence): a single probe
         # seeded by the most-recent selected row's re-derived vector reports how
         # far that row's stored vector drifted. A probe failure or a miss simply
         # leaves probe_self_distance unset.
-        probe_row_id = str(embeddable[0][0].get("id"))
-        try:
-            probe_rows = search_memories_vector(
-                query_vector=vectors[0],
-                domains=domains,
-                sensitivity_allowed=sensitivity,
-                limit=options.max_embedded_memories,
-            )
-        except Exception:  # noqa: BLE001 - diagnostic only; presence already resolved
-            probe_rows = []
+        probe_row_id = str(embedded_rows_and_text[0][0].get("id"))
+        probe_rows: list[JsonObject] = []
+        if callable(search_memories_vector):
+            try:
+                probe_rows = search_memories_vector(
+                    query_vector=derived_vectors[0].tolist(),
+                    domains=domains,
+                    sensitivity_allowed=sensitivity,
+                    limit=options.max_embedded_memories,
+                )
+            except Exception:  # noqa: BLE001 - diagnostic only; presence already resolved
+                probe_rows = []
         for row in probe_rows:
-            if str(row.get("id")) == probe_row_id and isinstance(row.get("vector_distance"), (int, float)):
-                outcome.probe_self_distance = float(row["vector_distance"])
+            vector_distance = row.get("vector_distance")
+            if str(row.get("id")) == probe_row_id and isinstance(
+                vector_distance,
+                (int, float),
+            ):
+                outcome.probe_self_distance = float(vector_distance)
                 break
-        member_pairs = [
-            (row, vector)
-            for (row, _), vector in zip(embeddable, vectors, strict=True)
-            if str(row.get("id")) in embedded_ids
-        ]
-        outcome.embedded_count = len(member_pairs)
-        if len(member_pairs) < options.min_cluster_size:
-            outcome.skipped.append("fewer_embedded_memories_than_min_cluster_size")
-            return outcome
 
-        member_count = len(member_pairs)
-        outcome.similarity_matrix_bytes = member_count * member_count * np.dtype(np.float32).itemsize
+        member_count = len(embedded_rows_and_text)
+        outcome.similarity_matrix_bytes = (
+            min(member_count, SIMILARITY_BLOCK_ROWS)
+            * member_count
+            * np.dtype(np.float32).itemsize
+        )
         outcome.pairwise_comparisons = member_count * (member_count - 1) // 2
         if (
             outcome.similarity_matrix_bytes > MAX_SIMILARITY_MATRIX_BYTES
             or outcome.pairwise_comparisons > MAX_PAIRWISE_COMPARISONS
         ):
-            # Defensive fail-closed guard: request validation should make
-            # this unreachable, but the matrix/pair limits must remain safe
-            # if one constant is changed without the others.
+            # Defensive fail-closed guard. ``similarity_matrix_bytes`` is the
+            # maximum streamed block, never a dense N x N allocation.
             outcome.skipped.append("similarity_resource_guard_exceeded")
             return outcome
 
-        member_rows = [row for row, _vector in member_pairs]
-        member_vectors = [vector for _row, vector in member_pairs]
-        width = max(len(vector) for vector in member_vectors)
-        matrix = np.zeros((member_count, width), dtype=np.float32)
-        for index, vector in enumerate(member_vectors):
-            matrix[index, : len(vector)] = np.asarray(vector, dtype=np.float32)
-        # The provider returns Python float lists, which are much larger than
-        # the compact float32 matrix. Drop those references before allocating
-        # the similarity matrix.
-        del member_pairs, member_vectors, vectors, embeddable, texts
+        member_rows = [row for row, _text in embedded_rows_and_text]
+        width = max(len(vector) for vector in derived_vectors)
+        matrix: np.ndarray = np.zeros((member_count, width), dtype=np.float32)
+        for index, vector in enumerate(derived_vectors):
+            matrix[index, : len(vector)] = vector
+        del derived_vectors, embeddable, embedded_rows_and_text
         norms = np.linalg.norm(matrix, axis=1)
         norms[norms == 0.0] = 1.0
-        normalized = matrix / norms[:, None]
-        del matrix, norms
-        similarities = normalized @ normalized.T
-        del normalized
+        matrix /= norms[:, None]
+        normalized = matrix
+        del norms
 
-        union_find = _UnionFind(member_count)
-        # Scan one upper-triangle row at a time. ``np.triu`` + ``np.where``
-        # materialized another dense matrix, two potentially multi-million
-        # element index arrays, and then Python lists of those indexes.
-        for left in range(member_count - 1):
-            matching_offsets = np.flatnonzero(
-                similarities[left, left + 1 :] >= options.similarity_threshold
-            )
-            for offset in matching_offsets:
-                union_find.union(left, left + 1 + int(offset))
-        groups: dict[int, list[int]] = {}
-        for index in range(member_count):
-            groups.setdefault(union_find.find(index), []).append(index)
-        clusters = [indices for indices in groups.values() if len(indices) >= options.min_cluster_size]
-        clusters.sort(key=lambda indices: (-len(indices), str(member_rows[min(indices)].get("id"))))
+        clusters = _cohesive_clusters(
+            normalized,
+            member_rows,
+            threshold=options.similarity_threshold,
+            min_cluster_size=options.min_cluster_size,
+        )
 
         for indices in clusters:
             rows = sorted((member_rows[index] for index in indices), key=lambda row: str(row.get("id")))
-            pair_count = 0
-            pair_total = 0.0
-            pair_min = float("inf")
-            pair_max = float("-inf")
-            for position, left in enumerate(indices[:-1]):
-                values = similarities[left, indices[position + 1 :]]
-                if values.size == 0:
-                    continue
-                pair_count += int(values.size)
-                pair_total += float(values.sum(dtype=np.float64))
-                pair_min = min(pair_min, float(values.min()))
-                pair_max = max(pair_max, float(values.max()))
             digest = _cluster_digest(rows)
             outcome.clusters.append(rows)
-            outcome.similarity_stats[digest] = {
-                "pair_count": pair_count,
-                "min": round(pair_min, 4),
-                "max": round(pair_max, 4),
-                "mean": round(pair_total / pair_count, 4),
-            }
+            outcome.similarity_stats[digest] = _cohesive_pair_stats(normalized, indices)
+        outcome.embedding_vectors = {
+            str(row.get("id")): normalized[index].copy()
+            for index, row in enumerate(member_rows)
+        }
         return outcome
 
     # -- proposals ---------------------------------------------------------------
@@ -677,19 +759,39 @@ class VNextConsolidationService:
         request: MemoryConsolidationRequest,
         proposal: JsonObject,
     ) -> JsonObject:
-        members: list[JsonObject] = proposal["members"]
-        member_ids: list[str] = proposal["cluster_member_ids"]
-        cluster_digest: str = proposal["consolidation_digest"]
-        proposal_kind: str = proposal["proposal_kind"]
+        members_value = proposal["members"]
+        members = (
+            [cast(JsonObject, member) for member in members_value if isinstance(member, dict)]
+            if isinstance(members_value, list)
+            else []
+        )
+        member_ids_value = proposal["cluster_member_ids"]
+        member_ids = (
+            [str(member_id) for member_id in member_ids_value]
+            if isinstance(member_ids_value, list)
+            else []
+        )
+        cluster_digest = str(proposal["consolidation_digest"])
+        proposal_kind = str(proposal["proposal_kind"])
         memory_types = Counter(
             str(row.get("memory_type")) for row in members if isinstance(row.get("memory_type"), str)
         )
         memory_type = memory_types.most_common(1)[0][0] if memory_types else "semantic"
+        proposed_supersede_value = proposal.get("proposed_supersede")
+        proposed_supersede = (
+            [str(member_id) for member_id in proposed_supersede_value]
+            if isinstance(proposed_supersede_value, list)
+            else []
+        )
+        similarity_stats_value = proposal.get("similarity_stats")
+        similarity_stats = (
+            similarity_stats_value if isinstance(similarity_stats_value, Mapping) else {}
+        )
         reviewer_instructions = [
             f"Review candidate memory for cluster {cluster_digest}; accepting it is the promotion decision.",
             "Accepting through the memory commit service (accept_consolidation_candidate) promotes this "
             "candidate and executes the proposed supersessions "
-            f"(members proposed for supersession: {', '.join(proposal['proposed_supersede']) or 'none'}).",
+            f"(members proposed for supersession: {', '.join(proposed_supersede) or 'none'}).",
             "Consolidation never supersedes active memories automatically; nothing changes until a reviewer accepts.",
         ]
         return self.store.create_memory(
@@ -711,7 +813,7 @@ class VNextConsolidationService:
                 "canonical_text": proposal["canonical_text"],
                 "summary": (
                     f"{proposal_kind} proposal covering {len(member_ids)} near-duplicate memories "
-                    f"(mean cosine {proposal['similarity_stats'].get('mean')})."
+                    f"(mean cosine {similarity_stats.get('mean')})."
                 ),
                 "domain": _domain(request, members),
                 "sensitivity": _highest_sensitivity(members),
@@ -875,6 +977,7 @@ class VNextConsolidationService:
                 self.store,
                 merge_provider=self.merge_provider,
                 embedding_provider=self.embedding_provider,
+                precomputed_embeddings=clustering.embedding_vectors,
             ).propose_rollups(
                 domains=domains,
                 sensitivity_allowed=sensitivity,
@@ -937,9 +1040,17 @@ class VNextConsolidationService:
             }
             for proposal in proposals
         ]
-        report_source_refs = list(
-            dict.fromkeys(ref for proposal in proposal_records for ref in proposal["source_refs"])
-        )
+        report_source_refs: list[str] = []
+        seen_report_source_refs: set[str] = set()
+        for proposal_record in proposal_records:
+            source_refs_value = proposal_record.get("source_refs")
+            if not isinstance(source_refs_value, list):
+                continue
+            for source_ref in source_refs_value:
+                normalized_ref = str(source_ref)
+                if normalized_ref not in seen_report_source_refs:
+                    seen_report_source_refs.add(normalized_ref)
+                    report_source_refs.append(normalized_ref)
         metadata = {
             **request.metadata_json,
             "workflow": "memory_consolidation",
@@ -952,7 +1063,8 @@ class VNextConsolidationService:
             "consolidation_digest": run_digest,
             "candidate_memory_ids": candidate_ids,
             "consolidation": {
-                "embedding_access": "provider_reembed_plus_exact_id_presence_read",
+                "embedding_access": "exact_id_presence_read_then_provider_reembed_reused_by_rollups",
+                "clustering": "complete_link_all_pairs_at_threshold",
                 "similarity_threshold": options.similarity_threshold,
                 "min_cluster_size": options.min_cluster_size,
                 "max_embedded_memories": options.max_embedded_memories,
@@ -960,6 +1072,11 @@ class VNextConsolidationService:
                 "active_memory_count_exact": clustering.active_count_exact,
                 "resource_guard": {
                     "matrix_dtype": "float32",
+                    "matrix_materialization": False,
+                    "similarity_block_rows": SIMILARITY_BLOCK_ROWS,
+                    "peak_similarity_block_bytes": clustering.similarity_matrix_bytes,
+                    # Compatibility alias; now the actual peak streamed
+                    # similarity block, not an N x N allocation.
                     "matrix_bytes": clustering.similarity_matrix_bytes,
                     "matrix_bytes_hard_cap": MAX_SIMILARITY_MATRIX_BYTES,
                     "pairwise_comparisons": clustering.pairwise_comparisons,
@@ -1077,11 +1194,23 @@ class VNextConsolidationService:
 
         proposal_lines: list[str] = []
         for proposal in proposals:
+            cluster_member_ids_value = proposal.get("cluster_member_ids")
+            cluster_member_ids = (
+                [str(member_id) for member_id in cluster_member_ids_value]
+                if isinstance(cluster_member_ids_value, list)
+                else []
+            )
+            proposed_supersede_value = proposal.get("proposed_supersede")
+            proposed_supersede = (
+                [str(member_id) for member_id in proposed_supersede_value]
+                if isinstance(proposed_supersede_value, list)
+                else []
+            )
             proposal_lines.append(
                 f"- `{proposal['consolidation_digest']}` {proposal['proposal_kind']} proposal "
                 f"({proposal['candidate_state']}, candidate: {proposal['candidate_memory_id']}) - "
-                f"members: {', '.join(proposal['cluster_member_ids'])}; "
-                f"proposed supersede after acceptance: {', '.join(proposal['proposed_supersede']) or 'none'}"
+                f"members: {', '.join(cluster_member_ids)}; "
+                f"proposed supersede after acceptance: {', '.join(proposed_supersede) or 'none'}"
                 + (f"; merge refused: {proposal['merge_refusal']}" if proposal.get("merge_refusal") else "")
             )
         if not proposal_lines:
@@ -1174,6 +1303,7 @@ __all__ = [
     "MAX_EMBEDDED_MEMORIES_HARD_CAP",
     "MAX_PAIRWISE_COMPARISONS",
     "MAX_SIMILARITY_MATRIX_BYTES",
+    "SIMILARITY_BLOCK_ROWS",
     "MemoryConsolidationRequest",
     "VNextConsolidationService",
     "VNextConsolidationStore",

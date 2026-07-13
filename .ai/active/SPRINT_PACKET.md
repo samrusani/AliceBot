@@ -1,117 +1,73 @@
 # Sprint Packet
 
-## Sprint Title
-Alice vNext Public Preview Release Gate
+## Sprint
 
-## Activation Note
-- This packet records the active release gate.
-- `v0.5.1` remains the current stable pre-1.0 public release boundary.
-- `v0.5.1-vnext-preview` is the vNext public-preview tag target.
-- Phase 14 is shipped.
-- `HF-001` Logging Safety And Disk Guardrails is shipped.
-- Alice vNext Sprint 1 through Sprint 12 preview scope is implemented.
-- Alice vNext live capture connectors are implemented for allowlisted Telegram, local folder/Obsidian notes, browser clips, and agent outputs.
-- Alice vNext dogfood hardening is implemented for dedicated connector settings/state, local secret references, readiness checks, live connector configuration, and daily-use runbooks.
+Alice v0.10.0 audit remediation and release-evidence repair.
 
-## Sprint Type
-release-gate
+## Status
 
-## Sprint Reason
-The vNext preview surface has moved from incremental seed work into release packaging. The release gate preserves the stable `v0.5.1` baseline while publishing the local-first vNext preview as a GitHub pre-release with current verification evidence, dogfood hardening, and explicit limitations.
+Mandatory repair pass active on `codex/v0.10-audit-remediation`, based on
+`68d6bf2`. The first independent review returned **REJECT**; its 16-item
+checklist is binding and all affected matrix rows are reopened. The published
+`v0.9.4` tag remains immutable. This sprint does not authorize a tag, merge,
+push, GitHub release, or PyPI publication.
 
-## Git Instructions
-- Branch: `codex/vnext-preview-release-packaging`
-- Base Branch: `main`
-- PR Strategy: release-paperwork PR, squash merge, then tag merged `main`
-- Merge Policy: merge after checks pass and explicit release approval
+## Reason
 
-## Baseline To Preserve
-- shipped Phases 9-14 baseline
-- shipped Bridge `B1` through `B4`
-- stable `v0.5.1` public release line
-- shipped one-call continuity surface
-- shipped Alice Lite profile
-- shipped hygiene/thread-health visibility
-- shipped Phase 14 provider contract, local/self-hosted compatibility, model packs, reference integrations, and design-partner launch surface
-- shipped `HF-001` logging safety and disk guardrails
-- no semantic fork between API, CLI, MCP, hosted, provider-runtime, and Hermes paths
+A third independent audit found that several v0.9.4 remediations were partial
+and that the endpoint-signature change broke eval and backfill vector
+compatibility. It also confirmed substantial P2 correctness, performance,
+typing, web, backup, packaging, and documentation debt. The branch is
+release-blocked until the builder and an independent reviewer close the matrix
+under `docs/handoff/2026-07-13-v0.10-audit-remediation/`.
 
-## Exact Goal
-Publish Alice vNext as the `v0.5.1-vnext-preview` public pre-release with release notes, tag plan, completed checklist evidence, aligned control docs, and the live capture connector dogfooding slice documented.
+## In scope
 
-## In Scope
-- release notes for `v0.5.1-vnext-preview`
-- vNext preview tag plan and rollback path
-- completed vNext public release checklist with current evidence
-- changelog entry for the preview release package
-- README and vNext docs pointing to release notes and tag plan
-- control docs updated away from stale "Sprint 1 active" wording
-- dogfood hardening docs for connector settings/state, secret references, doctor checks, and daily local-alpha operation
-- final verification of docs, tests, evals, and GitHub release state
+- one production-compatible signed-embedding contract for every vector writer;
+- exact-SHA semantic release evidence with nonzero signed-vector candidates;
+- complete people/time filters, query-vector reuse, and bulk graph/provenance reads;
+- scoped, status-aware, classification-aware, atomic capture dedupe;
+- fail-closed lifecycle graphs, correct lock order, confirmation auditing, and migration repair;
+- truthful/cohesive/bounded-memory rollups and consolidation;
+- pgvector 0.8+ installer, migration, and doctor enforcement;
+- immutable single-parse backup restore and future-table rejection;
+- thread-safe web drafts, independent outage degradation, SSR parallelism,
+  full TypeScript, browser navigation, accessibility, coverage, and budgets;
+- full first-party Python typing, portable package documentation, and active-doc truth;
+- focused regression tests plus the complete release-equivalent verification set.
 
-## Out Of Scope
-- new vNext features
-- managed connector OAuth or hosted connector polling
-- hosted SLA or managed cloud launch
-- automatic promotion of generated artifacts into trusted memory
-- production daily/weekly scheduler
-- live-backed expansion of the `/vnext` UI
-- new connector families beyond hardening the existing local dogfood loop
-- model-backed or human-rated eval scoring
-- destructive schema rewrites
+## Out of scope
 
-## Proposed Files And Modules
-- `CHANGELOG.md`
-- `README.md`
-- `CURRENT_STATE.md`
-- `.ai/handoff/CURRENT_STATE.md`
-- `.ai/active/SPRINT_PACKET.md`
-- `ROADMAP.md`
-- `PRODUCT_BRIEF.md`
-- `ARCHITECTURE.md`
-- `docs/archive/process/BUILD_REPORT.md`
-- `docs/archive/process/REVIEW_REPORT.md`
-- `scripts/check_control_doc_truth.py`
-- `docs/vnext/README.md`
-- `docs/release/vnext-public-release-checklist.md`
-- `docs/release/v0.5.1-vnext-preview-release-notes.md`
-- `docs/release/v0.5.1-vnext-preview-tag-plan.md`
-- `docs/archive/process/vnext-dogfood-hardening-cto-summary.md`
-- `docs/runbooks/vnext-dogfood-daily-checklist.md`
+- cybersecurity analysis beyond preserving existing controls;
+- new product features unrelated to an audited finding;
+- provider credentials in CI or deterministic fake evidence presented as a release result;
+- publication, tagging, pushing, merging, or changing repository settings.
 
-## Acceptance Criteria
-- `v0.5.1` remains documented as the stable pre-1.0 public release boundary.
-- `v0.5.1-vnext-preview` is documented as a pre-release preview, not a stable replacement.
-- README links the vNext overview, quickstart, architecture, security/privacy, demo script, release checklist, release notes, and tag plan.
-- The vNext release checklist records current verification evidence.
-- Connector settings/state are persisted in dedicated tables and settings/state changes remain audit logged.
-- Connector secrets are stored or resolved through secret references and are not exposed in CLI/API/UI/event/source/artifact output.
-- `/vnext` can update live connector defaults for Telegram, local folder, and browser clipper.
-- `alicebot vnext doctor --fix-safe` can initialize safe connector defaults and report readiness.
-- Release notes describe included preview scope and limitations.
-- The tag plan includes GitHub pre-release publication and rollback commands.
-- Control-doc truth reflects the release gate instead of stale Sprint 1 active wording.
-- The tag is created from merged `main`.
-- The GitHub release is published as a pre-release with `--latest=false`.
+## Required gates
 
-## Required Verification
-- `./.venv/bin/python -m pytest tests/unit -q`
-- `./.venv/bin/python -m pytest tests/integration -q`
-- `pnpm --dir apps/web test`
-- `pnpm --dir apps/web lint`
-- `pnpm --dir apps/web build`
-- `python3 scripts/check_control_doc_truth.py`
-- `./.venv/bin/python -c 'from alicebot_api.cli import main; raise SystemExit(main(["eval", "run", "--suite", "all"]))'`
-- `alicebot vnext migrations status`
-- `alicebot vnext smoke connector-hardening`
-- `alicebot vnext smoke secret-redaction`
-- `alicebot vnext smoke dogfood-doctor`
-- `alicebot vnext smoke live-capture-connectors`
-- `alicebot vnext smoke capture-to-brief`
-- `alicebot vnext smoke agentic-scheduler`
-- `git diff --check`
-- GitHub PR checks for the release-packaging PR
-- GitHub release view for `v0.5.1-vnext-preview`
+1. Focused regressions listed in `FIX_MATRIX.md` pass.
+2. Python unit coverage, PostgreSQL integration, LongMemEval, backup, and scale tests pass.
+3. Ruff and full first-party `mypy` pass with zero errors.
+4. Web tests, lint, full TypeScript, production build, browser navigation,
+   accessibility, coverage, and bundle/performance budgets pass.
+5. Wheel and sdist pass metadata, Twine, portable-link, and installed-artifact smokes.
+6. The no-provider eval fails closed.
+7. An operator-supplied configured provider eval on the exact candidate SHA
+   reports nonzero production-signed vector candidates and meets every quality target.
+8. Publication accepts only an attested semantic-eval report bound to the exact SHA.
+9. Control-document and release-finalization truth checks pass.
+10. An independent reviewer reports no remaining blocker.
 
-## Exit Condition
-This packet is complete when the release-packaging PR is merged, `v0.5.1-vnext-preview` is pushed as an annotated tag, the GitHub pre-release is published with release notes, and the final release state is verified.
+## Handoff
+
+- `docs/handoff/2026-07-13-v0.10-audit-remediation/FIX_MATRIX.md`
+- `docs/handoff/2026-07-13-v0.10-audit-remediation/BUILD_REPORT.md`
+- `docs/handoff/2026-07-13-v0.10-audit-remediation/ENGINEER_HANDOFF.md`
+- `docs/handoff/2026-07-13-v0.10-audit-remediation/REVIEW_REPORT.md` (reviewer-owned)
+
+## Exit condition
+
+The sprint is complete only when every matrix row is closed or explicitly
+returned as a release blocker, all runnable gates have exact command evidence,
+the configured semantic report is bound to the reviewed clean SHA, and the
+independent reviewer signs off. Until then, v0.10.0 remains unpublishable.

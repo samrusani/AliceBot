@@ -5,10 +5,14 @@ from uuid import UUID
 
 from alicebot_api.contracts import (
     TOOL_EXECUTION_LIST_ORDER,
+    ProxyExecutionStatus,
     ToolExecutionDetailResponse,
     ToolExecutionListResponse,
     ToolExecutionListSummary,
     ToolExecutionRecord,
+    ToolExecutionResultRecord,
+    ToolRecord,
+    ToolRoutingRequestRecord,
 )
 from alicebot_api.store import ContinuityStore, ToolExecutionRow
 
@@ -28,12 +32,12 @@ def serialize_tool_execution_row(row: ToolExecutionRow) -> ToolExecutionRecord:
         "trace_id": str(row["trace_id"]),
         "request_event_id": None if row["request_event_id"] is None else str(row["request_event_id"]),
         "result_event_id": None if row["result_event_id"] is None else str(row["result_event_id"]),
-        "status": cast(str, row["status"]),
+        "status": cast(ProxyExecutionStatus, row["status"]),
         "handler_key": row["handler_key"],
         "idempotency_key": cast(str | None, row.get("idempotency_key")),
-        "request": cast(dict[str, object], row["request"]),
-        "tool": cast(dict[str, object], row["tool"]),
-        "result": cast(dict[str, object], row["result"]),
+        "request": cast(ToolRoutingRequestRecord, row["request"]),
+        "tool": cast(ToolRecord, row["tool"]),
+        "result": cast(ToolExecutionResultRecord, row["result"]),
         "executed_at": row["executed_at"].isoformat(),
     }
 

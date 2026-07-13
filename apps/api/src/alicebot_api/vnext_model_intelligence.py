@@ -505,6 +505,8 @@ def _consolidation_member_context(members: tuple[JsonObject, ...]) -> list[JsonO
         source_refs = []
         if isinstance(metadata, dict) and isinstance(metadata.get("source_refs"), list):
             source_refs = [str(ref) for ref in metadata["source_refs"] if isinstance(ref, str)]
+        source_event_ids = member.get("source_event_ids")
+        source_event_count = len(source_event_ids) if isinstance(source_event_ids, list) else 0
         context.append(
             {
                 "memory_id": str(member.get("id")),
@@ -512,9 +514,7 @@ def _consolidation_member_context(members: tuple[JsonObject, ...]) -> list[JsonO
                 "canonical_text": member.get("canonical_text"),
                 "summary": member.get("summary"),
                 "memory_type": member.get("memory_type"),
-                "provenance_count": len(source_refs) + len(
-                    member.get("source_event_ids") if isinstance(member.get("source_event_ids"), list) else []
-                ),
+                "provenance_count": len(source_refs) + source_event_count,
             }
         )
     return context

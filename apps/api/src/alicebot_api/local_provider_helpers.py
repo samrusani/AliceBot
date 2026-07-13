@@ -5,7 +5,12 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from alicebot_api.contracts import ModelInvocationRequest, ModelInvocationResponse, ModelUsagePayload
+from alicebot_api.contracts import (
+    ModelFinishReason,
+    ModelInvocationRequest,
+    ModelInvocationResponse,
+    ModelUsagePayload,
+)
 from alicebot_api.provider_security import validate_provider_base_url
 from alicebot_api.response_generation import ModelInvocationError
 
@@ -144,7 +149,7 @@ def parse_ollama_invoke_response(*, request: ModelInvocationRequest, payload: di
     if not isinstance(output_text, str) or output_text.strip() == "":
         raise ModelInvocationError("ollama response did not include assistant output text")
     done = payload.get("done")
-    finish_reason = "completed" if done is True else "incomplete"
+    finish_reason: ModelFinishReason = "completed" if done is True else "incomplete"
     prompt_tokens = payload.get("prompt_eval_count")
     completion_tokens = payload.get("eval_count")
     total_tokens = (
@@ -185,7 +190,9 @@ def parse_llamacpp_invoke_response(
     if not isinstance(output_text, str) or output_text.strip() == "":
         raise ModelInvocationError("llamacpp response did not include assistant output text")
     raw_finish_reason = first_choice.get("finish_reason")
-    finish_reason = "completed" if raw_finish_reason in {"stop", "completed", "eos"} else "incomplete"
+    finish_reason: ModelFinishReason = (
+        "completed" if raw_finish_reason in {"stop", "completed", "eos"} else "incomplete"
+    )
     usage_payload = payload.get("usage")
     if isinstance(usage_payload, dict):
         usage: ModelUsagePayload = {
@@ -236,7 +243,9 @@ def parse_vllm_invoke_response(
     if not isinstance(output_text, str) or output_text.strip() == "":
         raise ModelInvocationError("vllm response did not include assistant output text")
     raw_finish_reason = first_choice.get("finish_reason")
-    finish_reason = "completed" if raw_finish_reason in {"stop", "completed", "eos"} else "incomplete"
+    finish_reason: ModelFinishReason = (
+        "completed" if raw_finish_reason in {"stop", "completed", "eos"} else "incomplete"
+    )
     usage_payload = payload.get("usage")
     if isinstance(usage_payload, dict):
         usage: ModelUsagePayload = {

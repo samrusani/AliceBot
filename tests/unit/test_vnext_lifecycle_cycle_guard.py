@@ -66,3 +66,30 @@ def test_supersession_would_cycle_fails_closed_on_depth_exhaustion() -> None:
             read_pointer=_pointer,
             max_depth=4,
         )
+
+
+def test_supersession_would_cycle_fails_closed_on_preexisting_cycle() -> None:
+    chain = {
+        "B": {"id": "B", "superseded_by": "C"},
+        "C": {"id": "C", "superseded_by": "B"},
+    }
+
+    with pytest.raises(LifecycleTransitionError, match="already contains a cycle"):
+        supersession_would_cycle(
+            memory_id="A",
+            successor=chain["B"],
+            load_memory=lambda i: chain.get(i),
+            read_pointer=_pointer,
+        )
+
+
+def test_supersession_would_cycle_fails_closed_on_dangling_pointer() -> None:
+    successor = {"id": "B", "superseded_by": "missing"}
+
+    with pytest.raises(LifecycleTransitionError, match="points to missing memory"):
+        supersession_would_cycle(
+            memory_id="A",
+            successor=successor,
+            load_memory=lambda _i: None,
+            read_pointer=_pointer,
+        )

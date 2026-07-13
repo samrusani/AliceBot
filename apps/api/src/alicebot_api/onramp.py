@@ -48,7 +48,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import marshal
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -57,6 +59,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import IO
 from uuid import UUID
@@ -91,9 +94,10 @@ from alicebot_api.vnext_embeddings import (
     MAX_EMBEDDINGS_BATCH_SIZE,
     VNextEmbeddingConfigurationError,
     VNextEmbeddingProviderError,
+    endpoint_fingerprint,
     get_embedding_provider,
-    memory_embedding_signature,
     memory_embedding_text,
+    signed_memory_embedding_update,
 )
 
 DEFAULT_DATA_DIR = "~/.alice"
@@ -283,6 +287,17 @@ class _BackupError(Exception):
 
 
 _BASE_ALICE_TABLES = frozenset({"users", "memories", "sources", "event_log"})
+
+
+@lru_cache(maxsize=1)
+def _current_alice_table_names() -> frozenset[str]:
+    """Return every table created by this Alice version, including FTS helpers."""
+    probe = sqlite3.connect(":memory:")
+    try:
+        bootstrap_sqlite_schema(probe)
+        return frozenset(_sqlite_table_names(probe))
+    finally:
+        probe.close()
 
 
 def _read_only_sqlite_connection(path: Path) -> sqlite3.Connection:
@@ -507,6 +522,16 @@ def _validate_alice_snapshot(
     if missing_base:
         raise _BackupError(
             "unsupported Alice SQLite schema; missing base tables: " + ", ".join(missing_base)
+        )
+    unknown_tables = sorted(
+        table
+        for table in tables - _current_alice_table_names()
+        if not table.startswith("sqlite_stat")
+    )
+    if unknown_tables:
+        raise _BackupError(
+            "unsupported newer Alice SQLite schema; unknown application tables: "
+            + ", ".join(unknown_tables)
         )
     if user_id is not None:
         user = conn.execute("SELECT 1 FROM users WHERE id = ?", (str(user_id),)).fetchone()
@@ -1228,6 +1253,81 @@ class _ValidatedImport:
     record_counts: dict[str, int]
     content_sha256: str
     manifest_sha256: str
+    spool_path: Path
+
+
+def _create_import_spool(path: Path) -> tuple[Path, sqlite3.Connection]:
+    """Create an owner-only, disk-backed spool beside the private snapshot."""
+    spool_path = path.with_name("validated-import-spool.sqlite3")
+    try:
+        spool_path.unlink()
+    except FileNotFoundError:
+        pass
+    spool: sqlite3.Connection | None = None
+    try:
+        spool = sqlite3.connect(spool_path)
+        os.chmod(spool_path, 0o600)
+        spool.execute("PRAGMA journal_mode=OFF")
+        spool.execute("PRAGMA synchronous=OFF")
+        spool.execute("PRAGMA temp_store=FILE")
+        spool.execute("PRAGMA cache_size=-1024")
+        spool.execute(
+            """
+            CREATE TABLE validated_records (
+                record_type TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                line_no INTEGER NOT NULL,
+                payload BLOB NOT NULL,
+                PRIMARY KEY (record_type, ordinal)
+            ) WITHOUT ROWID
+            """
+        )
+    except (OSError, sqlite3.Error):
+        if spool is not None:
+            try:
+                spool.close()
+            except sqlite3.Error:
+                pass
+        _remove_sqlite_files(spool_path)
+        raise
+    assert spool is not None
+    return spool_path, spool
+
+
+def _iter_spooled_records(
+    validated_import: _ValidatedImport,
+    record_type: str,
+) -> Iterator[tuple[int, dict[str, object]]]:
+    """Stream validated records without decoding the source JSONL again."""
+    spool = sqlite3.connect(
+        f"{validated_import.spool_path.resolve().as_uri()}?mode=ro&immutable=1",
+        uri=True,
+    )
+    try:
+        cursor = spool.execute(
+            """
+            SELECT line_no, payload
+            FROM validated_records
+            WHERE record_type = ?
+            ORDER BY ordinal
+            """,
+            (record_type,),
+        )
+        while rows := cursor.fetchmany(_EXPORT_FETCH_SIZE):
+            for line_no, payload in rows:
+                try:
+                    record = marshal.loads(bytes(payload))
+                except (EOFError, TypeError, ValueError) as exc:
+                    raise _ImportError(
+                        f"line {line_no}: validated import spool record is unreadable"
+                    ) from exc
+                if not isinstance(record, dict):
+                    raise _ImportError(
+                        f"line {line_no}: validated import spool record is malformed"
+                    )
+                yield int(line_no), record
+    finally:
+        spool.close()
 
 
 def _decode_import_envelope(
@@ -1262,6 +1362,11 @@ def _validate_import_file(path: Path) -> _ValidatedImport:
     digest = hashlib.sha256()
     manifest_sha256 = ""
     counts = {record_type: 0 for record_type in _RECORD_SPECS}
+    try:
+        spool_path, spool = _create_import_spool(path)
+    except (OSError, sqlite3.Error) as exc:
+        raise _ImportError(f"could not create validated import spool: {exc}") from exc
+    spool_complete = False
     record_count = 0
     saw_nonblank = False
     export_user_id: str | None = None
@@ -1367,49 +1472,58 @@ def _validate_import_file(path: Path) -> _ValidatedImport:
                             f"this Alice version cannot restore: {unknown_columns}"
                         )
                 counts[record_type] += 1
+                spool.execute(
+                    """
+                    INSERT INTO validated_records (record_type, ordinal, line_no, payload)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        record_type,
+                        counts[record_type],
+                        line_no,
+                        sqlite3.Binary(marshal.dumps(record)),
+                    ),
+                )
                 record_count += 1
                 digest.update((_export_line(record_type, record) + "\n").encode("utf-8"))
+        if not saw_nonblank:
+            raise _ImportError("file is empty")
+        if versioned:
+            if footer is None:
+                raise _ImportError("versioned export is truncated: integrity footer is missing")
+            if footer.get("format") != _EXPORT_FORMAT or footer.get(
+                "format_version"
+            ) != _EXPORT_FORMAT_VERSION:
+                raise _ImportError("export integrity footer has an unsupported format or version")
+            if footer.get("record_count") != record_count:
+                raise _ImportError("export integrity record count does not match its contents")
+            if footer.get("record_counts") != counts:
+                raise _ImportError("export integrity per-type counts do not match its contents")
+            if footer.get("sha256") != digest.hexdigest():
+                raise _ImportError("export integrity SHA-256 does not match its contents")
+        spool.commit()
+        spool.close()
+        spool_complete = True
     except UnicodeDecodeError as exc:
         raise _ImportError(f"file is not valid UTF-8 JSONL: {exc}") from exc
+    except sqlite3.Error as exc:
+        raise _ImportError(f"could not write validated import spool: {exc}") from exc
+    finally:
+        if not spool_complete:
+            try:
+                spool.close()
+            except sqlite3.Error:
+                pass
+            _remove_sqlite_files(spool_path)
 
-    if not saw_nonblank:
-        raise _ImportError("file is empty")
-    if versioned:
-        if footer is None:
-            raise _ImportError("versioned export is truncated: integrity footer is missing")
-        if footer.get("format") != _EXPORT_FORMAT or footer.get(
-            "format_version"
-        ) != _EXPORT_FORMAT_VERSION:
-            raise _ImportError("export integrity footer has an unsupported format or version")
-        if footer.get("record_count") != record_count:
-            raise _ImportError("export integrity record count does not match its contents")
-        if footer.get("record_counts") != counts:
-            raise _ImportError("export integrity per-type counts do not match its contents")
-        if footer.get("sha256") != digest.hexdigest():
-            raise _ImportError("export integrity SHA-256 does not match its contents")
     return _ValidatedImport(
         versioned=bool(versioned),
         record_count=record_count,
         record_counts=counts,
         content_sha256=digest.hexdigest(),
         manifest_sha256=manifest_sha256,
+        spool_path=spool_path,
     )
-
-
-def _iter_import_records(
-    path: Path, record_type: str
-) -> Iterator[tuple[int, dict[str, object]]]:
-    """Stream one FK-ordered record type after whole-file validation."""
-    with path.open("r", encoding="utf-8") as stream:
-        for line_no, line in enumerate(stream, start=1):
-            text = line.strip()
-            if not text:
-                continue
-            parsed_type, record = _decode_import_envelope(text, line_no=line_no)
-            if parsed_type == record_type:
-                yield line_no, record
-
-
 def _encode_column_value(column: str, value: object) -> object:
     """TEXT-encode JSON columns the way the store writes them; pass the rest."""
     if column in _JSON_COLUMNS and value is not None and not isinstance(value, str):
@@ -1461,7 +1575,7 @@ def _collision_is_identical(
 def _import_records(
     conn: sqlite3.Connection,
     store: SQLiteVNextStore,
-    in_path: Path,
+    validated_import: _ValidatedImport,
     *,
     mode: str,
 ) -> dict[str, dict[str, int]]:
@@ -1478,7 +1592,7 @@ def _import_records(
     """
     counts: dict[str, dict[str, int]] = {}
     for record_type, (table, columns) in _RECORD_SPECS.items():
-        for line_no, record in _iter_import_records(in_path, record_type):
+        for line_no, record in _iter_spooled_records(validated_import, record_type):
             tally = counts.setdefault(record_type, {"imported": 0, "skipped": 0})
             row_id = str(record["id"])
             existing = conn.execute(
@@ -1541,6 +1655,39 @@ def _print_import_summary(
         print(f"note: {memories_imported} {plural} {_EMBEDDING_NOTE}")
 
 
+@contextmanager
+def _immutable_import_copy(source_path: Path) -> Iterator[Path]:
+    """Yield an owner-only snapshot read from one stable source handle."""
+    with tempfile.TemporaryDirectory(prefix="alice-memory-import-snapshot-") as raw_dir:
+        snapshot_dir = Path(raw_dir)
+        os.chmod(snapshot_dir, 0o700)
+        snapshot_path = snapshot_dir / "import.jsonl"
+        with source_path.open("rb") as source, snapshot_path.open("xb") as destination:
+            before = os.fstat(source.fileno())
+            shutil.copyfileobj(source, destination, length=_FILE_COPY_CHUNK_SIZE)
+            after = os.fstat(source.fileno())
+            destination.flush()
+            os.fsync(destination.fileno())
+        stable_before = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        stable_after = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if stable_before != stable_after:
+            raise _ImportError("import file changed while it was being snapshotted")
+        os.chmod(snapshot_path, 0o600)
+        yield snapshot_path
+
+
 def _run_import(args: argparse.Namespace) -> int:
     requested_in_path = Path(args.in_path).expanduser()
     if not requested_in_path.exists():
@@ -1554,14 +1701,37 @@ def _run_import(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    in_path = requested_in_path.resolve()
+    display_path = requested_in_path.resolve()
+    try:
+        with _immutable_import_copy(display_path) as in_path:
+            return _run_import_snapshot(
+                args,
+                in_path=in_path,
+                display_path=display_path,
+                db_path=db_path,
+            )
+    except (_ImportError, OSError) as exc:
+        print(
+            f"error: could not read import file {display_path} into a stable snapshot: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+
+def _run_import_snapshot(
+    args: argparse.Namespace,
+    *,
+    in_path: Path,
+    display_path: Path,
+    db_path: Path,
+) -> int:
     try:
         validated_import = _validate_import_file(in_path)
     except _ImportError as exc:
-        print(f"error: {in_path}: {exc}", file=sys.stderr)
+        print(f"error: {display_path}: {exc}", file=sys.stderr)
         return 1
     except OSError as exc:
-        print(f"error: could not read import file {in_path}: {exc}", file=sys.stderr)
+        print(f"error: could not read import file {display_path}: {exc}", file=sys.stderr)
         return 1
 
     target_existed = db_path.exists()
@@ -1590,9 +1760,7 @@ def _run_import(args: argparse.Namespace) -> int:
         )
         with sqlite_user_connection(working_path, args.user_id) as conn:
             store = SQLiteVNextStore(conn, args.user_id)
-            counts = _import_records(conn, store, in_path, mode=args.mode)
-            if _validate_import_file(in_path) != validated_import:
-                raise _ImportError("import file changed while it was being restored")
+            counts = _import_records(conn, store, validated_import, mode=args.mode)
         # Move all committed WAL pages into the staged main file before
         # atomic publication, then durably persist it.
         checkpoint = sqlite3.connect(str(working_path))
@@ -1625,12 +1793,13 @@ def _run_import(args: argparse.Namespace) -> int:
             working_path = db_path
             _remove_sqlite_files(staged_path)
     except (_BackupError, _ImportError, OSError, sqlite3.Error) as exc:
-        print(f"error: {in_path}: {exc}", file=sys.stderr)
+        print(f"error: {display_path}: {exc}", file=sys.stderr)
         print("error: import aborted; no records were written", file=sys.stderr)
         return 1
     finally:
         if working_path is not None and working_path != db_path:
             _remove_sqlite_files(working_path)
+        _remove_sqlite_files(validated_import.spool_path)
     # A new target is the already-fchmod(0600) staged inode published by
     # hard link, so no fallible post-publication chmod is needed. Existing
     # targets keep their inode and need an explicit owner-only hardening pass.
@@ -1649,7 +1818,7 @@ def _run_import(args: argparse.Namespace) -> int:
     _fsync_directory(db_path.parent)
     summary_error: OSError | ValueError | None = None
     try:
-        _print_import_summary(counts, in_path=in_path, db_path=db_path)
+        _print_import_summary(counts, in_path=display_path, db_path=db_path)
         sys.stdout.flush()
     except (OSError, ValueError) as exc:
         summary_error = exc
@@ -1699,6 +1868,9 @@ def _run_reindex_embeddings(args: argparse.Namespace) -> int:
                 after_id=after_id,
                 embedding_provider=provider.provider,
                 embedding_model=provider.model,
+                embedding_endpoint=endpoint_fingerprint(
+                    getattr(provider, "base_url", "")
+                ),
                 embedding_signature_version=EMBEDDING_SIGNATURE_VERSION,
             )
             if not rows:
@@ -1717,14 +1889,8 @@ def _run_reindex_embeddings(args: argparse.Namespace) -> int:
                 print(f"warning: embedding batch failed: {exc}", file=sys.stderr)
                 continue
             for (row, _text), vector in zip(embeddable, vectors, strict=True):
-                signature = memory_embedding_signature(row, provider=provider)
                 store.update_memory_embedding(
-                    memory_id=str(row["id"]),
-                    vector=vector,
-                    provider=str(signature["provider"]),
-                    model=str(signature["model"]),
-                    content_sha256=str(signature["content_sha256"]),
-                    signature_version=int(signature["version"]),
+                    **signed_memory_embedding_update(row, vector, provider=provider)
                 )
                 if row.get("embedding_present") in (True, 1):
                     reindexed_incompatible += 1

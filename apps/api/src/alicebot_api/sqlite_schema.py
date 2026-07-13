@@ -46,6 +46,7 @@ Conventions:
 
 from __future__ import annotations
 
+from hashlib import md5
 import json
 import sqlite3
 
@@ -274,6 +275,7 @@ _TABLE_STATEMENTS: tuple[str, ...] = (
       uri TEXT NULL,
       raw_path TEXT NULL,
       content_hash TEXT NOT NULL,
+      dedupe_key TEXT NULL,
       captured_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
       source_created_at TEXT NULL,
       source_modified_at TEXT NULL,
@@ -288,6 +290,8 @@ _TABLE_STATEMENTS: tuple[str, ...] = (
         CHECK (length(source_type) BETWEEN 1 AND 120),
       CONSTRAINT sources_content_hash_length_check
         CHECK (length(content_hash) BETWEEN 1 AND 200),
+      CONSTRAINT sources_dedupe_key_length_check
+        CHECK (dedupe_key IS NULL OR length(dedupe_key) BETWEEN 1 AND 200),
       CONSTRAINT sources_domain_check
         CHECK (domain IN ({_DOMAINS_SQL})),
       CONSTRAINT sources_sensitivity_check
@@ -697,6 +701,7 @@ _TABLE_STATEMENTS: tuple[str, ...] = (
 # memories.project_id (and memories_user_superseded_by_idx references
 # memories.superseded_by).
 _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("sources", "dedupe_key", "TEXT NULL"),
     ("memories", "project_id", "TEXT NULL"),
     ("memories", "created_by_agent_id", "TEXT NULL"),
     ("memories", "run_id", "TEXT NULL"),
@@ -727,12 +732,24 @@ _ADDITIVE_COLUMN_BACKFILLS: dict[tuple[str, str], str] = {
         """,
 }
 
+_SOURCE_DEDUPE_BACKFILL_INDEX_SQL = """
+    CREATE INDEX IF NOT EXISTS sources_missing_dedupe_key_idx
+      ON sources (captured_at ASC, id ASC)
+      WHERE deleted_at IS NULL AND dedupe_key IS NULL
+    """
+
 _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
     # Indexes mirroring the hot Postgres access paths.
     """
     CREATE INDEX IF NOT EXISTS sources_user_content_hash_idx
       ON sources (user_id, content_hash)
     """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS sources_user_dedupe_key_unique_idx
+      ON sources (user_id, dedupe_key)
+      WHERE deleted_at IS NULL AND dedupe_key IS NOT NULL
+    """,
+    _SOURCE_DEDUPE_BACKFILL_INDEX_SQL,
     """
     CREATE INDEX IF NOT EXISTS sources_user_captured_idx
       ON sources (user_id, captured_at DESC, id DESC)
@@ -1259,6 +1276,133 @@ def _backfill_legacy_memory_project_scopes(conn: sqlite3.Connection) -> None:
         )
 
 
+def _source_capture_dedupe_key(
+    *,
+    raw_text: str,
+    project_scope: object,
+    domain: object,
+    sensitivity: object,
+) -> str:
+    normalized = raw_text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    scope = tuple(sorted(normalize_project_scope(project_scope)))
+    if scope:
+        normalized += "\x1fproject_scope:" + "\x1f".join(scope)
+    normalized += "\x1fdomain:" + str(domain or "unknown").strip().casefold()
+    normalized += "\x1fsensitivity:" + str(sensitivity or "unknown").strip().casefold()
+    return "capture-md5:" + md5(normalized.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+
+def _backfill_source_dedupe_keys(conn: sqlite3.Connection) -> None:
+    """Backfill only live sources that still lack a capture identity.
+
+    The partial work index makes the common reopening path proportional to
+    missing rows instead of the complete source corpus. Metadata is decoded
+    only for those rows, while a correlated conflict check preserves the
+    earliest identity when historical duplicates already exist.
+    """
+    rows = conn.execute(
+        """
+        SELECT id, user_id, content_hash, metadata_json, domain, sensitivity
+        FROM sources
+        WHERE deleted_at IS NULL
+          AND dedupe_key IS NULL
+        ORDER BY captured_at ASC, id ASC
+        """
+    ).fetchall()
+    for row in rows:
+        if isinstance(row, dict):
+            record = dict(row)
+        else:
+            record = {
+                "id": row[0],
+                "user_id": row[1],
+                "content_hash": row[2],
+                "metadata_json": row[3],
+                "domain": row[4],
+                "sensitivity": row[5],
+            }
+        metadata_raw = record["metadata_json"]
+        if isinstance(metadata_raw, str):
+            try:
+                metadata = json.loads(metadata_raw)
+            except json.JSONDecodeError:
+                metadata = {}
+        elif isinstance(metadata_raw, dict):
+            metadata = metadata_raw
+        else:
+            metadata = {}
+        raw_text = metadata.get("raw_text")
+        key = (
+            _source_capture_dedupe_key(
+                raw_text=raw_text,
+                project_scope=metadata.get("project_scope"),
+                domain=record["domain"],
+                sensitivity=record["sensitivity"],
+            )
+            if isinstance(raw_text, str) and raw_text.strip()
+            else str(record["content_hash"])
+        )
+        conn.execute(
+            """
+            UPDATE sources AS candidate
+            SET dedupe_key = ?
+            WHERE candidate.id = ?
+              AND candidate.deleted_at IS NULL
+              AND candidate.dedupe_key IS NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM sources AS occupied
+                WHERE occupied.user_id = candidate.user_id
+                  AND occupied.dedupe_key = ?
+                  AND occupied.deleted_at IS NULL
+              )
+            """,
+            (key, str(record["id"]), key),
+        )
+
+
+def _backfill_memory_agent_attribution(conn: sqlite3.Connection) -> None:
+    """Promote historical JSON-only agent/run attribution into scope columns."""
+    conn.execute(
+        """
+        UPDATE memories
+        SET created_by_agent_id = COALESCE(
+              json_extract(metadata_json, '$.agent_id'),
+              json_extract(metadata_json, '$.agent_identity.agent_id'),
+              json_extract(metadata_json, '$.agentic_memory.agent_id'),
+              json_extract(metadata_json, '$.agentic_memory.agent_identity.agent_id')
+            )
+        WHERE created_by_agent_id IS NULL
+          AND COALESCE(
+                json_extract(metadata_json, '$.agent_id'),
+                json_extract(metadata_json, '$.agent_identity.agent_id'),
+                json_extract(metadata_json, '$.agentic_memory.agent_id'),
+                json_extract(metadata_json, '$.agentic_memory.agent_identity.agent_id')
+              ) IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        UPDATE memories
+        SET run_id = COALESCE(
+              json_extract(metadata_json, '$.agent_run_id'),
+              json_extract(metadata_json, '$.run_id'),
+              json_extract(metadata_json, '$.agent_identity.agent_run_id'),
+              json_extract(metadata_json, '$.agentic_memory.agent_run_id'),
+              json_extract(metadata_json, '$.agentic_memory.agent_identity.agent_run_id')
+            )
+        WHERE run_id IS NULL
+          AND COALESCE(
+                json_extract(metadata_json, '$.agent_run_id'),
+                json_extract(metadata_json, '$.run_id'),
+                json_extract(metadata_json, '$.agent_identity.agent_run_id'),
+                json_extract(metadata_json, '$.agentic_memory.agent_run_id'),
+                json_extract(metadata_json, '$.agentic_memory.agent_identity.agent_run_id')
+              ) IS NOT NULL
+        """
+    )
+
+
 def _deduplicate_memory_lookup_values(conn: sqlite3.Connection) -> None:
     """Preserve rows while making retry/confirmation identifiers unique.
 
@@ -1498,7 +1642,12 @@ def bootstrap_sqlite_schema(conn: sqlite3.Connection) -> None:
     # Existing files created before the scope columns shipped need ALTERs
     # before the index statements reference the new columns.
     _ensure_additive_columns(conn)
+    # Install the empty-work index before probing for rows. On healthy current
+    # files this keeps every open independent of total source count.
+    conn.execute(_SOURCE_DEDUPE_BACKFILL_INDEX_SQL)
+    _backfill_source_dedupe_keys(conn)
     _backfill_legacy_memory_project_scopes(conn)
+    _backfill_memory_agent_attribution(conn)
     _deduplicate_memory_lookup_values(conn)
     # Corrective pass for files a buggy v0.9.2 dedup already stranded an
     # identifier on a tombstone (audit P1 #3); a no-op on healthy files.

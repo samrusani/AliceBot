@@ -102,6 +102,26 @@ class FakeRollupStore:
         rows.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id"))), reverse=True)
         return rows[:limit]
 
+    def count_rollup_input_memories(
+        self,
+        *,
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        excluded_candidate_kind: str,
+    ) -> int:
+        return len(
+            [
+                row
+                for row in self.memories
+                if row.get("status") in {"active", "accepted"}
+                and self._in_scope(row, domains=domains, sensitivity_allowed=sensitivity_allowed)
+                and not (
+                    isinstance(row.get("metadata_json"), dict)
+                    and row["metadata_json"].get("candidate_kind") == excluded_candidate_kind
+                )
+            ]
+        )
+
     def list_pending_rollup_candidates(
         self,
         *,
@@ -482,6 +502,11 @@ def test_rollup_membership_beyond_display_cap_is_full_and_stable() -> None:
     assert card["value"]["rollup"]["member_count"] == 5
     # Display instances stay bounded to the per-card cap.
     assert len(card["value"]["rollup"]["instances"]) == 3
+    assert card["value"]["rollup"]["displayed_instance_count"] == 3
+    assert card["value"]["rollup"]["instances_truncated"] is True
+    assert "5 instances total (showing 3)" in card["title"]
+    assert "5 instances in the authoritative group; showing 3" in card["canonical_text"]
+    assert "3 instances in total" not in card["canonical_text"]
 
     # Accept it (a rollup card flips to active) and rerun: a stable group larger
     # than the display cap must NOT re-propose a revision.
@@ -551,6 +576,19 @@ def test_rollup_reads_apply_deterministic_database_bounds_before_grouping() -> N
 
     assert outcome.bounded is True
     assert outcome.groupable_count == 3
+    assert outcome.groupable_total_count == 5
+    assert outcome.groupable_total_exact is True
+    assert any("of 5 in scope" in reason for reason in outcome.skipped)
+    bounded_card = next(
+        row
+        for row in store.memories
+        if isinstance(row.get("metadata_json"), dict)
+        and row["metadata_json"].get("candidate_kind") == ROLLUP_CANDIDATE_KIND
+    )
+    assert bounded_card["value"]["rollup"]["grouping_input_truncated"] is True
+    assert bounded_card["value"]["rollup"]["grouping_input_total"] == 5
+    assert "3 matched instances in a truncated grouping input" in bounded_card["canonical_text"]
+    assert "instances in total" not in bounded_card["canonical_text"]
     expected_member_ids = {
         str(members[key]["id"])
         for key in ("game-3", "game-4", "game-5")
@@ -1031,6 +1069,27 @@ def test_model_backed_summary_is_grounded_and_disclosed() -> None:
     assert stub.prompts and "[UNTRUSTED_CONTEXT_JSON]" in stub.prompts[0]
 
 
+def test_model_summary_is_not_allowed_to_describe_a_truncated_group() -> None:
+    store = FakeRollupStore()
+    _seed_entity_group(store)
+    stub = StubSummaryProvider('{"summary": "All five investments were successful."}')
+
+    outcome = VNextRollupService(store, merge_provider=stub).propose_rollups(
+        options=RollupOptions(max_instances_per_card=3),
+        generation_mode="model_backed",
+        route=StubRoute(),
+    )
+
+    assert stub.prompts == []
+    assert outcome.proposals[0]["instance_count"] == 5
+    assert outcome.proposals[0]["displayed_instance_count"] == 3
+    assert outcome.proposals[0]["instances_truncated"] is True
+    assert outcome.proposals[0]["merge_refusal"] == "model_summary_skipped_for_truncated_instances"
+    card = _rollup_candidates(store)[0]
+    assert "Summary:" not in card["canonical_text"]
+    assert card["trust_class"] == "deterministic"
+
+
 def test_ungrounded_model_summary_falls_back_to_deterministic_card() -> None:
     store = FakeRollupStore()
     _seed_game_memories(store)
@@ -1108,6 +1167,16 @@ def test_sqlite_rollup_reads_are_exact_deduplicated_and_bounded() -> None:
         key=lambda row: (str(row["created_at"]), str(row["id"])),
     )
     assert [str(row["id"]) for row in inputs] == [str(expected_newest["id"])]
+    assert store.count_rollup_input_memories(
+        domains=["personal"],
+        sensitivity_allowed=["internal"],
+        excluded_candidate_kind=ROLLUP_CANDIDATE_KIND,
+    ) == 2
+    assert store.count_memories(
+        status="active",
+        domains=["personal"],
+        sensitivity_allowed=["internal"],
+    ) == 2
 
     older_pending = create_row(
         "pending-old",

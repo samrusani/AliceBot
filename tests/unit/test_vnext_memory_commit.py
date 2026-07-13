@@ -447,6 +447,43 @@ def test_confirm_reject_replay_is_idempotent_without_mutation() -> None:
     assert len(store.revisions) == revisions_after_reject
 
 
+def test_expired_confirmation_records_rejection_revision_and_event() -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+    pending = service.commit(
+        identity=identity,
+        request=_request(domain="professional", sensitivity="internal", confidence=0.7),
+    )
+    memory_id = str(pending["memory"]["id"])
+    confirmation_id = str(pending["confirmation_id"])
+    agentic = store.memories[memory_id]["metadata_json"]["agentic_memory"]
+    agentic["confirmation"]["expires_at"] = "2020-01-01T00:00:00Z"
+
+    result = service.confirm(identity=identity, confirmation_id=confirmation_id)
+
+    assert result["status"] == "rejected"
+    assert result["write_mode"] == "confirm_inline"
+    row = store.memories[memory_id]
+    assert row["status"] == "rejected"
+    assert row["metadata_json"]["agentic_memory"]["confirmation"]["status"] == "expired"
+    expired_revisions = [
+        revision
+        for revision in store.revisions
+        if revision.get("action") == "agentic_memory_confirmation_expired"
+    ]
+    assert len(expired_revisions) == 1
+    assert expired_revisions[0]["revision_type"] == "rejected"
+    assert expired_revisions[0]["metadata_json"]["confirmation_id"] == confirmation_id
+    expired_events = [
+        event
+        for event in store.events
+        if event.get("event_type") == "agent.memory_confirmation_expired"
+    ]
+    assert len(expired_events) == 1
+    assert expired_events[0]["payload_json"]["confirmation_id"] == confirmation_id
+
+
 def test_correct_refreshes_last_confirmed_at() -> None:
     store = TargetedLookupStore()
     service = VNextMemoryCommitService(store)
@@ -1192,6 +1229,38 @@ def test_accept_merge_candidate_executes_the_proposed_supersessions() -> None:
     assert accepted_events[0]["payload_json"]["superseded_member_ids"] == members
 
 
+def test_accept_consolidation_locks_graph_before_candidate_and_member_rows() -> None:
+    class OrderedLockStore(TargetedLookupStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lock_order: list[str] = []
+
+        def lock_graph_mutation(self) -> None:
+            self.lock_order.append("graph")
+
+        def get_memory_for_update(self, memory_id: str) -> dict[str, object] | None:
+            self.lock_order.append(f"row:{memory_id}")
+            return self.get_memory(memory_id)
+
+    store = OrderedLockStore()
+    member_id = _seed_row(store, title="Member", text="Member fact.")
+    candidate_id = _seed_consolidation_candidate(
+        store,
+        member_ids=[member_id],
+        proposal_kind="merge",
+        survivor_memory_id=None,
+        proposed_supersede=[member_id],
+    )
+
+    VNextMemoryCommitService(store).accept_consolidation_candidate(
+        candidate_id,
+        reason="Reviewed and accepted.",
+    )
+
+    assert store.lock_order[0] == "graph"
+    assert store.lock_order[1:] == [f"row:{candidate_id}", f"row:{member_id}"]
+
+
 def test_accept_replay_is_a_noop_with_a_note() -> None:
     store = TargetedLookupStore()
     service = VNextMemoryCommitService(store)
@@ -1555,6 +1624,19 @@ def test_unexpire_replays_as_a_noop_when_nothing_is_expired() -> None:
     assert store.revisions == []
 
 
+def test_unexpire_noop_reports_the_returned_rows_actual_status() -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    memory_id = _seed_row(store, title="Stale", text="No validity end.", status="stale")
+
+    result = service.unexpire(memory_id, reason="Nothing to clear.")
+
+    assert result["idempotent_replay"] is True
+    assert result["status"] == "stale"
+    assert result["memory"]["status"] == "stale"
+    assert store.revisions == []
+
+
 def test_expire_is_policy_blocked_for_an_out_of_scope_agent_identity() -> None:
     store = TargetedLookupStore()
     service = VNextMemoryCommitService(store)
@@ -1757,6 +1839,99 @@ def test_supersession_acquires_the_graph_mutation_lock() -> None:
     service.undo(identity=identity, memory_id=a_id, superseded_by_memory_id=b_id)
 
     assert store.graph_locks >= 1
+
+
+def test_supersession_acquires_graph_lock_before_any_row_lock() -> None:
+    class OrderedLockStore(TargetedLookupStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lock_order: list[str] = []
+
+        def lock_graph_mutation(self) -> None:
+            self.lock_order.append("graph")
+
+        def get_memory_for_update(self, memory_id: str) -> dict[str, object] | None:
+            self.lock_order.append(f"row:{memory_id}")
+            return self.get_memory(memory_id)
+
+    store = OrderedLockStore()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+    old_id = _commit_active(service, identity, title="Old", text="Old fact.")
+    successor_id = _commit_active(service, identity, title="New", text="New fact.")
+
+    service.undo(
+        identity=identity,
+        memory_id=old_id,
+        superseded_by_memory_id=successor_id,
+    )
+
+    assert store.lock_order == ["graph", f"row:{old_id}", f"row:{successor_id}"]
+
+
+@pytest.mark.parametrize("operation", ["correct", "forget", "expire", "unexpire"])
+def test_member_lifecycle_mutations_lock_graph_before_the_row(operation: str) -> None:
+    class OrderedLockStore(TargetedLookupStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lock_order: list[str] = []
+
+        def lock_graph_mutation(self) -> None:
+            self.lock_order.append("graph")
+
+        def get_memory_for_update(self, memory_id: str) -> dict[str, object] | None:
+            self.lock_order.append(f"row:{memory_id}")
+            return self.get_memory(memory_id)
+
+    store = OrderedLockStore()
+    memory_id = _seed_row(store, title="Member", text="Member lifecycle fact.")
+    if operation == "unexpire":
+        store.memories[memory_id]["valid_to"] = "2020-01-01T00:00:00+00:00"
+    service = VNextMemoryCommitService(store)
+
+    if operation == "correct":
+        service.correct(
+            identity=None,
+            memory_id=memory_id,
+            canonical_text="Corrected member lifecycle fact.",
+        )
+    elif operation == "forget":
+        service.forget(identity=None, memory_id=memory_id, reason="Forget it.")
+    elif operation == "expire":
+        service.expire(memory_id, reason="Expire it.")
+    else:
+        service.unexpire(memory_id, reason="Restore it.")
+
+    assert store.lock_order == ["graph", f"row:{memory_id}"]
+
+
+@pytest.mark.parametrize(
+    "successor_status",
+    ["candidate", "needs_review", "stale", "rejected", "superseded", "archived", "unknown"],
+)
+def test_undo_rejects_a_successor_that_cannot_be_a_live_chain_head(
+    successor_status: str,
+) -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+    old_id = _commit_active(service, identity, title="Old", text="Old fact.")
+    successor_id = _seed_row(
+        store,
+        title="Invalid successor",
+        text="Invalid replacement.",
+        status=successor_status,
+    )
+
+    with pytest.raises(VNextMemoryCommitValidationError, match="accepted live successor"):
+        service.undo(
+            identity=identity,
+            memory_id=old_id,
+            superseded_by_memory_id=successor_id,
+        )
+
+    assert store.memories[old_id]["status"] == "active"
+    assert store.memories[old_id].get("superseded_by") is None
 
 
 def test_unexpire_restores_a_stale_expired_row_to_active_and_retrievable() -> None:

@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Any, TypedDict, TypeVar, cast
+from typing import Any, TypedDict, cast
 from uuid import UUID
 
 import psycopg
 from psycopg.types.json import Jsonb
 
+from alicebot_api.db import UserConnection
+
 JsonScalar = str | int | float | bool | None
 JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 JsonObject = dict[str, JsonValue]
-RowT = TypeVar("RowT")
 
 
 class UserRow(TypedDict):
@@ -6744,7 +6746,7 @@ class ContinuityStoreInvariantError(RuntimeError):
 
 
 class ContinuityStore:
-    def __init__(self, conn: psycopg.Connection):
+    def __init__(self, conn: UserConnection):
         self.conn = conn
 
     @staticmethod
@@ -6764,7 +6766,7 @@ class ContinuityStore:
         operation_name: str,
         query: str,
         params: tuple[object, ...] | None = None,
-    ) -> RowT:
+    ) -> Any:
         with self.conn.cursor() as cur:
             cur.execute(query, params)
             row = cur.fetchone()
@@ -6774,7 +6776,7 @@ class ContinuityStore:
                 f"{operation_name} did not return a row from the database",
             )
 
-        return cast(RowT, row)
+        return row
 
     def _fetch_one_with_lock(
         self,
@@ -6784,7 +6786,7 @@ class ContinuityStore:
         lock_key: UUID,
         query: str,
         params: tuple[object, ...] | None = None,
-    ) -> RowT:
+    ) -> Any:
         with self.conn.cursor() as cur:
             cur.execute(lock_query, (str(lock_key),))
             cur.execute(query, params)
@@ -6795,26 +6797,26 @@ class ContinuityStore:
                 f"{operation_name} did not return a row from the database",
             )
 
-        return cast(RowT, row)
+        return row
 
     def _fetch_all(
         self,
         query: str,
         params: tuple[object, ...] | None = None,
-    ) -> list[RowT]:
+    ) -> list[Any]:
         with self.conn.cursor() as cur:
             cur.execute(query, params)
-            return cast(list[RowT], list(cur.fetchall()))
+            return list(cur.fetchall())
 
     def _fetch_optional_one(
         self,
         query: str,
         params: tuple[object, ...] | None = None,
-    ) -> RowT | None:
+    ) -> Any | None:
         with self.conn.cursor() as cur:
             cur.execute(query, params)
             row = cur.fetchone()
-        return cast(RowT | None, row)
+        return row
 
     def _fetch_count(
         self,
@@ -7450,7 +7452,7 @@ class ContinuityStore:
     def list_continuity_review_queue(
         self,
         *,
-        statuses: list[str],
+        statuses: Sequence[str],
         limit: int,
     ) -> list[ContinuityObjectRow]:
         return self._fetch_all(
@@ -7461,7 +7463,7 @@ class ContinuityStore:
     def count_continuity_review_queue(
         self,
         *,
-        statuses: list[str],
+        statuses: Sequence[str],
     ) -> int:
         return self._fetch_count(
             COUNT_CONTINUITY_REVIEW_QUEUE_SQL,
@@ -8021,7 +8023,7 @@ class ContinuityStore:
     def list_contradiction_cases(
         self,
         *,
-        statuses: list[str],
+        statuses: Sequence[str],
         limit: int,
         continuity_object_id: UUID | None = None,
     ) -> list[ContradictionCaseRow]:
@@ -8056,7 +8058,7 @@ class ContinuityStore:
         self,
         *,
         continuity_object_ids: list[UUID],
-        statuses: list[str],
+        statuses: Sequence[str],
     ) -> list[ContradictionCaseRow]:
         if not continuity_object_ids:
             return []

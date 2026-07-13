@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from hashlib import sha256
-from typing import Mapping, Protocol, Sequence
+from typing import Mapping, Protocol, Sequence, TypedDict
 from urllib.error import HTTPError, URLError
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from alicebot_api.vnext_event_log import append_event
@@ -42,6 +44,53 @@ class EmbeddingProvider(Protocol):
     def embed_batch(self, texts: Sequence[str]) -> list[list[float]]: ...
 
 
+class SignedMemoryEmbeddingUpdate(TypedDict):
+    """Complete storage contract for one v2 content-derived vector."""
+
+    memory_id: str
+    vector: list[float]
+    provider: str
+    model: str
+    endpoint: str
+    content_sha256: str
+    signature_version: int
+
+
+def _canonical_endpoint(base_url: str) -> str:
+    """Normalize URL identity without changing case-sensitive route data."""
+    raw = base_url.strip()
+    if raw == "":
+        return ""
+    try:
+        parsed = urlsplit(raw)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        # Invalid URLs are rejected when the provider request is built. Keep a
+        # stable fingerprint here without inventing URL semantics.
+        return raw
+    if hostname is None:
+        return raw.rstrip("/")
+
+    userinfo = parsed.netloc.rsplit("@", 1)[0] + "@" if "@" in parsed.netloc else ""
+    canonical_host = hostname.casefold()
+    if ":" in canonical_host and not canonical_host.startswith("["):
+        canonical_host = f"[{canonical_host}]"
+    scheme = parsed.scheme.casefold()
+    default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+    port_suffix = "" if port is None or default_port else f":{port}"
+    path = parsed.path.rstrip("/")
+    return urlunsplit(
+        SplitResult(
+            scheme,
+            f"{userinfo}{canonical_host}{port_suffix}",
+            path,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
 def endpoint_fingerprint(base_url: object) -> str:
     """Stable, non-secret identity for an embedding endpoint.
 
@@ -53,7 +102,7 @@ def endpoint_fingerprint(base_url: object) -> str:
     """
     if not isinstance(base_url, str):
         return ""
-    normalized = base_url.strip().rstrip("/").lower()
+    normalized = _canonical_endpoint(base_url)
     if normalized == "":
         return ""
     return sha256(normalized.encode("utf-8")).hexdigest()[:16]
@@ -73,7 +122,10 @@ def pad_embedding_vector(
     for value in vector:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise VNextEmbeddingConfigurationError("embedding vectors must contain only numbers")
-        values.append(float(value))
+        normalized_value = float(value)
+        if not math.isfinite(normalized_value):
+            raise VNextEmbeddingConfigurationError("embedding vectors must contain only finite numbers")
+        values.append(normalized_value)
     if not values:
         raise VNextEmbeddingConfigurationError("embedding vectors must not be empty")
     if len(values) > dimensions:
@@ -213,7 +265,16 @@ def memory_embedding_signature_is_current(memory: Mapping[str, object]) -> bool:
     if not isinstance(signature, Mapping):
         return False
     stored_digest = signature.get("content_sha256")
-    return isinstance(stored_digest, str) and stored_digest == memory_embedding_content_sha256(memory)
+    return (
+        signature.get("version") == EMBEDDING_SIGNATURE_VERSION
+        and isinstance(signature.get("provider"), str)
+        and bool(signature.get("provider"))
+        and isinstance(signature.get("model"), str)
+        and bool(signature.get("model"))
+        and isinstance(signature.get("endpoint"), str)
+        and isinstance(stored_digest, str)
+        and stored_digest == memory_embedding_content_sha256(memory)
+    )
 
 
 def memory_embedding_signature(
@@ -228,6 +289,40 @@ def memory_embedding_signature(
         "model": provider.model,
         "endpoint": endpoint_fingerprint(getattr(provider, "base_url", "")),
         "content_sha256": memory_embedding_content_sha256(memory),
+    }
+
+
+def signed_memory_embedding_update(
+    memory: Mapping[str, object],
+    vector: Sequence[float],
+    *,
+    provider: EmbeddingProvider,
+) -> SignedMemoryEmbeddingUpdate:
+    """Build the one complete v2 vector-write contract used by Alice.
+
+    Centralizing this prevents a caller from persisting a vector without the
+    provider/model/endpoint/content identity required for safe retrieval.
+    The vector is validated and normalized to the storage width before it can
+    cross a store boundary.
+    """
+    try:
+        memory_id = str(memory["id"])
+    except KeyError as exc:
+        raise VNextEmbeddingConfigurationError("memory embedding writes require an id") from exc
+    if memory_id.strip() == "":
+        raise VNextEmbeddingConfigurationError("memory embedding writes require a non-empty id")
+    signature = memory_embedding_signature(memory, provider=provider)
+    signature_version = signature["version"]
+    if not isinstance(signature_version, int):
+        raise VNextEmbeddingConfigurationError("memory embedding signature version must be an integer")
+    return {
+        "memory_id": memory_id,
+        "vector": pad_embedding_vector(vector),
+        "provider": str(signature["provider"]),
+        "model": str(signature["model"]),
+        "endpoint": str(signature["endpoint"]),
+        "content_sha256": str(signature["content_sha256"]),
+        "signature_version": signature_version,
     }
 
 
@@ -257,25 +352,11 @@ def attach_memory_embedding(
         return False
     try:
         vector = resolved_provider.embed_text(text)
-        signature = memory_embedding_signature(memory, provider=resolved_provider)
-        try:
-            update_memory_embedding(
-                memory_id=str(memory["id"]),
-                vector=vector,
-                provider=str(signature["provider"]),
-                model=str(signature["model"]),
-                endpoint=str(signature["endpoint"]),
-                content_sha256=str(signature["content_sha256"]),
-                signature_version=int(signature["version"]),
-            )
-        except TypeError as exc:
-            # Third-party store adapters predating signature metadata remain
-            # usable; bundled stores accept the extended contract below.
-            if "unexpected keyword argument" not in str(exc):
-                raise
-            update_memory_embedding(memory_id=str(memory["id"]), vector=vector)
+        update_memory_embedding(
+            **signed_memory_embedding_update(memory, vector, provider=resolved_provider)
+        )
         return True
-    except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
+    except (TypeError, VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
         append_event(
             store,  # type: ignore[arg-type]
             event_type="memory.embedding_failed",
@@ -303,6 +384,7 @@ __all__ = [
     "EMBEDDING_SIGNATURE_METADATA_KEY",
     "EMBEDDING_SIGNATURE_VERSION",
     "EmbeddingProvider",
+    "SignedMemoryEmbeddingUpdate",
     "endpoint_fingerprint",
     "MAX_EMBEDDINGS_BATCH_SIZE",
     "OpenAICompatibleEmbeddingProvider",
@@ -315,4 +397,5 @@ __all__ = [
     "memory_embedding_text",
     "memory_embedding_signature",
     "pad_embedding_vector",
+    "signed_memory_embedding_update",
 ]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+from typing import cast
 from uuid import UUID
 
 from alicebot_api.continuity_evidence import SourceArtifactArchiveInput, archive_import_source_files
@@ -20,7 +21,7 @@ from alicebot_api.importer_models import (
     parse_optional_status,
 )
 from alicebot_api.importers.common import ImportPersistenceConfig, import_normalized_batch
-from alicebot_api.store import ContinuityStore, JsonObject
+from alicebot_api.store import ContinuityStore, JsonObject, JsonValue
 
 
 _DEFAULT_CONFIDENCE = 0.84
@@ -274,7 +275,7 @@ def load_markdown_payload(source: str | Path) -> ImporterNormalizedBatch:
                 single=tags.get("source_event_id"),
             )
             if source_event_ids:
-                source_provenance["source_event_ids"] = source_event_ids
+                source_provenance["source_event_ids"] = cast(JsonValue, source_event_ids)
 
             dedupe_payload: JsonObject = {
                 "workspace_id": workspace_id or source_path.stem,

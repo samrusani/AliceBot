@@ -33,7 +33,7 @@ Use this skill when the user asks:
 ## Workflow
 
 1. Prefer `alice_recall` over inference-only answers.
-2. Use scope filters when available (`thread_id`, `project`, `person`, `since`, `until`).
+2. Use hard scope filters when available (`thread_id`, `task_id`, `project`, `person`, `since`, `until`); Alice applies them before ranked result limits.
 3. Keep `limit` bounded (normally `3` to `10`).
 4. Return summary plus provenance-backed evidence IDs.
 

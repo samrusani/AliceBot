@@ -193,8 +193,9 @@ def test_continuity_capture_rejects_invalid_signal_and_enforces_user_scope(
             "explicit_signal": "invalid_signal",
         },
     )
-    assert invalid_status == 400
-    assert invalid_payload["detail"].startswith("explicit_signal must be one of")
+    assert invalid_status == 422
+    assert invalid_payload["detail"][0]["loc"] == ["body", "explicit_signal"]
+    assert invalid_payload["detail"][0]["type"] == "literal_error"
 
     create_status, create_payload = invoke_request(
         "POST",

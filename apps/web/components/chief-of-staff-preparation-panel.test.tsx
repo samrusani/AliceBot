@@ -3,8 +3,9 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ChiefOfStaffPreparationPanel } from "./chief-of-staff-preparation-panel";
+import { completeChiefOfStaffPriorityBrief } from "../test/fixture-builders";
 
-const briefFixture = {
+const briefFixture = completeChiefOfStaffPriorityBrief({
   assembly_version: "chief_of_staff_priority_brief_v0",
   scope: {
     thread_id: "thread-1",
@@ -369,7 +370,7 @@ const briefFixture = {
     execution_posture_order: ["approval_bounded_artifact_only"] as const,
   },
   sources: ["continuity_recall", "memory_trust_dashboard", "chief_of_staff_action_handoff"],
-};
+});
 
 describe("ChiefOfStaffPreparationPanel", () => {
   afterEach(() => {

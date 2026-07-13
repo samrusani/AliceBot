@@ -24,6 +24,7 @@ from alicebot_api.contracts import (
     ContradictionSyncResponse,
     ContradictionSyncSummary,
     ContinuityExplanationContradictionRecord,
+    ContinuityObjectType,
     ContinuityReviewObjectRecord,
     MemoryTrustClass,
     TrustSignalDirection,
@@ -417,7 +418,7 @@ def _serialize_review_object(record: ContinuityObjectRow) -> ContinuityReviewObj
     return {
         "id": str(record["id"]),
         "capture_event_id": str(record["capture_event_id"]),
-        "object_type": record["object_type"],
+        "object_type": cast(ContinuityObjectType, record["object_type"]),
         "status": record["status"],
         "lifecycle": _serialize_lifecycle(record),
         "title": record["title"],

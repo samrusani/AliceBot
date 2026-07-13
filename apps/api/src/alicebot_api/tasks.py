@@ -23,6 +23,7 @@ from alicebot_api.contracts import (
     TaskListSummary,
     TaskRecord,
     TaskStatus,
+    TaskStepKind,
     TaskStepCreateInput,
     TaskStepCreateResponse,
     TaskStepDetailResponse,
@@ -45,10 +46,16 @@ from alicebot_api.contracts import (
     TaskStepTransitionResponse,
     TaskStepTransitionStateTracePayload,
     TaskStepTransitionSummaryTracePayload,
+    ToolRecord,
+    ToolRoutingDecision,
+    ToolRoutingRequestRecord,
+    ApprovalStatus,
+    ProxyExecutionStatus,
 )
 from alicebot_api.store import (
     ContinuityStore,
     ContinuityStoreInvariantError,
+    JsonObject,
     TaskRow,
     TaskStepRow,
     ToolExecutionRow,
@@ -65,9 +72,13 @@ TASK_STEP_TRANSITION_REQUEST_EVENT_KIND = "task.step.transition.request"
 TASK_STEP_TRANSITION_STATE_EVENT_KIND = "task.step.transition.state"
 TASK_STEP_TRANSITION_SUMMARY_EVENT_KIND = "task.step.transition.summary"
 DEFAULT_TASK_STEP_SEQUENCE_NO = 1
-DEFAULT_TASK_STEP_KIND = "governed_request"
-TASK_STEP_APPENDABLE_STATUSES = frozenset({"executed", "blocked", "denied"})
-TASK_STEP_INITIAL_STATUSES = frozenset({"created", "approved", "denied"})
+DEFAULT_TASK_STEP_KIND: TaskStepKind = "governed_request"
+TASK_STEP_APPENDABLE_STATUSES: frozenset[TaskStepStatus] = frozenset(
+    {"executed", "blocked", "denied"}
+)
+TASK_STEP_INITIAL_STATUSES: frozenset[TaskStepStatus] = frozenset(
+    {"created", "approved", "denied"}
+)
 TASK_STEP_STATUS_GRAPH: dict[TaskStepStatus, tuple[TaskStepStatus, ...]] = {
     "created": ("approved", "denied"),
     "approved": ("executed", "blocked"),
@@ -128,7 +139,7 @@ def _append_trace_events(
             trace_id=trace_id,
             sequence_no=sequence_no,
             kind=kind,
-            payload=payload,
+            payload=cast(JsonObject, payload),
         )
 
 
@@ -221,8 +232,8 @@ def serialize_task_row(row: TaskRow) -> TaskRecord:
         "thread_id": str(row["thread_id"]),
         "tool_id": str(row["tool_id"]),
         "status": cast(TaskStatus, row["status"]),
-        "request": cast(dict[str, object], row["request"]),
-        "tool": cast(dict[str, object], row["tool"]),
+        "request": cast(ToolRoutingRequestRecord, row["request"]),
+        "tool": cast(ToolRecord, row["tool"]),
         "latest_approval_id": None if row["latest_approval_id"] is None else str(row["latest_approval_id"]),
         "latest_execution_id": None if row["latest_execution_id"] is None else str(row["latest_execution_id"]),
         "created_at": row["created_at"].isoformat(),
@@ -244,9 +255,9 @@ def serialize_task_step_row(row: TaskStepRow) -> TaskStepRecord:
                 None if row["source_execution_id"] is None else str(row["source_execution_id"])
             ),
         },
-        "kind": cast(str, row["kind"]),
+        "kind": cast(TaskStepKind, row["kind"]),
         "status": cast(TaskStepStatus, row["status"]),
-        "request": cast(dict[str, object], row["request"]),
+        "request": cast(ToolRoutingRequestRecord, row["request"]),
         "outcome": cast(TaskStepOutcomeSnapshot, row["outcome"]),
         "trace": {
             "trace_id": str(row["trace_id"]),
@@ -257,80 +268,87 @@ def serialize_task_step_row(row: TaskStepRow) -> TaskStepRecord:
     }
 
 
-def task_status_for_routing_decision(decision: str) -> TaskStatus:
-    return {
+def task_status_for_routing_decision(decision: ToolRoutingDecision) -> TaskStatus:
+    status_by_decision: dict[ToolRoutingDecision, TaskStatus] = {
         "approval_required": "pending_approval",
         "ready": "approved",
         "denied": "denied",
-    }[decision]
+    }
+    return status_by_decision[decision]
 
 
-def task_status_for_approval_status(approval_status: str) -> TaskStatus:
-    return {
+def task_status_for_approval_status(approval_status: ApprovalStatus) -> TaskStatus:
+    status_by_approval: dict[ApprovalStatus, TaskStatus] = {
         "pending": "pending_approval",
         "approved": "approved",
         "rejected": "denied",
-    }[approval_status]
+    }
+    return status_by_approval[approval_status]
 
 
 def next_task_status_for_approval(
     *,
     current_status: TaskStatus,
-    approval_status: str,
+    approval_status: ApprovalStatus,
 ) -> TaskStatus:
     if current_status in {"executed", "blocked"}:
         return current_status
     return task_status_for_approval_status(approval_status)
 
 
-def task_status_for_execution_status(execution_status: str) -> TaskStatus:
-    return {
+def task_status_for_execution_status(execution_status: ProxyExecutionStatus) -> TaskStatus:
+    status_by_execution: dict[ProxyExecutionStatus, TaskStatus] = {
         "completed": "executed",
         "blocked": "blocked",
-    }[execution_status]
+    }
+    return status_by_execution[execution_status]
 
 
 def task_status_for_step_status(step_status: TaskStepStatus) -> TaskStatus:
-    return {
+    status_by_step: dict[TaskStepStatus, TaskStatus] = {
         "created": "pending_approval",
         "approved": "approved",
         "executed": "executed",
         "blocked": "blocked",
         "denied": "denied",
-    }[step_status]
+    }
+    return status_by_step[step_status]
 
 
-def task_step_status_for_routing_decision(decision: str) -> TaskStepStatus:
-    return {
+def task_step_status_for_routing_decision(decision: ToolRoutingDecision) -> TaskStepStatus:
+    status_by_decision: dict[ToolRoutingDecision, TaskStepStatus] = {
         "approval_required": "created",
         "ready": "approved",
         "denied": "denied",
-    }[decision]
+    }
+    return status_by_decision[decision]
 
 
-def task_step_status_for_approval_status(approval_status: str) -> TaskStepStatus:
-    return {
+def task_step_status_for_approval_status(approval_status: ApprovalStatus) -> TaskStepStatus:
+    status_by_approval: dict[ApprovalStatus, TaskStepStatus] = {
         "pending": "created",
         "approved": "approved",
         "rejected": "denied",
-    }[approval_status]
+    }
+    return status_by_approval[approval_status]
 
 
 def next_task_step_status_for_approval(
     *,
     current_status: TaskStepStatus,
-    approval_status: str,
+    approval_status: ApprovalStatus,
 ) -> TaskStepStatus:
     if current_status in {"executed", "blocked"}:
         return current_status
     return task_step_status_for_approval_status(approval_status)
 
 
-def task_step_status_for_execution_status(execution_status: str) -> TaskStepStatus:
-    return {
+def task_step_status_for_execution_status(execution_status: ProxyExecutionStatus) -> TaskStepStatus:
+    status_by_execution: dict[ProxyExecutionStatus, TaskStepStatus] = {
         "completed": "executed",
         "blocked": "blocked",
-    }[execution_status]
+    }
+    return status_by_execution[execution_status]
 
 
 def allowed_task_step_transitions(current_status: TaskStepStatus) -> list[TaskStepStatus]:
@@ -339,19 +357,19 @@ def allowed_task_step_transitions(current_status: TaskStepStatus) -> list[TaskSt
 
 def task_step_outcome_snapshot(
     *,
-    routing_decision: str,
+    routing_decision: ToolRoutingDecision,
     approval_id: str | None,
-    approval_status: str | None,
+    approval_status: ApprovalStatus | None,
     execution_id: str | None,
-    execution_status: str | None,
+    execution_status: ProxyExecutionStatus | None,
     blocked_reason: str | None,
 ) -> TaskStepOutcomeSnapshot:
     return {
-        "routing_decision": cast(str, routing_decision),
+        "routing_decision": routing_decision,
         "approval_id": approval_id,
-        "approval_status": cast(str | None, approval_status),
+        "approval_status": approval_status,
         "execution_id": execution_id,
-        "execution_status": cast(str | None, execution_status),
+        "execution_status": execution_status,
         "blocked_reason": blocked_reason,
     }
 
@@ -365,8 +383,8 @@ def create_task_for_governed_request(
         thread_id=request.thread_id,
         tool_id=request.tool_id,
         status=request.status,
-        request=cast(dict[str, object], request.request),
-        tool=cast(dict[str, object], request.tool),
+        request=cast(JsonObject, request.request),
+        tool=cast(JsonObject, request.tool),
         latest_approval_id=request.latest_approval_id,
         latest_execution_id=request.latest_execution_id,
     )
@@ -383,8 +401,8 @@ def create_task_step_for_governed_request(
         sequence_no=request.sequence_no,
         kind=request.kind,
         status=request.status,
-        request=cast(dict[str, object], request.request),
-        outcome=cast(dict[str, object], request.outcome),
+        request=cast(JsonObject, request.request),
+        outcome=cast(JsonObject, request.outcome),
         trace_id=request.trace_id,
         trace_kind=request.trace_kind,
     )
@@ -571,7 +589,7 @@ def sync_task_with_approval(
     store: ContinuityStore,
     *,
     approval_id: UUID,
-    approval_status: str,
+    approval_status: ApprovalStatus,
 ) -> TaskTransitionResult:
     current = store.get_task_by_approval_optional(approval_id)
     if current is None:
@@ -603,7 +621,7 @@ def sync_task_step_with_approval(
     *,
     approval_id: UUID,
     task_step_id: UUID | None,
-    approval_status: str,
+    approval_status: ApprovalStatus,
     trace_id: UUID,
     trace_kind: str,
 ) -> TaskStepTransitionResult:
@@ -629,7 +647,7 @@ def sync_task_step_with_approval(
             current_status=previous_status,
             approval_status=approval_status,
         ),
-        outcome=cast(dict[str, object], updated_outcome),
+        outcome=cast(JsonObject, updated_outcome),
         trace_id=trace_id,
         trace_kind=trace_kind,
     )
@@ -649,7 +667,7 @@ def sync_task_with_execution(
     *,
     approval_id: UUID,
     execution_id: UUID,
-    execution_status: str,
+    execution_status: ProxyExecutionStatus,
 ) -> TaskTransitionResult:
     current = store.get_task_by_approval_optional(approval_id)
     if current is None:
@@ -690,19 +708,20 @@ def sync_task_step_with_execution(
     previous_status = cast(TaskStepStatus, current["status"])
     current_outcome = cast(TaskStepOutcomeSnapshot, current["outcome"])
     execution_result = cast(dict[str, object], execution["result"])
+    execution_status = cast(ProxyExecutionStatus, execution["status"])
     updated_outcome = task_step_outcome_snapshot(
         routing_decision=current_outcome["routing_decision"],
         approval_id=current_outcome["approval_id"],
         approval_status=current_outcome["approval_status"],
         execution_id=str(execution["id"]),
-        execution_status=cast(str, execution["status"]),
+        execution_status=execution_status,
         blocked_reason=cast(str | None, execution_result.get("reason")),
     )
 
     updated = store.update_task_step_optional(
         task_step_id=cast(UUID, current["id"]),
-        status=task_step_status_for_execution_status(cast(str, execution["status"])),
-        outcome=cast(dict[str, object], updated_outcome),
+        status=task_step_status_for_execution_status(execution_status),
+        outcome=cast(JsonObject, updated_outcome),
         trace_id=trace_id,
         trace_kind=trace_kind,
     )
@@ -802,13 +821,13 @@ def create_next_task_step_record(
         kind=TRACE_KIND_TASK_STEP_CONTINUATION,
         compiler_version=TASK_STEP_CONTINUATION_VERSION_V0,
         status="completed",
-        limits={
+        limits=cast(JsonObject, {
             "order": list(TASK_STEP_LIST_ORDER),
             "appendable_statuses": sorted(TASK_STEP_APPENDABLE_STATUSES),
             "initial_statuses": sorted(TASK_STEP_INITIAL_STATUSES),
             "parent_step_id": parent_step["id"],
             "parent_sequence_no": parent_step["sequence_no"],
-        },
+        }),
     )
     try:
         created = store.create_task_step(
@@ -819,8 +838,8 @@ def create_next_task_step_record(
             source_execution_id=source_execution_id,
             kind=request.kind,
             status=request.status,
-            request=cast(dict[str, object], request.request),
-            outcome=cast(dict[str, object], request.outcome),
+            request=cast(JsonObject, request.request),
+            outcome=cast(JsonObject, request.outcome),
             trace_id=trace["id"],
             trace_kind=TRACE_KIND_TASK_STEP_CONTINUATION,
         )
@@ -960,17 +979,17 @@ def transition_task_step_record(
         kind=TRACE_KIND_TASK_STEP_TRANSITION,
         compiler_version=TASK_STEP_TRANSITION_VERSION_V0,
         status="completed",
-        limits={
+        limits=cast(JsonObject, {
             "order": list(TASK_STEP_LIST_ORDER),
             "status_graph": {status: list(next_statuses) for status, next_statuses in TASK_STEP_STATUS_GRAPH.items()},
             "requested_status": request.status,
-        },
+        }),
     )
     updated_row = store.update_task_step_for_task_sequence_optional(
         task_id=step_row["task_id"],
         sequence_no=step_row["sequence_no"],
         status=request.status,
-        outcome=cast(dict[str, object], request.outcome),
+        outcome=cast(JsonObject, request.outcome),
         trace_id=trace["id"],
         trace_kind=TRACE_KIND_TASK_STEP_TRANSITION,
     )

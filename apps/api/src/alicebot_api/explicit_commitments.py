@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Sequence
+from typing import cast
 from uuid import UUID
 
 from alicebot_api.contracts import (
@@ -16,6 +17,7 @@ from alicebot_api.contracts import (
     ExtractedCommitmentCandidateRecord,
     MemoryCandidateInput,
     OpenLoopRecord,
+    OpenLoopStatus,
 )
 from alicebot_api.memory import admit_memory_candidate
 from alicebot_api.store import ContinuityStore, EventRow, OpenLoopRow
@@ -180,7 +182,7 @@ def _serialize_open_loop(open_loop: OpenLoopRow) -> OpenLoopRecord:
         "id": str(open_loop["id"]),
         "memory_id": None if open_loop["memory_id"] is None else str(open_loop["memory_id"]),
         "title": open_loop["title"],
-        "status": open_loop["status"],
+        "status": cast(OpenLoopStatus, open_loop["status"]),
         "opened_at": open_loop["opened_at"].isoformat(),
         "due_at": None if open_loop["due_at"] is None else open_loop["due_at"].isoformat(),
         "resolved_at": (

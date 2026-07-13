@@ -272,6 +272,8 @@ def _report_markdown(records: list[JsonObject], edge_ids: list[str]) -> str:
     if not records:
         lines.append("- No contradiction candidates were detected from the selected inputs.")
     for index, record in enumerate(records, start=1):
+        provenance = record["provenance"]
+        provenance_items = provenance if isinstance(provenance, list) else []
         lines.extend(
             [
                 f"### {index}. {record['contradiction_type']}",
@@ -280,7 +282,7 @@ def _report_markdown(records: list[JsonObject], edge_ids: list[str]) -> str:
                 f"- Confidence: {record['confidence']}",
                 f"- Nuance: {record['nuance']}",
                 f"- Recommended action: {record['recommended_action']}",
-                f"- Provenance: {', '.join(str(item) for item in record['provenance'])}",
+                f"- Provenance: {', '.join(str(item) for item in provenance_items)}",
                 "",
             ]
         )
@@ -336,9 +338,10 @@ class VNextContradictionService:
         records: list[JsonObject] = []
         for candidate in candidates:
             record = candidate.to_record()
+            source_item = str(record["source_item"])
             edge = self.store.create_edge(
                 {
-                    "from_type": "source" if record["source_item"].startswith("source:") else "memory",
+                    "from_type": "source" if source_item.startswith("source:") else "memory",
                     "from_id": str(candidate.new_item.get("id")),
                     "to_type": "belief",
                     "to_id": str(candidate.belief.get("id")),
@@ -510,15 +513,16 @@ class VNextContradictionService:
         if belief is None:
             raise VNextContradictionValidationError(f"belief {belief_id} was not found")
         events = self.store.list_events(target_type="belief", target_id=belief_id)
+        previous_statuses: list[object] = []
+        for event in events:
+            payload = event.get("payload_json")
+            if isinstance(payload, dict) and payload.get("status") is not None:
+                previous_statuses.append(payload["status"])
         return {
             "belief_id": belief_id,
             "current": belief,
             "history": events,
-            "previous_statuses": [
-                event.get("payload_json", {}).get("status")
-                for event in events
-                if isinstance(event.get("payload_json"), dict) and event.get("payload_json", {}).get("status") is not None
-            ],
+            "previous_statuses": previous_statuses,
         }
 
     @staticmethod

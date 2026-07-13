@@ -579,8 +579,9 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
   const mode = normalizeMode(resolvedSearchParams?.mode);
   const requestedThreadId = normalizeThreadId(resolvedSearchParams?.thread);
   const requestedTraceId = normalizeTraceId(resolvedSearchParams?.trace);
+  const demoMode = normalizeThreadId(resolvedSearchParams?.demo) === "fixture";
   const apiConfig = getApiConfig();
-  const liveModeReady = hasLiveApiConfig(apiConfig);
+  const liveModeReady = hasLiveApiConfig(apiConfig) && !demoMode;
   const [continuity, profileRegistry] = liveModeReady
     ? await Promise.all([
         loadLiveContinuity(
@@ -595,16 +596,19 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
         loadFixtureContinuity(requestedThreadId, apiConfig.defaultThreadId),
         loadFixtureProfileRegistry(),
       ]);
-  const workflow = liveModeReady
-    ? await loadLiveWorkflow(apiConfig.apiBaseUrl, apiConfig.userId, continuity.selectedThreadId)
-    : await loadFixtureWorkflow(continuity.selectedThreadId);
-  const resumptionBrief = liveModeReady
-    ? await loadLiveResumptionBrief(
-        apiConfig.apiBaseUrl,
-        apiConfig.userId,
-        continuity.selectedThreadId,
-      )
-    : await loadFixtureResumptionBrief(continuity, workflow);
+  const [workflow, resumptionBrief] = liveModeReady
+    ? await Promise.all([
+        loadLiveWorkflow(apiConfig.apiBaseUrl, apiConfig.userId, continuity.selectedThreadId),
+        loadLiveResumptionBrief(
+          apiConfig.apiBaseUrl,
+          apiConfig.userId,
+          continuity.selectedThreadId,
+        ),
+      ])
+    : await (async () => {
+        const fixtureWorkflow = await loadFixtureWorkflow(continuity.selectedThreadId);
+        return [fixtureWorkflow, await loadFixtureResumptionBrief(continuity, fixtureWorkflow)] as const;
+      })();
   const traceTargets = buildThreadTraceTargets(continuity.selectedThreadId, workflow, liveModeReady);
   const traceHrefPrefix = buildChatTraceHrefPrefix(mode, continuity.selectedThreadId);
   const threadTracePanel = await ThreadTracePanel({
@@ -643,12 +647,17 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
         }
       />
 
-      <ModeToggle currentMode={mode} selectedThreadId={continuity.selectedThreadId} />
+      <ModeToggle
+        currentMode={mode}
+        selectedThreadId={continuity.selectedThreadId}
+        demoMode={demoMode}
+      />
 
       <div className="chat-layout">
         <div className="chat-layout__main">
           {mode === "assistant" ? (
             <ResponseComposer
+              key={`response-composer:${continuity.selectedThreadId || "none"}`}
               initialEntries={[]}
               apiBaseUrl={continuity.continuitySource === "live" ? apiConfig.apiBaseUrl : undefined}
               userId={continuity.continuitySource === "live" ? apiConfig.userId : undefined}
@@ -669,6 +678,7 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
                 traceHrefPrefix={traceHrefPrefix}
               />
               <RequestComposer
+                key={`request-composer:${continuity.selectedThreadId || "none"}`}
                 initialEntries={initialRequestEntries}
                 apiBaseUrl={continuity.continuitySource === "live" ? apiConfig.apiBaseUrl : undefined}
                 userId={continuity.continuitySource === "live" ? apiConfig.userId : undefined}
@@ -720,6 +730,7 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
             threads={continuity.threads}
             selectedThreadId={continuity.selectedThreadId}
             currentMode={mode}
+            demoMode={demoMode}
             agentProfiles={profileRegistry.profiles}
             source={continuity.threadListSource}
             unavailableReason={continuity.unavailableReason}

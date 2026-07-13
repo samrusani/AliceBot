@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 from alicebot_api.continuity_evidence import SourceArtifactArchiveInput, archive_import_source_files
@@ -21,7 +22,7 @@ from alicebot_api.importer_models import (
     parse_optional_status,
 )
 from alicebot_api.importers.common import ImportPersistenceConfig, import_normalized_batch
-from alicebot_api.store import ContinuityStore, JsonObject
+from alicebot_api.store import ContinuityStore, JsonObject, JsonValue
 
 
 _DEFAULT_CONFIDENCE = 0.83
@@ -344,7 +345,7 @@ def load_chatgpt_payload(source: str | Path) -> ImporterNormalizedBatch:
                     source_provenance["person"] = conversation_person
 
                 source_event_ids = [f"chatgpt-event:{conversation_id}:{message_id}"]
-                source_provenance["source_event_ids"] = source_event_ids
+                source_provenance["source_event_ids"] = cast(JsonValue, source_event_ids)
 
                 dedupe_payload = merge_json_objects(
                     {

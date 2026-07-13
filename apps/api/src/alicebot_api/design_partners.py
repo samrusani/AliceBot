@@ -105,6 +105,70 @@ class DesignPartnerFeedbackRow(TypedDict):
     workspace_name: str | None
 
 
+class DesignPartnerUsageRow(TypedDict):
+    design_partner_id: UUID
+    runtime_invocation_count: int
+    successful_invocation_count: int
+    failed_invocation_count: int
+    unique_invoker_count: int
+    last_invocation_at: datetime | None
+
+
+class DesignPartnerUsageSummary(TypedDict):
+    linked_workspace_count: int
+    runtime_invocation_count: int
+    successful_invocation_count: int
+    failed_invocation_count: int
+    unique_invoker_count: int
+    last_invocation_at: str | None
+    usage_visible: bool
+
+
+class DesignPartnerFeedbackSummary(TypedDict):
+    total_count: int
+    open_count: int
+    case_study_signal_count: int
+    last_feedback_at: str | None
+
+
+class SerializedDesignPartner(TypedDict):
+    id: str
+    partner_key: str
+    name: str
+    lifecycle_stage: str
+    onboarding_status: str
+    support_status: str
+    instrumentation_status: str
+    case_study_status: str
+    target_outcome: str | None
+    launch_notes: str | None
+    success_metrics: dict[str, object]
+    created_by_user_account_id: str
+    created_at: str
+    updated_at: str
+    onboarding_checklist: dict[str, object]
+    support_checklist: dict[str, object]
+    linked_workspaces: list[dict[str, object]]
+    feedback_summary: DesignPartnerFeedbackSummary
+    usage_summary: DesignPartnerUsageSummary
+
+
+class DesignPartnerListSummary(TypedDict):
+    total_count: int
+    active_or_pilot_count: int
+    usage_visible_count: int
+    linked_workspace_count: int
+    candidate_case_study_count: int
+    feedback_captured_count: int
+    open_feedback_count: int
+    order: list[str]
+
+
+class DesignPartnerListPayload(TypedDict):
+    items: list[SerializedDesignPartner]
+    summary: DesignPartnerListSummary
+
+
 def slugify_partner_key(value: str) -> str:
     normalized = value.strip().lower().replace(" ", "-")
     normalized = SLUG_SANITIZE_PATTERN.sub("-", normalized)
@@ -190,10 +254,10 @@ def _serialize_feedback_row(row: DesignPartnerFeedbackRow) -> dict[str, object]:
 
 
 def _serialize_usage_summary(
-    usage_row: dict[str, object] | None,
+    usage_row: DesignPartnerUsageRow | None,
     *,
     linked_workspace_count: int,
-) -> dict[str, object]:
+) -> DesignPartnerUsageSummary:
     if usage_row is None:
         return {
             "linked_workspace_count": linked_workspace_count,
@@ -220,7 +284,7 @@ def _serialize_usage_summary(
 
 def _serialize_feedback_summary(
     feedback_rows: list[DesignPartnerFeedbackRow],
-) -> dict[str, object]:
+) -> DesignPartnerFeedbackSummary:
     open_statuses = {"new", "triaged"}
     last_feedback_at = feedback_rows[0]["created_at"] if feedback_rows else None
     return {
@@ -253,8 +317,8 @@ def _serialize_partner_row(
     *,
     workspace_rows: list[DesignPartnerWorkspaceRow],
     feedback_rows: list[DesignPartnerFeedbackRow],
-    usage_row: dict[str, object] | None,
-) -> dict[str, object]:
+    usage_row: DesignPartnerUsageRow | None,
+) -> SerializedDesignPartner:
     onboarding_checklist, support_checklist = _merge_operational_checklists(
         row,
         workspace_rows=workspace_rows,
@@ -433,7 +497,7 @@ def _fetch_usage_rows(
     conn,
     *,
     design_partner_ids: list[UUID],
-) -> dict[UUID, dict[str, object]]:
+) -> dict[UUID, DesignPartnerUsageRow]:
     if len(design_partner_ids) == 0:
         return {}
 
@@ -837,7 +901,7 @@ def list_design_partners(
     conn,
     *,
     limit: int,
-) -> dict[str, object]:
+) -> DesignPartnerListPayload:
     bounded_limit = max(1, min(limit, 200))
 
     with conn.cursor() as cur:

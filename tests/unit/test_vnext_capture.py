@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import sqlite3
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
@@ -19,6 +21,7 @@ from alicebot_api.vnext_capture import (
     content_hash_for_text,
     extract_candidate_memories,
     order_candidates_for_promotion,
+    raw_text_sha256,
 )
 from alicebot_api.vnext_entities import ENTITY_MENTION_EDGE_TYPE
 from alicebot_api.vnext_project_scope import memory_project_scope
@@ -163,6 +166,78 @@ def test_identical_text_in_different_projects_is_not_deduped() -> None:
     assert alpha_again.duplicate is True  # same scope + same text still dedupes
     assert alpha_again.source_id == alpha.source_id
     assert len({str(source["id"]) for source in store.sources}) == 2
+
+
+def test_scoped_identity_keeps_true_raw_digest_separate() -> None:
+    store = InMemoryVNextCaptureStore()
+    raw_text = "  Fact: Scoped evidence keeps its exact bytes.\r\n"
+
+    result = VNextCaptureService(store).capture_text(raw_text, project_scope=("Alpha",))
+
+    metadata = store.sources[0]["metadata_json"]
+    assert result.content_hash == content_hash_for_text(raw_text, ("Alpha",))
+    assert metadata["raw_text"] == raw_text
+    assert metadata["raw_text_sha256"] == raw_text_sha256(raw_text)
+    assert metadata["raw_text_sha256"] != result.content_hash
+
+
+def test_pre_v094_scoped_hash_is_still_recognized_as_same_capture() -> None:
+    store = InMemoryVNextCaptureStore()
+    text = "Fact: Legacy scoped captures remain idempotent after upgrade."
+    legacy = store.create_source(
+        {
+            "source_type": "manual_text",
+            "content_hash": content_hash_for_text(text),
+            "domain": "project",
+            "sensitivity": "private",
+            "metadata_json": {"raw_text": text, "project_scope": ["Alpha"]},
+        }
+    )
+
+    result = VNextCaptureService(store).capture_text(
+        text,
+        domain="project",
+        sensitivity="private",
+        project_scope=("Alpha",),
+    )
+
+    assert result.duplicate is True
+    assert result.source_id == legacy["id"]
+    assert len(store.sources) == 1
+
+
+def test_concurrent_sqlite_capture_claims_one_atomic_dedupe_identity(tmp_path: Path) -> None:
+    database_path = tmp_path / "concurrent-capture.db"
+    user_id = str(uuid4())
+    with sqlite3.connect(database_path) as seed:
+        bootstrap_sqlite_schema(seed)
+        ensure_sqlite_user(seed, user_id, "concurrent-capture@example.com")
+    barrier = Barrier(2)
+
+    def capture_once() -> str:
+        conn = sqlite3.connect(database_path, timeout=10)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+            barrier.wait()
+            result = VNextCaptureService(SQLiteVNextStore(conn, user_id)).capture_text(
+                "Fact: Concurrent capture creates one durable source."
+            )
+            conn.commit()
+            return result.status
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = sorted(pool.map(lambda _index: capture_once(), range(2)))
+
+    with sqlite3.connect(database_path) as check:
+        assert check.execute("SELECT COUNT(*) FROM sources WHERE deleted_at IS NULL").fetchone()[0] == 1
+        assert check.execute("SELECT COUNT(*) FROM source_chunks").fetchone()[0] == 1
+    assert statuses == ["duplicate", "imported"]
 
 
 def test_import_markdown_folder_imports_100_files_without_batch_duplicates(tmp_path: Path) -> None:
@@ -368,6 +443,54 @@ def test_recapturing_duplicate_content_does_not_double_count_mentions() -> None:
     # capture; the duplicate recapture added nothing.
     assert person["mention_count"] == 2
     assert len(store.list_edges(from_id=first.source_id)) == 2
+
+
+def test_exact_recapture_with_changed_classification_preserves_sqlite_source_and_candidate() -> None:
+    store = _sqlite_store()
+    service = VNextCaptureService(store)
+    text = "Fact: The release rehearsal is scheduled for Friday."
+    scope = ("Alpha",)
+
+    first = service.capture_text(
+        text,
+        domain="project",
+        sensitivity="public",
+        project_scope=scope,
+    )
+    reclassified = service.capture_text(
+        text,
+        domain="professional",
+        sensitivity="private",
+        project_scope=scope,
+    )
+    repeated = service.capture_text(
+        text,
+        domain="professional",
+        sensitivity="private",
+        project_scope=scope,
+    )
+
+    assert first.status == "imported"
+    assert reclassified.status == "imported"
+    assert reclassified.source_id != first.source_id
+    assert repeated.status == "duplicate"
+    assert repeated.source_id == reclassified.source_id
+
+    first_source = store.get_source(first.source_id)
+    reclassified_source = store.get_source(reclassified.source_id)
+    assert first_source is not None and reclassified_source is not None
+    assert (first_source["domain"], first_source["sensitivity"]) == ("project", "public")
+    assert (reclassified_source["domain"], reclassified_source["sensitivity"]) == (
+        "professional",
+        "private",
+    )
+
+    classified_candidates = {
+        (str(row["domain"]), str(row["sensitivity"]))
+        for row in store.list_memories(status="candidate")
+        if row["metadata_json"].get("source_id") in {first.source_id, reclassified.source_id}
+    }
+    assert classified_candidates == {("project", "public"), ("professional", "private")}
 
 
 def test_private_sensitivity_skips_entity_extraction_entirely() -> None:
@@ -627,6 +750,72 @@ def test_user_asserted_value_dedupes_against_existing_store_memories() -> None:
         memory for memory in store.list_memories() if "strap replacement" in str(memory.get("canonical_text"))
     ]
     assert len(strap_memories) == 1
+
+
+def test_user_asserted_value_dedupe_respects_scope_domain_sensitivity_and_status() -> None:
+    store = _sqlite_store()
+    service = VNextCaptureService(store)
+
+    first = service.capture_text(
+        f"Session one.\n\n{_OMEGA_LINE}",
+        domain="project",
+        sensitivity="private",
+        project_scope=("Alpha",),
+    )
+    first_memory = next(
+        row for row in store.list_memories() if row["metadata_json"].get("source_id") == first.source_id
+    )
+    service.capture_text(
+        f"Session two.\n\n{_OMEGA_LINE}",
+        domain="project",
+        sensitivity="private",
+        project_scope=("Beta",),
+    )
+    service.capture_text(
+        f"Session three.\n\n{_OMEGA_LINE}",
+        domain="personal",
+        sensitivity="private",
+        project_scope=("Alpha",),
+    )
+    service.capture_text(
+        f"Session four.\n\n{_OMEGA_LINE}",
+        domain="project",
+        sensitivity="internal",
+        project_scope=("Alpha",),
+    )
+    store.update_memory(
+        memory_id=str(first_memory["id"]),
+        patch={"status": "rejected"},
+        actor_type="user",
+    )
+    service.capture_text(
+        f"Session five.\n\n{_OMEGA_LINE}",
+        domain="project",
+        sensitivity="private",
+        project_scope=("Alpha",),
+    )
+
+    omega_memories = [
+        row for row in store.list_memories() if "Omega Seamaster" in str(row["canonical_text"])
+    ]
+    assert len(omega_memories) == 5
+
+
+def test_agent_capture_populates_first_class_agent_and_run_attribution() -> None:
+    store = _sqlite_store()
+    result = VNextCaptureService(
+        store,
+        actor_type="agent",
+        actor_id="hermes",
+        run_id="run-42",
+        agent_identity={"agent_id": "hermes", "agent_run_id": "run-42"},
+    ).capture_text("Fact: Agent capture attribution is durable.")
+
+    memory = next(
+        row for row in store.list_memories() if row["metadata_json"].get("source_id") == result.source_id
+    )
+    assert memory["created_by_agent_id"] == "hermes"
+    assert memory["run_id"] == "run-42"
 
 
 def test_cross_batch_dedupe_is_scoped_to_user_asserted_value_rule() -> None:

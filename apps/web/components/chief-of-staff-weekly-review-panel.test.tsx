@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChiefOfStaffWeeklyReviewPanel } from "./chief-of-staff-weekly-review-panel";
+import { completeChiefOfStaffPriorityBrief } from "../test/fixture-builders";
 
 const { captureChiefOfStaffRecommendationOutcomeMock } = vi.hoisted(() => ({
   captureChiefOfStaffRecommendationOutcomeMock: vi.fn(),
@@ -16,7 +17,7 @@ vi.mock("../lib/api", async () => {
   };
 });
 
-const briefFixture = {
+const briefFixture = completeChiefOfStaffPriorityBrief({
   assembly_version: "chief_of_staff_priority_brief_v0",
   scope: { thread_id: "thread-1", since: null, until: null },
   ranked_items: [],
@@ -248,7 +249,7 @@ const briefFixture = {
     execution_posture_order: ["approval_bounded_artifact_only"] as const,
   },
   sources: ["continuity_recall", "memory_trust_dashboard", "chief_of_staff_action_handoff"],
-};
+});
 
 describe("ChiefOfStaffWeeklyReviewPanel", () => {
   beforeEach(() => {

@@ -4,6 +4,7 @@ import json
 import re
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import TypedDict
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -123,7 +124,12 @@ def _coerce_nonempty_string(value: object) -> str | None:
     return normalized
 
 
-def build_calendar_protected_credential_blob(*, access_token: str) -> dict[str, str]:
+class CalendarProtectedCredential(TypedDict):
+    credential_kind: str
+    access_token: str
+
+
+def build_calendar_protected_credential_blob(*, access_token: str) -> CalendarProtectedCredential:
     normalized_access_token = _coerce_nonempty_string(access_token)
     if normalized_access_token is None:
         raise CalendarCredentialValidationError("calendar access token must be non-empty")
@@ -156,10 +162,14 @@ def _write_external_calendar_secret(
     *,
     calendar_account_id: UUID,
     secret_ref: str,
-    credential_blob: JsonObject,
+    credential_blob: CalendarProtectedCredential,
 ) -> None:
     try:
-        secret_manager.write_secret(secret_ref=secret_ref, payload=credential_blob)
+        payload: JsonObject = {
+            "credential_kind": credential_blob["credential_kind"],
+            "access_token": credential_blob["access_token"],
+        }
+        secret_manager.write_secret(secret_ref=secret_ref, payload=payload)
     except CalendarSecretManagerError as exc:
         raise CalendarCredentialPersistenceError(
             f"calendar account {calendar_account_id} protected credentials could not be persisted"

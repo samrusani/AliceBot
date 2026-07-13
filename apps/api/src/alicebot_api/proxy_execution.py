@@ -14,6 +14,7 @@ from alicebot_api.contracts import (
     EXECUTION_BUDGET_MATCH_ORDER,
     TRACE_KIND_PROXY_EXECUTE,
     ApprovalRecord,
+    ExecutionBudgetDecisionRecord,
     ProxyExecutionApprovalTracePayload,
     ProxyExecutionBudgetContextTracePayload,
     ProxyExecutionBudgetPrecheckTracePayload,
@@ -34,7 +35,7 @@ from alicebot_api.contracts import (
     ToolRoutingRequestRecord,
 )
 from alicebot_api.execution_budgets import evaluate_execution_budget
-from alicebot_api.store import ContinuityStore, JsonObject, TaskRunRow, ToolExecutionRow
+from alicebot_api.store import ContinuityStore, JsonObject, JsonValue, TaskRunRow, ToolExecutionRow
 from alicebot_api.tasks import (
     validate_linked_task_step_for_approval,
     sync_task_step_with_execution,
@@ -80,7 +81,7 @@ def _append_trace_events(
             trace_id=trace_id,
             sequence_no=sequence_no,
             kind=kind,
-            payload=payload,
+            payload=cast(JsonObject, payload),
         )
 
 
@@ -109,12 +110,14 @@ def _proxy_thread_audit_handler(
     tool: ToolRecord,
 ) -> ProxyExecutionResultRecord:
     attributes = request["attributes"]
+    attribute_keys: list[JsonValue] = []
+    attribute_keys.extend(sorted(attributes.keys()))
     output: JsonObject = {
         "mode": "internal_low_risk",
         "tool_key": tool["tool_key"],
         "summary": {
             "attribute_count": len(attributes),
-            "attribute_keys": sorted(attributes.keys()),
+            "attribute_keys": attribute_keys,
             "action": request["action"],
             "scope": request["scope"],
         },
@@ -198,7 +201,7 @@ def _tool_execution_result(
     status: ProxyExecutionStatus,
     output: JsonObject | None,
     reason: str | None,
-    budget_decision: dict[str, object] | None = None,
+    budget_decision: ExecutionBudgetDecisionRecord | None = None,
 ) -> ToolExecutionResultRecord:
     payload: ToolExecutionResultRecord = {
         "handler_key": handler_key,
@@ -207,7 +210,7 @@ def _tool_execution_result(
         "reason": reason,
     }
     if budget_decision is not None:
-        payload["budget_decision"] = cast(dict[str, object], budget_decision)
+        payload["budget_decision"] = budget_decision
     return payload
 
 
@@ -312,10 +315,10 @@ def _sync_task_run_after_execution(
 
     transitions = next_checkpoint.get("transitions")
     if isinstance(transitions, list):
-        history = [entry for entry in transitions if isinstance(entry, dict)]
+        history: list[JsonValue] = [entry for entry in transitions if isinstance(entry, dict)]
     else:
         history = []
-    transition_entry = {
+    transition_entry: JsonObject = {
         "sequence_no": len(history) + 1,
         "source": "proxy_execution",
         "at": datetime.now(UTC).isoformat(),
@@ -510,19 +513,19 @@ def execute_approved_proxy_request(
     ]
 
     if approval["status"] != "approved":
-        error = _blocked_state_error(approval=approval)
-        dispatch_payload: ProxyExecutionDispatchTracePayload = {
+        approval_error = _blocked_state_error(approval=approval)
+        approval_dispatch_payload: ProxyExecutionDispatchTracePayload = {
             "approval_id": approval["id"],
             "task_step_id": linked_task_step_id,
             "tool_id": tool["id"],
             "tool_key": tool["tool_key"],
             "handler_key": None,
             "dispatch_status": "blocked",
-            "reason": str(error),
+            "reason": str(approval_error),
             "result_status": None,
             "output": None,
         }
-        summary_payload: ProxyExecutionSummaryTracePayload = {
+        approval_summary_payload: ProxyExecutionSummaryTracePayload = {
             "approval_id": approval["id"],
             "task_step_id": linked_task_step_id,
             "tool_id": tool["id"],
@@ -535,12 +538,18 @@ def execute_approved_proxy_request(
         }
         trace_events.extend(
             [
-                ("tool.proxy.execute.dispatch", cast(dict[str, object], dispatch_payload)),
-                ("tool.proxy.execute.summary", cast(dict[str, object], summary_payload)),
+                (
+                    "tool.proxy.execute.dispatch",
+                    cast(dict[str, object], approval_dispatch_payload),
+                ),
+                (
+                    "tool.proxy.execute.summary",
+                    cast(dict[str, object], approval_summary_payload),
+                ),
             ]
         )
         _append_trace_events(store, trace_id=trace["id"], trace_events=trace_events)
-        raise error
+        raise approval_error
 
     if idempotency_key is not None and linked_task_run_id is not None:
         existing_execution = (
@@ -606,7 +615,7 @@ def execute_approved_proxy_request(
     )
 
     if budget_decision.blocked_result is not None:
-        dispatch_payload: ProxyExecutionDispatchTracePayload = {
+        budget_dispatch_payload: ProxyExecutionDispatchTracePayload = {
             "approval_id": approval["id"],
             "task_step_id": linked_task_step_id,
             "tool_id": tool["id"],
@@ -619,8 +628,8 @@ def execute_approved_proxy_request(
         }
         budget_context = _budget_context_trace_payload(budget_trace_payload)
         if budget_context is not None:
-            dispatch_payload["budget_context"] = budget_context
-        summary_payload: ProxyExecutionSummaryTracePayload = {
+            budget_dispatch_payload["budget_context"] = budget_context
+        budget_summary_payload: ProxyExecutionSummaryTracePayload = {
             "approval_id": approval["id"],
             "task_step_id": linked_task_step_id,
             "tool_id": tool["id"],
@@ -633,8 +642,14 @@ def execute_approved_proxy_request(
         }
         trace_events.extend(
             [
-                ("tool.proxy.execute.dispatch", cast(dict[str, object], dispatch_payload)),
-                ("tool.proxy.execute.summary", cast(dict[str, object], summary_payload)),
+                (
+                    "tool.proxy.execute.dispatch",
+                    cast(dict[str, object], budget_dispatch_payload),
+                ),
+                (
+                    "tool.proxy.execute.summary",
+                    cast(dict[str, object], budget_summary_payload),
+                ),
             ]
         )
         execution = _persist_tool_execution(
@@ -655,7 +670,7 @@ def execute_approved_proxy_request(
             store,
             approval_id=cast(UUID, approval_row["id"]),
             execution_id=execution["id"],
-            execution_status=execution["status"],
+            execution_status=cast(ProxyExecutionStatus, execution["status"]),
         )
         task_step_transition = sync_task_step_with_execution(
             store,
@@ -714,25 +729,25 @@ def execute_approved_proxy_request(
         }
 
     if handler_spec is None:
-        error = _missing_handler_error(tool=tool)
-        result = _tool_execution_result(
+        handler_error = _missing_handler_error(tool=tool)
+        handler_blocked_result = _tool_execution_result(
             handler_key=None,
             status="blocked",
             output=None,
-            reason=str(error),
+            reason=str(handler_error),
         )
-        dispatch_payload: ProxyExecutionDispatchTracePayload = {
+        handler_dispatch_payload: ProxyExecutionDispatchTracePayload = {
             "approval_id": approval["id"],
             "task_step_id": linked_task_step_id,
             "tool_id": tool["id"],
             "tool_key": tool["tool_key"],
             "handler_key": None,
             "dispatch_status": "blocked",
-            "reason": str(error),
-            "result_status": result["status"],
+            "reason": str(handler_error),
+            "result_status": handler_blocked_result["status"],
             "output": None,
         }
-        summary_payload: ProxyExecutionSummaryTracePayload = {
+        handler_summary_payload: ProxyExecutionSummaryTracePayload = {
             "approval_id": approval["id"],
             "task_step_id": linked_task_step_id,
             "tool_id": tool["id"],
@@ -745,8 +760,14 @@ def execute_approved_proxy_request(
         }
         trace_events.extend(
             [
-                ("tool.proxy.execute.dispatch", cast(dict[str, object], dispatch_payload)),
-                ("tool.proxy.execute.summary", cast(dict[str, object], summary_payload)),
+                (
+                    "tool.proxy.execute.dispatch",
+                    cast(dict[str, object], handler_dispatch_payload),
+                ),
+                (
+                    "tool.proxy.execute.summary",
+                    cast(dict[str, object], handler_summary_payload),
+                ),
             ]
         )
         execution = _persist_tool_execution(
@@ -759,7 +780,7 @@ def execute_approved_proxy_request(
             idempotency_key=idempotency_key,
             request=routed_request,
             tool=tool,
-            result=result,
+            result=handler_blocked_result,
             request_event_id=None,
             result_event_id=None,
         )
@@ -767,7 +788,7 @@ def execute_approved_proxy_request(
             store,
             approval_id=cast(UUID, approval_row["id"]),
             execution_id=execution["id"],
-            execution_status=execution["status"],
+            execution_status=cast(ProxyExecutionStatus, execution["status"]),
         )
         task_step_transition = sync_task_step_with_execution(
             store,
@@ -805,7 +826,7 @@ def execute_approved_proxy_request(
                     )
                 )
         _append_trace_events(store, trace_id=trace["id"], trace_events=trace_events)
-        raise error
+        raise handler_error
 
     request_event_payload: ProxyExecutionRequestEventPayload = {
         "approval_id": approval["id"],
@@ -823,15 +844,19 @@ def execute_approved_proxy_request(
         cast(JsonObject, request_event_payload),
     )
 
-    result = handler_spec.handler(routed_request, tool)
+    handler_result = handler_spec.handler(routed_request, tool)
+    if handler_result["status"] != "completed" or handler_result["output"] is None:
+        raise ProxyExecutionApprovalStateError(
+            f"proxy handler '{handler_result['handler_key']}' returned a non-completed result"
+        )
     result_event_payload: ProxyExecutionResultEventPayload = {
         "approval_id": approval["id"],
         "task_step_id": linked_task_step_id,
         "tool_id": tool["id"],
         "tool_key": tool["tool_key"],
-        "handler_key": result["handler_key"],
-        "status": result["status"],
-        "output": result["output"],
+        "handler_key": handler_result["handler_key"],
+        "status": "completed",
+        "output": handler_result["output"],
     }
     result_event = store.append_event(
         approval_row["thread_id"],
@@ -845,14 +870,14 @@ def execute_approved_proxy_request(
         task_run_id=linked_task_run_id,
         task_step_id=cast(UUID, linked_task_step["id"]),
         trace_id=trace["id"],
-        handler_key=result["handler_key"],
+        handler_key=handler_result["handler_key"],
         idempotency_key=idempotency_key,
         request=routed_request,
         tool=tool,
         result=_tool_execution_result(
-            handler_key=result["handler_key"],
-            status=result["status"],
-            output=result["output"],
+            handler_key=handler_result["handler_key"],
+            status=handler_result["status"],
+            output=handler_result["output"],
             reason=None,
         ),
         request_event_id=request_event["id"],
@@ -865,39 +890,45 @@ def execute_approved_proxy_request(
         "result_event_id": str(result_event["id"]),
         "result_sequence_no": result_event["sequence_no"],
     }
-    dispatch_payload: ProxyExecutionDispatchTracePayload = {
+    execution_dispatch_payload: ProxyExecutionDispatchTracePayload = {
         "approval_id": approval["id"],
         "task_step_id": linked_task_step_id,
         "tool_id": tool["id"],
         "tool_key": tool["tool_key"],
-        "handler_key": result["handler_key"],
+        "handler_key": handler_result["handler_key"],
         "dispatch_status": "executed",
         "reason": None,
-        "result_status": result["status"],
-        "output": result["output"],
+        "result_status": handler_result["status"],
+        "output": handler_result["output"],
     }
-    summary_payload: ProxyExecutionSummaryTracePayload = {
+    execution_summary_payload: ProxyExecutionSummaryTracePayload = {
         "approval_id": approval["id"],
         "task_step_id": linked_task_step_id,
         "tool_id": tool["id"],
         "tool_key": tool["tool_key"],
         "approval_status": approval["status"],
         "execution_status": "completed",
-        "handler_key": result["handler_key"],
+        "handler_key": handler_result["handler_key"],
         "request_event_id": events["request_event_id"],
         "result_event_id": events["result_event_id"],
     }
     trace_events.extend(
         [
-            ("tool.proxy.execute.dispatch", cast(dict[str, object], dispatch_payload)),
-            ("tool.proxy.execute.summary", cast(dict[str, object], summary_payload)),
+            (
+                "tool.proxy.execute.dispatch",
+                cast(dict[str, object], execution_dispatch_payload),
+            ),
+            (
+                "tool.proxy.execute.summary",
+                cast(dict[str, object], execution_summary_payload),
+            ),
         ]
     )
     task_transition = sync_task_with_execution(
         store,
         approval_id=cast(UUID, approval_row["id"]),
         execution_id=execution["id"],
-        execution_status=execution["status"],
+        execution_status=cast(ProxyExecutionStatus, execution["status"]),
     )
     task_step_transition = sync_task_step_with_execution(
         store,
@@ -947,7 +978,7 @@ def execute_approved_proxy_request(
         ),
         "approval": approval,
         "tool": tool,
-        "result": result,
+        "result": handler_result,
         "events": events,
         "trace": _trace_summary(trace["id"], trace_events),
     }

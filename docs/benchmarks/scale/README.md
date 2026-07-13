@@ -52,7 +52,8 @@ optimized).
 - **Scheduled jobs** are nightly-cadence work, not request-path latency.
   Staleness is a full-corpus scan. Consolidation clustering is worst-case
   quadratic; the current implementation bounds its corpus to 2,000 memories,
-  its float32 matrix to 16 MB, and unique comparisons to 1,999,000. These
+  its float32 similarity work to bounded row blocks (about 1 MB at the current
+  128 x 2,000 block), and unique comparisons to 1,999,000. These
   historical 2026-07-06 measurements used the then-current implementation and
   should not be read as proof of linear consolidation scaling.
 

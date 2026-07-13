@@ -22,9 +22,9 @@ _JSONRPC_VERSION = "2.0"
 _MCP_PROTOCOL_VERSION = "2024-11-05"
 _MCP_SERVER_NAME = "alice-core-mcp"
 _DEFAULT_MCP_USER_ID = "00000000-0000-0000-0000-000000000001"
-_TRANSPORT_CONTENT_LENGTH = "content-length"
-_TRANSPORT_JSON_LINE = "json-line"
 _TransportMode = Literal["content-length", "json-line"]
+_TRANSPORT_CONTENT_LENGTH: _TransportMode = "content-length"
+_TRANSPORT_JSON_LINE: _TransportMode = "json-line"
 
 
 def _parse_uuid(value: str) -> UUID:
@@ -271,11 +271,11 @@ class MCPServer:
 
             request, transport_mode = framed_request
             self._transport_mode = transport_mode
-            response = self._handle_request(request)
-            if response is not None:
+            request_response = self._handle_request(request)
+            if request_response is not None:
                 _write_message(
                     self._output_stream,
-                    response,
+                    request_response,
                     transport_mode=self._transport_mode,
                 )
 

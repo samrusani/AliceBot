@@ -39,7 +39,9 @@ function admissionMessage(item: ContinuityCaptureInboxItem) {
 
 export function ContinuityCaptureForm({ apiBaseUrl, userId, source }: ContinuityCaptureFormProps) {
   const router = useRouter();
-  const liveModeReady = Boolean(apiBaseUrl && userId && source === "live");
+  // Mutation readiness follows configured credentials, not the health of the
+  // independent inbox read. A partial read outage must not disable capture.
+  const liveModeReady = Boolean(apiBaseUrl && userId);
 
   const [rawContent, setRawContent] = useState("");
   const [explicitSignal, setExplicitSignal] = useState<string>("");

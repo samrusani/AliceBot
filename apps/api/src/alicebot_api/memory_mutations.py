@@ -22,9 +22,11 @@ from alicebot_api.contracts import (
     MEMORY_OPERATION_TYPES,
     ContinuityCaptureCandidatesInput,
     ContinuityCorrectionInput,
+    ContinuityObjectType,
     ContinuityObjectRecord,
     ContinuityReviewObjectRecord,
     MemoryOperationCandidateGenerateResponse,
+    MemoryOperationCandidateGenerateSummary,
     MemoryOperationCandidateListResponse,
     MemoryOperationCandidateRecord,
     MemoryOperationCommitInput,
@@ -34,6 +36,9 @@ from alicebot_api.contracts import (
     MemoryOperationListInput,
     MemoryOperationListResponse,
     MemoryOperationRecord,
+    MemoryOperationPolicyAction,
+    MemoryOperationStatus,
+    MemoryOperationType,
 )
 from alicebot_api.store import (
     ContinuityObjectRow,
@@ -78,7 +83,7 @@ def _serialize_review_object(record: ContinuityObjectRow) -> ContinuityReviewObj
     return {
         "id": str(record["id"]),
         "capture_event_id": str(record["capture_event_id"]),
-        "object_type": cast(str, record["object_type"]),
+        "object_type": cast(ContinuityObjectType, record["object_type"]),
         "status": cast(str, record["status"]),
         "lifecycle": serialize_continuity_lifecycle_state_from_record(record),
         "title": str(record["title"]),
@@ -135,9 +140,9 @@ def _serialize_memory_operation_candidate(row: MemoryOperationCandidateRow) -> M
         "source_candidate_type": str(row["source_candidate_type"]),
         "candidate_payload": cast(JsonObject, row["candidate_payload"]),
         "source_scope": cast(JsonObject, row["source_scope"]),
-        "operation_type": cast(str, row["operation_type"]),
+        "operation_type": cast(MemoryOperationType, row["operation_type"]),
         "operation_reason": str(row["operation_reason"]),
-        "policy_action": cast(str, row["policy_action"]),
+        "policy_action": cast(MemoryOperationPolicyAction, row["policy_action"]),
         "policy_reason": str(row["policy_reason"]),
         "target_continuity_object_id": (
             None if row["target_continuity_object_id"] is None else str(row["target_continuity_object_id"])
@@ -153,8 +158,8 @@ def _serialize_memory_operation(row: MemoryOperationRow) -> MemoryOperationRecor
     return {
         "id": str(row["id"]),
         "candidate_id": str(row["candidate_id"]),
-        "operation_type": cast(str, row["operation_type"]),
-        "status": cast(str, row["status"]),
+        "operation_type": cast(MemoryOperationType, row["operation_type"]),
+        "status": cast(MemoryOperationStatus, row["status"]),
         "sync_fingerprint": str(row["sync_fingerprint"]),
         "target_continuity_object_id": (
             None if row["target_continuity_object_id"] is None else str(row["target_continuity_object_id"])
@@ -351,7 +356,7 @@ def _classify_operation(
     *,
     candidate_payload: JsonObject,
     target_record: ContinuityObjectRow | None,
-) -> tuple[str, str]:
+) -> tuple[MemoryOperationType, str]:
     candidate_type = str(candidate_payload.get("candidate_type", ""))
     normalized_text = _normalize_text(cast(str, candidate_payload.get("normalized_text")))
 
@@ -389,9 +394,9 @@ def _classify_operation(
 def _resolve_policy_action(
     *,
     candidate_payload: JsonObject,
-    operation_type: str,
+    operation_type: MemoryOperationType,
     mode: str,
-) -> tuple[str, str]:
+) -> tuple[MemoryOperationPolicyAction, str]:
     if operation_type == "NOOP":
         return "skip", "noop_candidate"
 
@@ -400,7 +405,12 @@ def _resolve_policy_action(
 
     candidate_type = str(candidate_payload.get("candidate_type", ""))
     explicit = bool(candidate_payload.get("explicit", False))
-    confidence = float(candidate_payload.get("confidence", 0.0))
+    raw_confidence = candidate_payload.get("confidence", 0.0)
+    confidence = (
+        float(raw_confidence)
+        if isinstance(raw_confidence, (str, int, float))
+        else 0.0
+    )
 
     if confidence < 0.9:
         return "review_required", "low_confidence_requires_review"
@@ -495,7 +505,7 @@ def generate_memory_operation_candidates(
         )
         items.append(_serialize_memory_operation_candidate(created))
 
-    summary = {
+    summary: MemoryOperationCandidateGenerateSummary = {
         "candidate_count": len(items),
         "auto_apply_count": sum(1 for item in items if item["policy_action"] == "auto_apply"),
         "review_required_count": sum(1 for item in items if item["policy_action"] == "review_required"),
@@ -607,7 +617,13 @@ def _replacement_values(
         raw_content=normalized_text,
         explicit_signal=_explicit_signal_for_candidate(candidate_type),
     )
-    return title, body, provenance, float(candidate_payload.get("confidence", 0.0))
+    raw_confidence = candidate_payload.get("confidence", 0.0)
+    confidence = (
+        float(raw_confidence)
+        if isinstance(raw_confidence, (str, int, float))
+        else 0.0
+    )
+    return title, body, provenance, confidence
 
 
 def _apply_add_operation(

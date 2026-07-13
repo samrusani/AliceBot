@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 from uuid import UUID
 
 from alicebot_api.contracts import (
@@ -21,15 +22,27 @@ from alicebot_api.contracts import (
     CompiledContextPack,
     ContextPackArtifactChunk,
     ContextPackArtifactChunkSummary,
+    ContextPackEntity,
+    ContextPackEntityEdge,
+    ContextPackEvent,
     ContextCompilerLimits,
     ContextPackHybridMemorySummary,
     ContextPackMemory,
     ContextPackMemorySummary,
     ContextPackOpenLoop,
     ContextPackOpenLoopSummary,
+    ContextPackSession,
+    ContextPackThread,
+    ContextPackUser,
+    EntityType,
     HybridMemoryDecisionTracePayload,
     HybridArtifactRetrievalDecisionTracePayload,
+    MemoryConfirmationStatus,
+    MemoryPromotionEligibility,
     MemorySelectionSource,
+    MemoryStatus,
+    MemoryTrustClass,
+    MemoryType,
     OPEN_LOOP_REVIEW_ORDER,
     RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0,
     RESUMPTION_BRIEF_CONVERSATION_EVENT_KINDS,
@@ -37,6 +50,7 @@ from alicebot_api.contracts import (
     RESUMPTION_BRIEF_MEMORY_ORDER,
     ResumptionBriefConversationSection,
     ResumptionBriefMemoryHighlightSection,
+    ResumptionBriefOpenLoopSection,
     ResumptionBriefRecord,
     ResumptionBriefSectionSummary,
     ResumptionBriefWorkflowPosture,
@@ -46,6 +60,12 @@ from alicebot_api.contracts import (
     TASK_STEP_LIST_ORDER,
     TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER,
     TASK_ARTIFACT_CHUNK_SEMANTIC_RETRIEVAL_ORDER,
+    TaskArtifactChunkRetrievalMatch,
+    TaskArtifactChunkRetrievalScope,
+    TaskArtifactChunkRetrievalScopeKind,
+    TaskArtifactIngestionStatus,
+    ThreadEventRecord,
+    ThreadRecord,
     SemanticMemoryRetrievalRequestInput,
     TRACE_KIND_CONTEXT_COMPILE,
     TraceEventRecord,
@@ -70,11 +90,13 @@ from alicebot_api.store import (
     EntityEdgeRow,
     EntityRow,
     EventRow,
+    JsonObject,
     MemoryRow,
     OpenLoopRow,
     SemanticMemoryRetrievalRow,
     SessionRow,
     TaskRow,
+    TaskArtifactRow,
     TaskStepRow,
     ThreadRow,
     UserRow,
@@ -151,7 +173,7 @@ def _session_sort_key(
     return (latest_sequence, started_at, created_at, str(session["id"]))
 
 
-def _serialize_user(user: UserRow) -> dict[str, str | None]:
+def _serialize_user(user: UserRow) -> ContextPackUser:
     return {
         "id": str(user["id"]),
         "email": user["email"],
@@ -160,10 +182,20 @@ def _serialize_user(user: UserRow) -> dict[str, str | None]:
     }
 
 
-def _serialize_thread(thread: ThreadRow) -> dict[str, str]:
+def _serialize_context_thread(thread: ThreadRow) -> ContextPackThread:
     return {
         "id": str(thread["id"]),
         "title": thread["title"],
+        "created_at": thread["created_at"].isoformat(),
+        "updated_at": thread["updated_at"].isoformat(),
+    }
+
+
+def _serialize_thread(thread: ThreadRow) -> ThreadRecord:
+    return {
+        "id": str(thread["id"]),
+        "title": thread["title"],
+        "agent_profile_id": _resolve_thread_agent_profile_id(thread),
         "created_at": thread["created_at"].isoformat(),
         "updated_at": thread["updated_at"].isoformat(),
     }
@@ -215,7 +247,7 @@ def _retrieve_semantic_memory_matches_for_profile(
     ]
 
 
-def _serialize_session(session: SessionRow) -> dict[str, str | None]:
+def _serialize_session(session: SessionRow) -> ContextPackSession:
     return {
         "id": str(session["id"]),
         "status": session["status"],
@@ -225,7 +257,7 @@ def _serialize_session(session: SessionRow) -> dict[str, str | None]:
     }
 
 
-def _serialize_event(event: EventRow) -> dict[str, object]:
+def _serialize_event(event: EventRow) -> ContextPackEvent:
     return {
         "id": str(event["id"]),
         "session_id": None if event["session_id"] is None else str(event["session_id"]),
@@ -236,6 +268,34 @@ def _serialize_event(event: EventRow) -> dict[str, object]:
     }
 
 
+def _serialize_thread_event(event: EventRow) -> ThreadEventRecord:
+    return {
+        "id": str(event["id"]),
+        "thread_id": str(event["thread_id"]),
+        "session_id": None if event["session_id"] is None else str(event["session_id"]),
+        "sequence_no": event["sequence_no"],
+        "kind": event["kind"],
+        "payload": event["payload"],
+        "created_at": event["created_at"].isoformat(),
+    }
+
+
+def _memory_status(value: str) -> MemoryStatus:
+    if value == "active":
+        return "active"
+    if value == "deleted":
+        return "deleted"
+    raise ValueError(f"unsupported memory status: {value}")
+
+
+def _artifact_ingestion_status(value: str) -> TaskArtifactIngestionStatus:
+    if value == "pending":
+        return "pending"
+    if value == "ingested":
+        return "ingested"
+    raise ValueError(f"unsupported artifact ingestion status: {value}")
+
+
 def _memory_sort_key(memory: MemoryRow) -> tuple[str, str, str]:
     return (
         memory["updated_at"].isoformat(),
@@ -244,12 +304,12 @@ def _memory_sort_key(memory: MemoryRow) -> tuple[str, str, str]:
     )
 
 
-def _serialize_memory(memory: MemoryRow) -> dict[str, object]:
-    payload: dict[str, object] = {
+def _serialize_memory(memory: MemoryRow) -> ContextPackMemory:
+    payload: ContextPackMemory = {
         "id": str(memory["id"]),
         "memory_key": memory["memory_key"],
         "value": memory["value"],
-        "status": memory["status"],
+        "status": _memory_status(memory["status"]),
         "source_event_ids": memory["source_event_ids"],
         "created_at": memory["created_at"].isoformat(),
         "updated_at": memory["updated_at"].isoformat(),
@@ -258,7 +318,7 @@ def _serialize_memory(memory: MemoryRow) -> dict[str, object]:
             "semantic_score": None,
         },
     }
-    payload.update(_serialize_typed_memory_metadata(memory))
+    _add_typed_memory_metadata(payload, memory)
     return payload
 
 
@@ -289,10 +349,10 @@ def _entity_sort_key(entity: EntityRow) -> tuple[str, str]:
     return (entity["created_at"].isoformat(), str(entity["id"]))
 
 
-def _serialize_entity(entity: EntityRow) -> dict[str, object]:
+def _serialize_entity(entity: EntityRow) -> ContextPackEntity:
     return {
         "id": str(entity["id"]),
-        "entity_type": entity["entity_type"],
+        "entity_type": cast(EntityType, entity["entity_type"]),
         "name": entity["name"],
         "source_memory_ids": entity["source_memory_ids"],
         "created_at": entity["created_at"].isoformat(),
@@ -303,7 +363,7 @@ def _entity_edge_sort_key(edge: EntityEdgeRow) -> tuple[str, str]:
     return (edge["created_at"].isoformat(), str(edge["id"]))
 
 
-def _serialize_entity_edge(edge: EntityEdgeRow) -> dict[str, object]:
+def _serialize_entity_edge(edge: EntityEdgeRow) -> ContextPackEntityEdge:
     return {
         "id": str(edge["id"]),
         "from_entity_id": str(edge["from_entity_id"]),
@@ -328,21 +388,25 @@ def _semantic_deleted_memory_sort_key(memory: MemoryRow) -> tuple[str, str, str]
     )
 
 
-def _serialize_typed_memory_metadata(memory: MemoryRow) -> dict[str, object]:
-    payload: dict[str, object] = {}
-
+def _add_typed_memory_metadata(payload: ContextPackMemory, memory: MemoryRow) -> None:
     if "memory_type" in memory:
-        payload["memory_type"] = memory["memory_type"]
+        payload["memory_type"] = cast(MemoryType, memory["memory_type"])
     if "confidence" in memory:
         payload["confidence"] = memory["confidence"]
     if "salience" in memory:
         payload["salience"] = memory["salience"]
     if "confirmation_status" in memory:
-        payload["confirmation_status"] = memory["confirmation_status"]
+        payload["confirmation_status"] = cast(
+            MemoryConfirmationStatus,
+            memory["confirmation_status"],
+        )
     if "trust_class" in memory:
-        payload["trust_class"] = memory["trust_class"]
+        payload["trust_class"] = cast(MemoryTrustClass, memory["trust_class"])
     if "promotion_eligibility" in memory:
-        payload["promotion_eligibility"] = memory["promotion_eligibility"]
+        payload["promotion_eligibility"] = cast(
+            MemoryPromotionEligibility,
+            memory["promotion_eligibility"],
+        )
     if "evidence_count" in memory:
         payload["evidence_count"] = memory["evidence_count"]
     if "independent_source_count" in memory:
@@ -357,9 +421,6 @@ def _serialize_typed_memory_metadata(memory: MemoryRow) -> dict[str, object]:
         payload["valid_to"] = isoformat_or_none(memory["valid_to"])
     if "last_confirmed_at" in memory:
         payload["last_confirmed_at"] = isoformat_or_none(memory["last_confirmed_at"])
-
-    return payload
-
 
 def _empty_hybrid_memory_summary() -> ContextPackHybridMemorySummary:
     return {
@@ -416,38 +477,38 @@ def _empty_artifact_chunk_summary() -> ContextPackArtifactChunkSummary:
 
 def _hybrid_artifact_retrieval_decision_metadata(
     *,
-    scope_kind: str,
+    scope_kind: TaskArtifactChunkRetrievalScopeKind,
     task_id: UUID,
     task_artifact_id: UUID,
     relative_path: str,
     media_type: str | None,
-    ingestion_status: str,
+    ingestion_status: TaskArtifactIngestionStatus,
     limit: int,
     selected_sources: list[ArtifactSelectionSource],
     embedding_config_id: UUID | None = None,
     query_vector_dimensions: int = 0,
-    match: dict[str, object] | None = None,
+    match: TaskArtifactChunkRetrievalMatch | None = None,
     score: float | None = None,
     sequence_no: int | None = None,
     char_start: int | None = None,
     char_end_exclusive: int | None = None,
-) -> HybridArtifactRetrievalDecisionTracePayload:
+) -> JsonObject:
     payload: HybridArtifactRetrievalDecisionTracePayload = {
-        "scope_kind": scope_kind,  # type: ignore[typeddict-item]
+        "scope_kind": scope_kind,
         "task_id": str(task_id),
         "task_artifact_id": str(task_artifact_id),
         "relative_path": relative_path,
         "media_type": media_type,
-        "ingestion_status": ingestion_status,  # type: ignore[typeddict-item]
+        "ingestion_status": ingestion_status,
         "selected_sources": list(selected_sources),
         "embedding_config_id": None if embedding_config_id is None else str(embedding_config_id),
         "query_vector_dimensions": query_vector_dimensions,
         "limit": limit,
     }
     if match is not None:
-        payload["matched_query_terms"] = list(match["matched_query_terms"])  # type: ignore[index]
-        payload["matched_query_term_count"] = int(match["matched_query_term_count"])  # type: ignore[index]
-        payload["first_match_char_start"] = int(match["first_match_char_start"])  # type: ignore[index]
+        payload["matched_query_terms"] = list(match["matched_query_terms"])
+        payload["matched_query_term_count"] = match["matched_query_term_count"]
+        payload["first_match_char_start"] = match["first_match_char_start"]
     if score is not None:
         payload["score"] = score
         payload["similarity_metric"] = "cosine_similarity"
@@ -457,7 +518,7 @@ def _hybrid_artifact_retrieval_decision_metadata(
         payload["char_start"] = char_start
     if char_end_exclusive is not None:
         payload["char_end_exclusive"] = char_end_exclusive
-    return payload
+    return cast(JsonObject, payload)
 
 
 def _hybrid_memory_decision_metadata(
@@ -468,15 +529,16 @@ def _hybrid_memory_decision_metadata(
     source_event_ids: list[str],
     selected_sources: list[MemorySelectionSource],
     semantic_score: float | None,
-) -> HybridMemoryDecisionTracePayload:
-    return {
+) -> JsonObject:
+    payload: HybridMemoryDecisionTracePayload = {
         "embedding_config_id": None if embedding_config_id is None else str(embedding_config_id),
         "memory_key": memory_key,
-        "status": status,
+        "status": _memory_status(status),
         "source_event_ids": source_event_ids,
         "selected_sources": list(selected_sources),
         "semantic_score": semantic_score,
     }
+    return cast(JsonObject, payload)
 
 
 def _serialize_hybrid_memory(candidate: HybridMemoryCandidate) -> ContextPackMemory:
@@ -485,7 +547,7 @@ def _serialize_hybrid_memory(candidate: HybridMemoryCandidate) -> ContextPackMem
         "id": str(memory["id"]),
         "memory_key": memory["memory_key"],
         "value": memory["value"],
-        "status": memory["status"],
+        "status": _memory_status(memory["status"]),
         "source_event_ids": memory["source_event_ids"],
         "created_at": memory["created_at"].isoformat(),
         "updated_at": memory["updated_at"].isoformat(),
@@ -494,7 +556,7 @@ def _serialize_hybrid_memory(candidate: HybridMemoryCandidate) -> ContextPackMem
             "semantic_score": candidate.semantic_score,
         },
     }
-    payload.update(_serialize_typed_memory_metadata(memory))
+    _add_typed_memory_metadata(payload, memory)
     return payload
 
 
@@ -523,9 +585,21 @@ def _resolve_artifact_scope(
     *,
     artifact_retrieval: CompileContextArtifactRetrievalInput | None,
     semantic_artifact_retrieval: CompileContextSemanticArtifactRetrievalInput | None,
-) -> tuple[list[dict[str, object]], dict[str, str] | None, str | None]:
-    lexical_scope: tuple[list[dict[str, object]], dict[str, str], str] | None = None
-    semantic_scope: tuple[list[dict[str, object]], dict[str, str], str] | None = None
+) -> tuple[
+    list[TaskArtifactRow],
+    TaskArtifactChunkRetrievalScope | None,
+    TaskArtifactChunkRetrievalScopeKind | None,
+]:
+    lexical_scope: tuple[
+        list[TaskArtifactRow],
+        TaskArtifactChunkRetrievalScope,
+        TaskArtifactChunkRetrievalScopeKind,
+    ] | None = None
+    semantic_scope: tuple[
+        list[TaskArtifactRow],
+        TaskArtifactChunkRetrievalScope,
+        TaskArtifactChunkRetrievalScopeKind,
+    ] | None = None
 
     if isinstance(artifact_retrieval, CompileContextTaskScopedArtifactRetrievalInput):
         task = store.get_task_optional(artifact_retrieval.task_id)
@@ -1071,6 +1145,11 @@ def _compile_artifact_chunk_section(
         if semantic_artifact_retrieval is not None
         else 0
     )
+    semantic_embedding_config_id = (
+        None
+        if semantic_artifact_retrieval is None
+        else semantic_artifact_retrieval.embedding_config_id
+    )
 
     for position, artifact_row in enumerate(artifact_rows, start=1):
         if artifact_row["ingestion_status"] == "ingested":
@@ -1089,14 +1168,12 @@ def _compile_artifact_chunk_section(
                     task_artifact_id=artifact_row["id"],
                     relative_path=artifact_row["relative_path"],
                     media_type=infer_task_artifact_media_type(artifact_row),
-                    ingestion_status=artifact_row["ingestion_status"],
+                    ingestion_status=_artifact_ingestion_status(
+                        artifact_row["ingestion_status"]
+                    ),
                     limit=final_limit,
                     selected_sources=[],
-                    embedding_config_id=(
-                        None
-                        if semantic_artifact_retrieval is None
-                        else semantic_artifact_retrieval.embedding_config_id
-                    ),
+                    embedding_config_id=semantic_embedding_config_id,
                     query_vector_dimensions=query_vector_dimensions,
                 ),
             )
@@ -1146,7 +1223,7 @@ def _compile_artifact_chunk_section(
                     ingestion_status="ingested",
                     limit=final_limit,
                     selected_sources=existing_candidate.sources,
-                    embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
+                    embedding_config_id=semantic_embedding_config_id,
                     query_vector_dimensions=query_vector_dimensions,
                     match=existing_candidate.item["source_provenance"]["lexical_match"],
                     score=existing_candidate.item["source_provenance"]["semantic_score"],
@@ -1201,11 +1278,7 @@ def _compile_artifact_chunk_section(
                         ingestion_status="ingested",
                         limit=final_limit,
                         selected_sources=candidate.sources,
-                        embedding_config_id=(
-                            None
-                            if semantic_artifact_retrieval is None
-                            else semantic_artifact_retrieval.embedding_config_id
-                        ),
+                        embedding_config_id=semantic_embedding_config_id,
                         query_vector_dimensions=query_vector_dimensions,
                         match=candidate.item["source_provenance"]["lexical_match"],
                         score=candidate.item["source_provenance"]["semantic_score"],
@@ -1233,11 +1306,7 @@ def _compile_artifact_chunk_section(
                     ingestion_status="ingested",
                     limit=final_limit,
                     selected_sources=candidate.sources,
-                    embedding_config_id=(
-                        None
-                        if semantic_artifact_retrieval is None
-                        else semantic_artifact_retrieval.embedding_config_id
-                    ),
+                    embedding_config_id=semantic_embedding_config_id,
                     query_vector_dimensions=query_vector_dimensions,
                     match=candidate.item["source_provenance"]["lexical_match"],
                     score=candidate.item["source_provenance"]["semantic_score"],
@@ -1259,8 +1328,8 @@ def _compile_artifact_chunk_section(
             "query_terms": list(query_terms),
             "embedding_config_id": (
                 None
-                if semantic_artifact_retrieval is None
-                else str(semantic_artifact_retrieval.embedding_config_id)
+                if semantic_embedding_config_id is None
+                else str(semantic_embedding_config_id)
             ),
             "query_vector_dimensions": query_vector_dimensions,
             "limit": final_limit,
@@ -1374,7 +1443,7 @@ def compile_resumption_brief(
         ordered_conversation_events[-bounded_event_limit:] if bounded_event_limit > 0 else []
     )
     conversation_section: ResumptionBriefConversationSection = {
-        "items": [_serialize_event(event) for event in included_events],
+        "items": [_serialize_thread_event(event) for event in included_events],
         "summary": {
             **_build_resumption_section_summary(
                 limit=bounded_event_limit,
@@ -1390,7 +1459,7 @@ def compile_resumption_brief(
     included_open_loops = (
         ordered_open_loops[:bounded_open_loop_limit] if bounded_open_loop_limit > 0 else []
     )
-    open_loop_section = {
+    open_loop_section: ResumptionBriefOpenLoopSection = {
         "items": [_serialize_open_loop(open_loop) for open_loop in included_open_loops],
         "summary": _build_resumption_section_summary(
             limit=bounded_open_loop_limit,
@@ -1572,11 +1641,11 @@ def compile_continuity_context(
                     entity["id"],
                     "within_entity_limit",
                     position,
-                    metadata={
+                    metadata=cast(JsonObject, {
                         "record_entity_type": entity["entity_type"],
                         "name": entity["name"],
                         "source_memory_ids": entity["source_memory_ids"],
-                    },
+                    }),
                 )
             )
             continue
@@ -1588,11 +1657,11 @@ def compile_continuity_context(
                 entity["id"],
                 "entity_limit_exceeded",
                 position,
-                metadata={
+                metadata=cast(JsonObject, {
                     "record_entity_type": entity["entity_type"],
                     "name": entity["name"],
                     "source_memory_ids": entity["source_memory_ids"],
-                },
+                }),
             )
         )
 
@@ -1622,7 +1691,7 @@ def compile_continuity_context(
             for entity_id in (edge["from_entity_id"], edge["to_entity_id"])
             if entity_id in included_entity_ids
         ]
-        metadata = {
+        metadata: JsonObject = cast(JsonObject, {
             "from_entity_id": str(edge["from_entity_id"]),
             "to_entity_id": str(edge["to_entity_id"]),
             "relationship_type": edge["relationship_type"],
@@ -1630,7 +1699,7 @@ def compile_continuity_context(
             "valid_to": isoformat_or_none(edge["valid_to"]),
             "source_memory_ids": edge["source_memory_ids"],
             "attached_included_entity_ids": attached_included_entity_ids,
-        }
+        })
         if edge["id"] in included_entity_edge_ids:
             decisions.append(
                 CompilerDecision(
@@ -1753,7 +1822,7 @@ def compile_continuity_context(
                 "max_entity_edges": limits.max_entity_edges,
             },
             "user": _serialize_user(user),
-            "thread": _serialize_thread(thread),
+            "thread": _serialize_context_thread(thread),
             "sessions": [_serialize_session(session) for session in included_sessions],
             "events": [_serialize_event(event) for event in included_events],
             "memories": list(resolved_memory_section.items),

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
-from typing import Mapping
+from typing import Mapping, cast
 from uuid import UUID, uuid4
 
 from alicebot_api.vnext_agent_control import (
@@ -33,12 +33,14 @@ from alicebot_api.vnext_fact_keys import attach_memory_fact_keys
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_lifecycle import (
     CONFIRM_ACCEPT,
+    CONFIRM_EXPIRE,
     CONFIRM_REJECT,
     CORRECT,
     EXPIRE,
     FORGET,
     LIVE_STATUSES as _LIFECYCLE_LIVE_STATUSES,
     RETIRED_STATUSES as _LIFECYCLE_RETIRED_STATUSES,
+    SUPERSESSION_SUCCESSOR_STATUSES,
     SUPERSEDE_MEMBER,
     UNDO,
     UNEXPIRE,
@@ -47,7 +49,7 @@ from alicebot_api.vnext_lifecycle import (
     supersession_would_cycle,
 )
 from alicebot_api.vnext_memory_version import memory_matches_snapshot
-from alicebot_api.vnext_repositories import JsonObject
+from alicebot_api.vnext_repositories import EventStore, JsonObject
 from alicebot_api.store import ContinuityStoreInvariantError
 from alicebot_api.vnext_store import PostgresVNextStore, VNextRow
 
@@ -625,7 +627,50 @@ class VNextMemoryCommitService:
         except LifecycleTransitionError as exc:
             raise VNextMemoryCommitValidationError(str(exc)) from exc
 
-    def _guard_supersession_acyclic(self, *, memory: VNextRow, successor: VNextRow) -> None:
+    def lock_supersession_graph(self) -> None:
+        """Acquire the transaction-scoped lifecycle lock before any row lock.
+
+        PostgreSQL row locks and the per-user advisory lock must always be
+        acquired in this order. The lock serializes supersession-graph writes
+        plus consolidation candidate/member invalidation, preventing both
+        row-to-graph and candidate-to-member/member-to-candidate inversions.
+        PostgreSQL transaction advisory locks are re-entrant, so adapters may
+        safely establish this boundary before delegating to a service method.
+        """
+        lock_graph_mutation = getattr(self.store, "lock_graph_mutation", None)
+        if callable(lock_graph_mutation):
+            lock_graph_mutation()
+
+    def require_valid_supersession_successor(
+        self,
+        successor: Mapping[str, object],
+        *,
+        allow_pending_consolidation: bool = False,
+    ) -> None:
+        """Require a successor that can truthfully become the chain head.
+
+        Normal replacements must already be accepted/live. A consolidation
+        candidate is the sole exception: its candidate/needs_review status is
+        permitted only inside the same atomic acceptance transaction that
+        promotes it after retiring its reviewed members.
+        """
+        status = str(successor.get("status") or "")
+        allowed = SUPERSESSION_SUCCESSOR_STATUSES
+        if allow_pending_consolidation:
+            allowed = allowed | frozenset(CONSOLIDATION_ACCEPTABLE_STATUSES)
+        if status not in allowed:
+            raise VNextMemoryCommitValidationError(
+                f"superseding memory must be an accepted live successor; got status "
+                f"'{status or 'unknown'}'"
+            )
+
+    def _guard_supersession_acyclic(
+        self,
+        *,
+        memory: VNextRow,
+        successor: VNextRow,
+        allow_pending_consolidation: bool = False,
+    ) -> None:
         """Reject recording ``memory`` superseded-by ``successor`` when cyclic.
 
         Re-superseding a row back to one of its own predecessors would create
@@ -636,13 +681,15 @@ class VNextMemoryCommitService:
         ``C->D`` committing over pre-existing ``B->C`` and ``D->A``). A
         per-user, transaction-scoped advisory lock serializes graph mutation so
         the second supersession's check sees the first's committed edge. The
-        lock is held through the edge write in the same transaction. The chain
+        public supersession entry points acquire that lock before any row lock
+        and hold it through the edge write in the same transaction. The chain
         walk also fails closed when it cannot verify acyclicity within its hop
         bound (audit 2 P1 #1).
         """
-        lock_graph_mutation = getattr(self.store, "lock_graph_mutation", None)
-        if callable(lock_graph_mutation):
-            lock_graph_mutation()
+        self.require_valid_supersession_successor(
+            successor,
+            allow_pending_consolidation=allow_pending_consolidation,
+        )
         try:
             would_cycle = supersession_would_cycle(
                 memory_id=str(memory["id"]),
@@ -722,6 +769,7 @@ class VNextMemoryCommitService:
         canonical_text: str | None = None,
         rationale: str | None = None,
     ) -> JsonObject:
+        self.lock_supersession_graph()
         normalized_action = action.strip().casefold()
         if normalized_action not in {"confirm", "reject", "edit"}:
             raise VNextMemoryCommitValidationError("confirmation action must be confirm, reject, or edit")
@@ -737,7 +785,8 @@ class VNextMemoryCommitService:
         self._policy_checked_write(identity=identity, action="memory.confirm", memory=memory)
         metadata = _memory_metadata(memory)
         agentic = _agentic_metadata(memory)
-        confirmation = dict(agentic.get("confirmation") if isinstance(agentic.get("confirmation"), Mapping) else {})
+        confirmation_value = agentic.get("confirmation")
+        confirmation = dict(confirmation_value) if isinstance(confirmation_value, Mapping) else {}
         if confirmation.get("status") != "pending":
             replay = self._replay_confirmation(
                 identity=identity,
@@ -750,6 +799,80 @@ class VNextMemoryCommitService:
                 return replay
             raise VNextMemoryCommitValidationError("confirmation is not pending")
 
+        actor_type = "agent" if identity is not None else "user"
+        actor_id = identity.agent_id if identity is not None else None
+        expires_at_raw = confirmation.get("expires_at")
+        if isinstance(expires_at_raw, str):
+            expires_at = datetime.fromisoformat(expires_at_raw.replace("Z", "+00:00"))
+            if expires_at < _utc_now():
+                # Expiration is a lifecycle decision, not a silent metadata
+                # cleanup. Validate the row independently and preserve a full
+                # revision/event trail just like explicit confirmation actions.
+                self._require_transition(
+                    CONFIRM_EXPIRE,
+                    str(memory.get("status") or ""),
+                )
+                now = _utc_iso()
+                confirmation["status"] = "expired"
+                confirmation["expired_at"] = now
+                agentic["confirmation"] = confirmation
+                agentic["status"] = "rejected"
+                agentic["lifecycle_status"] = "confirmation_expired"
+                updated = self.store.update_memory(
+                    memory_id=str(memory["id"]),
+                    patch={
+                        "status": "rejected",
+                        "last_reviewed_at": now,
+                        "metadata_json": {**metadata, "agentic_memory": agentic},
+                    },
+                    actor_type=actor_type,
+                )
+                expiry_reason = "Inline memory confirmation expired before it was acted on."
+                self.store.append_revision(
+                    {
+                        "memory_id": str(updated["id"]),
+                        "memory_key": str(updated["memory_key"]),
+                        "previous_value": memory.get("value"),
+                        "new_value": updated.get("value"),
+                        "source_event_ids": updated.get("source_event_ids"),
+                        "revision_type": "rejected",
+                        "action": "agentic_memory_confirmation_expired",
+                        "text_before": str(memory.get("canonical_text") or ""),
+                        "text_after": str(updated.get("canonical_text") or ""),
+                        "reason": expiry_reason,
+                        "actor_type": actor_type,
+                        "actor_id": actor_id,
+                        "metadata_json": {
+                            "confirmation_id": confirmation_id,
+                            "action": "expire",
+                            "expired_at": now,
+                        },
+                    },
+                    actor_type=actor_type,
+                )
+                append_event(
+                    self.store,
+                    event_type="agent.memory_confirmation_expired",
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    target_type="memory",
+                    target_id=str(updated["id"]),
+                    trace_id=str(agentic.get("trace_id") or "") or None,
+                    payload={
+                        "confirmation_id": confirmation_id,
+                        "action": "expire",
+                        "status": "rejected",
+                        "expired_at": now,
+                    },
+                )
+                return {
+                    "status": "rejected",
+                    "write_mode": "confirm_inline",
+                    "confirmation_id": confirmation_id,
+                    "reason": "confirmation_expired",
+                    "memory": updated,
+                }
+
         # The nested flag says "pending"; the row's lifecycle status must
         # independently agree that this row still awaits confirmation. A review
         # rejection/supersession that retired the row (while leaving the flag
@@ -759,23 +882,6 @@ class VNextMemoryCommitService:
             str(memory.get("status") or ""),
         )
 
-        expires_at_raw = confirmation.get("expires_at")
-        if isinstance(expires_at_raw, str):
-            expires_at = datetime.fromisoformat(expires_at_raw.replace("Z", "+00:00"))
-            if expires_at < _utc_now():
-                confirmation["status"] = "expired"
-                agentic["confirmation"] = confirmation
-                agentic["status"] = "rejected"
-                agentic["lifecycle_status"] = "confirmation_expired"
-                updated = self.store.update_memory(
-                    memory_id=str(memory["id"]),
-                    patch={"status": "rejected", "metadata_json": {**metadata, "agentic_memory": agentic}},
-                    actor_type="agent" if identity else "user",
-                )
-                return {"status": "rejected", "write_mode": "reject", "reason": "confirmation_expired", "memory": updated}
-
-        actor_type = "agent" if identity is not None else "user"
-        actor_id = identity.agent_id if identity is not None else None
         previous_text = str(memory.get("canonical_text") or "")
         next_text = _normalized_text(canonical_text, field_name="canonical_text") if canonical_text is not None else previous_text
         now = _utc_iso()
@@ -804,11 +910,13 @@ class VNextMemoryCommitService:
             "last_reviewed_at": now,
         }
         if next_status == "active":
+            current_value = memory.get("value")
+            value_payload = dict(current_value) if isinstance(current_value, dict) else {}
             patch.update(
                 {
                     "canonical_text": next_text,
                     "summary": next_text[:280],
-                    "value": {**(memory.get("value") if isinstance(memory.get("value"), dict) else {}), "text": next_text},
+                    "value": {**value_payload, "text": next_text},
                     "confirmation_status": "confirmed",
                     "last_confirmed_at": now,
                 }
@@ -971,6 +1079,10 @@ class VNextMemoryCommitService:
         copies for backward compatibility, so the supersession chain in
         audit/explain can answer "what did I believe before".
         """
+        # Every lifecycle mutation shares the same graph -> row boundary,
+        # including undo without an explicit successor because it invalidates
+        # derived consolidation candidates.
+        self.lock_supersession_graph()
         get_memory_for_update = getattr(self.store, "get_memory_for_update", None)
         memory = self.store.get_memory(memory_id) if memory_id else self._latest_agentic_commit(identity)
         if memory is None:
@@ -1014,6 +1126,7 @@ class VNextMemoryCommitService:
         canonical_text: str,
         reason: str | None = None,
     ) -> JsonObject:
+        self.lock_supersession_graph()
         get_memory_for_update = getattr(self.store, "get_memory_for_update", None)
         memory = (
             get_memory_for_update(memory_id)
@@ -1041,7 +1154,8 @@ class VNextMemoryCommitService:
         agentic = _agentic_metadata(memory)
         now = _utc_iso()
         correction = {"corrected_at": now, "reason": reason, "previous_text": memory.get("canonical_text")}
-        history = list(agentic.get("corrections") if isinstance(agentic.get("corrections"), list) else [])
+        corrections_value = agentic.get("corrections")
+        history = list(corrections_value) if isinstance(corrections_value, list) else []
         history.append(correction)
         agentic["corrections"] = history
         agentic["lifecycle_status"] = "corrected"
@@ -1052,6 +1166,8 @@ class VNextMemoryCommitService:
         next_metadata: JsonObject = {**metadata, "review_required": False, "agentic_memory": agentic}
         actor_type = "agent" if identity is not None else "user"
         actor_id = identity.agent_id if identity is not None else None
+        current_value = memory.get("value")
+        value_payload = dict(current_value) if isinstance(current_value, dict) else {}
         updated = self.store.update_memory(
             memory_id=str(memory["id"]),
             patch={
@@ -1060,7 +1176,7 @@ class VNextMemoryCommitService:
                 "title": next_text[:120],
                 "canonical_text": next_text,
                 "summary": next_text[:280],
-                "value": {**(memory.get("value") if isinstance(memory.get("value"), dict) else {}), "text": next_text},
+                "value": {**value_payload, "text": next_text},
                 "metadata_json": next_metadata,
                 # A correction is an explicit accept of the new text, so it
                 # refreshes the staleness sweep's freshness signal.
@@ -1112,6 +1228,7 @@ class VNextMemoryCommitService:
         memory_id: str,
         reason: str | None = None,
     ) -> JsonObject:
+        self.lock_supersession_graph()
         get_memory_for_update = getattr(self.store, "get_memory_for_update", None)
         memory = (
             get_memory_for_update(memory_id)
@@ -1166,6 +1283,10 @@ class VNextMemoryCommitService:
         review path -- nothing here handles it. Replaying an acceptance is a
         no-op with a note.
         """
+        # Acceptance may retire several graph members. Serialize the graph
+        # before locking the candidate or any member rows so every path uses
+        # one deadlock-safe advisory-lock -> row-lock order.
+        self.lock_supersession_graph()
         get_memory_for_update = getattr(self.store, "get_memory_for_update", None)
         memory = (
             get_memory_for_update(memory_id)
@@ -1308,6 +1429,7 @@ class VNextMemoryCommitService:
                 # clobbered per member here.
                 set_successor_pointer=False,
                 exclude_derived_candidate_id=accepted_id,
+                allow_pending_consolidation_successor=True,
             )
             superseded_member_ids.append(member_id)
 
@@ -1419,6 +1541,7 @@ class VNextMemoryCommitService:
         concurrent correction/supersession cannot be overwritten by a stale
         snapshot.
         """
+        self.lock_supersession_graph()
         get_memory_for_update = getattr(self.store, "get_memory_for_update", None)
         memory = (
             get_memory_for_update(memory_id)
@@ -1435,8 +1558,10 @@ class VNextMemoryCommitService:
         actor_id = identity.agent_id if identity is not None else None
         now = _utc_iso()
         metadata = _memory_metadata(memory)
-        validity = dict(metadata.get("validity") if isinstance(metadata.get("validity"), Mapping) else {})
-        history = list(validity.get("history") if isinstance(validity.get("history"), list) else [])
+        validity_value = metadata.get("validity")
+        validity = dict(validity_value) if isinstance(validity_value, Mapping) else {}
+        validity_history_value = validity.get("history")
+        history = list(validity_history_value) if isinstance(validity_history_value, list) else []
         history.append({"op": "expired", "at": now, "valid_to": valid_to_iso, "reason": reason_text, "actor_id": actor_id})
         validity.update({"state": "expired", "expired_at": now, "valid_to": valid_to_iso, "history": history})
         validity.pop("unbounded_sentinel", None)
@@ -1506,6 +1631,7 @@ class VNextMemoryCommitService:
         window is restored to a retrievable ``active`` state, so the reported
         status matches reality rather than leaving it stale and unretrievable.
         """
+        self.lock_supersession_graph()
         get_memory_for_update = getattr(self.store, "get_memory_for_update", None)
         memory = (
             get_memory_for_update(memory_id)
@@ -1525,7 +1651,7 @@ class VNextMemoryCommitService:
         current_valid_to = memory.get("valid_to")
         if not current_valid_to or _is_unbounded_valid_to(current_valid_to):
             return {
-                "status": "active",
+                "status": status,
                 "memory": memory,
                 "idempotent_replay": True,
                 "policy_decision": decision.to_record(),
@@ -1535,8 +1661,10 @@ class VNextMemoryCommitService:
         actor_id = identity.agent_id if identity is not None else None
         now = _utc_iso()
         metadata = _memory_metadata(memory)
-        validity = dict(metadata.get("validity") if isinstance(metadata.get("validity"), Mapping) else {})
-        history = list(validity.get("history") if isinstance(validity.get("history"), list) else [])
+        validity_value = metadata.get("validity")
+        validity = dict(validity_value) if isinstance(validity_value, Mapping) else {}
+        validity_history_value = validity.get("history")
+        history = list(validity_history_value) if isinstance(validity_history_value, list) else []
         history.append({"op": "unexpired", "at": now, "reason": reason_text, "actor_id": actor_id})
         validity.update({"state": "cleared", "unexpired_at": now, "valid_to": None, "history": history})
         validity.pop("unbounded_sentinel", None)
@@ -1596,7 +1724,7 @@ class VNextMemoryCommitService:
             payload={"previous_valid_to": json_safe(current_valid_to), "reason": reason_text},
         )
         return {
-            "status": "active",
+            "status": str(updated.get("status") or restored_status),
             "memory": updated,
             "policy_decision": decision.to_record(),
             "idempotent_replay": False,
@@ -2276,7 +2404,7 @@ class VNextMemoryCommitService:
                     )
         except Exception as exc:
             append_event(
-                self.store,
+                cast(EventStore, self.store),
                 event_type="entity.extraction_failed",
                 actor_type=actor_type,
                 actor_id=actor_id,
@@ -2530,15 +2658,25 @@ class VNextMemoryCommitService:
         superseded_by: VNextRow | None = None,
         set_successor_pointer: bool = True,
         exclude_derived_candidate_id: str | None = None,
+        allow_pending_consolidation_successor: bool = False,
     ) -> JsonObject:
         # Central enforcement: reject undoing/forgetting/superseding a row that
         # is already retired, and reject re-superseding back to an ancestor.
         self._require_transition(operation, str(memory.get("status") or ""))
         if superseded_by is not None:
-            self._guard_supersession_acyclic(memory=memory, successor=superseded_by)
+            self._guard_supersession_acyclic(
+                memory=memory,
+                successor=superseded_by,
+                allow_pending_consolidation=allow_pending_consolidation_successor,
+            )
         metadata = _memory_metadata(memory)
         agentic = _agentic_metadata(memory)
-        history = list(agentic.get("lifecycle_history") if isinstance(agentic.get("lifecycle_history"), list) else [])
+        lifecycle_history_value = agentic.get("lifecycle_history")
+        history = (
+            list(lifecycle_history_value)
+            if isinstance(lifecycle_history_value, list)
+            else []
+        )
         history.append({"status": lifecycle_status, "at": _utc_iso(), "reason": reason})
         agentic["lifecycle_status"] = lifecycle_status
         agentic["lifecycle_history"] = history

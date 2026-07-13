@@ -29,6 +29,8 @@ artifacts/
 !.ai/handoff/CURRENT_STATE.md
 BUILD_REPORT.md
 REVIEW_REPORT.md
+!docs/handoff/2026-07-13-v0.10-audit-remediation/BUILD_REPORT.md
+!docs/handoff/2026-07-13-v0.10-audit-remediation/REVIEW_REPORT.md
 ARCHIVE_RECOMMENDATIONS.md
 RECOMMENDED_ADRS.md
 

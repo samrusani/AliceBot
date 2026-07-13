@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ContinuityOpenLoopsPanel } from "./continuity-open-loops-panel";
+import type { ContinuityOpenLoopDashboard } from "../lib/api";
 
 const { applyContinuityOpenLoopReviewActionMock, refreshMock } = vi.hoisted(() => ({
   applyContinuityOpenLoopReviewActionMock: vi.fn(),
@@ -23,7 +24,7 @@ vi.mock("../lib/api", async () => {
   };
 });
 
-const dashboardFixture = {
+const dashboardFixture: ContinuityOpenLoopDashboard = {
   scope: {
     since: null,
     until: null,
@@ -51,6 +52,12 @@ const dashboardFixture = {
           scope_match_count: 0,
           query_term_match_count: 0,
           confirmation_rank: 2,
+          freshness_posture: "aging",
+          freshness_rank: 3,
+          provenance_posture: "partial",
+          provenance_rank: 2,
+          supersession_posture: "current",
+          supersession_rank: 3,
           posture_rank: 2,
           lifecycle_rank: 4,
           confidence: 1,
@@ -195,5 +202,24 @@ describe("ContinuityOpenLoopsPanel", () => {
     render(<ContinuityOpenLoopsPanel dashboard={null} source="fixture" />);
 
     expect(screen.getByText("Open-loop dashboard unavailable")).toBeInTheDocument();
+  });
+
+  it("keeps fixture-backed lifecycle actions disabled when the dashboard read degraded", () => {
+    render(
+      <ContinuityOpenLoopsPanel
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+        dashboard={dashboardFixture}
+        source="unavailable"
+        unavailableReason="dashboard read timed out"
+      />,
+    );
+
+    const done = screen.getByRole("button", { name: "Done" });
+    expect(done).toBeDisabled();
+    fireEvent.click(done);
+    expect(applyContinuityOpenLoopReviewActionMock).not.toHaveBeenCalled();
+    expect(screen.getByText(/fallback open loops are read-only/i)).toBeInTheDocument();
+    expect(screen.getByText(/dashboard read timed out/i)).toBeInTheDocument();
   });
 });

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Container
+from collections.abc import Container, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
@@ -62,6 +62,7 @@ from alicebot_api.contracts import (
     ChiefOfStaffEscalationPosture,
     ChiefOfStaffEscalationPostureRecord,
     ChiefOfStaffExecutionPostureRecord,
+    ChiefOfStaffExecutionPosture,
     ChiefOfStaffExecutionReadinessPostureRecord,
     ChiefOfStaffExecutionRouteTarget,
     ChiefOfStaffExecutionRoutingActionCaptureResponse,
@@ -123,16 +124,19 @@ from alicebot_api.contracts import (
     ChiefOfStaffWeeklyReviewGuidanceItem,
     ChiefOfStaffWhatChangedSummaryRecord,
     ContinuityOpenLoopDashboardQueryInput,
+    ContinuityOpenLoopDashboardRecord,
     ContinuityOpenLoopPosture,
+    ContinuityRecallScopeFilters,
     ContinuityRecallProvenanceReference,
     ContinuityRecallQueryInput,
     ContinuityRecallResultRecord,
     ContinuityResumptionBriefRequestInput,
     ContinuityWeeklyReviewRequestInput,
+    ContinuityWeeklyReviewRollup,
     MemoryQualityGateStatus,
 )
 from alicebot_api.memory import get_memory_trust_dashboard_summary
-from alicebot_api.store import ContinuityStore
+from alicebot_api.store import ContinuityStore, JsonObject
 
 
 class ChiefOfStaffValidationError(ValueError):
@@ -159,6 +163,71 @@ class _ActionHandoffCandidate:
 
 
 _ACTIONABLE_OBJECT_TYPES = {"Commitment", "WaitingFor", "Blocker", "NextAction"}
+_OPEN_LOOP_POSTURES: tuple[ContinuityOpenLoopPosture, ...] = (
+    "waiting_for",
+    "blocker",
+    "stale",
+    "next_action",
+)
+_PRIORITY_POSTURES: tuple[ChiefOfStaffPriorityPosture, ...] = (
+    "urgent",
+    "important",
+    "waiting",
+    "blocked",
+    "stale",
+    "defer",
+)
+_FOLLOW_THROUGH_POSTURES: tuple[ChiefOfStaffFollowThroughPosture, ...] = (
+    "overdue",
+    "stale_waiting_for",
+    "slipped_commitment",
+)
+_EXECUTION_POSTURES: tuple[ChiefOfStaffExecutionPosture, ...] = (
+    "approval_bounded_artifact_only",
+)
+_ACTION_HANDOFF_SOURCE_ORDER: tuple[ChiefOfStaffActionHandoffSourceKind, ...] = (
+    "recommended_next_action",
+    "follow_through",
+    "prep_checklist",
+    "weekly_review",
+)
+_WEEKLY_REVIEW_GUIDANCE_ACTIONS: tuple[ChiefOfStaffWeeklyReviewGuidanceAction, ...] = (
+    "close",
+    "defer",
+    "escalate",
+)
+_HANDOFF_REVIEW_ACTIONS: tuple[ChiefOfStaffHandoffReviewAction, ...] = (
+    "mark_ready",
+    "mark_pending_approval",
+    "mark_executed",
+    "mark_stale",
+    "mark_expired",
+)
+_HANDOFF_QUEUE_STATES: tuple[ChiefOfStaffHandoffQueueLifecycleState, ...] = (
+    "ready",
+    "pending_approval",
+    "executed",
+    "stale",
+    "expired",
+)
+_HANDOFF_OUTCOME_STATUSES: tuple[ChiefOfStaffHandoffOutcomeStatus, ...] = (
+    "reviewed",
+    "approved",
+    "rejected",
+    "rewritten",
+    "executed",
+    "ignored",
+    "expired",
+)
+_EXECUTION_ROUTE_TARGETS: tuple[ChiefOfStaffExecutionRouteTarget, ...] = (
+    "task_workflow_draft",
+    "approval_workflow_draft",
+    "follow_up_draft_only",
+)
+_EXECUTION_ROUTING_TRANSITIONS: tuple[ChiefOfStaffExecutionRoutingTransition, ...] = (
+    "routed",
+    "reaffirmed",
+)
 _CONFIDENCE_ORDER: dict[ChiefOfStaffRecommendationConfidencePosture, int] = {
     "low": 0,
     "medium": 1,
@@ -205,7 +274,7 @@ _ACTION_HANDOFF_SOURCE_WEIGHT: dict[ChiefOfStaffActionHandoffSourceKind, float] 
     "weekly_review": 500.0,
 }
 _ACTION_HANDOFF_SOURCE_RANK: dict[ChiefOfStaffActionHandoffSourceKind, int] = {
-    source_kind: index for index, source_kind in enumerate(CHIEF_OF_STAFF_ACTION_HANDOFF_SOURCE_ORDER)
+    source_kind: index for index, source_kind in enumerate(_ACTION_HANDOFF_SOURCE_ORDER)
 }
 _ACTION_HANDOFF_ACTION_SCOPE_MAP: dict[ChiefOfStaffActionHandoffSourceKind, str] = {
     "recommended_next_action": "chief_of_staff_priority",
@@ -259,6 +328,30 @@ def _normalize_optional_text(value: str | None) -> str | None:
     return normalized
 
 
+def _handoff_queue_state(value: str | None) -> ChiefOfStaffHandoffQueueLifecycleState | None:
+    if value == "ready":
+        return "ready"
+    if value == "pending_approval":
+        return "pending_approval"
+    if value == "executed":
+        return "executed"
+    if value == "stale":
+        return "stale"
+    if value == "expired":
+        return "expired"
+    return None
+
+
+def _execution_routing_transition(
+    value: str,
+) -> ChiefOfStaffExecutionRoutingTransition | None:
+    if value == "routed":
+        return "routed"
+    if value == "reaffirmed":
+        return "reaffirmed"
+    return None
+
+
 def _validate_request(request: ChiefOfStaffPriorityBriefRequestInput) -> None:
     if request.limit < 0 or request.limit > MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT:
         raise ChiefOfStaffValidationError(
@@ -293,21 +386,12 @@ def _age_hours_relative_to_latest(*, latest_created_at: datetime, item_created_a
 
 
 def _build_open_loop_posture_map(
-    dashboard: dict[str, object],
+    dashboard: ContinuityOpenLoopDashboardRecord,
 ) -> dict[str, ContinuityOpenLoopPosture]:
     posture_by_id: dict[str, ContinuityOpenLoopPosture] = {}
-    for posture in CONTINUITY_OPEN_LOOP_POSTURE_ORDER:
-        section = dashboard[posture]
-        if not isinstance(section, dict):
-            continue
-        raw_items = section.get("items")
-        if not isinstance(raw_items, list):
-            continue
-        for item in raw_items:
-            if isinstance(item, dict):
-                item_id = item.get("id")
-                if isinstance(item_id, str):
-                    posture_by_id[item_id] = posture
+    for posture in _OPEN_LOOP_POSTURES:
+        for item in dashboard[posture]["items"]:
+            posture_by_id[item["id"]] = posture
     return posture_by_id
 
 
@@ -836,7 +920,7 @@ def _preparation_reason_for_context(item: ContinuityRecallResultRecord) -> str:
 def _build_preparation_brief(
     *,
     recall_items: list[ContinuityRecallResultRecord],
-    scope: dict[str, object],
+    scope: ContinuityRecallScopeFilters,
     last_decision: ContinuityRecallResultRecord | None,
     open_loops: list[ContinuityRecallResultRecord],
     next_action: ContinuityRecallResultRecord | None,
@@ -1179,7 +1263,7 @@ def _note_body_for_kind(
     item: ContinuityRecallResultRecord,
     *,
     kind: str,
-) -> dict[str, object] | None:
+) -> JsonObject | None:
     if item["object_type"] != "Note":
         return None
     body = item["body"]
@@ -1191,7 +1275,7 @@ def _note_body_for_kind(
 
 
 def _required_body_string(
-    body: dict[str, object],
+    body: Mapping[str, object],
     key: str,
     *,
     strip: bool = False,
@@ -1207,7 +1291,7 @@ def _required_body_string(
 
 
 def _required_body_choice(
-    body: dict[str, object],
+    body: Mapping[str, object],
     key: str,
     *,
     allowed: Container[str],
@@ -1219,7 +1303,7 @@ def _required_body_choice(
 
 
 def _optional_body_choice(
-    body: dict[str, object],
+    body: Mapping[str, object],
     key: str,
     *,
     allowed: Container[str],
@@ -1233,7 +1317,7 @@ def _optional_body_choice(
 
 
 def _defaulted_body_reason(
-    body: dict[str, object],
+    body: Mapping[str, object],
     *,
     default: str,
 ) -> str:
@@ -1241,7 +1325,7 @@ def _defaulted_body_reason(
     return default if reason is None else reason
 
 
-def _optional_body_note(body: dict[str, object]) -> str | None:
+def _optional_body_note(body: Mapping[str, object]) -> str | None:
     return _required_body_string(body, "note", strip=True)
 
 
@@ -1319,7 +1403,7 @@ def _build_outcome_hotspots(
         hotspot_key = item["target_priority_id"] or item["recommendation_action_type"]
         counts_by_key[hotspot_key] = counts_by_key.get(hotspot_key, 0) + 1
 
-    hotspots = [
+    hotspots: list[ChiefOfStaffOutcomeHotspotRecord] = [
         {"key": key, "count": count}
         for key, count in sorted(
             counts_by_key.items(),
@@ -1456,8 +1540,8 @@ def _build_pattern_drift_summary(
 
 def _build_weekly_review_brief(
     *,
-    scope: dict[str, object],
-    weekly_rollup: dict[str, object],
+    scope: ContinuityRecallScopeFilters,
+    weekly_rollup: ContinuityWeeklyReviewRollup,
     follow_through_items: list[ChiefOfStaffFollowThroughItem],
 ) -> ChiefOfStaffWeeklyReviewBriefRecord:
     action_counts: dict[ChiefOfStaffFollowThroughRecommendationAction, int] = {
@@ -1469,10 +1553,10 @@ def _build_weekly_review_brief(
     for item in follow_through_items:
         action_counts[item["recommendation_action"]] += 1
 
-    blocker_count = int(weekly_rollup.get("blocker_count", 0))
-    stale_count = int(weekly_rollup.get("stale_count", 0))
-    waiting_for_count = int(weekly_rollup.get("waiting_for_count", 0))
-    next_action_count = int(weekly_rollup.get("next_action_count", 0))
+    blocker_count = weekly_rollup["blocker_count"]
+    stale_count = weekly_rollup["stale_count"]
+    waiting_for_count = weekly_rollup["waiting_for_count"]
+    next_action_count = weekly_rollup["next_action_count"]
 
     guidance_candidates: list[ChiefOfStaffWeeklyReviewGuidanceItem] = [
         {
@@ -1507,16 +1591,16 @@ def _build_weekly_review_brief(
         key=lambda item: (item["signal_count"], item["action"]),
         reverse=True,
     )
-    for rank, item in enumerate(guidance_candidates, start=1):
-        item["rank"] = rank
+    for rank, guidance_item in enumerate(guidance_candidates, start=1):
+        guidance_item["rank"] = rank
 
     summary: ChiefOfStaffWeeklyReviewBriefSummary = {
-        "guidance_order": list(CHIEF_OF_STAFF_WEEKLY_REVIEW_GUIDANCE_ACTIONS),
+        "guidance_order": list(_WEEKLY_REVIEW_GUIDANCE_ACTIONS),
         "guidance_item_order": ["signal_count_desc", "action_desc"],
     }
     return {
-        "scope": scope,  # type: ignore[typeddict-item]
-        "rollup": weekly_rollup,  # type: ignore[typeddict-item]
+        "scope": scope,
+        "rollup": weekly_rollup,
         "guidance": guidance_candidates,
         "summary": summary,
     }
@@ -1579,7 +1663,7 @@ def _action_handoff_sort_key(candidate: _ActionHandoffCandidate) -> tuple[float,
 
 def _build_action_handoff_request_target(
     *,
-    scope: dict[str, object],
+    scope: ContinuityRecallScopeFilters,
 ) -> ChiefOfStaffActionHandoffRequestTarget:
     thread_id = scope.get("thread_id")
     task_id = scope.get("task_id")
@@ -1688,15 +1772,11 @@ def _aggregate_provenance_references(
 
 
 def _build_execution_posture() -> ChiefOfStaffExecutionPostureRecord:
-    posture = "approval_bounded_artifact_only"
-    if posture not in CHIEF_OF_STAFF_EXECUTION_POSTURE_ORDER:
-        posture = CHIEF_OF_STAFF_EXECUTION_POSTURE_ORDER[0]  # type: ignore[index]
-
     non_autonomous_guarantee = (
         "No task, approval, connector send, or external side effect is executed by this endpoint."
     )
     return {
-        "posture": posture,  # type: ignore[typeddict-item]
+        "posture": "approval_bounded_artifact_only",
         "approval_required": True,
         "autonomous_execution": False,
         "external_side_effects_allowed": False,
@@ -1718,7 +1798,7 @@ def _build_action_handoff_artifacts(
     prep_checklist: ChiefOfStaffPrepChecklistRecord,
     weekly_review_brief: ChiefOfStaffWeeklyReviewBriefRecord,
     trust_cap: _TrustConfidenceCap,
-    scope: dict[str, object],
+    scope: ContinuityRecallScopeFilters,
 ) -> tuple[
     ChiefOfStaffActionHandoffBriefRecord,
     list[ChiefOfStaffActionHandoffItem],
@@ -1880,7 +1960,7 @@ def _build_action_handoff_artifacts(
         "confidence_posture": trust_cap.posture,
         "non_autonomous_guarantee": non_autonomous_guarantee,
         "order": list(CHIEF_OF_STAFF_ACTION_HANDOFF_ITEM_ORDER),
-        "source_order": list(CHIEF_OF_STAFF_ACTION_HANDOFF_SOURCE_ORDER),
+        "source_order": list(_ACTION_HANDOFF_SOURCE_ORDER),
         "provenance_references": handoff_provenance,
     }
 
@@ -2003,7 +2083,7 @@ def _available_handoff_review_actions(
 ) -> list[ChiefOfStaffHandoffReviewAction]:
     return [
         action
-        for action in CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS
+        for action in _HANDOFF_REVIEW_ACTIONS
         if _HANDOFF_REVIEW_ACTION_TO_STATE[action] != state
     ]
 
@@ -2083,16 +2163,18 @@ def _parse_handoff_review_action_record(
     )
     if raw_review_action is None:
         return None
-    review_action: ChiefOfStaffHandoffReviewAction = raw_review_action  # type: ignore[assignment]
+    review_action = _normalize_handoff_review_action(raw_review_action)
+    if review_action is None:
+        return None
 
     raw_next_state = _required_body_choice(
         body,
         "next_lifecycle_state",
         allowed=CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER,
     )
-    if raw_next_state is None:
+    next_lifecycle_state = _handoff_queue_state(raw_next_state)
+    if next_lifecycle_state is None:
         return None
-    next_lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState = raw_next_state  # type: ignore[assignment]
 
     valid_previous_state, raw_previous_state = _optional_body_choice(
         body,
@@ -2101,9 +2183,9 @@ def _parse_handoff_review_action_record(
     )
     if not valid_previous_state:
         return None
-    previous_lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState | None = raw_previous_state  # type: ignore[assignment]
+    previous_lifecycle_state = _handoff_queue_state(raw_previous_state)
 
-    return {
+    record: ChiefOfStaffHandoffReviewActionRecord = {
         "id": item["id"],
         "capture_event_id": item["capture_event_id"],
         "handoff_item_id": handoff_item_id,
@@ -2119,6 +2201,7 @@ def _parse_handoff_review_action_record(
         "created_at": item["created_at"],
         "updated_at": item["updated_at"],
     }
+    return record
 
 
 def _handoff_review_action_sort_key(
@@ -2172,7 +2255,9 @@ def _parse_handoff_outcome_record(
     )
     if raw_outcome_status is None:
         return None
-    outcome_status: ChiefOfStaffHandoffOutcomeStatus = raw_outcome_status  # type: ignore[assignment]
+    outcome_status = _normalize_handoff_outcome_status(raw_outcome_status)
+    if outcome_status is None:
+        return None
 
     valid_previous_status, raw_previous_outcome_status = _optional_body_choice(
         body,
@@ -2181,9 +2266,13 @@ def _parse_handoff_outcome_record(
     )
     if not valid_previous_status:
         return None
-    previous_outcome_status: ChiefOfStaffHandoffOutcomeStatus | None = raw_previous_outcome_status  # type: ignore[assignment]
+    previous_outcome_status = (
+        None
+        if raw_previous_outcome_status is None
+        else _normalize_handoff_outcome_status(raw_previous_outcome_status)
+    )
 
-    return {
+    record: ChiefOfStaffHandoffOutcomeRecord = {
         "id": item["id"],
         "capture_event_id": item["capture_event_id"],
         "handoff_item_id": handoff_item_id,
@@ -2199,6 +2288,7 @@ def _parse_handoff_outcome_record(
         "created_at": item["created_at"],
         "updated_at": item["updated_at"],
     }
+    return record
 
 
 def _handoff_outcome_sort_key(item: ChiefOfStaffHandoffOutcomeRecord) -> tuple[str, str]:
@@ -2255,7 +2345,7 @@ def _build_handoff_outcome_artifacts(
         "latest_total_count": latest_total_count,
         "status_counts": status_counts,
         "latest_status_counts": latest_status_counts,
-        "status_order": list(CHIEF_OF_STAFF_HANDOFF_OUTCOME_STATUSES),
+        "status_order": list(_HANDOFF_OUTCOME_STATUSES),
         "order": list(CHIEF_OF_STAFF_HANDOFF_OUTCOME_ORDER),
     }
     return summary, selected_outcomes, latest_status_counts
@@ -2427,7 +2517,9 @@ def _parse_execution_routing_audit_record(
     )
     if raw_route_target is None:
         return None
-    route_target: ChiefOfStaffExecutionRouteTarget = raw_route_target  # type: ignore[assignment]
+    route_target = _normalize_execution_route_target(raw_route_target)
+    if route_target is None:
+        return None
 
     raw_transition = _required_body_choice(
         body,
@@ -2436,12 +2528,14 @@ def _parse_execution_routing_audit_record(
     )
     if raw_transition is None:
         return None
-    transition: ChiefOfStaffExecutionRoutingTransition = raw_transition  # type: ignore[assignment]
+    transition = _execution_routing_transition(raw_transition)
+    if transition is None:
+        return None
 
     previously_routed = bool(body.get("previously_routed", False))
     route_state = bool(body.get("route_state", True))
 
-    return {
+    record: ChiefOfStaffExecutionRoutingAuditRecord = {
         "id": item["id"],
         "capture_event_id": item["capture_event_id"],
         "handoff_item_id": handoff_item_id,
@@ -2458,6 +2552,7 @@ def _parse_execution_routing_audit_record(
         "created_at": item["created_at"],
         "updated_at": item["updated_at"],
     }
+    return record
 
 
 def _execution_routing_audit_sort_key(
@@ -2486,17 +2581,17 @@ def _build_execution_readiness_posture(
     execution_posture: ChiefOfStaffExecutionPostureRecord,
 ) -> ChiefOfStaffExecutionReadinessPostureRecord:
     return {
-        "posture": CHIEF_OF_STAFF_EXECUTION_READINESS_POSTURE_ORDER[0],  # type: ignore[index]
+        "posture": "approval_required_draft_only",
         "approval_required": execution_posture["approval_required"],
         "autonomous_execution": execution_posture["autonomous_execution"],
         "external_side_effects_allowed": execution_posture["external_side_effects_allowed"],
         "approval_path_visible": True,
-        "route_target_order": list(CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER),
+        "route_target_order": list(_EXECUTION_ROUTE_TARGETS),
         "required_route_targets": [
             "task_workflow_draft",
             "approval_workflow_draft",
         ],
-        "transition_order": list(CHIEF_OF_STAFF_EXECUTION_ROUTING_TRANSITIONS),
+        "transition_order": list(_EXECUTION_ROUTING_TRANSITIONS),
         "non_autonomous_guarantee": execution_posture["non_autonomous_guarantee"],
         "reason": (
             "Execution routing remains draft-only and approval-bounded; operators can explicitly route "
@@ -2518,14 +2613,14 @@ def _build_execution_routing_artifacts(
 ]:
     latest_by_item_target: dict[tuple[str, ChiefOfStaffExecutionRouteTarget], ChiefOfStaffExecutionRoutingAuditRecord] = {}
     latest_by_item: dict[str, ChiefOfStaffExecutionRoutingAuditRecord] = {}
-    for transition in routing_audit_trail:
-        item_id = transition["handoff_item_id"]
-        route_target = transition["route_target"]
+    for audit_record in routing_audit_trail:
+        item_id = audit_record["handoff_item_id"]
+        route_target = audit_record["route_target"]
         key = (item_id, route_target)
         if key not in latest_by_item_target:
-            latest_by_item_target[key] = transition
+            latest_by_item_target[key] = audit_record
         if item_id not in latest_by_item:
-            latest_by_item[item_id] = transition
+            latest_by_item[item_id] = audit_record
 
     routed_handoff_items: list[ChiefOfStaffRoutedHandoffItemRecord] = []
     task_routed_count = 0
@@ -2547,11 +2642,11 @@ def _build_execution_routing_artifacts(
             available_targets.append("follow_up_draft_only")
 
         routed_targets: list[ChiefOfStaffExecutionRouteTarget] = []
-        for route_target in CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER:
+        for route_target in _EXECUTION_ROUTE_TARGETS:
             if route_target not in available_targets:
                 continue
-            transition = latest_by_item_target.get((handoff_item_id, route_target))
-            if transition is not None and transition["route_state"]:
+            routing_record = latest_by_item_target.get((handoff_item_id, route_target))
+            if routing_record is not None and routing_record["route_state"]:
                 routed_targets.append(route_target)
 
         task_routed = "task_workflow_draft" in routed_targets
@@ -2567,7 +2662,7 @@ def _build_execution_routing_artifacts(
             "title": handoff_item["title"],
             "source_kind": handoff_item["source_kind"],
             "recommendation_action": handoff_item["recommendation_action"],
-            "route_target_order": list(CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER),
+            "route_target_order": list(_EXECUTION_ROUTE_TARGETS),
             "available_route_targets": available_targets,
             "routed_targets": routed_targets,
             "is_routed": len(routed_targets) > 0,
@@ -2591,10 +2686,10 @@ def _build_execution_routing_artifacts(
         "task_workflow_draft_count": task_routed_count,
         "approval_workflow_draft_count": approval_routed_count,
         "follow_up_draft_only_count": follow_up_routed_count,
-        "route_target_order": list(CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER),
+        "route_target_order": list(_EXECUTION_ROUTE_TARGETS),
         "routed_item_order": list(CHIEF_OF_STAFF_EXECUTION_ROUTED_ITEM_ORDER),
         "audit_order": list(CHIEF_OF_STAFF_EXECUTION_ROUTING_AUDIT_ORDER),
-        "transition_order": list(CHIEF_OF_STAFF_EXECUTION_ROUTING_TRANSITIONS),
+        "transition_order": list(_EXECUTION_ROUTING_TRANSITIONS),
         "approval_required": execution_posture["approval_required"],
         "non_autonomous_guarantee": execution_posture["non_autonomous_guarantee"],
         "reason": (
@@ -2698,7 +2793,7 @@ def _build_handoff_queue(
             "confidence_posture": handoff_item["confidence_posture"],
             "score": handoff_item["score"],
             "age_hours_relative_to_latest": age_hours,
-            "review_action_order": list(CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS),
+            "review_action_order": list(_HANDOFF_REVIEW_ACTIONS),
             "available_review_actions": _available_handoff_review_actions(state),
             "last_review_action": last_review_action,
             "provenance_references": handoff_item["provenance_references"],
@@ -2706,12 +2801,15 @@ def _build_handoff_queue(
         grouped_items[state].append(queue_item)
 
     queue_rank = 1
-    for lifecycle_state in CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER:
-        items = sorted(grouped_items[lifecycle_state], key=_handoff_queue_item_sort_key)
-        for item in items:
-            item["queue_rank"] = queue_rank
+    for lifecycle_state in _HANDOFF_QUEUE_STATES:
+        state_items = sorted(
+            grouped_items[lifecycle_state],
+            key=_handoff_queue_item_sort_key,
+        )
+        for queue_entry in state_items:
+            queue_entry["queue_rank"] = queue_rank
             queue_rank += 1
-        grouped_items[lifecycle_state] = items
+        grouped_items[lifecycle_state] = state_items
 
     handoff_queue_summary: ChiefOfStaffHandoffQueueSummary = {
         "total_count": len(handoff_items),
@@ -2720,10 +2818,10 @@ def _build_handoff_queue(
         "executed_count": len(grouped_items["executed"]),
         "stale_count": len(grouped_items["stale"]),
         "expired_count": len(grouped_items["expired"]),
-        "state_order": list(CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER),
-        "group_order": list(CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER),
+        "state_order": list(_HANDOFF_QUEUE_STATES),
+        "group_order": list(_HANDOFF_QUEUE_STATES),
         "item_order": list(CHIEF_OF_STAFF_HANDOFF_QUEUE_ITEM_ORDER),
-        "review_action_order": list(CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS),
+        "review_action_order": list(_HANDOFF_REVIEW_ACTIONS),
     }
     handoff_queue_groups: ChiefOfStaffHandoffQueueGroups = {
         "ready": {
@@ -2800,7 +2898,7 @@ def _flatten_handoff_queue_items(
     handoff_queue_groups: ChiefOfStaffHandoffQueueGroups,
 ) -> list[ChiefOfStaffHandoffQueueItem]:
     items: list[ChiefOfStaffHandoffQueueItem] = []
-    for lifecycle_state in CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER:
+    for lifecycle_state in _HANDOFF_QUEUE_STATES:
         items.extend(handoff_queue_groups[lifecycle_state]["items"])
     return items
 
@@ -2808,25 +2906,49 @@ def _flatten_handoff_queue_items(
 def _normalize_handoff_review_action(
     review_action: str,
 ) -> ChiefOfStaffHandoffReviewAction | None:
-    if review_action not in CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS:
+    if review_action not in _HANDOFF_REVIEW_ACTIONS:
         return None
-    return review_action  # type: ignore[return-value]
+    if review_action == "mark_ready":
+        return "mark_ready"
+    if review_action == "mark_pending_approval":
+        return "mark_pending_approval"
+    if review_action == "mark_executed":
+        return "mark_executed"
+    if review_action == "mark_stale":
+        return "mark_stale"
+    return "mark_expired"
 
 
 def _normalize_execution_route_target(
     route_target: str,
 ) -> ChiefOfStaffExecutionRouteTarget | None:
-    if route_target not in CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER:
-        return None
-    return route_target  # type: ignore[return-value]
+    if route_target == "task_workflow_draft":
+        return "task_workflow_draft"
+    if route_target == "approval_workflow_draft":
+        return "approval_workflow_draft"
+    if route_target == "follow_up_draft_only":
+        return "follow_up_draft_only"
+    return None
 
 
 def _normalize_handoff_outcome_status(
     outcome_status: str,
 ) -> ChiefOfStaffHandoffOutcomeStatus | None:
-    if outcome_status not in CHIEF_OF_STAFF_HANDOFF_OUTCOME_STATUSES:
-        return None
-    return outcome_status  # type: ignore[return-value]
+    if outcome_status == "reviewed":
+        return "reviewed"
+    if outcome_status == "approved":
+        return "approved"
+    if outcome_status == "rejected":
+        return "rejected"
+    if outcome_status == "rewritten":
+        return "rewritten"
+    if outcome_status == "executed":
+        return "executed"
+    if outcome_status == "ignored":
+        return "ignored"
+    if outcome_status == "expired":
+        return "expired"
+    return None
 
 
 def capture_chief_of_staff_recommendation_outcome(
@@ -2869,7 +2991,7 @@ def capture_chief_of_staff_recommendation_outcome(
     project = _normalize_optional_text(request.project)
     person = _normalize_optional_text(request.person)
 
-    body: dict[str, object] = {
+    body: JsonObject = {
         "kind": _OUTCOME_BODY_KIND,
         "outcome": outcome,
         "recommendation_action_type": recommendation_action_type,
@@ -2878,7 +3000,7 @@ def capture_chief_of_staff_recommendation_outcome(
         "rationale": rationale,
         "rewritten_title": rewritten_title,
     }
-    provenance: dict[str, object] = {
+    provenance: JsonObject = {
         "thread_id": thread_id,
         "task_id": task_id,
         "project": project,
@@ -3000,7 +3122,7 @@ def capture_chief_of_staff_handoff_review_action(
 
     thread_id = None if request.thread_id is None else str(request.thread_id)
     task_id = None if request.task_id is None else str(request.task_id)
-    body: dict[str, object] = {
+    body: JsonObject = {
         "kind": _HANDOFF_REVIEW_ACTION_BODY_KIND,
         "handoff_item_id": handoff_item_id,
         "review_action": review_action,
@@ -3009,7 +3131,7 @@ def capture_chief_of_staff_handoff_review_action(
         "reason": transition_reason,
         "note": note,
     }
-    provenance: dict[str, object] = {
+    provenance: JsonObject = {
         "thread_id": thread_id,
         "task_id": task_id,
         "project": project,
@@ -3136,7 +3258,7 @@ def capture_chief_of_staff_execution_routing_action(
 
     thread_id = None if request.thread_id is None else str(request.thread_id)
     task_id = None if request.task_id is None else str(request.task_id)
-    body: dict[str, object] = {
+    body: JsonObject = {
         "kind": _EXECUTION_ROUTING_ACTION_BODY_KIND,
         "handoff_item_id": handoff_item_id,
         "route_target": route_target,
@@ -3146,7 +3268,7 @@ def capture_chief_of_staff_execution_routing_action(
         "reason": transition_reason,
         "note": note,
     }
-    provenance: dict[str, object] = {
+    provenance: JsonObject = {
         "thread_id": thread_id,
         "task_id": task_id,
         "project": project,
@@ -3286,7 +3408,7 @@ def capture_chief_of_staff_handoff_outcome(
 
     thread_id = None if request.thread_id is None else str(request.thread_id)
     task_id = None if request.task_id is None else str(request.task_id)
-    body: dict[str, object] = {
+    body: JsonObject = {
         "kind": _HANDOFF_OUTCOME_BODY_KIND,
         "handoff_item_id": handoff_item_id,
         "outcome_status": outcome_status,
@@ -3294,7 +3416,7 @@ def capture_chief_of_staff_handoff_outcome(
         "reason": transition_reason,
         "note": note,
     }
-    provenance: dict[str, object] = {
+    provenance: JsonObject = {
         "thread_id": thread_id,
         "task_id": task_id,
         "project": project,
@@ -3616,10 +3738,9 @@ def compile_chief_of_staff_priority_brief(
     selected_items = scored_items[:limit] if limit > 0 else []
 
     ranked_items: list[ChiefOfStaffPriorityItem] = []
-    for rank, (_, _, item) in enumerate(selected_items, start=1):
-        ranked_item = dict(item)
-        ranked_item["rank"] = rank
-        ranked_items.append(ranked_item)  # type: ignore[arg-type]
+    for rank, (_, _, priority_item) in enumerate(selected_items, start=1):
+        priority_item["rank"] = rank
+        ranked_items.append(priority_item)
 
     recommended_next_action = _build_recommended_action(
         ranked_items=ranked_items,
@@ -3764,9 +3885,9 @@ def compile_chief_of_staff_priority_brief(
         "limit": limit,
         "returned_count": len(ranked_items),
         "total_count": total_count,
-        "posture_order": list(CHIEF_OF_STAFF_PRIORITY_POSTURE_ORDER),
+        "posture_order": list(_PRIORITY_POSTURES),
         "order": list(CHIEF_OF_STAFF_PRIORITY_ITEM_ORDER),
-        "follow_through_posture_order": list(CHIEF_OF_STAFF_FOLLOW_THROUGH_POSTURE_ORDER),
+        "follow_through_posture_order": list(_FOLLOW_THROUGH_POSTURES),
         "follow_through_item_order": list(CHIEF_OF_STAFF_FOLLOW_THROUGH_ITEM_ORDER),
         "follow_through_total_count": len(follow_through_candidates),
         "overdue_count": len(overdue_items_all),
@@ -3778,7 +3899,7 @@ def compile_chief_of_staff_priority_brief(
         "retrieval_status": retrieval_status,
         "handoff_item_count": len(handoff_items),
         "handoff_item_order": list(CHIEF_OF_STAFF_ACTION_HANDOFF_ITEM_ORDER),
-        "execution_posture_order": list(CHIEF_OF_STAFF_EXECUTION_POSTURE_ORDER),
+        "execution_posture_order": list(_EXECUTION_POSTURES),
         "handoff_queue_total_count": handoff_queue_summary["total_count"],
         "handoff_queue_ready_count": handoff_queue_summary["ready_count"],
         "handoff_queue_pending_approval_count": handoff_queue_summary["pending_approval_count"],

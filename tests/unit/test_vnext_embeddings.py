@@ -12,10 +12,12 @@ from alicebot_api.vnext_embeddings import (
     VNextEmbeddingConfigurationError,
     VNextEmbeddingProviderError,
     attach_memory_embedding,
+    endpoint_fingerprint,
     get_embedding_provider,
     memory_embedding_signature,
     memory_embedding_text,
     pad_embedding_vector,
+    signed_memory_embedding_update,
 )
 
 
@@ -52,6 +54,12 @@ def test_pad_embedding_vector_rejects_empty_and_non_numeric_vectors() -> None:
         pad_embedding_vector([])
     with pytest.raises(VNextEmbeddingConfigurationError, match="only numbers"):
         pad_embedding_vector([0.1, "bad"])  # type: ignore[list-item]
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_pad_embedding_vector_rejects_non_finite_numbers(value: float) -> None:
+    with pytest.raises(VNextEmbeddingConfigurationError, match="finite numbers"):
+        pad_embedding_vector([0.1, value])
 
 
 def test_get_embedding_provider_returns_none_when_unconfigured(monkeypatch) -> None:
@@ -183,6 +191,46 @@ def test_embedding_signature_distinguishes_endpoints_with_same_labels() -> None:
         base_url="https://a.example/v1/", model="text-embed"
     )
     assert memory_embedding_signature(memory, provider=endpoint_a_again)["endpoint"] == sig_a["endpoint"]
+
+
+def test_endpoint_fingerprint_normalizes_only_scheme_host_and_default_port() -> None:
+    canonical = endpoint_fingerprint("HTTPS://Embed.Example:443/CaseSensitive/V1?Model=AbC")
+
+    assert canonical == endpoint_fingerprint(
+        "https://embed.example/CaseSensitive/V1?Model=AbC"
+    )
+    assert canonical != endpoint_fingerprint(
+        "https://embed.example/casesensitive/v1?model=abc"
+    )
+    assert endpoint_fingerprint("http://EMBED.example:80/v1/") == endpoint_fingerprint(
+        "http://embed.example/v1"
+    )
+
+
+def test_signed_memory_embedding_update_is_complete_v2_contract() -> None:
+    provider = OpenAICompatibleEmbeddingProvider(
+        base_url="https://Embed.Example:443/Case/V1",
+        model="text-embed",
+    )
+    memory = {"id": "memory-1", "canonical_text": "Signed fact."}
+
+    update = signed_memory_embedding_update(memory, [0.5, 0.25], provider=provider)
+
+    assert set(update) == {
+        "memory_id",
+        "vector",
+        "provider",
+        "model",
+        "endpoint",
+        "content_sha256",
+        "signature_version",
+    }
+    assert update["memory_id"] == "memory-1"
+    assert len(update["vector"]) == EMBEDDING_VECTOR_DIMENSIONS
+    assert update["provider"] == "openai_compatible"
+    assert update["model"] == "text-embed"
+    assert update["endpoint"] == endpoint_fingerprint(provider.base_url)
+    assert update["signature_version"] == 2
 
 
 class _AttachStore:

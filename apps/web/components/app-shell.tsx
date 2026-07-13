@@ -96,6 +96,9 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="shell-chrome">
+      <a className="skip-link" href="#main-content">
+        Skip to main content
+      </a>
       <div className="shell">
         <aside className="shell-sidebar" aria-label="Primary navigation">
           <div className="brand-copy">
@@ -103,7 +106,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               AB
             </span>
             <p className="eyebrow">AliceBot</p>
-            <h1 className="brand-title">Operator shell</h1>
+            <p className="brand-title">Operator shell</p>
             <p className="brand-description">
               Calm, governed views for hosted onboarding/settings plus requests, approvals, tasks,
               hosted admin operations, artifacts, Gmail, Calendar, memories, chief-of-staff
@@ -117,6 +120,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 key={item.href}
                 href={item.href}
                 className={`shell-nav__item${isActive(pathname, item.href) ? " is-active" : ""}`}
+                aria-current={isActive(pathname, item.href) ? "page" : undefined}
               >
                 <span className="shell-nav__title">{item.label}</span>
                 <span className="shell-nav__caption">{item.caption}</span>
@@ -138,7 +142,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <div className="shell-topbar__row">
               <div className="brand-copy">
                 <p className="eyebrow">MVP Web Shell</p>
-                <h2 className="shell-topbar__title">Governed operator interface</h2>
+                <p className="shell-topbar__title">Governed operator interface</p>
               </div>
 
               <div className="topbar-status" aria-label="Shell status">
@@ -153,6 +157,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                   key={item.href}
                   href={item.href}
                   className={`shell-nav__item${isActive(pathname, item.href) ? " is-active" : ""}`}
+                  aria-current={isActive(pathname, item.href) ? "page" : undefined}
                 >
                   <span className="shell-nav__title">{item.label}</span>
                   <span className="shell-nav__caption">{item.caption}</span>
@@ -161,7 +166,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </nav>
           </header>
 
-          <main className="shell-main">
+          <main id="main-content" className="shell-main" tabIndex={-1}>
             <div className="content-frame">{children}</div>
           </main>
         </div>

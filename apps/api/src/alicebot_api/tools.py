@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal, cast
 from uuid import UUID
 
 from alicebot_api.contracts import (
@@ -11,11 +12,14 @@ from alicebot_api.contracts import (
     TRACE_KIND_TOOL_ALLOWLIST_EVALUATE,
     TRACE_KIND_TOOL_ROUTE,
     PolicyEvaluationRequestInput,
+    PolicyEffect,
     ToolAllowlistDecisionRecord,
+    ToolAllowlistDecision,
     ToolAllowlistEvaluationRequestInput,
     ToolAllowlistEvaluationResponse,
     ToolAllowlistEvaluationSummary,
     ToolAllowlistReason,
+    ToolAllowlistReasonCode,
     ToolAllowlistTraceSummary,
     ToolRoutingDecision,
     ToolRoutingDecisionTracePayload,
@@ -30,6 +34,7 @@ from alicebot_api.contracts import (
     ToolDetailResponse,
     ToolListResponse,
     ToolListSummary,
+    ToolMetadataVersion,
     ToolRecord,
     isoformat_or_none,
 )
@@ -37,7 +42,7 @@ from alicebot_api.policy import (
     evaluate_policy_against_context,
     load_policy_evaluation_context,
 )
-from alicebot_api.store import ContinuityStore, ToolRow
+from alicebot_api.store import ContinuityStore, JsonObject, JsonValue, ToolRow
 
 
 class ToolValidationError(ValueError):
@@ -58,7 +63,7 @@ class ToolRoutingValidationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ToolClassificationResult:
-    decision: str
+    decision: ToolAllowlistDecision
     tool: ToolRecord
     reasons: list[ToolAllowlistReason]
     matched_policy_id: str | None
@@ -71,7 +76,7 @@ def _serialize_tool(tool: ToolRow) -> ToolRecord:
         "name": tool["name"],
         "description": tool["description"],
         "version": tool["version"],
-        "metadata_version": tool["metadata_version"],
+        "metadata_version": cast(ToolMetadataVersion, tool["metadata_version"]),
         "active": tool["active"],
         "tags": list(tool["tags"]),
         "action_hints": list(tool["action_hints"]),
@@ -85,8 +90,8 @@ def _serialize_tool(tool: ToolRow) -> ToolRecord:
 
 def _build_tool_reason(
     *,
-    code: str,
-    source: str,
+    code: ToolAllowlistReasonCode,
+    source: Literal["tool", "policy", "consent", "system"],
     message: str,
     tool_id: UUID,
     policy_id: str | None = None,
@@ -173,8 +178,8 @@ def _policy_attributes(
     *,
     tool: ToolRow,
     request: ToolAllowlistEvaluationRequestInput,
-) -> dict[str, object]:
-    attributes: dict[str, object] = dict(request.attributes)
+) -> JsonObject:
+    attributes: JsonObject = dict(request.attributes)
     attributes["tool_key"] = tool["tool_key"]
     attributes["tool_version"] = tool["version"]
     attributes["metadata_version"] = tool["metadata_version"]
@@ -222,12 +227,13 @@ def _classify_tool_request(
         }
         for reason in policy_decision.reasons
     ]
-    return ToolClassificationResult(
-        decision={
+    decisions: dict[PolicyEffect, ToolAllowlistDecision] = {
             "allow": "allowed",
             "deny": "denied",
             "require_approval": "approval_required",
-        }[policy_decision.decision],
+    }
+    return ToolClassificationResult(
+        decision=decisions[policy_decision.decision],
         tool=serialized_tool,
         reasons=reasons,
         matched_policy_id=(
@@ -248,14 +254,14 @@ def _decision_record_from_classification(
 
 def _allowlist_trace_payload(
     classification: ToolClassificationResult,
-) -> dict[str, object]:
+) -> JsonObject:
     return {
         "tool_id": classification.tool["id"],
         "tool_key": classification.tool["tool_key"],
         "tool_version": classification.tool["version"],
         "decision": classification.decision,
         "matched_policy_id": classification.matched_policy_id,
-        "reasons": classification.reasons,
+        "reasons": cast(JsonValue, classification.reasons),
     }
 
 
@@ -272,12 +278,15 @@ def _allowlist_request_from_routing(
     )
 
 
-def _routing_decision_from_allowlist(allowlist_decision: str) -> ToolRoutingDecision:
-    return {
+def _routing_decision_from_allowlist(
+    allowlist_decision: ToolAllowlistDecision,
+) -> ToolRoutingDecision:
+    decisions: dict[ToolAllowlistDecision, ToolRoutingDecision] = {
         "allowed": "ready",
         "denied": "denied",
         "approval_required": "approval_required",
-    }[allowlist_decision]
+    }
+    return decisions[allowlist_decision]
 
 
 def create_tool_record(
@@ -360,7 +369,7 @@ def evaluate_tool_allowlist(
     allowed: list[ToolAllowlistDecisionRecord] = []
     denied: list[ToolAllowlistDecisionRecord] = []
     approval_required: list[ToolAllowlistDecisionRecord] = []
-    tool_trace_events: list[tuple[str, dict[str, object]]] = []
+    tool_trace_events: list[tuple[str, JsonObject]] = []
 
     for tool in active_tools:
         classification = _classify_tool_request(
@@ -398,7 +407,7 @@ def evaluate_tool_allowlist(
         },
     )
 
-    trace_events: list[tuple[str, dict[str, object]]] = [
+    trace_events: list[tuple[str, JsonObject]] = [
         (
             "tool.allowlist.request",
             {
@@ -407,14 +416,14 @@ def evaluate_tool_allowlist(
                 "scope": request.scope,
                 "domain_hint": request.domain_hint,
                 "risk_hint": request.risk_hint,
-                "attributes": request.attributes,
+                "attributes": cast(JsonValue, request.attributes),
             },
         ),
         (
             "tool.allowlist.order",
             {
-                "order": list(TOOL_LIST_ORDER),
-                "tool_ids": [str(tool["id"]) for tool in active_tools],
+                "order": cast(JsonValue, list(TOOL_LIST_ORDER)),
+                "tool_ids": cast(JsonValue, [str(tool["id"]) for tool in active_tools]),
             },
         ),
         *tool_trace_events,
@@ -504,7 +513,15 @@ def route_tool_invocation(
         },
     )
 
-    request_payload: ToolRoutingRequestTracePayload = request.as_payload()
+    request_payload: ToolRoutingRequestTracePayload = {
+        "thread_id": str(request.thread_id),
+        "tool_id": str(request.tool_id),
+        "action": request.action,
+        "scope": request.scope,
+        "domain_hint": request.domain_hint,
+        "risk_hint": request.risk_hint,
+        "attributes": request.attributes,
+    }
     decision_payload: ToolRoutingDecisionTracePayload = {
         "tool_id": classification.tool["id"],
         "tool_key": classification.tool["tool_key"],
@@ -530,7 +547,7 @@ def route_tool_invocation(
             trace_id=trace["id"],
             sequence_no=sequence_no,
             kind=kind,
-            payload=payload,
+            payload=cast(JsonObject, payload),
         )
 
     summary: ToolRoutingSummary = {

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 import json
+from typing import TypedDict, cast
 from uuid import UUID
 
 import psycopg
@@ -10,6 +11,7 @@ import psycopg
 from alicebot_api.continuity_open_loops import compile_continuity_weekly_review
 from alicebot_api.contracts import (
     AdmissionDecisionOutput,
+    AdmissionAction,
     DEFAULT_AGENT_PROFILE_ID,
     DEFAULT_MEMORY_CONFIRMATION_STATUS,
     DEFAULT_MEMORY_PROMOTION_ELIGIBILITY,
@@ -34,6 +36,7 @@ from alicebot_api.contracts import (
     MEMORY_TYPES,
     MEMORY_TRUST_CLASSES,
     MemoryCandidateInput,
+    MemoryConfirmationStatus,
     MemoryEvaluationSummary,
     MemoryEvaluationSummaryResponse,
     MemoryDuplicateGroupRecord,
@@ -58,6 +61,10 @@ from alicebot_api.contracts import (
     MemoryQualityGateStatus,
     MemoryQualityGateSummary,
     MemoryTrustCorrectionFreshnessSummary,
+    MemoryPromotionEligibility,
+    MemoryStatus,
+    MemoryTrustClass,
+    MemoryType,
     MemoryTrustDashboardResponse,
     MemoryTrustDashboardSummary,
     MemoryReviewQueuePressureSummary,
@@ -79,6 +86,7 @@ from alicebot_api.contracts import (
     OpenLoopListSummary,
     OpenLoopRecord,
     OpenLoopStatusFilter,
+    OpenLoopStatus,
     OpenLoopStatusUpdateInput,
     OpenLoopStatusUpdateResponse,
     PersistedMemoryRecord,
@@ -115,21 +123,94 @@ class OpenLoopNotFoundError(LookupError):
     """Raised when a requested open loop is not visible inside the current user scope."""
 
 
-def _serialize_typed_memory_metadata(memory: MemoryRow) -> JsonObject:
-    payload: JsonObject = {}
+class _ResolvedMemoryMetadata(TypedDict):
+    memory_type: MemoryType
+    confidence: float | None
+    salience: float | None
+    confirmation_status: MemoryConfirmationStatus
+    trust_class: MemoryTrustClass
+    promotion_eligibility: MemoryPromotionEligibility
+    evidence_count: int | None
+    independent_source_count: int | None
+    extracted_by_model: str | None
+    trust_reason: str | None
+    valid_from: datetime | None
+    valid_to: datetime | None
+    last_confirmed_at: datetime | None
 
+
+_MEMORY_REVIEW_LABEL_ORDER: tuple[MemoryReviewLabelValue, ...] = (
+    "correct",
+    "incorrect",
+    "outdated",
+    "insufficient_evidence",
+)
+
+
+def _memory_status(value: str) -> MemoryStatus:
+    if value == "active":
+        return "active"
+    if value == "deleted":
+        return "deleted"
+    raise ValueError(f"unsupported memory status: {value}")
+
+
+def _admission_action(value: str) -> AdmissionAction:
+    if value == "NOOP":
+        return "NOOP"
+    if value == "ADD":
+        return "ADD"
+    if value == "UPDATE":
+        return "UPDATE"
+    if value == "DELETE":
+        return "DELETE"
+    raise ValueError(f"unsupported memory revision action: {value}")
+
+
+def _memory_review_label(value: str) -> MemoryReviewLabelValue:
+    if value == "correct":
+        return "correct"
+    if value == "incorrect":
+        return "incorrect"
+    if value == "outdated":
+        return "outdated"
+    if value == "insufficient_evidence":
+        return "insufficient_evidence"
+    raise ValueError(f"unsupported memory review label: {value}")
+
+
+def _open_loop_status(value: str) -> OpenLoopStatus:
+    if value == "open":
+        return "open"
+    if value == "resolved":
+        return "resolved"
+    if value == "dismissed":
+        return "dismissed"
+    raise ValueError(f"unsupported open-loop status: {value}")
+
+
+def _add_typed_memory_metadata(
+    payload: PersistedMemoryRecord | MemoryReviewRecord | MemoryReviewQueueItem,
+    memory: MemoryRow,
+) -> None:
     if "memory_type" in memory:
-        payload["memory_type"] = memory["memory_type"]
+        payload["memory_type"] = cast(MemoryType, memory["memory_type"])
     if "confidence" in memory:
         payload["confidence"] = memory["confidence"]
     if "salience" in memory:
         payload["salience"] = memory["salience"]
     if "confirmation_status" in memory:
-        payload["confirmation_status"] = memory["confirmation_status"]
+        payload["confirmation_status"] = cast(
+            MemoryConfirmationStatus,
+            memory["confirmation_status"],
+        )
     if "trust_class" in memory:
-        payload["trust_class"] = memory["trust_class"]
+        payload["trust_class"] = cast(MemoryTrustClass, memory["trust_class"])
     if "promotion_eligibility" in memory:
-        payload["promotion_eligibility"] = memory["promotion_eligibility"]
+        payload["promotion_eligibility"] = cast(
+            MemoryPromotionEligibility,
+            memory["promotion_eligibility"],
+        )
     if "evidence_count" in memory:
         payload["evidence_count"] = memory["evidence_count"]
     if "independent_source_count" in memory:
@@ -145,22 +226,19 @@ def _serialize_typed_memory_metadata(memory: MemoryRow) -> JsonObject:
     if "last_confirmed_at" in memory:
         payload["last_confirmed_at"] = isoformat_or_none(memory["last_confirmed_at"])
 
-    return payload
-
-
 def _serialize_memory(memory: MemoryRow) -> PersistedMemoryRecord:
     payload: PersistedMemoryRecord = {
         "id": str(memory["id"]),
         "user_id": str(memory["user_id"]),
         "memory_key": memory["memory_key"],
         "value": memory["value"],
-        "status": memory["status"],
+        "status": _memory_status(memory["status"]),
         "source_event_ids": memory["source_event_ids"],
         "created_at": memory["created_at"].isoformat(),
         "updated_at": memory["updated_at"].isoformat(),
         "deleted_at": isoformat_or_none(memory["deleted_at"]),
     }
-    payload.update(_serialize_typed_memory_metadata(memory))
+    _add_typed_memory_metadata(payload, memory)
     return payload
 
 
@@ -170,7 +248,7 @@ def _serialize_memory_revision(revision: MemoryRevisionRow) -> PersistedMemoryRe
         "user_id": str(revision["user_id"]),
         "memory_id": str(revision["memory_id"]),
         "sequence_no": revision["sequence_no"],
-        "action": revision["action"],
+        "action": _admission_action(revision["action"]),
         "memory_key": revision["memory_key"],
         "previous_value": revision["previous_value"],
         "new_value": revision["new_value"],
@@ -185,13 +263,13 @@ def _serialize_memory_review(memory: MemoryRow) -> MemoryReviewRecord:
         "id": str(memory["id"]),
         "memory_key": memory["memory_key"],
         "value": memory["value"],
-        "status": memory["status"],
+        "status": _memory_status(memory["status"]),
         "source_event_ids": memory["source_event_ids"],
         "created_at": memory["created_at"].isoformat(),
         "updated_at": memory["updated_at"].isoformat(),
         "deleted_at": isoformat_or_none(memory["deleted_at"]),
     }
-    payload.update(_serialize_typed_memory_metadata(memory))
+    _add_typed_memory_metadata(payload, memory)
     return payload
 
 
@@ -326,7 +404,7 @@ def _serialize_memory_review_queue_item(
         "id": str(memory["id"]),
         "memory_key": memory["memory_key"],
         "value": memory["value"],
-        "status": memory["status"],
+        "status": "active",
         "source_event_ids": memory["source_event_ids"],
         "is_high_risk": is_high_risk,
         "is_stale_truth": is_stale_truth,
@@ -341,7 +419,9 @@ def _serialize_memory_review_queue_item(
         "created_at": memory["created_at"].isoformat(),
         "updated_at": memory["updated_at"].isoformat(),
     }
-    payload.update(_serialize_typed_memory_metadata(memory))
+    if memory["status"] != "active":
+        raise ValueError(f"review queue memory {memory['id']} is not active")
+    _add_typed_memory_metadata(payload, memory)
     return payload
 
 
@@ -350,7 +430,7 @@ def _serialize_memory_revision_review(revision: MemoryRevisionRow) -> MemoryRevi
         "id": str(revision["id"]),
         "memory_id": str(revision["memory_id"]),
         "sequence_no": revision["sequence_no"],
-        "action": revision["action"],
+        "action": _admission_action(revision["action"]),
         "memory_key": revision["memory_key"],
         "previous_value": revision["previous_value"],
         "new_value": revision["new_value"],
@@ -364,7 +444,7 @@ def _serialize_memory_review_label(label: MemoryReviewLabelRow) -> MemoryReviewL
         "id": str(label["id"]),
         "memory_id": str(label["memory_id"]),
         "reviewer_user_id": str(label["user_id"]),
-        "label": label["label"],
+        "label": _memory_review_label(label["label"]),
         "note": label["note"],
         "created_at": label["created_at"].isoformat(),
     }
@@ -383,9 +463,24 @@ def _summarize_memory_review_label_counts(rows: list[LabelCountRow]) -> MemoryRe
     counts = _empty_memory_review_label_counts()
     for row in rows:
         label = row["label"]
-        if label in counts:
-            counts[label] = row["count"]
+        if label == "correct":
+            counts["correct"] = row["count"]
+        elif label == "incorrect":
+            counts["incorrect"] = row["count"]
+        elif label == "outdated":
+            counts["outdated"] = row["count"]
+        elif label == "insufficient_evidence":
+            counts["insufficient_evidence"] = row["count"]
     return counts
+
+
+def _memory_review_label_total(counts: MemoryReviewLabelCounts) -> int:
+    return (
+        counts["correct"]
+        + counts["incorrect"]
+        + counts["outdated"]
+        + counts["insufficient_evidence"]
+    )
 
 
 def _build_memory_review_label_summary(
@@ -395,7 +490,7 @@ def _build_memory_review_label_summary(
 ) -> MemoryReviewLabelSummary:
     return {
         "memory_id": str(memory_id),
-        "total_count": sum(counts.values()),
+        "total_count": _memory_review_label_total(counts),
         "counts_by_label": counts,
         "order": list(MEMORY_REVIEW_LABEL_ORDER),
     }
@@ -586,9 +681,9 @@ def get_memory_evaluation_summary(
         "deleted_memory_count": deleted_memory_count,
         "labeled_memory_count": labeled_memory_count,
         "unlabeled_memory_count": unlabeled_memory_count,
-        "total_label_row_count": sum(label_row_counts.values()),
+        "total_label_row_count": _memory_review_label_total(label_row_counts),
         "label_row_counts_by_value": label_row_counts,
-        "label_value_order": list(MEMORY_REVIEW_LABEL_VALUES),
+        "label_value_order": list(_MEMORY_REVIEW_LABEL_ORDER),
     }
     return {
         "summary": summary,
@@ -1056,15 +1151,17 @@ def get_memory_hygiene_dashboard_summary(
     duplicate_groups = _memory_duplicate_groups(active_memories)
     duplicate_memory_count = sum(group["count"] for group in duplicate_groups)
     stale_facts = [memory for memory in active_memories if _is_stale_truth_memory(memory)]
-    weak_trust_memories = [
-        memory
-        for memory in active_memories
-        if memory.get("promotion_eligibility") == "not_promotable"
-        or memory.get("trust_class") == "llm_single_source"
-        or memory.get("confirmation_status") != "confirmed"
-        or memory.get("confidence") is None
-        or float(memory["confidence"]) < MEMORY_QUALITY_HIGH_RISK_CONFIDENCE_THRESHOLD
-    ]
+    weak_trust_memories: list[MemoryRow] = []
+    for memory in active_memories:
+        confidence = memory.get("confidence")
+        if (
+            memory.get("promotion_eligibility") == "not_promotable"
+            or memory.get("trust_class") == "llm_single_source"
+            or memory.get("confirmation_status") != "confirmed"
+            or confidence is None
+            or confidence < MEMORY_QUALITY_HIGH_RISK_CONFIDENCE_THRESHOLD
+        ):
+            weak_trust_memories.append(memory)
 
     trust_dashboard = get_memory_trust_dashboard_summary(store, user_id=user_id)["dashboard"]
     review_queue_pressure = _review_queue_pressure(trust_dashboard["queue_posture"])
@@ -1174,7 +1271,7 @@ def _serialize_open_loop(open_loop: OpenLoopRow) -> OpenLoopRecord:
         "id": str(open_loop["id"]),
         "memory_id": None if open_loop["memory_id"] is None else str(open_loop["memory_id"]),
         "title": open_loop["title"],
-        "status": open_loop["status"],
+        "status": _open_loop_status(open_loop["status"]),
         "opened_at": open_loop["opened_at"].isoformat(),
         "due_at": isoformat_or_none(open_loop["due_at"]),
         "resolved_at": isoformat_or_none(open_loop["resolved_at"]),
@@ -1451,16 +1548,18 @@ def _create_open_loop_for_memory(
     return _serialize_open_loop(created)
 
 
-def _validate_memory_type(memory_type: str | None) -> str | None:
+def _validate_memory_type(memory_type: str | None) -> MemoryType | None:
     if memory_type is None:
         return None
     if memory_type not in MEMORY_TYPES:
         allowed_values = ", ".join(MEMORY_TYPES)
         raise MemoryAdmissionValidationError(f"memory_type must be one of: {allowed_values}")
-    return memory_type
+    return cast(MemoryType, memory_type)
 
 
-def _validate_confirmation_status(confirmation_status: str | None) -> str | None:
+def _validate_confirmation_status(
+    confirmation_status: str | None,
+) -> MemoryConfirmationStatus | None:
     if confirmation_status is None:
         return None
     if confirmation_status not in MEMORY_CONFIRMATION_STATUSES:
@@ -1468,19 +1567,21 @@ def _validate_confirmation_status(confirmation_status: str | None) -> str | None
         raise MemoryAdmissionValidationError(
             f"confirmation_status must be one of: {allowed_values}"
         )
-    return confirmation_status
+    return cast(MemoryConfirmationStatus, confirmation_status)
 
 
-def _validate_trust_class(trust_class: str | None) -> str | None:
+def _validate_trust_class(trust_class: str | None) -> MemoryTrustClass | None:
     if trust_class is None:
         return None
     if trust_class not in MEMORY_TRUST_CLASSES:
         allowed_values = ", ".join(MEMORY_TRUST_CLASSES)
         raise MemoryAdmissionValidationError(f"trust_class must be one of: {allowed_values}")
-    return trust_class
+    return cast(MemoryTrustClass, trust_class)
 
 
-def _validate_promotion_eligibility(promotion_eligibility: str | None) -> str | None:
+def _validate_promotion_eligibility(
+    promotion_eligibility: str | None,
+) -> MemoryPromotionEligibility | None:
     if promotion_eligibility is None:
         return None
     if promotion_eligibility not in MEMORY_PROMOTION_ELIGIBILITIES:
@@ -1488,10 +1589,12 @@ def _validate_promotion_eligibility(promotion_eligibility: str | None) -> str | 
         raise MemoryAdmissionValidationError(
             f"promotion_eligibility must be one of: {allowed_values}"
         )
-    return promotion_eligibility
+    return cast(MemoryPromotionEligibility, promotion_eligibility)
 
 
-def _default_promotion_eligibility_for_trust_class(trust_class: str) -> str:
+def _default_promotion_eligibility_for_trust_class(
+    trust_class: MemoryTrustClass,
+) -> MemoryPromotionEligibility:
     if trust_class == "llm_single_source":
         return "not_promotable"
     return DEFAULT_MEMORY_PROMOTION_ELIGIBILITY
@@ -1533,7 +1636,7 @@ def _resolve_memory_typed_metadata(
     *,
     existing_memory: MemoryRow | None,
     candidate: MemoryCandidateInput,
-) -> dict[str, object]:
+) -> _ResolvedMemoryMetadata:
     memory_type = _validate_memory_type(candidate.memory_type)
     confirmation_status = _validate_confirmation_status(candidate.confirmation_status)
     trust_class = _validate_trust_class(candidate.trust_class)
@@ -1571,9 +1674,11 @@ def _resolve_memory_typed_metadata(
             "last_confirmed_at": candidate.last_confirmed_at,
         }
 
-    existing_trust_class = existing_memory.get("trust_class", DEFAULT_MEMORY_TRUST_CLASS)
+    existing_trust_class = _validate_trust_class(
+        existing_memory.get("trust_class", DEFAULT_MEMORY_TRUST_CLASS)
+    ) or DEFAULT_MEMORY_TRUST_CLASS
     resolved_trust_class = trust_class if trust_class is not None else existing_trust_class
-    resolved_promotion_eligibility: str
+    resolved_promotion_eligibility: MemoryPromotionEligibility
     if promotion_eligibility is not None:
         resolved_promotion_eligibility = promotion_eligibility
     elif trust_class is not None:
@@ -1581,19 +1686,25 @@ def _resolve_memory_typed_metadata(
             resolved_trust_class
         )
     else:
-        resolved_promotion_eligibility = existing_memory.get(
-            "promotion_eligibility",
-            _default_promotion_eligibility_for_trust_class(resolved_trust_class),
+        resolved_promotion_eligibility = (
+            _validate_promotion_eligibility(existing_memory.get("promotion_eligibility"))
+            or _default_promotion_eligibility_for_trust_class(resolved_trust_class)
         )
 
     return {
-        "memory_type": memory_type if memory_type is not None else existing_memory.get("memory_type", DEFAULT_MEMORY_TYPE),
+        "memory_type": (
+            memory_type
+            if memory_type is not None
+            else _validate_memory_type(existing_memory.get("memory_type"))
+            or DEFAULT_MEMORY_TYPE
+        ),
         "confidence": confidence if confidence is not None else existing_memory.get("confidence"),
         "salience": salience if salience is not None else existing_memory.get("salience"),
         "confirmation_status": (
             confirmation_status
             if confirmation_status is not None
-            else existing_memory.get("confirmation_status", DEFAULT_MEMORY_CONFIRMATION_STATUS)
+            else _validate_confirmation_status(existing_memory.get("confirmation_status"))
+            or DEFAULT_MEMORY_CONFIRMATION_STATUS
         ),
         "trust_class": resolved_trust_class,
         "promotion_eligibility": resolved_promotion_eligibility,
@@ -1755,21 +1866,25 @@ def admit_memory_candidate(
         )
 
     metadata_changed = any(
-        existing_memory.get(field_name) != resolved_metadata[field_name]
-        for field_name in (
-            "memory_type",
-            "confidence",
-            "salience",
-            "confirmation_status",
-            "trust_class",
-            "promotion_eligibility",
-            "evidence_count",
-            "independent_source_count",
-            "extracted_by_model",
-            "trust_reason",
-            "valid_from",
-            "valid_to",
-            "last_confirmed_at",
+        (
+            existing_memory.get("memory_type") != resolved_metadata["memory_type"],
+            existing_memory.get("confidence") != resolved_metadata["confidence"],
+            existing_memory.get("salience") != resolved_metadata["salience"],
+            existing_memory.get("confirmation_status")
+            != resolved_metadata["confirmation_status"],
+            existing_memory.get("trust_class") != resolved_metadata["trust_class"],
+            existing_memory.get("promotion_eligibility")
+            != resolved_metadata["promotion_eligibility"],
+            existing_memory.get("evidence_count") != resolved_metadata["evidence_count"],
+            existing_memory.get("independent_source_count")
+            != resolved_metadata["independent_source_count"],
+            existing_memory.get("extracted_by_model")
+            != resolved_metadata["extracted_by_model"],
+            existing_memory.get("trust_reason") != resolved_metadata["trust_reason"],
+            existing_memory.get("valid_from") != resolved_metadata["valid_from"],
+            existing_memory.get("valid_to") != resolved_metadata["valid_to"],
+            existing_memory.get("last_confirmed_at")
+            != resolved_metadata["last_confirmed_at"],
         )
     )
 

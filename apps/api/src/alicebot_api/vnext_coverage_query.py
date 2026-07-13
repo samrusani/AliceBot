@@ -580,12 +580,12 @@ def promote_rollup_cards(
         }
         best_move: tuple[int, int] | None = None  # (member position, card position)
         for card_position, candidate in enumerate(pool):
-            member_ids = members_of.get(id(candidate))
-            if member_ids is None:
+            candidate_member_ids = members_of.get(id(candidate))
+            if candidate_member_ids is None:
                 continue
             slotted_positions = [
                 position_of[member_id]
-                for member_id in member_ids
+                for member_id in candidate_member_ids
                 if member_id in position_of and position_of[member_id] < slot_count
             ]
             # The inversion gate: promote only when the card's receipts are

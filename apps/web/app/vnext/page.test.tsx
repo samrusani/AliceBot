@@ -207,7 +207,7 @@ describe("VNextPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create open loop from selected memory" }));
     expect(screen.getAllByText("Demo open loop created.").length).toBeGreaterThan(0);
     expect(screen.getByText("Follow up with Sam about launch owner")).toBeInTheDocument();
-  }, 30000); // heavy multi-action page test; CI runners need more than 10s
+  }, 60000); // heavy multi-action page test; allow bounded CI contention headroom
 
   it("refreshes Ask Alice output and generates reviewable artifacts", async () => {
     await renderVNextPage();

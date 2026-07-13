@@ -73,6 +73,41 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         ),
     ),
     ControlDocTruthRule(
+        relative_path="ARCHITECTURE.md",
+        required_markers=(
+            "# Architecture",
+            "third-audit remediation candidate",
+        ),
+    ),
+    ControlDocTruthRule(
+        relative_path="RELEASING.md",
+        required_markers=(
+            "# Releasing Alice",
+            "ALICE_RELEASE_CONTROLS_ATTESTATION",
+            "alice_release_controls_attestation_v1",
+            "independent mandatory gates",
+            "exact-SHA semantic report/attestation",
+            "normal cross-module mypy",
+            "core plus vNext per-file coverage",
+            "structured `embedding_signature`",
+            "nonempty case lists",
+        ),
+    ),
+    ControlDocTruthRule(
+        relative_path="docs/vnext/consolidation.md",
+        required_markers=(
+            "non-null vector presence",
+            "ANN/vector-search capability remains optional",
+        ),
+    ),
+    ControlDocTruthRule(
+        relative_path="docs/release/v0.9.4-release-notes.md",
+        required_markers=(
+            "# Alice v0.9.4 Release Notes",
+            "alice-release-state",
+        ),
+    ),
+    ControlDocTruthRule(
         relative_path="docs/archive/planning/2026-04-08-context-compaction/README.md",
         required_markers=("This folder preserves superseded planning and control material removed from the live docs during Context Compaction 01.",),
     ),
@@ -127,6 +162,9 @@ DISALLOWED_MARKERS: tuple[str, ...] = (
     "design partner",
     "second brain",
     "HF-001",
+    "resumes feature work and clears the second audit's P2 backlog",
+    'present-tense "published to PyPI"',
+    "semantic attestation replaces the repository-control attestation",
 )
 
 

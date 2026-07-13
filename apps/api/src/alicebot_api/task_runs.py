@@ -22,7 +22,7 @@ from alicebot_api.contracts import (
     TaskRunStopReason,
     TaskRunTickInput,
 )
-from alicebot_api.store import ContinuityStore, JsonObject, TaskRunRow
+from alicebot_api.store import ContinuityStore, JsonObject, JsonValue, TaskRunRow
 from alicebot_api.tasks import TaskNotFoundError
 
 
@@ -132,11 +132,13 @@ def _append_transition_checkpoint_entry(
     normalized = normalize_checkpoint(checkpoint)
     transitions = normalized.get("transitions")
     if isinstance(transitions, list):
-        history = [entry for entry in transitions if isinstance(entry, dict)]
+        history: list[JsonObject] = [
+            cast(JsonObject, entry) for entry in transitions if isinstance(entry, dict)
+        ]
     else:
         history = []
 
-    transition_entry = {
+    transition_entry: JsonObject = {
         "sequence_no": len(history) + 1,
         "source": source,
         "at": datetime.now(UTC).isoformat(),
@@ -150,7 +152,7 @@ def _append_transition_checkpoint_entry(
         "retry_posture": retry_posture,
     }
     history.append(transition_entry)
-    normalized["transitions"] = history
+    normalized["transitions"] = cast(JsonValue, history)
     normalized["last_transition"] = transition_entry
     return normalized
 
@@ -376,10 +378,11 @@ def tick_task_run_record(
             source="tick_waiting_user",
         )
     else:
-        checkpoint["cursor"] = cursor + 1
+        next_cursor = cursor + 1
+        checkpoint["cursor"] = next_cursor
         next_tick_count = tick_count + 1
         next_step_count = step_count + 1
-        if checkpoint["cursor"] >= target_steps:
+        if next_cursor >= target_steps:
             status: TaskRunStatus = "done"
             stop_reason: TaskRunStopReason | None = "done"
             retry_posture: TaskRunRetryPosture = "terminal"

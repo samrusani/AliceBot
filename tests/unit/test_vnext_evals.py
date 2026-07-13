@@ -4,11 +4,13 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import sqlite3
 from typing import Iterator
 
 import pytest
 
+import alicebot_api.vnext_evals as vnext_evals_module
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_evals import (
@@ -71,13 +73,18 @@ def _perfect_retrieval_fn(corpus: dict[str, object]):
         return {
             "ranked_memory_keys": [expected_by_query[query]],
             "vector_stage": "enabled",
+            "vector_candidate_count": 1,
         }
 
     return _retrieve
 
 
 def _hopeless_retrieval_fn(query: str, *, limit: int) -> dict[str, object]:
-    return {"ranked_memory_keys": [], "vector_stage": "enabled"}
+    return {
+        "ranked_memory_keys": [],
+        "vector_stage": "enabled",
+        "vector_candidate_count": 1,
+    }
 
 
 def _fts_only_retrieval_fn(corpus: dict[str, object]):
@@ -193,7 +200,11 @@ def test_retrieval_quality_metrics_against_known_rankings() -> None:
     }
 
     def fake_retrieval(query: str, *, limit: int) -> dict[str, object]:
-        return {"ranked_memory_keys": rankings[query], "vector_stage": "enabled"}
+        return {
+            "ranked_memory_keys": rankings[query],
+            "vector_stage": "enabled",
+            "vector_candidate_count": len(rankings[query]),
+        }
 
     suite = run_retrieval_quality_eval(None, retrieval_fn=fake_retrieval, corpus=corpus)
 
@@ -228,7 +239,11 @@ def test_retrieval_quality_matches_reciprocal_rank_fusion_ordering() -> None:
     }
 
     def fused_retrieval(query: str, *, limit: int) -> dict[str, object]:
-        return {"ranked_memory_keys": fused_ids[:limit], "vector_stage": "enabled"}
+        return {
+            "ranked_memory_keys": fused_ids[:limit],
+            "vector_stage": "enabled",
+            "vector_candidate_count": len(vector_rows),
+        }
 
     suite = run_retrieval_quality_eval(None, retrieval_fn=fused_retrieval, corpus=corpus)
     case = suite["cases"][0]
@@ -294,10 +309,50 @@ def test_run_vnext_evals_release_gate_downgrades_fts_only_aggregate() -> None:
     dev = run_vnext_evals(suite="retrieval_quality", retrieval_fn=retrieval_fn)
     gated = run_vnext_evals(suite="retrieval_quality", retrieval_fn=retrieval_fn, release_gate=True)
 
-    # Dev aggregate keeps the legacy fts_only "pass"; the release gate does not.
+    # Dev aggregate keeps the legacy fts_only "pass"; the release aggregate
+    # fails because the unmeasured paraphrase cases are not passing evidence.
     assert dev["status"] == "pass"
-    assert gated["status"] != "pass"
+    assert gated["status"] == "fail"
+
+
+def test_release_gate_requires_nonzero_vector_candidates() -> None:
+    corpus = {
+        "queries": [
+            {
+                "query_key": "q-1",
+                "query": "alpha",
+                "expected_memory_key": "m-1",
+                "subset": SUBSET_LEXICAL_OVERLAP,
+            },
+            {
+                "query_key": "q-2",
+                "query": "semantic paraphrase",
+                "expected_memory_key": "m-2",
+                "subset": SUBSET_PARAPHRASE,
+            },
+        ]
+    }
+
+    def enabled_but_empty(query: str, *, limit: int) -> dict[str, object]:
+        del limit
+        expected = "m-1" if query == "alpha" else "m-2"
+        return {
+            "ranked_memory_keys": [expected],
+            "vector_stage": "enabled",
+            "vector_candidate_count": 0,
+        }
+
+    gated = run_retrieval_quality_eval(
+        None,
+        retrieval_fn=enabled_but_empty,
+        corpus=corpus,
+        release_gate=True,
+    )
+
     assert gated["status"] == "pass_fts_only"
+    assert gated["metrics"]["vector_candidate_count"] == 0
+    assert gated["metrics"]["vector_queries_with_candidates"] == 0
+    assert gated["metrics"]["vector_stage_participated"] is False
 
 
 # --------------------------------------------------------------------------
@@ -372,11 +427,63 @@ def test_report_passes_only_when_executed_suites_pass() -> None:
     assert failing["suites"][0]["metrics"]["recall_at_5"] == 0.0
 
 
+def test_release_gate_fails_when_only_some_requested_suites_execute() -> None:
+    corpus = generate_vnext_benchmark_corpus()
+
+    report = run_vnext_evals(
+        suite="all",
+        retrieval_fn=_perfect_retrieval_fn(corpus),
+        release_gate=True,
+    )
+
+    assert report["summary"]["executed_suite_count"] == 1
+    assert report["summary"]["skipped_suite_count"] == len(VNEXT_EVAL_SUITE_ORDER) - 1
+    assert report["status"] == "fail"
+    assert report["summary"]["status"] == "fail"
+
+
+def test_release_gate_derives_failure_from_case_and_target_verdicts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        vnext_evals_module,
+        "run_retrieval_quality_eval",
+        lambda *_args, **_kwargs: {
+            "suite_key": RETRIEVAL_QUALITY_SUITE_KEY,
+            "status": "pass",
+            "metrics": {"target_checks": {"recall_at_5": "fail"}},
+            "cases": [{"case_key": "adversarial", "status": "fail", "metrics": {}}],
+        },
+    )
+
+    report = run_vnext_evals(
+        suite="retrieval_quality",
+        retrieval_fn=lambda *_args, **_kwargs: {},
+        release_gate=True,
+    )
+
+    assert report["status"] == "fail"
+    assert report["summary"]["status"] == "fail"
+    assert report["summary"]["case_count"] == 1
+    assert report["summary"]["passed_case_count"] == 0
+    assert report["summary"]["failed_case_count"] == 1
+    assert report["summary"]["pass_rate"] == 0.0
+
+
 def test_report_keeps_top_level_shape_for_cli_seam() -> None:
     report = run_vnext_evals(suite="all")
 
     # cli.py serializes the report as-is; these keys are the stable contract.
-    for key in ("schema_version", "generated_at", "suite", "status", "targets", "suites", "summary"):
+    for key in (
+        "schema_version",
+        "generated_at",
+        "suite",
+        "status",
+        "embedding_signature",
+        "targets",
+        "suites",
+        "summary",
+    ):
         assert key in report
     assert report["suite"] == "all"
     assert isinstance(report["suites"], list)
@@ -396,6 +503,20 @@ def test_generated_at_is_real_time_not_hardcoded() -> None:
     assert abs((parsed - datetime.now(timezone.utc)).total_seconds()) < 60
     # Wall-clock time must not leak into the digest.
     assert stamped["report_digest"] == defaulted["report_digest"]
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", str(stamped["report_digest"]))
+
+
+def test_report_digest_binds_all_semantic_evidence_but_not_generated_at() -> None:
+    report = run_vnext_evals(suite="all")
+    original_digest = report["report_digest"]
+
+    report["generated_at"] = "2099-01-01T00:00:00Z"
+    assert vnext_evals_module.semantic_eval_report_digest(report) == original_digest
+
+    report["targets"][RETRIEVAL_QUALITY_SUITE_KEY][
+        "lexical_overlap_recall_at_5"
+    ]["minimum"] = 0.0
+    assert vnext_evals_module.semantic_eval_report_digest(report) != original_digest
 
 
 def test_vnext_eval_rejects_unknown_suite() -> None:
@@ -433,6 +554,61 @@ def test_seed_retrieval_corpus_writes_active_memories_via_store() -> None:
     assert all(row["canonical_text"] for row in store.created)
 
 
+def test_seed_retrieval_corpus_persists_complete_signed_vectors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class EmbeddingStore(RecordingStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.updates: list[dict[str, object]] = []
+
+        def update_memory_embedding(self, **update: object) -> dict[str, object]:
+            self.updates.append(update)
+            return {"id": update["memory_id"]}
+
+    class Provider:
+        provider = "configured-test"
+        model = "semantic-v1"
+        base_url = "HTTPS://Embed.Example:443/Case/V1"
+
+        def embed_batch(self, texts):
+            return [[0.5, 0.25] for _text in texts]
+
+    store = EmbeddingStore()
+    corpus = {
+        "memories": [
+            {
+                "memory_key": "vnext-eval/retrieval/signed-1",
+                "canonical_text": "A product-usable signed vector.",
+                "title": "Signed vector",
+            }
+        ]
+    }
+    monkeypatch.setattr(vnext_evals_module, "get_embedding_provider", lambda: Provider())
+
+    seeding = seed_retrieval_corpus(store, corpus)
+
+    assert seeding["embedded_memory_count"] == 1
+    assert len(store.updates) == 1
+    update = store.updates[0]
+    assert update["signature_version"] == 2
+    assert update["provider"] == "configured-test"
+    assert update["model"] == "semantic-v1"
+    assert update["endpoint"]
+    assert update["content_sha256"]
+    assert len(update["vector"]) == 1536
+    assert seeding["embedding_signature"] == {
+        "schema_version": "alice_embedding_signature_identity_v1",
+        "signature_version": 2,
+        "provider": "configured-test",
+        "provider_fingerprint": vnext_evals_module.sha256(b"configured-test").hexdigest(),
+        "model": "semantic-v1",
+        "model_fingerprint": vnext_evals_module.sha256(b"semantic-v1").hexdigest(),
+        "endpoint_fingerprint": update["endpoint"],
+    }
+    assert "Embed.Example" not in json.dumps(seeding["embedding_signature"])
+
+
 # --------------------------------------------------------------------------
 # Writers
 # --------------------------------------------------------------------------
@@ -446,7 +622,11 @@ def test_backend_label_reported_for_injected_runs() -> None:
     }
 
     def retrieval(query: str, *, limit: int) -> dict[str, object]:
-        return {"ranked_memory_keys": ["m-1"], "vector_stage": "enabled"}
+        return {
+            "ranked_memory_keys": ["m-1"],
+            "vector_stage": "enabled",
+            "vector_candidate_count": 1,
+        }
 
     suite = run_retrieval_quality_eval(None, retrieval_fn=retrieval, corpus=corpus)
 
@@ -534,7 +714,15 @@ def test_live_sqlite_file_run_is_repeatable_on_the_same_file(
 
     _assert_live_sqlite_suite_shape(first)
     _assert_live_sqlite_suite_shape(second)
-    assert first["report_digest"] == second["report_digest"]
+    assert first["summary"] == second["summary"]
+    assert first["targets"] == second["targets"]
+    assert [case["status"] for case in first["suites"][0]["cases"]] == [
+        case["status"] for case in second["suites"][0]["cases"]
+    ]
+    # The exact evidence digest intentionally binds measured latency, so two
+    # otherwise equivalent live runs need not share one digest.
+    assert first["report_digest"] == vnext_evals_module.semantic_eval_report_digest(first)
+    assert second["report_digest"] == vnext_evals_module.semantic_eval_report_digest(second)
 
 
 def test_unsupported_sqlite_url_reports_skipped_not_pass(monkeypatch: pytest.MonkeyPatch) -> None:

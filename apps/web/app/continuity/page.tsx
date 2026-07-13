@@ -47,6 +47,22 @@ import {
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
+type SettledRead<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+function settleRead<T>(promise: Promise<T>): Promise<SettledRead<T>> {
+  return promise.then(
+    (value) => ({ ok: true, value }),
+    (error: unknown) => ({ ok: false, error }),
+  );
+}
+
+function unwrapRead<T>(result: SettledRead<T>): T {
+  if (!result.ok) {
+    throw result.error;
+  }
+  return result.value;
+}
+
 function normalizeParam(value: string | string[] | undefined) {
   if (Array.isArray(value)) {
     return normalizeParam(value[0]);
@@ -533,15 +549,6 @@ const continuityReviewSummaryFixture: ContinuityReviewQueueSummary = {
   order: ["updated_at_desc", "created_at_desc", "id_desc"],
 };
 
-const continuityReviewDetailFixture: ContinuityReviewDetail = {
-  continuity_object: continuityReviewFixtures[0],
-  correction_events: [],
-  supersession_chain: {
-    supersedes: null,
-    superseded_by: null,
-  },
-};
-
 const threadHealthDashboardFixture: ThreadHealthDashboardSummary = {
   posture: "watch",
   total_thread_count: 3,
@@ -770,6 +777,96 @@ export default async function ContinuityPage({
   const apiConfig = getApiConfig();
   const liveModeReady = hasLiveApiConfig(apiConfig);
 
+  // Launch independent continuity reads together. Each result still degrades
+  // separately below, while the detail reads remain correctly dependent on
+  // the selected list and review-queue rows.
+  const liveReads = liveModeReady
+    ? {
+        captures: settleRead(listContinuityCaptures(apiConfig.apiBaseUrl, apiConfig.userId, { limit: 20 })),
+        recall: settleRead(queryContinuityRecall(apiConfig.apiBaseUrl, apiConfig.userId, {
+          query: recallQuery,
+          threadId: recallThreadId,
+          taskId: recallTaskId,
+          project: recallProject,
+          person: recallPerson,
+          since: recallSince,
+          until: recallUntil,
+          limit: recallLimit,
+        })),
+        resumption: settleRead(getContinuityResumptionBrief(apiConfig.apiBaseUrl, apiConfig.userId, {
+          query: recallQuery,
+          threadId: recallThreadId,
+          taskId: recallTaskId,
+          project: recallProject,
+          person: recallPerson,
+          since: recallSince,
+          until: recallUntil,
+          maxRecentChanges: resumptionRecentChanges,
+          maxOpenLoops: resumptionOpenLoops,
+        })),
+        openLoops: settleRead(getContinuityOpenLoopDashboard(apiConfig.apiBaseUrl, apiConfig.userId, {
+          query: recallQuery,
+          threadId: recallThreadId,
+          taskId: recallTaskId,
+          project: recallProject,
+          person: recallPerson,
+          since: recallSince,
+          until: recallUntil,
+          limit: openLoopLimit,
+        })),
+        dailyBrief: settleRead(getContinuityDailyBrief(apiConfig.apiBaseUrl, apiConfig.userId, {
+          query: recallQuery,
+          threadId: recallThreadId,
+          taskId: recallTaskId,
+          project: recallProject,
+          person: recallPerson,
+          since: recallSince,
+          until: recallUntil,
+          limit: dailyBriefLimit,
+        })),
+        weeklyReview: settleRead(getContinuityWeeklyReview(apiConfig.apiBaseUrl, apiConfig.userId, {
+          query: recallQuery,
+          threadId: recallThreadId,
+          taskId: recallTaskId,
+          project: recallProject,
+          person: recallPerson,
+          since: recallSince,
+          until: recallUntil,
+          limit: weeklyReviewLimit,
+        })),
+        threadHealth: settleRead(getThreadHealthDashboard(apiConfig.apiBaseUrl, apiConfig.userId)),
+        reviewQueue: settleRead(listContinuityReviewQueue(apiConfig.apiBaseUrl, apiConfig.userId, {
+          status: reviewStatus,
+          limit: reviewLimit,
+        })),
+      }
+    : null;
+
+  // Chain the selected review-detail read directly from its parent queue read.
+  // Attaching this continuation now prevents unrelated capture/brief panels
+  // from delaying detail I/O after the queue has already resolved.
+  const liveReviewDetailRead = liveModeReady
+    ? liveReads!.reviewQueue
+        .then((queueRead) => {
+          const queuePayload = unwrapRead(queueRead);
+          const selectedObjectId = resolveSelectedReviewObjectId(
+            requestedReviewObjectId,
+            queuePayload.items,
+          );
+          if (!selectedObjectId) {
+            return null;
+          }
+          return settleRead(
+            getContinuityReviewDetail(
+              apiConfig.apiBaseUrl,
+              selectedObjectId,
+              apiConfig.userId,
+            ),
+          ).then((detailRead) => ({ selectedObjectId, detailRead }));
+        })
+        .catch(() => null)
+    : null;
+
   let items = continuityCaptureFixtures;
   let summary = continuityCaptureSummaryFixture;
   let listSource: ApiSource = "fixture";
@@ -777,9 +874,7 @@ export default async function ContinuityPage({
 
   if (liveModeReady) {
     try {
-      const payload = await listContinuityCaptures(apiConfig.apiBaseUrl, apiConfig.userId, {
-        limit: 20,
-      });
+      const payload = unwrapRead(await liveReads!.captures);
       items = payload.items;
       summary = payload.summary;
       listSource = "live";
@@ -822,16 +917,7 @@ export default async function ContinuityPage({
 
   if (liveModeReady) {
     try {
-      const payload = await queryContinuityRecall(apiConfig.apiBaseUrl, apiConfig.userId, {
-        query: recallQuery,
-        threadId: recallThreadId,
-        taskId: recallTaskId,
-        project: recallProject,
-        person: recallPerson,
-        since: recallSince,
-        until: recallUntil,
-        limit: recallLimit,
-      });
+      const payload = unwrapRead(await liveReads!.recall);
       recallResults = payload.items;
       recallSummary = payload.summary;
       recallSource = "live";
@@ -849,17 +935,7 @@ export default async function ContinuityPage({
 
   if (liveModeReady) {
     try {
-      const payload = await getContinuityResumptionBrief(apiConfig.apiBaseUrl, apiConfig.userId, {
-        query: recallQuery,
-        threadId: recallThreadId,
-        taskId: recallTaskId,
-        project: recallProject,
-        person: recallPerson,
-        since: recallSince,
-        until: recallUntil,
-        maxRecentChanges: resumptionRecentChanges,
-        maxOpenLoops: resumptionOpenLoops,
-      });
+      const payload = unwrapRead(await liveReads!.resumption);
       brief = payload.brief;
       resumptionSource = "live";
     } catch (error) {
@@ -871,24 +947,16 @@ export default async function ContinuityPage({
   }
 
   let openLoopDashboard = continuityOpenLoopDashboardFixture;
-  let openLoopSource: ApiSource = "fixture";
+  let openLoopSource: ApiSource | "unavailable" = "fixture";
   let openLoopUnavailableReason: string | undefined;
 
   if (liveModeReady) {
     try {
-      const payload = await getContinuityOpenLoopDashboard(apiConfig.apiBaseUrl, apiConfig.userId, {
-        query: recallQuery,
-        threadId: recallThreadId,
-        taskId: recallTaskId,
-        project: recallProject,
-        person: recallPerson,
-        since: recallSince,
-        until: recallUntil,
-        limit: openLoopLimit,
-      });
+      const payload = unwrapRead(await liveReads!.openLoops);
       openLoopDashboard = payload.dashboard;
       openLoopSource = "live";
     } catch (error) {
+      openLoopSource = "unavailable";
       openLoopUnavailableReason =
         error instanceof Error
           ? error.message
@@ -902,16 +970,7 @@ export default async function ContinuityPage({
 
   if (liveModeReady) {
     try {
-      const payload = await getContinuityDailyBrief(apiConfig.apiBaseUrl, apiConfig.userId, {
-        query: recallQuery,
-        threadId: recallThreadId,
-        taskId: recallTaskId,
-        project: recallProject,
-        person: recallPerson,
-        since: recallSince,
-        until: recallUntil,
-        limit: dailyBriefLimit,
-      });
+      const payload = unwrapRead(await liveReads!.dailyBrief);
       dailyBrief = payload.brief;
       dailyBriefSource = "live";
     } catch (error) {
@@ -928,16 +987,7 @@ export default async function ContinuityPage({
 
   if (liveModeReady) {
     try {
-      const payload = await getContinuityWeeklyReview(apiConfig.apiBaseUrl, apiConfig.userId, {
-        query: recallQuery,
-        threadId: recallThreadId,
-        taskId: recallTaskId,
-        project: recallProject,
-        person: recallPerson,
-        since: recallSince,
-        until: recallUntil,
-        limit: weeklyReviewLimit,
-      });
+      const payload = unwrapRead(await liveReads!.weeklyReview);
       weeklyReview = payload.review;
       weeklyReviewSource = "live";
     } catch (error) {
@@ -954,7 +1004,7 @@ export default async function ContinuityPage({
 
   if (liveModeReady) {
     try {
-      const payload = await getThreadHealthDashboard(apiConfig.apiBaseUrl, apiConfig.userId);
+      const payload = unwrapRead(await liveReads!.threadHealth);
       threadHealthDashboard = payload.dashboard;
       threadHealthSource = "live";
     } catch (error) {
@@ -967,19 +1017,17 @@ export default async function ContinuityPage({
 
   let reviewItems = continuityReviewFixtures;
   let reviewSummary = continuityReviewSummaryFixture;
-  let reviewSource: ApiSource = "fixture";
+  let reviewSource: ApiSource | "unavailable" = "fixture";
   let reviewUnavailableReason: string | undefined;
 
   if (liveModeReady) {
     try {
-      const payload = await listContinuityReviewQueue(apiConfig.apiBaseUrl, apiConfig.userId, {
-        status: reviewStatus,
-        limit: reviewLimit,
-      });
+      const payload = unwrapRead(await liveReads!.reviewQueue);
       reviewItems = payload.items;
       reviewSummary = payload.summary;
       reviewSource = "live";
     } catch (error) {
+      reviewSource = "unavailable";
       reviewUnavailableReason =
         error instanceof Error
           ? error.message
@@ -990,26 +1038,35 @@ export default async function ContinuityPage({
   const selectedReviewObjectId = resolveSelectedReviewObjectId(requestedReviewObjectId, reviewItems);
   const selectedReviewFromQueue = reviewItems.find((item) => item.id === selectedReviewObjectId) ?? null;
   let selectedReviewDetail: ContinuityReviewDetail | null = selectedReviewFromQueue
-    ? { ...continuityReviewDetailFixture, continuity_object: selectedReviewFromQueue }
+    ? {
+        continuity_object: selectedReviewFromQueue,
+        correction_events: [],
+        supersession_chain: { supersedes: null, superseded_by: null },
+      }
     : null;
   let correctionSource: ApiSource | "unavailable" = selectedReviewFromQueue ? reviewSource : "unavailable";
+  const correctionMutationTargetSource: ApiSource | "unavailable" = selectedReviewFromQueue
+    ? reviewSource
+    : "unavailable";
   let correctionUnavailableReason: string | undefined;
 
   if (selectedReviewFromQueue && liveModeReady && reviewSource === "live") {
-    try {
-      const payload = await getContinuityReviewDetail(
-        apiConfig.apiBaseUrl,
-        selectedReviewFromQueue.id,
-        apiConfig.userId,
-      );
-      selectedReviewDetail = payload.review;
-      correctionSource = "live";
-    } catch (error) {
-      correctionUnavailableReason =
-        error instanceof Error
-          ? error.message
-          : "Selected continuity review detail could not be loaded.";
+    const chainedDetail = await liveReviewDetailRead;
+    if (chainedDetail?.selectedObjectId === selectedReviewFromQueue.id) {
+      try {
+        const payload = unwrapRead(chainedDetail.detailRead);
+        selectedReviewDetail = payload.review;
+        correctionSource = "live";
+      } catch (error) {
+        correctionUnavailableReason =
+          error instanceof Error
+            ? error.message
+            : "Selected continuity review detail could not be loaded.";
+        correctionSource = "unavailable";
+      }
+    } else {
       correctionSource = "unavailable";
+      correctionUnavailableReason = "Selected continuity review detail could not be loaded.";
     }
   }
 
@@ -1018,16 +1075,16 @@ export default async function ContinuityPage({
     selectedSource === "unavailable" ? null : selectedSource,
     recallSource,
     resumptionSource,
-    openLoopSource,
+    openLoopSource === "unavailable" ? null : openLoopSource,
     dailyBriefSource,
     weeklyReviewSource,
     threadHealthSource,
-    reviewSource,
+    reviewSource === "unavailable" ? null : reviewSource,
     correctionSource === "unavailable" ? null : correctionSource,
   );
 
   return (
-    <main className="stack">
+    <div className="stack">
       <PageHeader
         eyebrow="Continuity"
         title="Continuity workspace"
@@ -1126,10 +1183,11 @@ export default async function ContinuityPage({
             apiBaseUrl={apiConfig.apiBaseUrl}
             userId={apiConfig.userId}
             source={correctionSource}
+            mutationTargetSource={correctionMutationTargetSource}
             review={selectedReviewDetail}
           />
         </div>
       </div>
-    </main>
+    </div>
   );
 }

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, cast
 
 from alicebot_api.contracts import (
     ContinuityArtifactDetailResponse,
@@ -21,9 +21,11 @@ from alicebot_api.contracts import (
     ContinuityReviewDetailResponse,
     ContinuityReviewQueueResponse,
     MemoryOperationCandidateGenerateResponse,
+    MemoryOperationCandidateGenerateSummary,
     MemoryOperationCandidateListResponse,
     MemoryOperationCommitResponse,
     MemoryOperationListResponse,
+    MemoryOperationListSummary,
     TemporalExplainResponse,
     TemporalStateAtResponse,
     TemporalTimelineResponse,
@@ -1212,26 +1214,34 @@ def format_memory_operation_candidates_output(
     payload: MemoryOperationCandidateGenerateResponse | MemoryOperationCandidateListResponse,
 ) -> str:
     summary = payload["summary"]
-    lines = [
-        "memory operation candidates",
-        f"returned: {summary['returned_count']}/{summary['total_count']} (limit={summary['limit']})"
-        if "returned_count" in summary
-        else (
+    lines = ["memory operation candidates"]
+    if "candidate_count" in summary:
+        generated_summary = cast(MemoryOperationCandidateGenerateSummary, summary)
+        lines.extend(
+            [
             "generated: "
-            f"{summary['candidate_count']} "
-            f"auto_apply={summary['auto_apply_count']} "
-            f"review_required={summary['review_required_count']} "
-            f"noop={summary['noop_count']}"
-        ),
-    ]
-    if "operation_types" in summary:
-        lines.append(f"operation_types: {', '.join(summary['operation_types'])}")
-    if "policy_action" in summary:
-        lines.append(
-            "filters: "
-            f"policy_action={summary['policy_action']} "
-            f"operation_type={summary['operation_type']} "
-            f"sync_fingerprint={summary['sync_fingerprint']}"
+            f"{generated_summary['candidate_count']} "
+            f"auto_apply={generated_summary['auto_apply_count']} "
+            f"review_required={generated_summary['review_required_count']} "
+            f"noop={generated_summary['noop_count']}",
+            f"operation_types: {', '.join(generated_summary['operation_types'])}",
+            ]
+        )
+    else:
+        listed_summary = cast(MemoryOperationListSummary, summary)
+        lines.extend(
+            [
+                (
+                    f"returned: {listed_summary['returned_count']}/"
+                    f"{listed_summary['total_count']} (limit={listed_summary['limit']})"
+                ),
+                (
+                    "filters: "
+                    f"policy_action={listed_summary['policy_action']} "
+                    f"operation_type={listed_summary['operation_type']} "
+                    f"sync_fingerprint={listed_summary['sync_fingerprint']}"
+                ),
+            ]
         )
 
     items = payload["items"]

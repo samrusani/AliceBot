@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 from uuid import UUID
 
 from alicebot_api.continuity_evidence import ArchivedArtifactRef, checksum_sha256_for_text
@@ -9,7 +10,7 @@ from alicebot_api.importer_models import (
     OBJECT_TYPE_TO_EXPLICIT_SIGNAL,
     to_string_list,
 )
-from alicebot_api.store import ContinuityStore, JsonObject
+from alicebot_api.store import ContinuityStore, JsonObject, JsonValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,9 +57,9 @@ def _build_provenance(
     config: ImportPersistenceConfig,
 ) -> JsonObject:
     source_prefix = config.source_prefix
-    provenance = {
+    provenance: JsonObject = {
         **source_provenance,
-        "source_event_ids": source_event_ids,
+        "source_event_ids": cast(JsonValue, source_event_ids),
         "source_kind": config.source_kind,
         f"{source_prefix}_workspace_id": batch.context.workspace_id,
         f"{source_prefix}_workspace_name": batch.context.workspace_name,
@@ -184,8 +185,8 @@ def import_normalized_batch(
         "dedupe_posture": config.dedupe_posture,
         "provenance_source_kind": config.source_kind,
         "provenance_source_label": config.source_label,
-        "imported_capture_event_ids": imported_capture_ids,
-        "imported_object_ids": imported_object_ids,
+        "imported_capture_event_ids": cast(JsonValue, imported_capture_ids),
+        "imported_object_ids": cast(JsonValue, imported_object_ids),
     }
 
 

@@ -36,7 +36,9 @@ Optional:
 
 - `alice_capture` — submit information as source-backed reviewable memory
 - `alice_memory_commit` — explicit policy-checked memory write with commit / confirmation / review / reject outcomes
-- `alice_recall` — hybrid full-text + vector search with fused ranking
+- `alice_recall` — hybrid full-text + vector search with fused ranking; hard
+  pre-limit scopes support `thread_id`, `task_id`, `project`/`projects`,
+  `person`/`people`, and absolute `since`/`until` bounds
 - `alice_resume` — resumption brief for a project, person, or thread
 - `alice_context_pack` — scoped context bundle for a task
 - `alice_open_loops` — list or manage open loops

@@ -27,6 +27,7 @@ from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_rollups import (
     ROLLUP_CANDIDATE_KIND,
     SEMANTIC_MIN_MEAN_SIMILARITY,
+    SEMANTIC_MIN_PAIRWISE_SIMILARITY,
     VNextRollupService,
     _topic_tokens,
 )
@@ -90,6 +91,26 @@ class SemanticFakeStore:
         ]
         rows.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id"))), reverse=True)
         return rows[:limit]
+
+    def count_rollup_input_memories(
+        self,
+        *,
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        excluded_candidate_kind: str,
+    ) -> int:
+        return len(
+            [
+                row
+                for row in self.memories
+                if row.get("status") in {"active", "accepted"}
+                and self._in_scope(row, domains=domains, sensitivity_allowed=sensitivity_allowed)
+                and not (
+                    isinstance(row.get("metadata_json"), dict)
+                    and row["metadata_json"].get("candidate_kind") == excluded_candidate_kind
+                )
+            ]
+        )
 
     def list_pending_rollup_candidates(
         self,
@@ -353,6 +374,8 @@ def test_anchorless_kitchen_items_form_exactly_one_gated_topical_card() -> None:
     assert aggregation["distinct_sessions"] == 3
     assert aggregation["semantic_mean_similarity"] == pytest.approx(0.821, abs=0.01)
     assert aggregation["semantic_mean_similarity"] >= SEMANTIC_MIN_MEAN_SIMILARITY
+    assert aggregation["semantic_min_similarity"] == pytest.approx(0.821, abs=0.01)
+    assert aggregation["semantic_min_similarity"] >= SEMANTIC_MIN_PAIRWISE_SIMILARITY
 
     # The card: review-gated candidate, unit-bearing title, every
     # instance's amount and date present, members stay untouched.
@@ -379,8 +402,11 @@ def test_anchorless_kitchen_items_form_exactly_one_gated_topical_card() -> None:
     metadata = outcome.to_metadata()
     assert metadata["grouping"] == "deterministic_entity_and_lexical_topic_plus_semantic_embedding"
     record = metadata["semantic_grouping"]
-    assert record["embedding_access"] == "provider_reembed_plus_exact_id_presence_read"
+    assert record["embedding_access"] == "exact_id_presence_read_then_reuse_or_provider_reembed"
     assert record["provider"] == "test_embeddings"
+    assert record["matrix_dtype"] == "float32"
+    assert record["matrix_materialization"] is False
+    assert record["peak_similarity_block_bytes"] == 6 * 6 * 4
     assert record["embedded_rows"] == 6
     assert record["clusters_formed"] == 1
     assert record["groups_admitted"] == 1
@@ -478,7 +504,9 @@ def test_semantic_chain_below_similarity_floor_is_dropped() -> None:
 
     assert outcome.proposals == []
     assert _rollup_candidates(store) == []
-    assert outcome.quality_gate["dropped_by_reason"]["semantic_coherence_below_floor"] >= 1
+    assert outcome.semantic is not None
+    assert outcome.semantic["clustering"] == "complete_link_all_pairs_at_threshold"
+    assert "no_usable_clusters_at_any_threshold" in outcome.semantic["skipped"]
 
 
 def test_semantic_cluster_without_dominant_noun_is_dropped() -> None:
@@ -532,6 +560,8 @@ ROUND4_METADATA_KEYS = [
     "grouping",
     "options",
     "groupable_memories",
+    "groupable_memories_total",
+    "groupable_memories_total_exact",
     "bounded",
     "groups",
     "proposals",
@@ -597,11 +627,29 @@ def test_rows_without_stored_embeddings_never_join_a_cluster() -> None:
     rows = _seed(store, mapping, KITCHEN_SPECS, KITCHEN_VECTORS)
     # Drop one stored vector: only two embedded rows remain (< 3).
     del store.embeddings[str(rows["kitchen-3"]["id"])]
-    outcome = VNextRollupService(store, embedding_provider=MappedEmbeddingProvider(mapping)).propose_rollups()
+    provider = MappedEmbeddingProvider(mapping)
+    outcome = VNextRollupService(store, embedding_provider=provider).propose_rollups()
 
     assert outcome.proposals == []
     assert outcome.semantic is not None
     assert outcome.semantic["embedded_rows"] == 2
+    assert "fewer_embedded_rows_than_min_members" in outcome.semantic["skipped"]
+    # Presence is checked before provider work, so an ineligible third row
+    # never consumes embedding quota (and this early exit consumes none).
+    assert provider.batch_calls == 0
+
+
+def test_embedding_presence_is_read_before_any_provider_call() -> None:
+    store = SemanticFakeStore()
+    mapping: dict[str, list[float]] = {}
+    _seed(store, mapping, KITCHEN_SPECS, KITCHEN_VECTORS, with_embedding=False)
+    provider = MappedEmbeddingProvider(mapping)
+
+    outcome = VNextRollupService(store, embedding_provider=provider).propose_rollups()
+
+    assert provider.batch_calls == 0
+    assert outcome.semantic is not None
+    assert outcome.semantic["embedded_rows"] == 0
     assert "fewer_embedded_rows_than_min_members" in outcome.semantic["skipped"]
 
 
@@ -689,13 +737,18 @@ def test_consolidation_workflow_runs_semantic_tier_and_discloses() -> None:
     _seed(store, mapping, KITCHEN_SPECS, kitchen_vectors)
 
     artifact = VNextConsolidationService(
-        store, embedding_provider=MappedEmbeddingProvider(mapping)
+        store, embedding_provider=(provider := MappedEmbeddingProvider(mapping))
     ).generate_memory_consolidation(MemoryConsolidationRequest())
 
     rollups_metadata = artifact["metadata_json"]["rollups"]
     assert rollups_metadata["enabled"] is True
     assert rollups_metadata["grouping"] == "deterministic_entity_and_lexical_topic_plus_semantic_embedding"
     assert rollups_metadata["semantic_grouping"]["groups_admitted"] == 1
+    assert rollups_metadata["semantic_grouping"]["reused_embedding_rows"] == 6
+    assert rollups_metadata["semantic_grouping"]["provider_embedded_rows"] == 0
+    # One consolidation batch; rollups consume the cache and make no second
+    # provider call for the same selected memories.
+    assert provider.batch_calls == 1
     semantic = [p for p in rollups_metadata["proposals"] if p["group_kind"] == "semantic"]
     assert len(semantic) == 1
     assert semantic[0]["label"].casefold() == "kitchen"

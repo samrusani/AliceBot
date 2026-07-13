@@ -415,7 +415,11 @@ def test_agent_output_ingestion_creates_review_only_artifact_and_memory_proposal
     assert result.artifact_id == "artifact-1"
     assert result.memory_id is not None
     assert store.artifacts[0]["status"] == "needs_review"
+    assert store.artifacts[0]["metadata_json"]["project_scope"] == ["Alice"]
     assert store.memories[-1]["status"] == "candidate"
+    assert store.memories[-1]["project_id"] == "Alice"
+    assert store.memories[-1]["created_by_agent_id"] == "openclaw"
+    assert store.memories[-1]["run_id"] == "run-1"
     assert store.sources[0]["metadata_json"]["agent_id"] == "openclaw"
     assert store.provenance_links[-1]["evidence_role"] == "inferred_from"
     assert any(event["event_type"] == "agent.output_ingested" for event in store.events)

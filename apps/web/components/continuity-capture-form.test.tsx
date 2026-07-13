@@ -103,4 +103,19 @@ describe("ContinuityCaptureForm", () => {
     ).toBeInTheDocument();
     expect(createContinuityCaptureMock).not.toHaveBeenCalled();
   });
+
+  it("keeps capture available when the independent inbox read is unavailable", () => {
+    render(
+      <ContinuityCaptureForm
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+        source="unavailable"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Capture text"), {
+      target: { value: "Read outage must not block this capture" },
+    });
+    expect(screen.getByRole("button", { name: "Capture" })).toBeEnabled();
+  });
 });

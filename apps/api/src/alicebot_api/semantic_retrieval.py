@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import math
 from pathlib import Path
 from typing import cast
@@ -10,6 +11,10 @@ from alicebot_api.contracts import (
     SEMANTIC_MEMORY_RETRIEVAL_ORDER,
     TASK_ARTIFACT_CHUNK_SEMANTIC_RETRIEVAL_ORDER,
     ArtifactScopedSemanticArtifactChunkRetrievalInput,
+    MemoryConfirmationStatus,
+    MemoryPromotionEligibility,
+    MemoryTrustClass,
+    MemoryType,
     SemanticMemoryRetrievalRequestInput,
     SemanticMemoryRetrievalResponse,
     SemanticMemoryRetrievalResultItem,
@@ -23,6 +28,7 @@ from alicebot_api.contracts import (
 )
 from alicebot_api.store import (
     ContinuityStore,
+    EmbeddingConfigRow,
     SemanticMemoryRetrievalRow,
     TaskArtifactChunkSemanticRetrievalRow,
 )
@@ -97,7 +103,7 @@ def _validate_embedding_config_and_query_vector(
     embedding_config_id: UUID,
     query_vector: tuple[float, ...],
     error_type: type[ValueError],
-) -> tuple[dict[str, object], list[float]]:
+) -> tuple[EmbeddingConfigRow, list[float]]:
     config = store.get_embedding_config_optional(embedding_config_id)
     if config is None:
         raise error_type(
@@ -119,7 +125,7 @@ def validate_semantic_memory_retrieval_request(
     store: ContinuityStore,
     *,
     request: SemanticMemoryRetrievalRequestInput,
-) -> tuple[dict[str, object], list[float]]:
+) -> tuple[EmbeddingConfigRow, list[float]]:
     return _validate_embedding_config_and_query_vector(
         store,
         embedding_config_id=request.embedding_config_id,
@@ -145,21 +151,33 @@ def serialize_semantic_memory_result_item(
         "updated_at": row["updated_at"].isoformat(),
         "score": float(row["score"]),
     }
-    optional_fields = (
-        "memory_type",
-        "confidence",
-        "salience",
-        "confirmation_status",
-        "trust_class",
-        "promotion_eligibility",
-        "evidence_count",
-        "independent_source_count",
-        "extracted_by_model",
-        "trust_reason",
-    )
-    for field_name in optional_fields:
-        if field_name in row:
-            payload[field_name] = row[field_name]
+    memory_type = row.get("memory_type")
+    if isinstance(memory_type, str):
+        payload["memory_type"] = cast(MemoryType, memory_type)
+    if "confidence" in row:
+        payload["confidence"] = row["confidence"]
+    if "salience" in row:
+        payload["salience"] = row["salience"]
+    confirmation_status = row.get("confirmation_status")
+    if isinstance(confirmation_status, str):
+        payload["confirmation_status"] = cast(MemoryConfirmationStatus, confirmation_status)
+    trust_class = row.get("trust_class")
+    if isinstance(trust_class, str):
+        payload["trust_class"] = cast(MemoryTrustClass, trust_class)
+    promotion_eligibility = row.get("promotion_eligibility")
+    if isinstance(promotion_eligibility, str):
+        payload["promotion_eligibility"] = cast(
+            MemoryPromotionEligibility,
+            promotion_eligibility,
+        )
+    if "evidence_count" in row:
+        payload["evidence_count"] = row["evidence_count"]
+    if "independent_source_count" in row:
+        payload["independent_source_count"] = row["independent_source_count"]
+    if "extracted_by_model" in row:
+        payload["extracted_by_model"] = row["extracted_by_model"]
+    if "trust_reason" in row:
+        payload["trust_reason"] = row["trust_reason"]
 
     if "valid_from" in row:
         valid_from = row["valid_from"]
@@ -223,7 +241,7 @@ def validate_semantic_artifact_chunk_retrieval_request(
     *,
     embedding_config_id: UUID,
     query_vector: tuple[float, ...],
-) -> tuple[dict[str, object], list[float]]:
+) -> tuple[EmbeddingConfigRow, list[float]]:
     return _validate_embedding_config_and_query_vector(
         store,
         embedding_config_id=embedding_config_id,
@@ -232,7 +250,9 @@ def validate_semantic_artifact_chunk_retrieval_request(
     )
 
 
-def _count_ingested_artifacts(artifact_rows: list[dict[str, object]]) -> int:
+def _count_ingested_artifacts(
+    artifact_rows: Sequence[Mapping[str, object]],
+) -> int:
     return sum(1 for artifact_row in artifact_rows if artifact_row["ingestion_status"] == "ingested")
 
 

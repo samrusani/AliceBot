@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, time, timedelta
-from typing import Protocol
+from datetime import UTC, datetime, time, timedelta, tzinfo
+from typing import Protocol, TypedDict, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from alicebot_api.vnext_agent_control import AgentIdentity, PolicyDecision
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService
 from alicebot_api.vnext_connections import ConnectionFinderRequest, VNextConnectionService
-from alicebot_api.vnext_consolidation import MemoryConsolidationRequest, VNextConsolidationService
+from alicebot_api.vnext_consolidation import (
+    MemoryConsolidationRequest,
+    VNextConsolidationService,
+    VNextConsolidationStore,
+)
 from alicebot_api.vnext_contradictions import ContradictionFinderRequest, VNextContradictionService
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_model_intelligence import (
@@ -19,7 +23,12 @@ from alicebot_api.vnext_model_intelligence import (
     build_model_backed_artifact,
     resolve_model_route,
 )
-from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
+from alicebot_api.vnext_projects import (
+    ProjectAutomationRequest,
+    VNextProjectService,
+    VNextProjectStore,
+    VNextProjectValidationError,
+)
 from alicebot_api.vnext_repositories import JsonObject
 
 
@@ -61,7 +70,7 @@ class VNextSchedulerValidationError(ValueError):
     """Raised when scheduler configuration or execution input is invalid."""
 
 
-class VNextSchedulerStore(Protocol):
+class VNextSchedulerStore(VNextProjectStore, Protocol):
     def append_event(self, event: JsonObject) -> JsonObject: ...
 
     def upsert_scheduler_workflow(self, workflow: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
@@ -86,29 +95,73 @@ class VNextSchedulerStore(Protocol):
 
     def try_scheduler_workflow_lock(self, workflow_type: str) -> bool: ...
 
-    def create_artifact(self, artifact: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
+    def list_memories(
+        self,
+        *,
+        status: str | None = None,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int | None = None,
+    ) -> list[JsonObject]: ...
 
-    def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
+    def count_memories(
+        self,
+        *,
+        status: str | None = None,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+    ) -> int: ...
 
-    def update_memory(self, *, memory_id: str, patch: JsonObject, actor_type: str = "system") -> JsonObject: ...
+    def create_edge(self, edge: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
-    def append_revision(self, revision: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
+    def list_edges(self, *, from_id: str | None = None, to_id: str | None = None) -> list[JsonObject]: ...
 
-    def list_memories(self, **kwargs) -> list[JsonObject]: ...
+    def update_edge_status(self, *, edge_id: str, status: str, actor_type: str = "system") -> JsonObject: ...
 
-    def search_sources(self, **kwargs) -> list[JsonObject]: ...
+    def list_beliefs(
+        self,
+        *,
+        status: str | None = "active",
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int = 8,
+    ) -> list[JsonObject]: ...
 
-    def search_memories(self, **kwargs) -> list[JsonObject]: ...
+    def get_belief(self, belief_id: str) -> JsonObject | None: ...
 
-    def list_open_loops(self, **kwargs) -> list[JsonObject]: ...
+    def update_belief_status(
+        self,
+        *,
+        belief_id: str,
+        status: str,
+        confidence: float | None = None,
+        superseded_by: str | None = None,
+        actor_type: str = "system",
+    ) -> JsonObject: ...
 
-    def list_artifacts(self, **kwargs) -> list[JsonObject]: ...
+    def list_artifact_quality_ratings(
+        self,
+        *,
+        artifact_id: str | None = None,
+        limit: int = 100,
+    ) -> list[JsonObject]: ...
 
-    def list_artifact_quality_ratings(self, **kwargs) -> list[JsonObject]: ...
+    def list_events(
+        self,
+        *,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[JsonObject]: ...
 
-    def list_projects(self, **kwargs) -> list[JsonObject]: ...
 
-    def list_events(self, **kwargs) -> list[JsonObject]: ...
+class _GenerationOptions(TypedDict):
+    generation_mode: str
+    model_route_mode: str | None
+    model_provider: str | None
+    model: str | None
+    model_temperature: float
+    allow_cloud_private: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,9 +280,12 @@ def compute_next_run_at(
     except ZoneInfoNotFoundError as exc:
         raise VNextSchedulerValidationError("timezone must be a valid IANA timezone") from exc
     local_now = (now or datetime.now(UTC)).astimezone(zone)
-    run_time = _parse_time_of_day(schedule["time_of_day"])
+    run_time = _parse_time_of_day(schedule.get("time_of_day"))
     if schedule["kind"] == "daily":
-        allowed_days = {_day_index(day) for day in schedule["days_of_week"]}  # type: ignore[index]
+        days_of_week = schedule.get("days_of_week")
+        if not isinstance(days_of_week, list):
+            raise VNextSchedulerValidationError("daily schedules must include days_of_week")
+        allowed_days = {_day_index(day) for day in days_of_week}
     else:
         allowed_days = {_day_index(schedule["day_of_week"])}
     for offset in range(8):
@@ -352,7 +408,9 @@ class VNextSchedulerService:
         current = self._ensure_workflow(workflow_type)
         next_enabled = bool(current.get("enabled")) if enabled is None else enabled
         next_paused = bool(current.get("paused")) if paused is None else paused
-        next_schedule = validate_schedule(workflow_type, schedule_json or current.get("schedule_json") or default_schedule(workflow_type))
+        configured_schedule = schedule_json or current.get("schedule_json")
+        schedule_input = configured_schedule if isinstance(configured_schedule, dict) else default_schedule(workflow_type)
+        next_schedule = validate_schedule(workflow_type, schedule_input)
         next_timezone = timezone or str(current.get("timezone") or "UTC")
         next_run_at = compute_next_run_at(
             workflow_type=workflow_type,
@@ -429,8 +487,10 @@ class VNextSchedulerService:
                     payload={"workflow_type": workflow_type, "scheduled_for": next_run_at.isoformat()},
                 )
                 continue
-            workflow_metadata = workflow.get("metadata_json") if isinstance(workflow.get("metadata_json"), dict) else {}
-            workflow_options = workflow_metadata.get("model_options") if isinstance(workflow_metadata.get("model_options"), dict) else {}
+            workflow_metadata_value = workflow.get("metadata_json")
+            workflow_metadata: JsonObject = workflow_metadata_value if isinstance(workflow_metadata_value, dict) else {}
+            workflow_options_value = workflow_metadata.get("model_options")
+            workflow_options: JsonObject = workflow_options_value if isinstance(workflow_options_value, dict) else {}
             result = self.run_now(
                 SchedulerRunRequest(
                     workflow_type=workflow_type,
@@ -554,7 +614,7 @@ class VNextSchedulerService:
 
     def _run_workflow(self, request: SchedulerRunRequest, *, scheduler_run_id: str, trace_id: str) -> JsonObject:
         generation_kwargs = self._generation_kwargs(request)
-        metadata = {
+        metadata: JsonObject = {
             "generated_by": "scheduler",
             "workflow": request.workflow_type,
             "workflow_type": request.workflow_type,
@@ -617,7 +677,7 @@ class VNextSchedulerService:
         if request.workflow_type == "project_update_scan":
             return self._generate_project_update_scan_artifact(request, metadata=metadata)
         if request.workflow_type == "memory_consolidation":
-            return VNextConsolidationService(self.store).generate_memory_consolidation(
+            return VNextConsolidationService(cast(VNextConsolidationStore, self.store)).generate_memory_consolidation(
                 MemoryConsolidationRequest(
                     domains=request.domains,
                     sensitivity_allowed=request.sensitivity_allowed,
@@ -776,7 +836,8 @@ class VNextSchedulerService:
         note: str,
         metadata: JsonObject,
     ) -> JsonObject:
-        memory_metadata = dict(memory.get("metadata_json")) if isinstance(memory.get("metadata_json"), dict) else {}
+        memory_metadata_value = memory.get("metadata_json")
+        memory_metadata: JsonObject = dict(memory_metadata_value) if isinstance(memory_metadata_value, dict) else {}
         memory_metadata["staleness"] = {
             "marked_by": "staleness_sweep",
             "reason": reason,
@@ -887,10 +948,10 @@ class VNextSchedulerService:
                     sensitivity_allowed=request.sensitivity_allowed,
                     agent_identity=request.agent_identity.to_record() if request.agent_identity else None,
                     brain_charter=self._brain_charter(),
-                    requested_route_mode=generation_kwargs.get("model_route_mode") if isinstance(generation_kwargs.get("model_route_mode"), str) else None,
-                    requested_provider=generation_kwargs.get("model_provider") if isinstance(generation_kwargs.get("model_provider"), str) else None,
-                    requested_model=generation_kwargs.get("model") if isinstance(generation_kwargs.get("model"), str) else None,
-                    allow_cloud_private=bool(generation_kwargs.get("allow_cloud_private")),
+                    requested_route_mode=generation_kwargs["model_route_mode"],
+                    requested_provider=generation_kwargs["model_provider"],
+                    requested_model=generation_kwargs["model"],
+                    allow_cloud_private=generation_kwargs["allow_cloud_private"],
                 )
             )
             model_artifact = build_model_backed_artifact(
@@ -903,7 +964,7 @@ class VNextSchedulerService:
                     open_questions=("Which open loop should be closed, snoozed, edited, or escalated first?",),
                     trace_id=str(metadata.get("trace_id")) if metadata.get("trace_id") is not None else None,
                     route=route,
-                    temperature=float(generation_kwargs.get("model_temperature", 0.2)),
+                    temperature=generation_kwargs["model_temperature"],
                     config={"generated_by": "scheduler"},
                 )
             )
@@ -936,6 +997,7 @@ class VNextSchedulerService:
         )
         if projects:
             try:
+                policy_decision_value = metadata.get("policy_decision")
                 return VNextProjectService(self.store).generate_project_update_candidate(
                     ProjectAutomationRequest(
                         domains=request.domains,
@@ -944,7 +1006,7 @@ class VNextSchedulerService:
                         generated_by="scheduler",
                         trace_id=str(metadata.get("trace_id")) if metadata.get("trace_id") is not None else None,
                         run_id=str(metadata.get("scheduler_run_id")) if metadata.get("scheduler_run_id") is not None else None,
-                        policy_decision=metadata.get("policy_decision") if isinstance(metadata.get("policy_decision"), dict) else None,
+                        policy_decision=policy_decision_value if isinstance(policy_decision_value, dict) else None,
                         metadata_json={**metadata, "workflow_type": "project_update_scan", "review_status": "needs_review"},
                         **self._generation_kwargs(request),
                     )
@@ -979,10 +1041,10 @@ class VNextSchedulerService:
                     sensitivity_allowed=request.sensitivity_allowed,
                     agent_identity=request.agent_identity.to_record() if request.agent_identity else None,
                     brain_charter=self._brain_charter(),
-                    requested_route_mode=generation_kwargs.get("model_route_mode") if isinstance(generation_kwargs.get("model_route_mode"), str) else None,
-                    requested_provider=generation_kwargs.get("model_provider") if isinstance(generation_kwargs.get("model_provider"), str) else None,
-                    requested_model=generation_kwargs.get("model") if isinstance(generation_kwargs.get("model"), str) else None,
-                    allow_cloud_private=bool(generation_kwargs.get("allow_cloud_private")),
+                    requested_route_mode=generation_kwargs["model_route_mode"],
+                    requested_provider=generation_kwargs["model_provider"],
+                    requested_model=generation_kwargs["model"],
+                    allow_cloud_private=generation_kwargs["allow_cloud_private"],
                 )
             )
             model_artifact = build_model_backed_artifact(
@@ -995,7 +1057,7 @@ class VNextSchedulerService:
                     open_questions=("Which project scope should be checked next?",),
                     trace_id=str(metadata.get("trace_id")) if metadata.get("trace_id") is not None else None,
                     route=route,
-                    temperature=float(generation_kwargs.get("model_temperature", 0.2)),
+                    temperature=generation_kwargs["model_temperature"],
                     config={"generated_by": "scheduler"},
                 )
             )
@@ -1023,13 +1085,13 @@ class VNextSchedulerService:
         value = request.options.get("generation_mode")
         return value if value in {"deterministic", "model_backed"} else "deterministic"
 
-    def _generation_kwargs(self, request: SchedulerRunRequest) -> JsonObject:
+    def _generation_kwargs(self, request: SchedulerRunRequest) -> _GenerationOptions:
         options = request.options
         route_mode = options.get("model_route_mode")
+        temperature_value = options.get("model_temperature")
         temperature = (
-            float(options.get("model_temperature"))
-            if isinstance(options.get("model_temperature"), (int, float))
-            and not isinstance(options.get("model_temperature"), bool)
+            float(temperature_value)
+            if isinstance(temperature_value, (int, float)) and not isinstance(temperature_value, bool)
             else 0.2
         )
         if temperature < 0.0 or temperature > 2.0:
@@ -1037,8 +1099,8 @@ class VNextSchedulerService:
         return {
             "generation_mode": self._generation_mode(request),
             "model_route_mode": route_mode if isinstance(route_mode, str) and route_mode in MODEL_ROUTE_MODES else None,
-            "model_provider": options.get("model_provider") if isinstance(options.get("model_provider"), str) else None,
-            "model": options.get("model") if isinstance(options.get("model"), str) else None,
+            "model_provider": provider if isinstance((provider := options.get("model_provider")), str) else None,
+            "model": model if isinstance((model := options.get("model")), str) else None,
             "model_temperature": temperature,
             "allow_cloud_private": bool(options.get("allow_cloud_private"))
             if isinstance(options.get("allow_cloud_private"), bool)
@@ -1054,15 +1116,18 @@ class VNextSchedulerService:
 
     def _next_run_after(self, workflow: JsonObject) -> str | None:
         workflow_type = str(workflow["workflow_type"])
+        schedule_value = workflow.get("schedule_json")
+        schedule_json = schedule_value if isinstance(schedule_value, dict) else default_schedule(workflow_type)
         return compute_next_run_at(
             workflow_type=workflow_type,
             enabled=bool(workflow.get("enabled")),
             paused=bool(workflow.get("paused")),
-            schedule_json=workflow.get("schedule_json") or default_schedule(workflow_type),
+            schedule_json=schedule_json,
             timezone=str(workflow.get("timezone") or "UTC"),
         )
 
     def _generated_for(self, workflow: JsonObject, checked_at: datetime) -> str:
+        zone: tzinfo
         try:
             zone = ZoneInfo(str(workflow.get("timezone") or "UTC"))
         except ZoneInfoNotFoundError:

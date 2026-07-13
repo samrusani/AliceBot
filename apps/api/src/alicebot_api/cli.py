@@ -11,6 +11,7 @@ from pathlib import Path
 import sys
 import tempfile
 import time
+from typing import TypedDict, cast
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 from uuid import UUID, uuid4
@@ -178,7 +179,7 @@ from alicebot_api.public_evals import (
     write_public_eval_report,
 )
 from alicebot_api.retrieval_evaluation import get_retrieval_evaluation_summary
-from alicebot_api.store import ContinuityStore, JsonObject
+from alicebot_api.store import ContinuityStore, JsonObject as ContinuityJsonObject
 from alicebot_api.temporal_state import (
     TemporalStateValidationError,
     get_temporal_explain,
@@ -195,6 +196,7 @@ from alicebot_api.trusted_fact_promotions import (
 from alicebot_api.vnext_agent_control import (
     PERMISSION_PROFILES,
     AgentIdentity,
+    PolicyDecision,
     agent_metadata,
     append_policy_events,
     ensure_policy_allowed,
@@ -218,7 +220,11 @@ from alicebot_api.vnext_connectors import (
     list_connector_definitions,
     load_connector_items_from_file,
 )
-from alicebot_api.vnext_context_tree import ContextTreeRequest, VNextContextTreeService
+from alicebot_api.vnext_context_tree import (
+    ContextTreeRequest,
+    VNextContextTreeService,
+    VNextContextTreeStore,
+)
 from alicebot_api.vnext_contradictions import (
     ContradictionFinderRequest,
     VNextContradictionService,
@@ -244,9 +250,17 @@ from alicebot_api.vnext_retrieval import (
     CONTEXT_DEPTHS,
     VNextRetrievalRequest,
     VNextRetrievalService,
+    VNextRetrievalStore,
     VNextRetrievalValidationError,
 )
-from alicebot_api.vnext_scheduler import SchedulerRunRequest, VNextSchedulerService, VNextSchedulerValidationError, WORKFLOW_TYPES, default_schedule
+from alicebot_api.vnext_scheduler import (
+    SchedulerRunRequest,
+    VNextSchedulerService,
+    VNextSchedulerStore,
+    VNextSchedulerValidationError,
+    WORKFLOW_TYPES,
+    default_schedule,
+)
 from alicebot_api.vnext_scheduler_runtime import (
     DEFAULT_LOG_FILE,
     DEFAULT_PID_FILE,
@@ -268,7 +282,7 @@ from alicebot_api.vnext_embeddings import (
     endpoint_fingerprint,
     get_embedding_provider,
     memory_embedding_text,
-    memory_embedding_signature,
+    signed_memory_embedding_update,
 )
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_json import json_safe
@@ -305,11 +319,28 @@ class EvalGateFailure(Exception):
         self.output = output
 
 
+class EmbeddingBackfillFailure(Exception):
+    """A backfill completed with failed rows and must exit nonzero."""
+
+    def __init__(self, output: str) -> None:
+        super().__init__("embedding backfill completed with failures")
+        self.output = output
+
+
 @dataclass(frozen=True, slots=True)
 class CLIContext:
     settings: Settings
     database_url: str
     user_id: UUID
+
+
+class ModelGenerationKwargs(TypedDict):
+    generation_mode: str
+    model_route_mode: str | None
+    model_provider: str | None
+    model: str | None
+    model_temperature: float
+    allow_cloud_private: bool
 
 
 def _parse_uuid(value: str) -> UUID:
@@ -331,7 +362,9 @@ def _parse_datetime(value: str) -> datetime:
         ) from exc
 
 
-def _parse_optional_json_object(raw_value: str | None, *, option_name: str) -> JsonObject | None:
+def _parse_optional_json_object(
+    raw_value: str | None, *, option_name: str
+) -> ContinuityJsonObject | None:
     if raw_value is None:
         return None
     try:
@@ -341,6 +374,24 @@ def _parse_optional_json_object(raw_value: str | None, *, option_name: str) -> J
     if not isinstance(payload, dict):
         raise ValueError(f"{option_name} must be a JSON object")
     return payload
+
+
+def _object_dict(value: object) -> dict[str, object]:
+    """Return a JSON-like object only after a runtime shape check."""
+
+    return value if isinstance(value, dict) else {}
+
+
+def _object_list(value: object) -> list[object]:
+    """Return a JSON-like list only after a runtime shape check."""
+
+    return value if isinstance(value, list) else []
+
+
+def _object_int(value: object, *, default: int = 0) -> int:
+    """Read an integer-valued payload field without accepting bools."""
+
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
 
 
 def _add_scope_filter_arguments(parser: argparse.ArgumentParser) -> None:
@@ -641,7 +692,7 @@ def _vnext_policy_checked_for_args(
     domains: tuple[str, ...] = (),
     workflow_type: str | None = None,
     write_policy: str | None = None,
-) -> tuple[AgentIdentity | None, str, str | None, object]:
+) -> tuple[AgentIdentity | None, str, str | None, PolicyDecision]:
     identity = _vnext_agent_identity_from_args(args)
     if identity is not None:
         store.upsert_agent_identity(
@@ -665,6 +716,24 @@ def _vnext_policy_checked_for_args(
     )
     append_policy_events(store, identity=identity, decision=decision)
     return identity, ("agent" if identity is not None else "user"), identity.agent_id if identity is not None else None, decision
+
+
+def _scheduler_service(store: PostgresVNextStore) -> VNextSchedulerService:
+    """Bridge the concrete store to the scheduler's deliberately broad protocol."""
+
+    return VNextSchedulerService(cast(VNextSchedulerStore, store))
+
+
+def _context_tree_service(store: PostgresVNextStore) -> VNextContextTreeService:
+    """Bridge the concrete store to the context-tree read protocol."""
+
+    return VNextContextTreeService(cast(VNextContextTreeStore, store))
+
+
+def _retrieval_service(store: PostgresVNextStore) -> VNextRetrievalService:
+    """Bridge the concrete store to the retrieval read protocol."""
+
+    return VNextRetrievalService(cast(VNextRetrievalStore, store))
 
 
 def _run_vnext_sources_capture_text(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -795,6 +864,7 @@ def _run_vnext_connectors_configure(ctx: CLIContext, args: argparse.Namespace) -
 def _run_vnext_connectors_status(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
         service = VNextConnectorService(store)
+        payload: object
         if args.connector_name:
             payload = {
                 "config": service.get_config(args.connector_name),
@@ -828,15 +898,14 @@ def _run_vnext_telegram_test(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
         service = VNextConnectorService(store)
         config = service.get_config("telegram")
+        config_json = _object_dict(config.get("config_json"))
         payload = {
             "connector_name": "telegram",
             "configured": bool(config.get("configured")),
             "enabled": bool(config.get("enabled")),
             "secret_ref": config.get("secret_ref") or f"env:{args.bot_token_env}",
             "secret_resolved": service.secret_provider.has_secret(str(config.get("secret_ref") or f"env:{args.bot_token_env}")),
-            "allowed_chat_ids_configured": bool((config.get("config_json") or {}).get("allowed_chat_ids"))
-            if isinstance(config.get("config_json"), dict)
-            else False,
+            "allowed_chat_ids_configured": bool(config_json.get("allowed_chat_ids")),
             "cursor": service.get_cursor("telegram"),
         }
         if getattr(args, "live", False):
@@ -858,8 +927,8 @@ def _run_vnext_telegram_sync(ctx: CLIContext, args: argparse.Namespace) -> str:
                 retries=args.retries,
             )
         config = service.get_config("telegram")
-        config_json = config.get("config_json") if isinstance(config.get("config_json"), dict) else {}
-        configured_allowed = config_json.get("allowed_chat_ids") if isinstance(config_json, dict) else []
+        config_json = _object_dict(config.get("config_json"))
+        configured_allowed = _object_list(config_json.get("allowed_chat_ids"))
         allowed_chat_ids = tuple(args.allowed_chat_id or [str(value) for value in configured_allowed if isinstance(value, (str, int))])
         result = service.sync_telegram_updates(
             updates,
@@ -875,8 +944,8 @@ def _run_vnext_local_folder_sync(ctx: CLIContext, args: argparse.Namespace) -> s
         paths = list(args.path)
         if not paths:
             config = VNextConnectorService(store).get_config("local_folder")
-            config_json = config.get("config_json") if isinstance(config.get("config_json"), dict) else {}
-            configured_paths = config_json.get("paths") if isinstance(config_json, dict) else []
+            config_json = _object_dict(config.get("config_json"))
+            configured_paths = _object_list(config_json.get("paths"))
             paths = [str(path) for path in configured_paths if isinstance(path, str)]
         result = VNextConnectorService(store).sync_local_folder(
             paths,
@@ -978,7 +1047,7 @@ def _run_vnext_doctor(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
         payload = VNextDoctorService(store).run(fix_safe=args.fix_safe, ci=args.ci)
     output = _json_dumps(payload)
-    if int(payload.get("blocking_failure_count", 0) or 0) > 0:
+    if _object_int(payload.get("blocking_failure_count")) > 0:
         print(output)
         raise VNextConnectorValidationError("vNext doctor found blocking failures")
     return output
@@ -1109,7 +1178,7 @@ def _reset_vnext_demo_dataset(store: PostgresVNextStore, *, dataset_id: str) -> 
 def _tag_demo_candidate_memories(store: PostgresVNextStore, *, dataset_id: str, source_ids: set[str]) -> int:
     updated = 0
     for memory in store.list_memories(status="candidate"):
-        metadata = memory.get("metadata_json") if isinstance(memory.get("metadata_json"), dict) else {}
+        metadata = _object_dict(memory.get("metadata_json"))
         if str(metadata.get("source_id") or "") not in source_ids:
             continue
         store.update_memory(
@@ -1125,7 +1194,7 @@ def _tag_demo_artifact(store: PostgresVNextStore, *, artifact_id: str, dataset_i
     artifact = store.get_artifact(artifact_id)
     if artifact is None:
         return
-    metadata = artifact.get("metadata_json") if isinstance(artifact.get("metadata_json"), dict) else {}
+    metadata = _object_dict(artifact.get("metadata_json"))
     with store.conn.cursor() as cur:
         cur.execute(
             """
@@ -1161,7 +1230,7 @@ def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
             _reset_vnext_demo_dataset(store, dataset_id=dataset_id)
         connector_service = VNextConnectorService(store)
         connector_service.ensure_default_settings()
-        for project in dataset.get("projects", []):
+        for project in _object_list(dataset.get("projects")):
             if not isinstance(project, dict):
                 continue
             row = store.create_project(
@@ -1180,23 +1249,23 @@ def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
             created_project_ids.append(str(row["id"]))
 
         capture_service = VNextCaptureService(store)
-        for source in dataset.get("sources", []):
+        for source in _object_list(dataset.get("sources")):
             if not isinstance(source, dict):
                 continue
-            result = capture_service.capture_text(
+            capture_result = capture_service.capture_text(
                 str(source.get("raw_text") or ""),
                 title=str(source.get("title") or "Synthetic demo source"),
                 domain=str(source.get("domain") or "project"),
                 sensitivity=str(source.get("sensitivity") or "private"),
                 metadata_json={**_demo_tag(dataset_id), "fixture_source_type": source.get("source_type")},
             )
-            if result.source_id is not None:
-                created_source_ids.add(result.source_id)
+            if capture_result.source_id is not None:
+                created_source_ids.add(capture_result.source_id)
 
         connector_payloads = dataset.get("connector_payloads") if isinstance(dataset.get("connector_payloads"), dict) else {}
         browser_payload = connector_payloads.get("browser_clipper") if isinstance(connector_payloads, dict) else None
         if isinstance(browser_payload, dict) and isinstance(browser_payload.get("items"), list):
-            result = connector_service.sync_items(
+            browser_result = connector_service.sync_items(
                 "browser_clipper",
                 [
                     {**item, **_demo_tag(dataset_id)}
@@ -1207,11 +1276,11 @@ def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
                 default_sensitivity="private",
                 use_cursor=False,
             )
-            created_source_ids.update(result.source_ids)
+            created_source_ids.update(browser_result.source_ids)
 
         telegram_payload = connector_payloads.get("telegram") if isinstance(connector_payloads, dict) else None
         if isinstance(telegram_payload, dict) and isinstance(telegram_payload.get("items"), list):
-            result = connector_service.sync_telegram_updates(
+            telegram_result = connector_service.sync_telegram_updates(
                 [
                     {**item, **_demo_tag(dataset_id)}
                     for item in telegram_payload["items"]
@@ -1221,10 +1290,10 @@ def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
                 default_domain="personal",
                 default_sensitivity="private",
             )
-            created_source_ids.update(result.source_ids)
+            created_source_ids.update(telegram_result.source_ids)
 
         project_id = created_project_ids[0] if created_project_ids else None
-        agent_outputs = dataset.get("agent_outputs") if isinstance(dataset.get("agent_outputs"), list) else []
+        agent_outputs = _object_list(dataset.get("agent_outputs"))
         fixture_agent_output = next((item for item in agent_outputs if isinstance(item, dict)), {})
         identity = AgentIdentity(
             agent_id=str(fixture_agent_output.get("agent_id") or "openclaw"),
@@ -1234,9 +1303,7 @@ def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
             project_scope=tuple(
                 str(value)
                 for value in (
-                    fixture_agent_output.get("project_scope")
-                    if isinstance(fixture_agent_output.get("project_scope"), list)
-                    else ["Alice"]
+                    _object_list(fixture_agent_output.get("project_scope")) or ["Alice"]
                 )
             ),
             permission_profile=str(fixture_agent_output.get("permission_profile") or "project_scoped_agent"),
@@ -1351,7 +1418,7 @@ def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
                 )
             )
             created_artifact_ids.append(str(project_update["id"]))
-        scheduler = VNextSchedulerService(store)
+        scheduler = _scheduler_service(store)
         scheduler.configure_workflow(
             workflow_type="daily_brief",
             enabled=True,
@@ -1370,8 +1437,8 @@ def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
                 options={"generation_mode": "deterministic"},
             )
         )
-        scheduled_artifact = scheduled.get("artifact") if isinstance(scheduled.get("artifact"), dict) else None
-        if scheduled_artifact and scheduled_artifact.get("id"):
+        scheduled_artifact = _object_dict(scheduled.get("artifact"))
+        if scheduled_artifact.get("id"):
             artifact_id = str(scheduled_artifact["id"])
             created_artifact_ids.append(artifact_id)
             _tag_demo_artifact(store, artifact_id=artifact_id, dataset_id=dataset_id)
@@ -1402,7 +1469,7 @@ def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
         "artifact_count": len(created_artifact_ids),
         "project_count": len(created_project_ids),
         "open_loop_count": len(created_open_loop_ids),
-        "agent_activity_visible": telemetry.get("total_agent_events", 0) > 0,
+        "agent_activity_visible": _object_int(telemetry.get("total_agent_events")) > 0,
         "policy_block_recorded": blocked_decision.decision == "blocked",
         "connector_health_count": health.get("count"),
     }
@@ -1430,7 +1497,7 @@ def _run_context_pack(ctx: CLIContext, args: argparse.Namespace) -> str:
     if args.budget_strategy is not None:
         tuning_kwargs["budget_strategy"] = args.budget_strategy
     with _vnext_store_context(ctx) as store:
-        payload = VNextRetrievalService(store).compile_context_pack(
+        payload = _retrieval_service(store).compile_context_pack(
             VNextRetrievalRequest(
                 query=query,
                 domains=tuple(args.domain),
@@ -1452,7 +1519,7 @@ def _run_context_pack(ctx: CLIContext, args: argparse.Namespace) -> str:
 def _run_vnext_context_tree(ctx: CLIContext, args: argparse.Namespace) -> str:
     query = " ".join(args.query).strip()
     with _vnext_store_context(ctx) as store:
-        payload = VNextContextTreeService(store).build_tree(
+        payload = _context_tree_service(store).build_tree(
             ContextTreeRequest(
                 query=query,
                 domains=tuple(args.domain),
@@ -1480,7 +1547,7 @@ def _brain_artifact_request_from_args(args: argparse.Namespace) -> BrainArtifact
     )
 
 
-def _model_generation_kwargs_from_args(args: argparse.Namespace) -> JsonObject:
+def _model_generation_kwargs_from_args(args: argparse.Namespace) -> ModelGenerationKwargs:
     return {
         "generation_mode": getattr(args, "generation_mode", "deterministic"),
         "model_route_mode": getattr(args, "model_route_mode", None),
@@ -1781,20 +1848,14 @@ def _run_vnext_memories_backfill_embeddings(ctx: CLIContext, args: argparse.Name
                 failed += len(embeddable)
                 print(f"warning: embedding batch failed: {exc}", file=sys.stderr)
                 continue
-            for (row, _text), vector in zip(embeddable, vectors):
-                signature = memory_embedding_signature(row, provider=provider)
+            for (row, _text), vector in zip(embeddable, vectors, strict=True):
                 store.update_memory_embedding(
-                    memory_id=str(row["id"]),
-                    vector=vector,
-                    provider=str(signature["provider"]),
-                    model=str(signature["model"]),
-                    content_sha256=str(signature["content_sha256"]),
-                    signature_version=int(signature["version"]),
+                    **signed_memory_embedding_update(row, vector, provider=provider)
                 )
                 if row.get("embedding_present") is True:
                     reindexed_incompatible += 1
                 embedded += 1
-    return _json_dumps(
+    output = _json_dumps(
         {
             "provider": provider.provider,
             "model": provider.model,
@@ -1805,6 +1866,9 @@ def _run_vnext_memories_backfill_embeddings(ctx: CLIContext, args: argparse.Name
             "failed": failed,
         }
     )
+    if failed:
+        raise EmbeddingBackfillFailure(output)
+    return output
 
 
 def _run_maintenance_sync_contradictions(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -1906,7 +1970,7 @@ def _run_agent_keys_revoke(ctx: CLIContext, args: argparse.Namespace) -> str:
 
 def _run_vnext_scheduler_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
-        payload = VNextSchedulerService(store).status()
+        payload = _scheduler_service(store).status()
     return _json_dumps(payload)
 
 
@@ -1941,7 +2005,7 @@ def _run_vnext_scheduler_run_now(ctx: CLIContext, args: argparse.Namespace) -> s
         if decision.decision == "blocked":
             blocked_decision = decision
         else:
-            payload = VNextSchedulerService(store).run_now(
+            payload = _scheduler_service(store).run_now(
                 SchedulerRunRequest(
                     workflow_type=args.workflow_type,
                     domains=decision.effective_domains,
@@ -1973,7 +2037,7 @@ def _run_vnext_scheduler_run_due(ctx: CLIContext, args: argparse.Namespace) -> s
         if decision.decision == "blocked":
             blocked_decision = decision
         else:
-            payload = VNextSchedulerService(store).run_due_workflows(
+            payload = _scheduler_service(store).run_due_workflows(
                 limit=args.limit,
                 triggered_by=actor_type if identity is not None else "scheduler",
                 agent_identity=identity,
@@ -2027,7 +2091,7 @@ def _run_vnext_scheduler_pause(ctx: CLIContext, args: argparse.Namespace) -> str
         if decision.decision == "blocked":
             blocked_decision = decision
         else:
-            payload = VNextSchedulerService(store).pause_all(actor_type=actor_type)
+            payload = _scheduler_service(store).pause_all(actor_type=actor_type)
     if blocked_decision is not None:
         ensure_policy_allowed(blocked_decision)
     if payload is None or decision is None:
@@ -2048,7 +2112,7 @@ def _run_vnext_scheduler_resume(ctx: CLIContext, args: argparse.Namespace) -> st
         if decision.decision == "blocked":
             blocked_decision = decision
         else:
-            payload = VNextSchedulerService(store).resume_all(actor_type=actor_type)
+            payload = _scheduler_service(store).resume_all(actor_type=actor_type)
     if blocked_decision is not None:
         ensure_policy_allowed(blocked_decision)
     if payload is None or decision is None:
@@ -2059,7 +2123,7 @@ def _run_vnext_scheduler_resume(ctx: CLIContext, args: argparse.Namespace) -> st
 def _run_vnext_smoke_agentic_scheduler(ctx: CLIContext, _args: argparse.Namespace) -> str:
     smoke_run_id = f"cli-agentic-scheduler-smoke-{uuid4()}"
     with _vnext_store_context(ctx) as store:
-        service = VNextSchedulerService(store)
+        service = _scheduler_service(store)
         initial_status = service.status()
         daily_workflow = service.configure_workflow(
             workflow_type="daily_brief",
@@ -2207,21 +2271,28 @@ def _run_vnext_smoke_agentic_scheduler(ctx: CLIContext, _args: argparse.Namespac
         resume_payload = service.resume_all(actor_type="user")
         final_status = service.status()
 
+    daily_run_record = _object_dict(daily_run.get("run"))
+    weekly_run_record = _object_dict(weekly_run.get("run"))
+    due_runs = _object_list(due_payload.get("runs"))
+    first_due = _object_dict(due_runs[0]) if due_runs else {}
+    first_due_run = _object_dict(first_due.get("run"))
     gates = {
-        "scheduler_defaults_exist": len(initial_status.get("workflows", [])) >= 6,
+        "scheduler_defaults_exist": len(_object_list(initial_status.get("workflows"))) >= 6,
         "scheduler_disabled_by_default": initial_status.get("disabled_by_default") is True,
         "daily_workflow_enabled": daily_workflow.get("enabled") is True,
         "weekly_workflow_enabled": weekly_workflow.get("enabled") is True,
         "memory_proposal_candidate": proposal.get("status") == "candidate",
-        "daily_run_succeeded": (daily_run.get("run") or {}).get("status") == "succeeded",
-        "weekly_run_succeeded": (weekly_run.get("run") or {}).get("status") == "succeeded",
+        "daily_run_succeeded": daily_run_record.get("status") == "succeeded",
+        "weekly_run_succeeded": weekly_run_record.get("status") == "succeeded",
         "due_scan_executed": due_payload.get("due_count") == 1
-        and ((due_payload.get("runs") or [{}])[0].get("run") or {}).get("status") == "succeeded",
-        "scheduler_artifacts_reviewable": (daily_run.get("artifact") or {}).get("status") == "needs_review"
-        and (weekly_run.get("artifact") or {}).get("status") == "needs_review",
+        and first_due_run.get("status") == "succeeded",
+        "scheduler_artifacts_reviewable": _object_dict(daily_run.get("artifact")).get("status")
+        == "needs_review"
+        and _object_dict(weekly_run.get("artifact")).get("status") == "needs_review",
         "blocked_policy_recorded": blocked_decision.decision == "blocked",
-        "pause_resume_completed": pause_payload.get("paused_count", 0) >= 6 and resume_payload.get("resumed_count", 0) >= 6,
-        "run_history_visible": len(final_status.get("recent_runs", [])) >= 2,
+        "pause_resume_completed": _object_int(pause_payload.get("paused_count")) >= 6
+        and _object_int(resume_payload.get("resumed_count")) >= 6,
+        "run_history_visible": len(_object_list(final_status.get("recent_runs"))) >= 2,
     }
     payload = {
         "status": "passed" if all(gates.values()) else "failed",
@@ -2229,9 +2300,9 @@ def _run_vnext_smoke_agentic_scheduler(ctx: CLIContext, _args: argparse.Namespac
         "gates": gates,
         "agent_identity": identity.to_record(),
         "proposal_id": str(proposal.get("id")),
-        "daily_run_id": str((daily_run.get("run") or {}).get("id")),
-        "weekly_run_id": str((weekly_run.get("run") or {}).get("id")),
-        "due_run_id": str((((due_payload.get("runs") or [{}])[0].get("run") or {}).get("id"))),
+        "daily_run_id": str(daily_run_record.get("id")),
+        "weekly_run_id": str(weekly_run_record.get("id")),
+        "due_run_id": str(first_due_run.get("id")),
         "policy_decisions": {
             "proposal": proposal_decision.to_record(),
             "daily_run": daily_decision.to_record(),
@@ -2315,7 +2386,7 @@ def _run_vnext_smoke_local_runtime(ctx: CLIContext, _args: argparse.Namespace) -
     with tempfile.TemporaryDirectory(prefix="alicebot-vnext-scheduler-") as tmpdir:
         runtime_dir = Path(tmpdir)
         with _vnext_store_context(ctx) as store:
-            service = VNextSchedulerService(store)
+            service = _scheduler_service(store)
             service.ensure_default_workflows()
             _seed_local_runtime_smoke_inputs(store, smoke_id)
             for workflow_type in WORKFLOW_TYPES:
@@ -2345,19 +2416,24 @@ def _run_vnext_smoke_local_runtime(ctx: CLIContext, _args: argparse.Namespace) -
             )
         )
 
-    last_due_scan = daemon_payload.get("last_due_scan") if isinstance(daemon_payload.get("last_due_scan"), dict) else {}
-    due_runs = last_due_scan.get("runs") if isinstance(last_due_scan, dict) and isinstance(last_due_scan.get("runs"), list) else []
-    artifacts = [run.get("artifact") for run in due_runs if isinstance(run, dict) and isinstance(run.get("artifact"), dict)]
+    last_due_scan = _object_dict(daemon_payload.get("last_due_scan"))
+    due_runs = [
+        _object_dict(item) for item in _object_list(last_due_scan.get("runs"))
+    ]
+    artifacts = [
+        _object_dict(run.get("artifact"))
+        for run in due_runs
+        if isinstance(run.get("artifact"), dict)
+    ]
     required_metadata = {"workflow_type", "scheduler_run_id", "trace_id", "source_refs", "generated_by", "review_status"}
-    observed_workflows = {str(run.get("workflow_type")) for run in due_runs if isinstance(run, dict)}
+    observed_workflows = {str(run.get("workflow_type")) for run in due_runs}
     metadata_complete = all(
         artifact.get("generated_by") == "scheduler"
         and artifact.get("status") == "needs_review"
         and artifact.get("domain") is not None
         and artifact.get("sensitivity") is not None
-        and required_metadata.issubset(set((artifact.get("metadata_json") or {}).keys()))
+        and required_metadata.issubset(set(_object_dict(artifact.get("metadata_json")).keys()))
         for artifact in artifacts
-        if isinstance(artifact, dict)
     )
     gates = {
         "daemon_once_completed": daemon_payload.get("running") is False and daemon_payload.get("last_error") is None,
@@ -2369,7 +2445,7 @@ def _run_vnext_smoke_local_runtime(ctx: CLIContext, _args: argparse.Namespace) -
         "open_loop_review_scheduled": "open_loop_review" in observed_workflows,
         "project_update_scan_scheduled": "project_update_scan" in observed_workflows,
         "scheduled_artifacts_reviewable": len(artifacts) == len(WORKFLOW_TYPES)
-        and all(isinstance(artifact, dict) and artifact.get("status") == "needs_review" for artifact in artifacts),
+        and all(artifact.get("status") == "needs_review" for artifact in artifacts),
         "scheduled_artifact_metadata_complete": metadata_complete,
     }
     daemon_summary = {
@@ -2389,17 +2465,19 @@ def _run_vnext_smoke_local_runtime(ctx: CLIContext, _args: argparse.Namespace) -
         )
         if key in daemon_payload
     }
-    run_summaries = [
-        {
-            "workflow_type": run.get("workflow_type"),
-            "run_id": ((run.get("run") or {}).get("id") if isinstance(run.get("run"), dict) else None),
-            "status": ((run.get("run") or {}).get("status") if isinstance(run.get("run"), dict) else None),
-            "artifact_id": ((run.get("artifact") or {}).get("id") if isinstance(run.get("artifact"), dict) else None),
-            "artifact_type": ((run.get("artifact") or {}).get("artifact_type") if isinstance(run.get("artifact"), dict) else None),
-        }
-        for run in due_runs
-        if isinstance(run, dict)
-    ]
+    run_summaries: list[dict[str, object]] = []
+    for run in due_runs:
+        run_record = _object_dict(run.get("run"))
+        artifact_record = _object_dict(run.get("artifact"))
+        run_summaries.append(
+            {
+                "workflow_type": run.get("workflow_type"),
+                "run_id": run_record.get("id"),
+                "status": run_record.get("status"),
+                "artifact_id": artifact_record.get("id"),
+                "artifact_type": artifact_record.get("artifact_type"),
+            }
+        )
     payload = {
         "status": "passed" if all(gates.values()) else "failed",
         "smoke": "local-runtime",
@@ -2416,7 +2494,7 @@ def _run_vnext_smoke_model_backed(ctx: CLIContext, _args: argparse.Namespace) ->
     smoke_id = str(uuid4())
     due_at = "2000-01-01T00:00:00+00:00"
     with _vnext_store_context(ctx) as store:
-        service = VNextSchedulerService(store)
+        service = _scheduler_service(store)
         service.ensure_default_workflows()
         _seed_local_runtime_smoke_inputs(store, smoke_id)
         store.update_scheduler_workflow(
@@ -2441,19 +2519,20 @@ def _run_vnext_smoke_model_backed(ctx: CLIContext, _args: argparse.Namespace) ->
         )
         payload = service.run_due_workflows(limit=1, triggered_by="scheduler")
 
-    run = (payload.get("runs") or [{}])[0] if isinstance(payload.get("runs"), list) else {}
-    artifact = run.get("artifact") if isinstance(run, dict) and isinstance(run.get("artifact"), dict) else {}
-    metadata = artifact.get("metadata_json") if isinstance(artifact, dict) and isinstance(artifact.get("metadata_json"), dict) else {}
-    model_info = artifact.get("model_info_json") if isinstance(artifact, dict) and isinstance(artifact.get("model_info_json"), dict) else {}
-    content = str(artifact.get("content_markdown", "")) if isinstance(artifact, dict) else ""
+    runs = _object_list(payload.get("runs"))
+    run = _object_dict(runs[0]) if runs else {}
+    run_record = _object_dict(run.get("run"))
+    artifact = _object_dict(run.get("artifact"))
+    metadata = _object_dict(artifact.get("metadata_json"))
+    model_info = _object_dict(artifact.get("model_info_json"))
+    model_routing = _object_dict(metadata.get("model_routing"))
+    content = str(artifact.get("content_markdown", ""))
     gates = {
         "due_scan_ran_one_workflow": payload.get("due_count") == 1,
-        "run_succeeded": ((run.get("run") or {}).get("status") if isinstance(run, dict) and isinstance(run.get("run"), dict) else None) == "succeeded",
+        "run_succeeded": run_record.get("status") == "succeeded",
         "artifact_reviewable": artifact.get("status") == "needs_review",
         "artifact_model_backed": metadata.get("generation_mode") == "model_backed",
-        "local_route_enforced": (metadata.get("model_routing") or {}).get("route_mode") == "local_only"
-        if isinstance(metadata.get("model_routing"), dict)
-        else False,
+        "local_route_enforced": model_routing.get("route_mode") == "local_only",
         "provider_metadata_present": all(model_info.get(key) for key in ("provider", "model", "prompt_hash", "input_context_hash", "created_at", "policy_mode")),
         "source_grounded_sections_present": all(
             section in content
@@ -2474,7 +2553,7 @@ def _run_vnext_smoke_model_backed(ctx: CLIContext, _args: argparse.Namespace) ->
         "smoke": "model-backed",
         "gates": gates,
         "artifact_id": artifact.get("id"),
-        "run_id": ((run.get("run") or {}).get("id") if isinstance(run, dict) and isinstance(run.get("run"), dict) else None),
+        "run_id": run_record.get("id"),
         "model_info": model_info,
     }
     if result["status"] != "passed":
@@ -2559,7 +2638,11 @@ def _run_vnext_smoke_live_capture_connectors(ctx: CLIContext, _args: argparse.Na
                 policy_decision={"decision": "allowed", "action": "source.capture"},
             )
             health = service.connector_health_all()
-    health_items = {str(item["connector_name"]): item for item in health["items"]} if isinstance(health.get("items"), list) else {}
+    health_items = {
+        str(item["connector_name"]): item
+        for item in _object_list(health.get("items"))
+        if isinstance(item, dict) and "connector_name" in item
+    }
     gates = {
         "telegram_imported_allowlisted": telegram.imported_count == 1 and telegram.skipped_count == 1,
         "local_folder_imported_and_ignored_generated": local.imported_count == 1,
@@ -2594,7 +2677,7 @@ def _run_vnext_smoke_capture_to_brief(ctx: CLIContext, _args: argparse.Namespace
             default_sensitivity="private",
         )
         source_id = capture.source_ids[0] if capture.source_ids else None
-        pack = VNextRetrievalService(store).compile_context_pack(
+        pack = _retrieval_service(store).compile_context_pack(
             VNextRetrievalRequest(query=smoke_id, domains=("project",), sensitivity_allowed=("private", "unknown"))
         )
         artifact = VNextBrainService(store).generate_daily_brief(
@@ -2616,15 +2699,22 @@ def _run_vnext_smoke_capture_to_brief(ctx: CLIContext, _args: argparse.Namespace
             actor_type="system",
         )
         dogfooding = VNextDogfoodingService(store).dashboard()
-    artifact_refs = artifact.get("metadata_json", {}).get("source_refs") if isinstance(artifact.get("metadata_json"), dict) else []
-    pack_source_ids = [str(source.get("id")) for source in pack.get("sources", []) if isinstance(source, dict)]
+    artifact_refs = _object_dict(artifact.get("metadata_json")).get("source_refs")
+    pack_source_ids = [
+        str(source.get("id"))
+        for source in _object_list(pack.get("sources"))
+        if isinstance(source, dict)
+    ]
     gates = {
         "source_captured": source_id is not None,
         "context_pack_includes_source": source_id in pack_source_ids,
         "daily_brief_created": artifact.get("artifact_type") == "daily_brief" and artifact.get("status") == "needs_review",
         "artifact_has_source_reference": bool(artifact_refs),
         "rating_recorded": str(rating.get("artifact_id")) == str(artifact["id"]),
-        "dogfooding_reflects_rating": dogfooding.get("artifact_quality_rating_count", 0) >= 1,
+        "dogfooding_reflects_rating": _object_int(
+            dogfooding.get("artifact_quality_rating_count")
+        )
+        >= 1,
     }
     payload = {"status": "passed" if all(gates.values()) else "failed", "smoke": "capture-to-brief", "gates": gates}
     if payload["status"] != "passed":
@@ -2662,7 +2752,9 @@ def _run_vnext_smoke_operator_console(ctx: CLIContext, _args: argparse.Namespace
             raise RuntimeError("operator console smoke failed to capture source")
 
         source = store.get_source(source_id)
-        source_metadata = source.get("metadata_json") if isinstance(source, dict) and isinstance(source.get("metadata_json"), dict) else {}
+        source_metadata = _object_dict(
+            source.get("metadata_json") if source is not None else None
+        )
         reviewed_source = store.update_source(
             source_id=source_id,
             patch={
@@ -2700,14 +2792,14 @@ def _run_vnext_smoke_operator_console(ctx: CLIContext, _args: argparse.Namespace
             (
                 memory
                 for memory in store.list_memories(status="candidate")
-                if isinstance(memory.get("metadata_json"), dict)
-                and str(memory["metadata_json"].get("source_id")) == source_id
+                if str(_object_dict(memory.get("metadata_json")).get("source_id"))
+                == source_id
             ),
             None,
         )
         if candidate_memory is None:
             raise RuntimeError("operator console smoke did not create a candidate memory")
-        memory_metadata = candidate_memory.get("metadata_json") if isinstance(candidate_memory.get("metadata_json"), dict) else {}
+        memory_metadata = _object_dict(candidate_memory.get("metadata_json"))
         reviewed_memory = store.update_memory(
             memory_id=str(candidate_memory["id"]),
             patch={
@@ -2772,7 +2864,7 @@ def _run_vnext_smoke_operator_console(ctx: CLIContext, _args: argparse.Namespace
             },
             actor_type="user",
         )
-        scheduler = VNextSchedulerService(store)
+        scheduler = _scheduler_service(store)
         scheduler.configure_workflow(
             workflow_type="daily_brief",
             enabled=True,
@@ -2791,26 +2883,36 @@ def _run_vnext_smoke_operator_console(ctx: CLIContext, _args: argparse.Namespace
                 options={"generation_mode": "deterministic"},
             )
         )
-        pack = VNextRetrievalService(store).compile_context_pack(
+        pack = _retrieval_service(store).compile_context_pack(
             VNextRetrievalRequest(query=smoke_id, domains=("project",), sensitivity_allowed=("private", "unknown"))
         )
         health = connector_service.connector_health_all()
         doctor = VNextDoctorService(store, secret_provider=secrets).run(fix_safe=True, ci=True)
         events = store.list_events(limit=100)
 
-    health_items = {str(item["connector_name"]): item for item in health.get("items", []) if isinstance(item, dict)}
-    pack_source_ids = [str(source.get("id")) for source in pack.get("sources", []) if isinstance(source, dict)]
-    artifact_refs = artifact.get("metadata_json", {}).get("source_refs") if isinstance(artifact.get("metadata_json"), dict) else []
+    health_items = {
+        str(item["connector_name"]): item
+        for item in _object_list(health.get("items"))
+        if isinstance(item, dict) and "connector_name" in item
+    }
+    pack_source_ids = [
+        str(source.get("id"))
+        for source in _object_list(pack.get("sources"))
+        if isinstance(source, dict)
+    ]
+    artifact_refs = _object_dict(artifact.get("metadata_json")).get("source_refs")
     serialized_refs = _json_dumps(artifact_refs)
     gates = {
-        "source_review_action_persisted": isinstance(reviewed_source.get("metadata_json"), dict)
-        and reviewed_source["metadata_json"].get("review_status") == "reviewed",
+        "source_review_action_persisted": _object_dict(
+            reviewed_source.get("metadata_json")
+        ).get("review_status")
+        == "reviewed",
         "memory_review_action_persisted": reviewed_memory.get("status") == "active",
         "artifact_review_and_rating_persisted": reviewed_artifact.get("status") == "reviewed"
         and str(rating.get("artifact_id")) == str(artifact["id"]),
         "open_loop_created_from_source": str(loop.get("source_id")) == source_id and loop.get("status") == "open",
         "scheduler_run_now_created_artifact": scheduled.get("artifact") is not None
-        and scheduled.get("run", {}).get("status") == "succeeded",
+        and _object_dict(scheduled.get("run")).get("status") == "succeeded",
         "connector_health_visible": "browser_clipper" in health_items,
         "doctor_readiness_available": doctor.get("status") in {"pass", "warn"} and doctor.get("blocking_failure_count") == 0,
         "capture_to_brief_trace_exists": source_id in pack_source_ids or source_id in serialized_refs,
@@ -2880,7 +2982,7 @@ def _run_vnext_smoke_agent_integration_pack(ctx: CLIContext, _args: argparse.Nam
         )
         append_policy_events(store, identity=identity, decision=context_decision, target_type="context_pack", target_id=smoke_id)
         ensure_policy_allowed(context_decision)
-        context_pack = VNextRetrievalService(store).compile_context_pack(
+        context_pack = _retrieval_service(store).compile_context_pack(
             VNextRetrievalRequest(
                 query=smoke_id,
                 domains=context_decision.effective_domains,
@@ -2976,11 +3078,15 @@ def _run_vnext_smoke_agent_integration_pack(ctx: CLIContext, _args: argparse.Nam
         )
         agent_identities = store.list_agent_identities(limit=20)
 
-    pack_source_ids = [str(item.get("id")) for item in context_pack.get("sources", []) if isinstance(item, dict)]
+    pack_source_ids = [
+        str(item.get("id"))
+        for item in _object_list(context_pack.get("sources"))
+        if isinstance(item, dict)
+    ]
     candidate_ids = {str(memory.get("id")) for memory in candidate_memories}
 
     def _matches_smoke_active_agent_memory(memory: JsonObject) -> bool:
-        metadata = memory.get("metadata_json") if isinstance(memory.get("metadata_json"), dict) else {}
+        metadata = _object_dict(memory.get("metadata_json"))
         identity_payload = metadata.get("agent_identity")
         if isinstance(identity_payload, dict) and identity_payload.get("agent_run_id") == agent_run_id:
             return True
@@ -2991,9 +3097,10 @@ def _run_vnext_smoke_agent_integration_pack(ctx: CLIContext, _args: argparse.Nam
         and agent_identity.get("permission_profile") == "project_scoped_agent",
         "agent_requested_project_context_pack": context_decision.decision == "allowed"
         and source.source_id in pack_source_ids,
-        "scoped_context_pack_returned": int((context_pack.get("trace") or {}).get("selected_count", 0)) >= 1
-        if isinstance(context_pack.get("trace"), dict)
-        else False,
+        "scoped_context_pack_returned": _object_int(
+            _object_dict(context_pack.get("trace")).get("selected_count")
+        )
+        >= 1,
         "agent_output_stored_as_reviewable_source_or_artifact": agent_output.source_id is not None
         and agent_output.artifact_id is not None,
         "memory_proposal_in_review_queue": agent_output.memory_id is not None and agent_output.memory_id in candidate_ids,
@@ -3007,7 +3114,7 @@ def _run_vnext_smoke_agent_integration_pack(ctx: CLIContext, _args: argparse.Nam
         "policy_blocks_restricted_domain_request": blocked_decision.decision == "blocked"
         and "all_requested_domains_restricted" in blocked_decision.reasons,
         "vnext_agent_activity_visible": bool(agent_identities)
-        and int(telemetry.get("total_agent_events", 0) or 0) >= 4
+        and _object_int(telemetry.get("total_agent_events")) >= 4
         and bool(telemetry.get("policy_blocks_by_agent")),
     }
     payload = {
@@ -3198,11 +3305,11 @@ def _run_vnext_smoke_agentic_memory_commit(ctx: CLIContext, _args: argparse.Name
                 user_id=ctx.user_id,
             ),
         )
-        committed_memory = committed.get("memory") if isinstance(committed.get("memory"), dict) else {}
+        committed_memory = _object_dict(committed.get("memory"))
         committed_memory_id = str(committed_memory.get("id"))
         gates["trusted_hermes_commit_active"] = committed.get("status") == "committed" and committed_memory.get("status") == "active"
 
-        before_undo_context = VNextRetrievalService(store).compile_context_pack(
+        before_undo_context = _retrieval_service(store).compile_context_pack(
             VNextRetrievalRequest(
                 query=f"Agentic memory smoke {smoke_id}",
                 domains=("professional",),
@@ -3211,7 +3318,9 @@ def _run_vnext_smoke_agentic_memory_commit(ctx: CLIContext, _args: argparse.Name
             )
         )
         gates["committed_memory_enters_context"] = any(
-            str(memory.get("id")) == committed_memory_id for memory in before_undo_context.get("relevant_memories", [])
+            str(memory.get("id")) == committed_memory_id
+            for memory in _object_list(before_undo_context.get("relevant_memories"))
+            if isinstance(memory, dict)
         )
 
         sensitive = service.commit(
@@ -3230,7 +3339,7 @@ def _run_vnext_smoke_agentic_memory_commit(ctx: CLIContext, _args: argparse.Name
         confirmation_id = str(sensitive.get("confirmation_id"))
         gates["sensitive_memory_requires_confirmation"] = sensitive.get("status") == "confirmation_required" and confirmation_id.startswith("confirm-")
         confirmed = service.confirm(identity=hermes, confirmation_id=confirmation_id)
-        confirmed_memory = confirmed.get("memory") if isinstance(confirmed.get("memory"), dict) else {}
+        confirmed_memory = _object_dict(confirmed.get("memory"))
         gates["inline_confirmation_commits"] = confirmed.get("status") == "committed" and confirmed_memory.get("status") == "active"
 
         external = service.commit(
@@ -3247,7 +3356,7 @@ def _run_vnext_smoke_agentic_memory_commit(ctx: CLIContext, _args: argparse.Name
                 user_id=ctx.user_id,
             ),
         )
-        external_memory = external.get("memory") if isinstance(external.get("memory"), dict) else {}
+        external_memory = _object_dict(external.get("memory"))
         gates["external_source_review_required"] = external.get("status") == "review_required" and external_memory.get("status") == "candidate"
 
         blocked = service.commit(
@@ -3304,7 +3413,7 @@ def _run_vnext_smoke_agentic_memory_commit(ctx: CLIContext, _args: argparse.Name
             reason="Agentic memory smoke correction.",
         )
         gates["correction_revises_memory"] = corrected.get("status") == "committed" and "corrects" in str(
-            (corrected.get("memory") if isinstance(corrected.get("memory"), dict) else {}).get("canonical_text")
+            _object_dict(corrected.get("memory")).get("canonical_text")
         )
 
         forgotten = service.forget(
@@ -3313,15 +3422,15 @@ def _run_vnext_smoke_agentic_memory_commit(ctx: CLIContext, _args: argparse.Name
             reason="Agentic memory smoke forget.",
         )
         gates["forget_preserves_audit_and_excludes_context"] = forgotten.get("status") == "forgotten" and (
-            forgotten.get("memory") if isinstance(forgotten.get("memory"), dict) else {}
+            _object_dict(forgotten.get("memory"))
         ).get("status") == "superseded"
 
         undone = service.undo(identity=hermes, memory_id=committed_memory_id, reason="Agentic memory smoke undo.")
         gates["undo_supersedes_committed_memory"] = undone.get("status") == "undone" and (
-            undone.get("memory") if isinstance(undone.get("memory"), dict) else {}
+            _object_dict(undone.get("memory"))
         ).get("status") == "superseded"
 
-        after_undo_context = VNextRetrievalService(store).compile_context_pack(
+        after_undo_context = _retrieval_service(store).compile_context_pack(
             VNextRetrievalRequest(
                 query=f"Agentic memory smoke {smoke_id}",
                 domains=("professional",),
@@ -3330,16 +3439,22 @@ def _run_vnext_smoke_agentic_memory_commit(ctx: CLIContext, _args: argparse.Name
             )
         )
         gates["undone_memory_leaves_context"] = all(
-            str(memory.get("id")) != committed_memory_id for memory in after_undo_context.get("relevant_memories", [])
+            str(memory.get("id")) != committed_memory_id
+            for memory in _object_list(after_undo_context.get("relevant_memories"))
+            if isinstance(memory, dict)
         )
 
         audit = service.audit(memory_id=committed_memory_id)
         gates["audit_includes_revision_and_undo_event"] = bool(audit.get("revisions")) and any(
-            event.get("event_type") == "agent.memory_undone" for event in audit.get("events", [])
+            event.get("event_type") == "agent.memory_undone"
+            for event in _object_list(audit.get("events"))
+            if isinstance(event, dict)
         )
         recent = service.recent_commits(limit=20)
         gates["recent_commits_visible"] = any(
-            str(memory.get("id")) == committed_memory_id for memory in recent.get("recent_commits", [])
+            str(memory.get("id")) == committed_memory_id
+            for memory in _object_list(recent.get("recent_commits"))
+            if isinstance(memory, dict)
         )
 
     payload = {"status": "passed" if all(gates.values()) else "failed", "smoke": "agentic-memory-commit", "gates": gates}
@@ -3390,7 +3505,7 @@ def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
     )
     with _vnext_store_context(ctx) as store:
         doctor = VNextDoctorService(store, secret_provider=alpha_secret_provider).run(fix_safe=True, ci=True)
-        scheduler = VNextSchedulerService(store).status()
+        scheduler = _scheduler_service(store).status()
         connector_storage = store.connector_storage_status()
         connector_settings = store.list_connector_settings()
         connector_states = store.list_connector_states()
@@ -3432,14 +3547,14 @@ def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
         smokes = [_run_alpha_smoke(ctx, name=name, runner=runner) for name, runner in smoke_runners]
 
     blocking: list[str] = []
-    if doctor.get("status") == "fail" or int(doctor.get("blocking_failure_count", 0) or 0) > 0:
+    if doctor.get("status") == "fail" or _object_int(doctor.get("blocking_failure_count")) > 0:
         blocking.append("doctor")
     if not bool(connector_storage.get("connector_settings_exists")) or not bool(connector_storage.get("connector_state_exists")):
         blocking.append("connector_storage")
     failed_smokes = [str(smoke.get("name")) for smoke in smokes if smoke.get("status") != "passed"]
     blocking.extend(f"smoke:{name}" for name in failed_smokes)
     if isinstance(headless, dict):
-        package_status = ((headless.get("package") or {}) if isinstance(headless.get("package"), dict) else {}).get("status")
+        package_status = _object_dict(headless.get("package")).get("status")
         if package_status != "passed":
             blocking.append("headless:package")
         for key in ("api_reachability", "web_reachability", "mcp", "demo_cycle"):
@@ -3455,8 +3570,8 @@ def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
         "doctor": doctor,
         "scheduler": {
             "disabled_by_default": scheduler.get("disabled_by_default"),
-            "workflow_count": len(scheduler.get("workflows", [])) if isinstance(scheduler.get("workflows"), list) else 0,
-            "recent_run_count": len(scheduler.get("recent_runs", [])) if isinstance(scheduler.get("recent_runs"), list) else 0,
+            "workflow_count": len(_object_list(scheduler.get("workflows"))),
+            "recent_run_count": len(_object_list(scheduler.get("recent_runs"))),
         },
         "connector_storage": connector_storage,
         "connector_settings_count": len(connector_settings),
@@ -3557,14 +3672,21 @@ def _run_vnext_smoke_connector_hardening(ctx: CLIContext, _args: argparse.Namesp
             local_second = restarted.sync_local_folder((root,), default_domain="project", default_sensitivity="private")
             health = restarted.connector_health_all()
             events = store.list_events(target_type="connector", target_id="telegram", limit=25)
-    health_items = {str(item["connector_name"]): item for item in health.get("items", []) if isinstance(item, dict)}
+    health_items = {
+        str(item["connector_name"]): item
+        for item in _object_list(health.get("items"))
+        if isinstance(item, dict) and "connector_name" in item
+    }
     gates = {
         "settings_rows_available": all(name in health_items for name in ("telegram", "local_folder", "browser_clipper", "agent_output")),
         "telegram_cursor_persisted": telegram.sync_cursor == str(telegram_update_id + 1) and repeated.status == "skipped",
         "telegram_rejected_chat_logged": any(event.get("event_type") == "connector.item_rejected" for event in events),
         "local_folder_ignores_generated": local_first.imported_count == 1,
         "local_folder_dedupes_unchanged_restart": local_second.duplicate_count >= 1,
-        "health_counts_present": int(health_items.get("telegram", {}).get("items_seen", 0) or 0) >= 2,
+        "health_counts_present": _object_int(
+            health_items.get("telegram", {}).get("items_seen")
+        )
+        >= 2,
     }
     payload = {"status": "passed" if all(gates.values()) else "failed", "smoke": "connector-hardening", "gates": gates}
     if payload["status"] != "passed":
@@ -3618,7 +3740,7 @@ def _run_vnext_smoke_dogfood_doctor(ctx: CLIContext, _args: argparse.Namespace) 
         "migration_status_present": isinstance(payload.get("migration_status"), dict),
         "connector_settings_checked": any(
             isinstance(check, dict) and check.get("name") == "connector_settings"
-            for check in payload.get("checks", [])
+            for check in _object_list(payload.get("checks"))
             if isinstance(check, dict)
         ),
     }
@@ -4233,7 +4355,7 @@ def _run_trust_signals(ctx: CLIContext, args: argparse.Namespace) -> str:
 def _run_explain(ctx: CLIContext, args: argparse.Namespace) -> str:
     if args.entity_id is not None:
         with _store_context(ctx) as store:
-            payload = get_temporal_explain(
+            temporal_payload = get_temporal_explain(
                 store,
                 user_id=ctx.user_id,
                 request=TemporalExplainQueryInput(
@@ -4241,18 +4363,18 @@ def _run_explain(ctx: CLIContext, args: argparse.Namespace) -> str:
                     at=args.at,
                 ),
             )
-        return format_temporal_explain_output(payload)
+        return format_temporal_explain_output(temporal_payload)
 
     if args.continuity_object_id is None:
         raise ValueError("explain requires either a continuity_object_id or --entity-id")
 
     with _store_context(ctx) as store:
-        payload = build_continuity_explain(
+        continuity_payload = build_continuity_explain(
             store,
             user_id=ctx.user_id,
             continuity_object_id=args.continuity_object_id,
         )
-    return format_explain_output(payload)
+    return format_explain_output(continuity_payload)
 
 
 def _run_evidence_artifact(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -4521,7 +4643,8 @@ def _run_eval_run(ctx: CLIContext, args: argparse.Namespace) -> str:
             report=payload["report"],
             report_path=args.report_path,
         )
-        payload["written_report_path"] = str(written_path)
+        result: dict[str, object] = {**payload, "written_report_path": str(written_path)}
+        return json.dumps(result, indent=2, sort_keys=True)
     return json.dumps(payload, indent=2, sort_keys=True)
 
 
@@ -4552,11 +4675,23 @@ def _run_vnext_eval_run(_ctx: CLIContext, args: argparse.Namespace) -> str:
             )
         )
     output = json.dumps(payload, indent=2, sort_keys=True)
-    # Propagate the report verdict to the process exit code. A "fail" (any
-    # suite failed) or "pass_fts_only" (release gate never measured semantic
-    # quality) must not exit 0. "skipped" and "pass" stay green. The JSON is
-    # still emitted -- EvalGateFailure carries it so main() prints it verbatim.
-    if report.get("status") not in {"pass", "skipped"}:
+    # Propagate the report verdict to the process exit code. A release gate
+    # must also fail when any requested suite skipped; otherwise a partially
+    # unavailable store can turn incomplete evidence into a green release.
+    # Non-release dev runs preserve the informational zero exit for an honestly
+    # labelled skip.
+    report_status = report.get("status")
+    summary = report.get("summary")
+    release_has_skips = (
+        args.release_gate
+        and (
+            not isinstance(summary, dict)
+            or summary.get("skipped_suite_count") != 0
+        )
+    )
+    if report_status not in {"pass", "skipped"} or (
+        args.release_gate and (report_status == "skipped" or release_has_skips)
+    ):
         raise EvalGateFailure(output)
     return output
 
@@ -6097,8 +6232,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Run as the canonical release gate: a run that never exercised the "
-            "vector/paraphrase stage reports 'pass_fts_only' (not a full pass) "
-            "and exits nonzero, so the gate cannot be green without measuring "
+            "vector/paraphrase stage leaves its retrieval suite 'pass_fts_only', "
+            "fails the aggregate case contract, and exits nonzero, so the gate "
+            "cannot be green without measuring "
             "semantic retrieval quality (requires ALICE_EMBEDDINGS_* + pgvector)."
         ),
     )
@@ -6375,6 +6511,9 @@ def main(argv: list[str] | None = None) -> int:
     except EvalGateFailure as exc:
         # Honor the JSON output contract (report to stdout) while signaling a
         # nonzero exit for a failing / not-fully-passing eval report.
+        print(exc.output)
+        return 1
+    except EmbeddingBackfillFailure as exc:
         print(exc.output)
         return 1
 

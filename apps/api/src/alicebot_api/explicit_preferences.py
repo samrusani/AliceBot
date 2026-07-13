@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Sequence
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID
 
 from alicebot_api.contracts import (
@@ -165,9 +165,12 @@ def extract_explicit_preference_candidates(
         )
         if not nested_candidates:
             return []
-        candidate = dict(nested_candidates[0])
-        candidate["pattern"] = _REMEMBER_PATTERN_MAP[candidate["pattern"]]
-        return [candidate]
+        nested_candidate = cast(
+            ExtractedPreferenceCandidateRecord,
+            dict(nested_candidates[0]),
+        )
+        nested_candidate["pattern"] = _REMEMBER_PATTERN_MAP[nested_candidate["pattern"]]
+        return [nested_candidate]
 
     return []
 

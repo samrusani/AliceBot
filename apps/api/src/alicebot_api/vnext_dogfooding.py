@@ -5,12 +5,12 @@ from datetime import UTC, datetime, timedelta
 from statistics import mean
 from typing import Protocol
 
-from alicebot_api.vnext_connectors import VNextConnectorService
+from alicebot_api.vnext_connectors import VNextConnectorService, VNextConnectorStore
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_repositories import JsonObject
 
 
-class VNextDogfoodingStore(Protocol):
+class VNextDogfoodingStore(VNextConnectorStore, Protocol):
     def append_event(self, event: JsonObject) -> JsonObject: ...
 
     def list_events(self, *, target_type: str | None = None, target_id: str | None = None) -> list[JsonObject]: ...
@@ -44,6 +44,8 @@ class VNextDogfoodingStore(Protocol):
     def list_open_loops(self, *, status: str | None = None, limit: int = 20) -> list[JsonObject]: ...
 
     def list_scheduler_runs(self, *, workflow_type: str | None = None, limit: int = 20) -> list[JsonObject]: ...
+
+    def create_artifact(self, artifact: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
 
 def _event_payload(event: JsonObject) -> JsonObject:
@@ -170,15 +172,16 @@ class VNextDogfoodingService:
             for event in events
             if event.get("event_type") == "artifact.insight_feedback_recorded"
         ]
-        quality_scores = [
-            float(rating["usefulness"])
-            for rating in ratings
-            if isinstance(rating.get("usefulness"), int | float) and not isinstance(rating.get("usefulness"), bool)
-        ]
+        quality_scores: list[float] = []
+        for rating in ratings:
+            usefulness = rating.get("usefulness")
+            if isinstance(usefulness, (int, float)) and not isinstance(usefulness, bool):
+                quality_scores.append(float(usefulness))
         last_successful_scheduler_run = next(
             (run for run in scheduler_runs if run.get("status") == "succeeded"),
             None,
         )
+        last_successful_scheduler_timestamp = _record_timestamp(last_successful_scheduler_run or {})
         connector_failures = event_types.get("connector.item_failed", 0) + event_types.get("connector.sync_failed", 0)
         captures_today = _count_since(sources, today_cutoff)
         captures_this_week = _count_since(sources, week_cutoff)
@@ -221,8 +224,8 @@ class VNextDogfoodingService:
                 "last_success_at": last_successful_scheduler_run.get("completed_at")
                 if isinstance(last_successful_scheduler_run, dict)
                 else None,
-                "recent_success": _record_timestamp(last_successful_scheduler_run or {}) is not None
-                and _record_timestamp(last_successful_scheduler_run or {}) >= now - timedelta(hours=36),
+                "recent_success": last_successful_scheduler_timestamp is not None
+                and last_successful_scheduler_timestamp >= now - timedelta(hours=36),
                 "recent_failure_count": sum(1 for run in scheduler_runs if run.get("status") == "failed"),
             },
             "agent_activity_summary": {

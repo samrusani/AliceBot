@@ -27,6 +27,7 @@ from alicebot_api.vnext_retrieval import (
     GRAPH_STAGE_DISABLED_NO_ENTITY_MATCH,
     GRAPH_STAGE_DISABLED_NO_STORE_SUPPORT,
     GRAPH_STAGE_ENABLED,
+    LEGACY_SCOPED_SCAN_MAX_ROWS,
     RRF_K,
     SOURCES_STAGE_DISABLED_BY_FLAG,
     SOURCE_CHUNK_STAGE_DISABLED_NO_STORE_SUPPORT,
@@ -40,6 +41,7 @@ from alicebot_api.vnext_retrieval import (
     VECTOR_STAGE_DISABLED_NO_PROVIDER,
     VECTOR_STAGE_ENABLED,
     VNextRetrievalRequest,
+    VNextRetrievalCompletenessError,
     VNextRetrievalService,
     VNextRetrievalValidationError,
     classify_query,
@@ -110,6 +112,8 @@ class InMemoryVNextRetrievalStore:
         self.fts_match_any_queries: list[str] = []
         self.chunk_match_any_queries: list[str] = []
         self.time_search_calls: list[dict[str, object]] = []
+        self.fts_limits: list[int] = []
+        self.vector_limits: list[int] = []
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
@@ -181,6 +185,7 @@ class InMemoryVNextRetrievalStore:
         match_any: bool = False,
     ) -> list[dict[str, object]]:
         del sensitivity_allowed, include_expired
+        self.fts_limits.append(limit)
         if match_any:
             self.fts_match_any_queries.append(query)
         self.memory_search_domains = domains
@@ -217,6 +222,7 @@ class InMemoryVNextRetrievalStore:
         include_expired: bool = False,
     ) -> list[dict[str, object]]:
         del query_vector, domains, sensitivity_allowed, include_expired
+        self.vector_limits.append(limit)
         if self.vector_memories is None:
             return []
         rows = self._apply_filters(
@@ -1120,6 +1126,66 @@ def test_provenance_fusion_pulls_source_with_no_lexical_match() -> None:
     assert source_trace[0]["stage_ranks"] == {"provenance": 1}
 
 
+def test_source_provenance_uses_one_bulk_link_read_and_one_bulk_source_read() -> None:
+    class BulkProvenanceStore(InMemoryVNextRetrievalStore):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.bulk_provenance_calls = 0
+            self.bulk_source_calls = 0
+
+        def list_provenance_links_for_targets(self, *, target_type, target_ids):
+            self.bulk_provenance_calls += 1
+            ids = set(target_ids)
+            return [
+                link
+                for link in self.provenance_links
+                if link.get("target_type") == target_type and link.get("target_id") in ids
+            ]
+
+        def get_sources_by_ids(self, source_ids):
+            self.bulk_source_calls += 1
+            ids = set(source_ids)
+            return [source for source in self.sources if source.get("id") in ids]
+
+    memories = [_memory_row(f"memory-{index:02d}", f"Winning memory {index}") for index in range(40)]
+    sources = [
+        {
+            "id": f"source-{index:02d}",
+            "title": f"Evidence {index}",
+            "domain": "project",
+            "sensitivity": "private",
+        }
+        for index in range(40)
+    ]
+    links = [
+        {
+            "id": f"link-{index:02d}",
+            "target_type": "memory",
+            "target_id": f"memory-{index:02d}",
+            "source_id": f"source-{index:02d}",
+        }
+        for index in range(40)
+    ]
+    store = BulkProvenanceStore(
+        memories=memories,
+        sources=sources,
+        provenance_links=links,
+    )
+
+    ranked_lists, stage = VNextRetrievalService(store)._source_stage_lists(
+        query="unmatched",
+        domains=[],
+        sensitivity_allowed=["private"],
+        limit=40,
+        winning_memories=memories,
+    )
+
+    assert len(ranked_lists["provenance"]) == 40
+    assert stage["provenance"] == 40
+    assert store.bulk_provenance_calls == 1
+    assert store.bulk_source_calls == 1
+
+
 def test_source_chunk_or_fallback_retries_once_and_reports_the_relaxed_pass() -> None:
     source = {
         "id": "source-1",
@@ -1783,6 +1849,245 @@ def test_time_window_surfaces_valid_row_beyond_the_overfetch_cap() -> None:
     assert [row["id"] for row in pack["relevant_memories"]] == ["memory-new"]
 
 
+def test_people_scope_has_no_rank_4000_cliff_and_embeds_query_once() -> None:
+    decoys = [
+        _memory_row(
+            f"memory-decoy-{index:04d}",
+            "Quarterly planning person-scoped fact.",
+            metadata_json={"people": ["Alex"]},
+        )
+        for index in range(4_001)
+    ]
+    valid_row = _memory_row(
+        "memory-sam",
+        "Quarterly planning person-scoped fact.",
+        metadata_json={"people": ["Sam"]},
+    )
+    rows = [*decoys, valid_row]
+    store = InMemoryVNextRetrievalStore(memories=rows, vector_memories=rows, sources=[])
+    provider = StubEmbeddingProvider()
+
+    pack = VNextRetrievalService(store, embedding_provider=provider).compile_context_pack(
+        VNextRetrievalRequest(
+            query="quarterly planning",
+            people=("Sam",),
+            max_items=1,
+            include_sources=False,
+        )
+    )
+
+    assert [row["id"] for row in pack["relevant_memories"]] == ["memory-sam"]
+    assert store.fts_limits == [200, 400, 800, 1600, 3200, 6400]
+    assert store.vector_limits == [200, 400, 800, 1600, 3200, 6400]
+    assert provider.embedded_texts == ["quarterly planning"]
+
+
+def test_legacy_scope_deepening_fails_closed_at_finite_boundary() -> None:
+    scope = vnext_retrieval_module._ResolvedRetrievalScope(
+        projects=frozenset(),
+        people=frozenset({"sam"}),
+        window_start=None,
+        window_end=None,
+    )
+    limits: list[int] = []
+
+    def _endless_decoys(limit: int) -> tuple[list[dict[str, object]], str]:
+        limits.append(limit)
+        return [
+            {"id": f"decoy-{index}", "metadata_json": {"people": ["alex"]}}
+            for index in range(limit)
+        ], "legacy"
+
+    with pytest.raises(
+        VNextRetrievalCompletenessError,
+        match=f"within {LEGACY_SCOPED_SCAN_MAX_ROWS} rows",
+    ):
+        vnext_retrieval_module._fetch_scope_filtered(
+            _endless_decoys,
+            scope=scope,
+            person_linked_memory_ids=frozenset(),
+            target=1,
+        )
+
+    assert limits == [200, 400, 800, 1_600, 3_200, 6_400, 12_800, 16_384]
+
+
+def test_legacy_scope_deepening_detects_repeated_prefix_and_deduplicates() -> None:
+    scope = vnext_retrieval_module._ResolvedRetrievalScope(
+        projects=frozenset(),
+        people=frozenset({"sam"}),
+        window_start=None,
+        window_end=None,
+    )
+    repeated_limits: list[int] = []
+    decoy = {"id": "same-decoy", "metadata_json": {"people": ["alex"]}}
+
+    def _repeated(limit: int) -> tuple[list[dict[str, object]], str]:
+        repeated_limits.append(limit)
+        return [decoy] * limit, "legacy"
+
+    with pytest.raises(VNextRetrievalCompletenessError, match="non-progressing prefix"):
+        vnext_retrieval_module._fetch_scope_filtered(
+            _repeated,
+            scope=scope,
+            person_linked_memory_ids=frozenset(),
+            target=1,
+        )
+    assert repeated_limits == [200, 400]
+
+    target = {"id": "sam-target", "metadata_json": {"people": ["sam"]}}
+    rows, source = vnext_retrieval_module._fetch_scope_filtered(
+        lambda _limit: ([target, target], "exhausted"),
+        scope=scope,
+        person_linked_memory_ids=frozenset(),
+        target=1,
+    )
+    assert rows == [target]
+    assert source == "exhausted"
+
+
+def test_sqlite_people_and_time_scope_precedes_source_chunk_title_and_loop_limits() -> None:
+    store = _sqlite_retrieval_store()
+    user_id = store.user_id
+    target_source_id = "00000000-0000-0000-0000-000000000001"
+    target_chunk_id = "00000000-0000-0000-0000-000000000002"
+    target_loop_id = "00000000-0000-0000-0000-000000000003"
+    target_metadata = json.dumps(
+        {"people": ["Sam"], "session_date": "2026-07-08T00:00:00+00:00"}
+    )
+    store.conn.execute(
+        """
+        INSERT INTO sources (
+          id, user_id, source_type, title, content_hash, captured_at,
+          source_created_at, metadata_json
+        ) VALUES (?, ?, 'chat_session', 'Scoped needle source', ?, ?, ?, ?)
+        """,
+        (
+            target_source_id,
+            user_id,
+            "target-hash",
+            "2026-01-01T00:00:00+00:00",
+            None,
+            target_metadata,
+        ),
+    )
+    store.conn.execute(
+        """
+        INSERT INTO source_chunks (id, user_id, source_id, chunk_index, text, created_at)
+        VALUES (?, ?, ?, 0, 'scoped needle evidence', '2026-01-01T00:00:00+00:00')
+        """,
+        (target_chunk_id, user_id, target_source_id),
+    )
+    store.conn.execute(
+        """
+        INSERT INTO open_loops (
+          id, user_id, title, status, opened_at, created_at, updated_at, metadata_json
+        ) VALUES (?, ?, 'Scoped needle follow-up', 'open', ?, ?, ?, ?)
+        """,
+        (
+            target_loop_id,
+            user_id,
+            "2026-07-08T00:00:00+00:00",
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-01T00:00:00+00:00",
+            target_metadata,
+        ),
+    )
+
+    source_rows: list[tuple[object, ...]] = []
+    chunk_rows: list[tuple[object, ...]] = []
+    loop_rows: list[tuple[object, ...]] = []
+    for index in range(420):
+        is_people_decoy = index < 210
+        ordinal = index + 10
+        source_id = f"10000000-0000-0000-0000-{ordinal:012d}"
+        metadata = json.dumps({"people": ["Alex" if is_people_decoy else "Sam"]})
+        event_time = (
+            "2026-07-09T00:00:00+00:00"
+            if is_people_decoy
+            else "2027-01-01T00:00:00+00:00"
+        )
+        created_at = f"2026-12-31T23:{index // 60:02d}:{index % 60:02d}+00:00"
+        source_rows.append(
+            (
+                source_id,
+                user_id,
+                f"decoy-hash-{index}",
+                created_at,
+                event_time,
+                metadata,
+            )
+        )
+        chunk_rows.append(
+            (
+                f"20000000-0000-0000-0000-{ordinal:012d}",
+                user_id,
+                source_id,
+                created_at,
+            )
+        )
+        loop_rows.append(
+            (
+                f"30000000-0000-0000-0000-{ordinal:012d}",
+                user_id,
+                event_time,
+                created_at,
+                created_at,
+                metadata,
+            )
+        )
+    store.conn.executemany(
+        """
+        INSERT INTO sources (
+          id, user_id, source_type, title, content_hash, captured_at,
+          source_created_at, metadata_json
+        ) VALUES (?, ?, 'chat_session', 'Scoped needle source', ?, ?, ?, ?)
+        """,
+        source_rows,
+    )
+    store.conn.executemany(
+        """
+        INSERT INTO source_chunks (id, user_id, source_id, chunk_index, text, created_at)
+        VALUES (?, ?, ?, 0, 'scoped needle evidence', ?)
+        """,
+        chunk_rows,
+    )
+    store.conn.executemany(
+        """
+        INSERT INTO open_loops (
+          id, user_id, title, status, opened_at, created_at, updated_at, metadata_json
+        ) VALUES (?, ?, 'Scoped needle follow-up', 'open', ?, ?, ?, ?)
+        """,
+        loop_rows,
+    )
+
+    window_start = datetime(2026, 7, 3, tzinfo=UTC)
+    window_end = datetime(2026, 7, 10, tzinfo=UTC)
+    scope_kwargs = {
+        "scope_people": ("sam",),
+        "scope_window_start": window_start,
+        "scope_window_end": window_end,
+    }
+    chunks = store.search_source_chunks(query="scoped needle", limit=1, **scope_kwargs)
+    sources = store.search_sources(query="scoped needle", limit=1, **scope_kwargs)
+    loops = store.list_open_loops(limit=1, **scope_kwargs)
+    assert [str(row["source_id"]) for row in chunks] == [target_source_id]
+    assert [str(row["id"]) for row in sources] == [target_source_id]
+    assert [str(row["id"]) for row in loops] == [target_loop_id]
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="scoped needle",
+            people=("Sam",),
+            time_window="7d",
+            reference_time=window_end,
+            max_items=1,
+        )
+    )
+    assert [str(row["id"]) for row in pack["sources"]] == [target_source_id]
+    assert [str(row["id"]) for row in pack["open_loops"]] == [target_loop_id]
+
+
 def test_context_pack_applies_relative_time_window_to_every_content_section() -> None:
     reference_time = datetime(2026, 7, 10, tzinfo=UTC)
     store = InMemoryVNextRetrievalStore(
@@ -2331,6 +2636,50 @@ def test_graph_stage_caps_matched_entities_at_five_by_mention_count() -> None:
     assert stage == GRAPH_STAGE_ENABLED
     assert len(matched) == GRAPH_ENTITY_MATCH_LIMIT
     assert [entity["mention_count"] for entity in matched] == [7, 6, 5, 4, 3]
+
+
+def test_graph_stage_bulk_reads_all_edges_beyond_200_in_constant_queries() -> None:
+    class BulkGraphStore(InMemoryVNextRetrievalStore):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.bulk_edge_calls = 0
+            self.bulk_memory_calls = 0
+
+        def list_memory_entity_edges(self, *, entity_ids, edge_types=("mentions", "about")):
+            self.bulk_edge_calls += 1
+            ids = set(entity_ids)
+            return [
+                edge
+                for edge in self.edges
+                if edge.get("edge_type") in edge_types
+                and (
+                    edge.get("to_id") in ids
+                    or edge.get("from_id") in ids
+                )
+            ]
+
+        def get_memories_by_ids(self, memory_ids):
+            self.bulk_memory_calls += 1
+            ids = set(memory_ids)
+            return [row for row in self.memories if row.get("id") in ids]
+
+    memories = [_memory_row(f"memory-{index:03d}", f"Board note {index}.") for index in range(251)]
+    store = BulkGraphStore(
+        memories=memories,
+        sources=[],
+        entities=[_entity_row("entity-meridian", "Meridian")],
+        edges=[_mention_edge(str(memory["id"]), "entity-meridian") for memory in memories],
+    )
+
+    rows, stage, _entities = VNextRetrievalService(store)._memory_graph_rows(
+        query="Meridian", domains=[], sensitivity_allowed=["private"], limit=300
+    )
+
+    assert stage == GRAPH_STAGE_ENABLED
+    assert len(rows) == 251
+    assert {row["id"] for row in rows} == {memory["id"] for memory in memories}
+    assert store.bulk_edge_calls == 1
+    assert store.bulk_memory_calls == 1
 
 
 # -- type-aware sections -------------------------------------------------------------

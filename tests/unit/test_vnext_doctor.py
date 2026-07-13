@@ -18,6 +18,7 @@ class DoctorStore:
             "artifact_quality_ratings_exists": True,
             "scheduler_workflows_exists": True,
             "scheduler_runs_exists": True,
+            "pgvector_version": "0.8.0",
             "migration_revision": "20260511_0070",
         }
 
@@ -148,6 +149,27 @@ def test_doctor_detects_enabled_telegram_missing_secret_as_blocking() -> None:
 
     assert payload["blocking_failure_count"] == 1
     assert any(check["name"] == "telegram_secret_ref" and check["status"] == "fail" for check in payload["checks"])
+
+
+def test_doctor_blocks_pgvector_older_than_required_version() -> None:
+    store = DoctorStore()
+    original_status = store.connector_storage_status
+
+    def old_pgvector_status() -> dict[str, object]:
+        return {**original_status(), "pgvector_version": "0.7.4"}
+
+    store.connector_storage_status = old_pgvector_status  # type: ignore[method-assign]
+
+    payload = VNextDoctorService(store).run(fix_safe=True, ci=True)
+
+    check = next(item for item in payload["checks"] if item["name"] == "pgvector_version")
+    assert check["status"] == "fail"
+    assert check["severity"] == "blocking"
+    assert check["details"] == {
+        "installed_version": "0.7.4",
+        "minimum_version": "0.8.0",
+    }
+    assert payload["blocking_failure_count"] == 1
 
 
 def test_doctor_warns_when_local_live_cors_is_missing(tmp_path, monkeypatch) -> None:

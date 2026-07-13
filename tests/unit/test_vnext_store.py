@@ -141,6 +141,58 @@ def test_get_source_by_content_hash_uses_dedupe_lookup() -> None:
     assert params == ("sha256:abc",)
 
 
+def test_get_or_create_source_uses_partial_unique_dedupe_claim() -> None:
+    source_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {"id": source_id, "content_hash": "sha256:abc", "dedupe_key": "sha256:scoped"},
+            _event_row(source_id),
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    source, created = store.get_or_create_source(
+        {
+            "id": source_id,
+            "source_type": "manual_text",
+            "content_hash": "sha256:abc",
+            "dedupe_key": "sha256:scoped",
+        }
+    )
+
+    assert created is True
+    assert source["id"] == source_id
+    query, _params = cursor.executed[0]
+    assert "ON CONFLICT (user_id, dedupe_key)" in query
+    assert "WHERE deleted_at IS NULL AND dedupe_key IS NOT NULL" in query
+    assert "DO NOTHING" in query
+
+
+def test_get_or_create_source_returns_concurrent_winner_without_create_event() -> None:
+    source_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            None,  # INSERT lost the unique-key race.
+            {"id": source_id, "content_hash": "sha256:abc", "dedupe_key": "sha256:scoped"},
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    source, created = store.get_or_create_source(
+        {
+            "source_type": "manual_text",
+            "content_hash": "sha256:abc",
+            "dedupe_key": "sha256:scoped",
+        }
+    )
+
+    assert created is False
+    assert source["id"] == source_id
+    assert len(cursor.executed) == 2
+    assert "SELECT" in cursor.executed[1][0]
+    assert _event_log_insert_count(cursor) == 0
+
+
 def test_search_patterns_strip_quotes_and_add_keyword_fallbacks() -> None:
     patterns = _search_patterns('"agent-first /vnext audit correction cockpit"')
 
@@ -224,7 +276,7 @@ def test_keyword_search_methods_apply_domain_sensitivity_and_limit_filters() -> 
     assert "FROM sources" in source_query
     assert "ILIKE ANY" in source_query
     assert source_params is not None
-    assert source_params[4] == ["%Alice provenance%", "%alice%", "%provenance%"]
+    assert source_params[12] == ["%Alice provenance%", "%alice%", "%provenance%"]
     assert source_params[-1] == 3
     assert "FROM open_loops" in open_loop_query
     assert "%s::text IS NULL OR status = %s" in open_loop_query
@@ -237,6 +289,16 @@ def test_keyword_search_methods_apply_domain_sensitivity_and_limit_filters() -> 
         ["project"],
         ["public", "private"],
         ["public", "private"],
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
         None,
         None,
         None,
@@ -637,6 +699,37 @@ def test_list_memories_pushes_scope_and_limit_into_postgres_query() -> None:
     assert params == ("active", ["project"], ["private"], 7)
     with pytest.raises(ValueError, match="limit must be positive"):
         store.list_memories(limit=0)
+
+
+def test_memory_and_rollup_counts_are_exact_scoped_database_reads() -> None:
+    cursor = RecordingCursor(fetchone_results=[{"count": 7}, {"count": 5}])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    assert store.count_memories(
+        status="active",
+        domains=["project"],
+        sensitivity_allowed=["private"],
+    ) == 7
+    assert store.count_rollup_input_memories(
+        domains=["project"],
+        sensitivity_allowed=["private"],
+        excluded_candidate_kind="memory_rollup",
+    ) == 5
+
+    memory_query, memory_params = cursor.executed[0]
+    assert "SELECT COUNT(*) AS count" in memory_query
+    assert "status = %s" in memory_query
+    assert memory_params == ("active", ["project"], ["private"])
+    rollup_query, rollup_params = cursor.executed[1]
+    assert "SELECT COUNT(*) AS count" in rollup_query
+    assert "status IN ('active', 'accepted')" in rollup_query
+    assert "candidate_kind" in rollup_query
+    assert rollup_params == (
+        "memory_rollup",
+        ["project"],
+        ["project"],
+        ["private"],
+    )
 
 
 def test_rollup_reads_push_status_scope_exact_keys_order_and_limits_into_postgres() -> None:
@@ -1139,6 +1232,17 @@ def test_fts_search_builds_websearch_tsquery_with_pushed_down_filters() -> None:
         None,  # run_id unset
         None,
         False,  # include_expired defaults to excluded
+        None,  # scope_thread_id unset
+        None,
+        None,  # scope_task_id unset
+        None,
+        None,  # scope_people unset
+        None,  # scope_person_memory_ids unset
+        None,  # direct people predicate unset
+        None,  # scope_window_start unset
+        None,
+        None,  # scope_window_end unset
+        None,
         "Alice provenance retrieval",
         25,
     )
@@ -1179,8 +1283,52 @@ def test_fts_search_pushes_down_memory_type_project_agent_run_and_expiry_filters
         "run-2026-07-04-001",
         "run-2026-07-04-001",
         True,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
         "Alice provenance retrieval",
         25,
+    )
+
+
+def test_fts_search_pushes_people_and_time_scope_before_ranked_limit() -> None:
+    cursor = RecordingCursor(fetchone_results=[], fetchall_result=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+    linked_memory_id = str(uuid4())
+    window_start = datetime(2026, 7, 3, tzinfo=UTC)
+    window_end = datetime(2026, 7, 10, tzinfo=UTC)
+
+    store.search_memories_fts(
+        query="deployment",
+        scope_people=("sam",),
+        scope_person_memory_ids=(linked_memory_id,),
+        scope_window_start=window_start,
+        scope_window_end=window_end,
+        limit=1,
+    )
+
+    query, params = cursor.executed[0]
+    assert "jsonb_path_query" in query
+    assert "id::text = ANY" in query
+    assert "COALESCE(valid_from, last_seen_at, updated_at, first_seen_at, created_at)" in query
+    assert params[-9:] == (
+        ["sam"],
+        [linked_memory_id],
+        ["sam"],
+        window_start,
+        window_start,
+        window_end,
+        window_end,
+        "deployment",
+        1,
     )
 
 
@@ -1214,6 +1362,14 @@ def test_search_source_chunks_builds_websearch_tsquery_over_chunk_text() -> None
         ["project"],
         ["public", "private"],
         ["public", "private"],
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
         "golden retriever Biscuit",
         32,
     )
@@ -1290,10 +1446,36 @@ def test_vector_search_orders_by_cosine_distance_and_skips_null_embeddings() -> 
         None,
         None,  # run_id unset
         None,
+        None,  # scope_thread_id unset
+        None,
+        None,  # scope_task_id unset
+        None,
+        None,  # scope_people unset
+        None,  # scope_person_memory_ids unset
+        None,  # direct people predicate unset
+        None,  # scope_window_start unset
+        None,
+        None,  # scope_window_end unset
+        None,
         False,  # include_expired defaults to excluded
         "[0.25,-1.0]",
         12,
     )
+
+
+def test_postgres_vector_boundary_rejects_non_finite_values() -> None:
+    cursor = RecordingCursor(fetchone_results=[], fetchall_result=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    with pytest.raises(ContinuityStoreInvariantError, match="finite numbers"):
+        store.search_memories_vector(query_vector=[1.0, float("nan")])
+    with pytest.raises(ContinuityStoreInvariantError, match="finite numbers"):
+        store.update_memory_embedding(
+            memory_id=str(uuid4()),
+            vector=[1.0, float("inf")],
+        )
+
+    assert cursor.executed == []
 
 
 def test_vector_search_can_require_matching_embedding_signature() -> None:
@@ -1341,7 +1523,13 @@ def test_vector_search_discards_stale_content_signatures_after_database_read() -
         "vector_distance": 0.2,
     }
     current["metadata_json"] = {
-        "_alice_embedding": {"content_sha256": memory_embedding_content_sha256(current)}
+        "_alice_embedding": {
+            "version": 2,
+            "provider": "openai_compatible",
+            "model": "embed-v1",
+            "endpoint": "host-a",
+            "content_sha256": memory_embedding_content_sha256(current),
+        }
     }
     stale = {
         "id": "memory-stale",
@@ -1357,7 +1545,8 @@ def test_vector_search_discards_stale_content_signatures_after_database_read() -
         limit=1,
         embedding_provider="openai_compatible",
         embedding_model="embed-v1",
-        embedding_signature_version=1,
+        embedding_endpoint="host-a",
+        embedding_signature_version=2,
     )
 
     assert [row["id"] for row in rows] == ["memory-current"]
@@ -1402,6 +1591,9 @@ def test_embedding_backfill_includes_unsigned_or_incompatible_vectors() -> None:
     query, params = cursor.executed[0]
     assert "embedding_vector IS NULL" in query
     assert "IS DISTINCT FROM %s" in query
+    assert "content_sha256" in query
+    assert "digest(" in query
+    assert "concat_ws(" in query
     assert "embedding_present" in query
     assert params == ("openai_compatible", "embed-v2", "1", None, None, 32)
 

@@ -114,4 +114,61 @@ describe("ContinuityCorrectionForm", () => {
     expect(refreshMock).toHaveBeenCalled();
     expect(screen.getByText(/Correction applied/i)).toBeInTheDocument();
   });
+
+  it("keeps fixture-backed corrections disabled when review-detail refresh is unavailable", () => {
+    render(
+      <ContinuityCorrectionForm
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+        source="unavailable"
+        review={reviewFixture}
+      />,
+    );
+
+    const submit = screen.getByRole("button", { name: "Apply correction" });
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(applyContinuityCorrectionMock).not.toHaveBeenCalled();
+    expect(screen.getByText(/fallback review objects are read-only/i)).toBeInTheDocument();
+  });
+
+  it("keeps a live-queue target actionable when only detail history is unavailable", async () => {
+    applyContinuityCorrectionMock.mockResolvedValue({
+      continuity_object: reviewFixture.continuity_object,
+      correction_event: {
+        id: "event-detail-outage",
+        continuity_object_id: "object-1",
+        action: "confirm",
+        reason: null,
+        before_snapshot: {},
+        after_snapshot: {},
+        payload: {},
+        created_at: "2026-03-30T10:01:00Z",
+      },
+      replacement_object: null,
+    });
+    render(
+      <ContinuityCorrectionForm
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+        source="unavailable"
+        mutationTargetSource="live"
+        review={reviewFixture}
+      />,
+    );
+
+    expect(screen.getByText("Live target · detail unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/Live queue target verified/i)).toBeInTheDocument();
+    const submit = screen.getByRole("button", { name: "Apply correction" });
+    expect(submit).toBeEnabled();
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(applyContinuityCorrectionMock).toHaveBeenCalledWith(
+        "https://api.example.com",
+        "object-1",
+        expect.objectContaining({ user_id: "user-1", action: "confirm" }),
+      );
+    });
+  });
 });

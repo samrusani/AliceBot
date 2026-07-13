@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 import hashlib
 import re
-from typing import Any, Literal, TypedDict
+from typing import Literal, TypedDict, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -22,8 +23,11 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_DAILY_BRIEF_LIMIT,
     MAX_CONTINUITY_OPEN_LOOP_LIMIT,
     ChiefOfStaffPriorityBriefRequestInput,
+    ChiefOfStaffPriorityBriefRecord,
+    ContinuityDailyBriefRecord,
     ContinuityDailyBriefRequestInput,
     ContinuityOpenLoopDashboardQueryInput,
+    ContinuityRecallResultRecord,
 )
 from alicebot_api.db import set_current_user
 from alicebot_api.hosted_preferences import (
@@ -33,7 +37,7 @@ from alicebot_api.hosted_preferences import (
     ensure_user_preferences,
     validate_timezone,
 )
-from alicebot_api.store import ContinuityStore
+from alicebot_api.store import ContinuityStore, JsonObject, JsonValue
 from alicebot_api.telegram_channels import (
     TELEGRAM_CHANNEL_TYPE,
     TelegramDeliveryReceiptRow,
@@ -90,8 +94,8 @@ class ContinuityBriefRow(TypedDict):
     channel_identity_id: UUID
     brief_kind: str
     assembly_version: str
-    summary: dict[str, Any]
-    brief_payload: dict[str, Any]
+    summary: JsonObject
+    brief_payload: JsonObject
     message_text: str
     compiled_at: datetime
     created_at: datetime
@@ -114,12 +118,12 @@ class DailyBriefJobRow(TypedDict):
     suppression_reason: str | None
     attempt_count: int
     delivery_receipt_id: UUID | None
-    payload: dict[str, Any]
-    result_payload: dict[str, Any]
+    payload: JsonObject
+    result_payload: JsonObject
     rollout_flag_state: str
-    support_evidence: dict[str, Any]
-    rate_limit_evidence: dict[str, Any]
-    incident_evidence: dict[str, Any]
+    support_evidence: JsonObject
+    rate_limit_evidence: JsonObject
+    incident_evidence: JsonObject
     attempted_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
@@ -134,6 +138,12 @@ class OpenLoopPromptCandidate(TypedDict):
     continuity_status: str
     review_action_hint: Literal["still_blocked", "deferred"]
     due_at: str
+    message_text: str
+
+
+class DailyBriefBundle(TypedDict):
+    brief: ContinuityDailyBriefRecord
+    chief_of_staff_summary: JsonObject
     message_text: str
 
 
@@ -287,9 +297,13 @@ def _subscription_defaults(
 ) -> dict[str, object]:
     daily_brief = brief_preferences.get("daily_brief")
     if not isinstance(daily_brief, dict):
-        daily_brief = DEFAULT_BRIEF_PREFERENCES["daily_brief"]
+        daily_brief = cast(dict[str, object], DEFAULT_BRIEF_PREFERENCES["daily_brief"])
 
-    quiet = quiet_hours if isinstance(quiet_hours, dict) else DEFAULT_QUIET_HOURS
+    quiet = (
+        quiet_hours
+        if isinstance(quiet_hours, dict)
+        else cast(dict[str, object], DEFAULT_QUIET_HOURS)
+    )
 
     daily_brief_enabled = bool(daily_brief.get("enabled", False))
     daily_brief_window_start = _normalize_hhmm(
@@ -742,8 +756,8 @@ def _serialize_job(
 
 def _format_daily_brief_message(
     *,
-    brief: dict[str, Any],
-    chief_brief: dict[str, Any],
+    brief: ContinuityDailyBriefRecord,
+    chief_brief: ChiefOfStaffPriorityBriefRecord,
     timezone_name: str,
     now: datetime,
 ) -> str:
@@ -781,7 +795,7 @@ def _build_daily_brief_bundle(
     user_account_id: UUID,
     timezone_name: str,
     now: datetime,
-) -> dict[str, object]:
+) -> DailyBriefBundle:
     set_current_user(conn, user_account_id)
     store = ContinuityStore(conn)
     daily_payload = compile_continuity_daily_brief(
@@ -808,10 +822,13 @@ def _build_daily_brief_bundle(
         now=now,
     )
 
-    chief_summary = {
+    chief_summary: JsonObject = {
         "trust_confidence_posture": chief_brief["summary"].get("trust_confidence_posture"),
         "follow_through_total_count": chief_brief["summary"].get("follow_through_total_count"),
-        "recommended_next_action": chief_brief.get("recommended_next_action"),
+        "recommended_next_action": cast(
+            JsonValue,
+            chief_brief.get("recommended_next_action"),
+        ),
     }
 
     return {
@@ -826,8 +843,8 @@ def _create_continuity_brief_row(
     *,
     workspace_id: UUID,
     channel_identity_id: UUID,
-    brief_payload: dict[str, Any],
-    chief_summary: dict[str, Any],
+    brief_payload: ContinuityDailyBriefRecord,
+    chief_summary: JsonObject,
     message_text: str,
     now: datetime,
 ) -> ContinuityBriefRow:
@@ -1083,7 +1100,7 @@ def _build_open_loop_prompt_candidates(
         kind: Literal["waiting_for", "stale"],
         *,
         review_action_hint: Literal["still_blocked", "deferred"],
-        section_items: list[dict[str, object]],
+        section_items: Sequence[ContinuityRecallResultRecord],
     ) -> list[OpenLoopPromptCandidate]:
         prompts: list[OpenLoopPromptCandidate] = []
         for item in section_items:

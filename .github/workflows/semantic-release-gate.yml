@@ -1,0 +1,95 @@
+name: Semantic release gate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  semantic-release-gate:
+    name: Semantic eval attestation (exact SHA)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: semantic-release
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
+        env:
+          POSTGRES_USER: alicebot_admin
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: alicebot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U alicebot_admin -d alicebot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout the exact workflow SHA
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install -e '.[dev]'
+
+      - name: Bootstrap pgvector and role-separated schema
+        env:
+          PGPASSWORD: ci
+          DATABASE_ADMIN_URL: postgresql://alicebot_admin:ci@localhost:5432/alicebot
+        run: |
+          psql -h localhost -U alicebot_admin -d alicebot -v ON_ERROR_STOP=1 -c "
+            CREATE EXTENSION IF NOT EXISTS vector;
+            DO \$\$ BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'alicebot_app') THEN
+                CREATE ROLE alicebot_app LOGIN PASSWORD 'ci';
+              END IF;
+            END \$\$;
+            GRANT CONNECT ON DATABASE alicebot TO alicebot_app;
+          "
+          test "$(psql -h localhost -U alicebot_admin -d alicebot -Atqc "SELECT split_part(extversion, '.', 1)::int > 0 OR (split_part(extversion, '.', 1)::int = 0 AND split_part(extversion, '.', 2)::int >= 8) FROM pg_extension WHERE extname = 'vector'")" = "t"
+          python -m alembic -c apps/api/alembic.ini upgrade head
+
+      - name: Require configured embedding provider
+        env:
+          ALICE_EMBEDDINGS_BASE_URL: ${{ secrets.ALICE_RELEASE_EMBEDDINGS_BASE_URL }}
+          ALICE_EMBEDDINGS_MODEL: ${{ vars.ALICE_RELEASE_EMBEDDINGS_MODEL }}
+        run: |
+          test -n "$ALICE_EMBEDDINGS_BASE_URL"
+          test -n "$ALICE_EMBEDDINGS_MODEL"
+
+      - name: Run semantic release gate and write exact-SHA attestation
+        env:
+          ALICEBOT_EVAL_DATABASE_URL: postgresql://alicebot_app:ci@localhost:5432/alicebot
+          ALICE_EMBEDDINGS_BASE_URL: ${{ secrets.ALICE_RELEASE_EMBEDDINGS_BASE_URL }}
+          ALICE_EMBEDDINGS_MODEL: ${{ vars.ALICE_RELEASE_EMBEDDINGS_MODEL }}
+          ALICE_EMBEDDINGS_API_KEY: ${{ secrets.ALICE_RELEASE_EMBEDDINGS_API_KEY }}
+        run: |
+          mkdir -p artifacts/release
+          python -m alicebot_api eval run \
+            --suite all \
+            --release-gate \
+            --report-path artifacts/release/semantic-eval-report.json
+          python scripts/release_check.py \
+            --expected-sha "$GITHUB_SHA" \
+            --semantic-eval-report artifacts/release/semantic-eval-report.json \
+            --write-semantic-eval-attestation artifacts/release/semantic-eval-attestation.json
+
+      - name: Upload credential-free exact-SHA evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: semantic-eval-attestation-${{ github.sha }}
+          path: |
+            artifacts/release/semantic-eval-report.json
+            artifacts/release/semantic-eval-attestation.json
+          if-no-files-found: error
+          retention-days: 30

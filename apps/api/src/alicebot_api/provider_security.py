@@ -107,6 +107,8 @@ def _resolve_hostname_ips(hostname: str) -> tuple[ipaddress.IPv4Address | ipaddr
             candidate = sockaddr[0]
         else:
             continue
+        if not isinstance(candidate, str):
+            continue
         resolved_ip = _parse_ip_literal(candidate)
         if resolved_ip is not None and resolved_ip not in resolved:
             resolved.append(resolved_ip)

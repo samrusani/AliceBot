@@ -67,6 +67,8 @@ describe("MemorySummary", () => {
         queueSummary={{
           memory_status: "active",
           review_state: "unlabeled",
+          priority_mode: "oldest_first",
+          available_priority_modes: ["oldest_first", "recent_first", "high_risk_first", "stale_truth_first"],
           limit: 20,
           returned_count: 2,
           total_count: 2,
@@ -121,6 +123,8 @@ describe("MemorySummary", () => {
         queueSummary={{
           memory_status: "active",
           review_state: "unlabeled",
+          priority_mode: "oldest_first",
+          available_priority_modes: ["oldest_first", "recent_first", "high_risk_first", "stale_truth_first"],
           limit: 20,
           returned_count: 2,
           total_count: 2,

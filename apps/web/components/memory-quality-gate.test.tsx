@@ -3,8 +3,9 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { MemoryQualityGate } from "./memory-quality-gate";
+import type { MemoryEvaluationSummary, MemoryQualityGateStatus } from "../lib/api";
 
-function summaryWithGate(status: "healthy" | "needs_review" | "insufficient_sample" | "degraded") {
+function summaryWithGate(status: MemoryQualityGateStatus): MemoryEvaluationSummary {
   return {
     total_memory_count: 12,
     active_memory_count: 10,
@@ -18,7 +19,7 @@ function summaryWithGate(status: "healthy" | "needs_review" | "insufficient_samp
       outdated: 0,
       insufficient_evidence: 0,
     },
-    label_value_order: ["correct", "incorrect", "outdated", "insufficient_evidence"] as const,
+    label_value_order: ["correct", "incorrect", "outdated", "insufficient_evidence"],
     quality_gate: {
       status,
       precision: status === "degraded" ? 0.7 : 0.9,

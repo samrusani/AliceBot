@@ -81,6 +81,7 @@ from alicebot_api.vnext_embeddings import (
     VNextEmbeddingProviderError,
     get_embedding_provider,
     memory_embedding_text,
+    signed_memory_embedding_update,
 )
 from alicebot_api.vnext_memory_commit import (
     MemoryCommitRequest,
@@ -99,6 +100,7 @@ RetrievalFn = Callable[..., JsonObject]
 
 VNEXT_EVAL_CORPUS_SCHEMA_VERSION = "vnext_eval_corpus_v1"
 VNEXT_EVAL_REPORT_SCHEMA_VERSION = "vnext_eval_report_v1"
+EMBEDDING_SIGNATURE_IDENTITY_SCHEMA_VERSION = "alice_embedding_signature_identity_v1"
 VNEXT_EVAL_CORPUS_SOURCE_PATH = "eval/fixtures/vnext_benchmark_corpus.json"
 VNEXT_EVAL_REPORT_PATH = "eval/reports/vnext_eval_latest.json"
 VNEXT_EVAL_DATABASE_URL_ENV = "ALICEBOT_EVAL_DATABASE_URL"
@@ -112,6 +114,8 @@ DECISION_RECOVERY_SUITE_KEY = "decision_recovery"
 PROVENANCE_EXPLANATION_SUITE_KEY = "provenance_explanation"
 ENTITY_RESOLUTION_SUITE_KEY = "entity_resolution"
 GRAPH_HOP_RETRIEVAL_SUITE_KEY = "graph_hop_retrieval"
+
+RETRIEVAL_QUALITY_TITLE = "Retrieval quality (production hybrid pipeline)"
 
 VNEXT_EVAL_SUITE_ORDER = (
     RETRIEVAL_QUALITY_SUITE_KEY,
@@ -422,6 +426,28 @@ def _hash_payload(payload: object) -> str:
     return f"sha256:{sha256(encoded).hexdigest()}"
 
 
+def _report_digest_payload(report: Mapping[str, object]) -> JsonObject:
+    """Return the canonical, time-independent semantic report payload.
+
+    ``generated_at`` is transport metadata rather than eval evidence, and the
+    digest cannot include itself. Every other report field is deliberately
+    bound: corpus identity, declared targets, ordered suites, per-case
+    metrics/evidence, skipped-suite state, summary, and embedding identity.
+    Keeping this projection exhaustive makes newly added semantic fields fail
+    verification until the producer and release checker agree on them.
+    """
+    return {
+        key: deepcopy(value)
+        for key, value in report.items()
+        if key not in {"generated_at", "report_digest"}
+    }
+
+
+def semantic_eval_report_digest(report: Mapping[str, object]) -> str:
+    """Hash a semantic report using the canonical ``sha256:<hex>`` form."""
+    return _hash_payload(_report_digest_payload(report))
+
+
 def _memory_key(kind: str, index: int) -> str:
     return f"{VNEXT_EVAL_MEMORY_KEY_PREFIX}{kind}-{index:03d}"
 
@@ -728,6 +754,7 @@ def seed_retrieval_corpus(store: object, corpus: JsonObject) -> JsonObject:
         )
 
     embedded_count = 0
+    embedding_signature: JsonObject | None = None
     embedding_note = "no embedding provider configured; vector stage inactive"
     provider = get_embedding_provider()
     update_memory_embedding = getattr(store, "update_memory_embedding", None)
@@ -736,8 +763,23 @@ def seed_retrieval_corpus(store: object, corpus: JsonObject) -> JsonObject:
             for batch_start in range(0, len(created_rows), MAX_EMBEDDINGS_BATCH_SIZE):
                 batch = created_rows[batch_start : batch_start + MAX_EMBEDDINGS_BATCH_SIZE]
                 vectors = provider.embed_batch([memory_embedding_text(row) for row in batch])
-                for row, vector in zip(batch, vectors):
-                    update_memory_embedding(memory_id=str(row["id"]), vector=vector)
+                for row, vector in zip(batch, vectors, strict=True):
+                    signed_update = signed_memory_embedding_update(row, vector, provider=provider)
+                    update_memory_embedding(**signed_update)
+                    if embedding_signature is None:
+                        embedding_signature = {
+                            "schema_version": EMBEDDING_SIGNATURE_IDENTITY_SCHEMA_VERSION,
+                            "signature_version": signed_update["signature_version"],
+                            "provider": signed_update["provider"],
+                            "provider_fingerprint": sha256(
+                                signed_update["provider"].encode("utf-8")
+                            ).hexdigest(),
+                            "model": signed_update["model"],
+                            "model_fingerprint": sha256(
+                                signed_update["model"].encode("utf-8")
+                            ).hexdigest(),
+                            "endpoint_fingerprint": signed_update["endpoint"],
+                        }
                     embedded_count += 1
             embedding_note = f"embedded via {provider.provider}/{provider.model}"
         except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
@@ -748,6 +790,7 @@ def seed_retrieval_corpus(store: object, corpus: JsonObject) -> JsonObject:
     return {
         "seeded_memory_count": len(created_rows),
         "embedded_memory_count": embedded_count,
+        "embedding_signature": embedding_signature,
         "embedding_note": embedding_note,
     }
 
@@ -768,9 +811,20 @@ def production_retrieval_fn(store: object) -> RetrievalFn:
         )
         relevant = cast(list[JsonObject], pack.get("relevant_memories", []))
         trace = cast(JsonObject, pack.get("trace", {}))
+        stages = trace.get("stages")
+        vector_stage = (
+            cast(Mapping[str, object], stages).get("vector")
+            if isinstance(stages, Mapping)
+            else None
+        )
         return {
             "ranked_memory_keys": [str(item["memory_key"]) for item in relevant if item.get("memory_key")],
             "vector_stage": trace.get("vector_stage", "unknown"),
+            "vector_candidate_count": (
+                cast(Mapping[str, object], vector_stage).get("candidate_count", 0)
+                if isinstance(vector_stage, Mapping)
+                else 0
+            ),
         }
 
     return _retrieve
@@ -779,7 +833,7 @@ def production_retrieval_fn(store: object) -> RetrievalFn:
 def _skipped_retrieval_suite(reason: str) -> JsonObject:
     return {
         "suite_key": RETRIEVAL_QUALITY_SUITE_KEY,
-        "title": "Retrieval quality (production hybrid pipeline)",
+        "title": RETRIEVAL_QUALITY_TITLE,
         "status": "skipped",
         "reason": reason,
         "targets": deepcopy(RETRIEVAL_QUALITY_TARGETS),
@@ -845,6 +899,7 @@ def run_retrieval_quality_eval(
     cases: list[JsonObject] = []
     latencies_ms: list[float] = []
     vector_stages: set[str] = set()
+    vector_candidate_counts: list[int] = []
     for query in queries:
         query_text = str(query["query"])
         expected_key = str(query["expected_memory_key"])
@@ -855,6 +910,15 @@ def run_retrieval_quality_eval(
         latencies_ms.append(latency_ms)
         ranked_keys = [str(key) for key in cast(list[object], result.get("ranked_memory_keys", []))]
         vector_stages.add(str(result.get("vector_stage", "unknown")))
+        candidate_count = result.get("vector_candidate_count", 0)
+        vector_candidate_count = (
+            candidate_count
+            if isinstance(candidate_count, int)
+            and not isinstance(candidate_count, bool)
+            and candidate_count > 0
+            else 0
+        )
+        vector_candidate_counts.append(vector_candidate_count)
         case_recall_at_1 = recall_at_k(ranked_keys, expected_key, 1)
         case_recall_at_5 = recall_at_k(ranked_keys, expected_key, 5)
         case_reciprocal_rank = reciprocal_rank(ranked_keys, expected_key)
@@ -874,12 +938,22 @@ def run_retrieval_quality_eval(
                     "expected_memory_key": expected_key,
                     "top_memory_keys": ranked_keys[:5],
                     "vector_stage": result.get("vector_stage", "unknown"),
+                    "vector_candidate_count": vector_candidate_count,
                 },
             }
         )
 
-    vector_stage_active = vector_stages == {VECTOR_STAGE_ENABLED}
-    if vector_stage_active:
+    vector_stage_enabled = vector_stages == {VECTOR_STAGE_ENABLED}
+    vector_candidate_count = sum(vector_candidate_counts)
+    vector_queries_with_candidates = sum(
+        1 for candidate_count in vector_candidate_counts if candidate_count > 0
+    )
+    vector_stage_participated = (
+        vector_stage_enabled
+        and bool(vector_candidate_counts)
+        and vector_queries_with_candidates == len(vector_candidate_counts)
+    )
+    if vector_stage_enabled:
         retrieval_mode = "hybrid"
     elif VECTOR_STAGE_ENABLED in vector_stages:
         retrieval_mode = "mixed"
@@ -911,7 +985,7 @@ def run_retrieval_quality_eval(
     # The paraphrase subset is designed so FTS alone struggles; the target is
     # only enforced when the vector stage actually ran. In FTS-only mode the
     # paraphrase numbers are still reported, honestly, as degraded coverage.
-    if vector_stage_active:
+    if vector_stage_enabled:
         checks["paraphrase_recall_at_5"] = cast(float, paraphrase_metrics["recall_at_5"]) >= paraphrase_recall_target
 
     metrics: JsonObject = {
@@ -926,8 +1000,12 @@ def run_retrieval_quality_eval(
             "max": round(max(latencies_ms), 3),
         },
         "vector_stages": sorted(vector_stages),
+        "vector_candidate_count": vector_candidate_count,
+        "vector_query_count": len(vector_candidate_counts),
+        "vector_queries_with_candidates": vector_queries_with_candidates,
+        "vector_stage_participated": vector_stage_participated,
         "retrieval_mode": retrieval_mode,
-        "paraphrase_targets_enforced": vector_stage_active,
+        "paraphrase_targets_enforced": vector_stage_enabled,
         "release_gate": release_gate,
         "subsets": {
             SUBSET_LEXICAL_OVERLAP: lexical_metrics,
@@ -941,13 +1019,13 @@ def run_retrieval_quality_eval(
     if all(checks.values()):
         # A release-designated run that never exercised the vector stage did not
         # measure paraphrase/semantic quality, so it cannot claim a full pass.
-        status = "pass_fts_only" if (release_gate and not vector_stage_active) else "pass"
+        status = "pass_fts_only" if (release_gate and not vector_stage_participated) else "pass"
     else:
         status = "fail"
 
     return {
         "suite_key": RETRIEVAL_QUALITY_SUITE_KEY,
-        "title": "Retrieval quality (production hybrid pipeline)",
+        "title": RETRIEVAL_QUALITY_TITLE,
         "status": status,
         "targets": deepcopy(RETRIEVAL_QUALITY_TARGETS),
         "metrics": metrics,
@@ -2311,19 +2389,24 @@ def run_entity_resolution_eval(
             list[JsonObject],
             store.find_entities_by_names((canonical,)),  # type: ignore[attr-defined]
         )
-        entity = matches[0] if matches else None
+        matched_entity: JsonObject | None = matches[0] if matches else None
         distinct_rows = {str(m["id"]) for m in matches}
-        group_resolved = entity is not None and len(distinct_rows) == 1
+        group_resolved = matched_entity is not None and len(distinct_rows) == 1
         if group_resolved:
             resolved_groups += 1
-        mentions_ok = bool(entity) and int(cast(int, entity.get("mention_count", 0))) >= len(source_texts)
+        mentions_ok = matched_entity is not None and int(
+            cast(int, matched_entity.get("mention_count", 0))
+        ) >= len(source_texts)
         if mentions_ok:
             mention_correct += 1
         alias_ok = True
         expected_alias = group.get("expected_alias")
         if expected_alias is not None:
             alias_expected += 1
-            aliases = [str(a) for a in cast(list[object], (entity or {}).get("aliases", []))]
+            aliases = [
+                str(alias)
+                for alias in cast(list[object], (matched_entity or {}).get("aliases", []))
+            ]
             alias_ok = str(expected_alias) in aliases
             if alias_ok:
                 alias_grown += 1
@@ -2334,12 +2417,14 @@ def run_entity_resolution_eval(
                 "status": "pass" if (group_resolved and mentions_ok and alias_ok) else "fail",
                 "metrics": {
                     "resolved": 1.0 if group_resolved else 0.0,
-                    "mention_count": int(cast(int, (entity or {}).get("mention_count", 0))),
+                    "mention_count": int(
+                        cast(int, (matched_entity or {}).get("mention_count", 0))
+                    ),
                 },
                 "evidence": {
                     "canonical_normalized": canonical,
-                    "entity_id": str(entity["id"]) if entity else None,
-                    "aliases": (entity or {}).get("aliases", []),
+                    "entity_id": str(matched_entity["id"]) if matched_entity else None,
+                    "aliases": (matched_entity or {}).get("aliases", []),
                 },
             }
         )
@@ -2593,8 +2678,11 @@ def run_graph_hop_retrieval_eval(
         fts_result = retrieve_fts(query)
         graph_ranked = cast(list[str], graph_result["ranked_memory_keys"])
         fts_ranked = cast(list[str], fts_result["ranked_memory_keys"])
-        winner_stage_ranks = cast(JsonObject, graph_result["stage_ranks_by_id"]).get(
+        winner_stage_ranks_value = cast(JsonObject, graph_result["stage_ranks_by_id"]).get(
             str(group.get("memory_id", "")), {}
+        )
+        winner_stage_ranks = (
+            winner_stage_ranks_value if isinstance(winner_stage_ranks_value, dict) else {}
         )
         case_metrics: JsonObject = {
             "graph_recall_at_5": recall_at_k(graph_ranked, expected_key, 5),
@@ -2660,6 +2748,108 @@ VNEXT_ACCEPTANCE_TARGETS[ENTITY_RESOLUTION_SUITE_KEY] = deepcopy(ENTITY_RESOLUTI
 VNEXT_ACCEPTANCE_TARGETS[GRAPH_HOP_RETRIEVAL_SUITE_KEY] = deepcopy(GRAPH_HOP_RETRIEVAL_TARGETS)
 
 
+def canonical_semantic_eval_release_contract() -> JsonObject:
+    """Derive the release verifier's case linkage from canonical generators.
+
+    This intentionally returns only non-secret, deterministic identities. The
+    release checker uses it to bind each case key to the exact query, expected
+    target, title, and correction/entity semantics produced by this candidate.
+    """
+    from alicebot_api.vnext_entity_names import normalize_entity_name
+
+    retrieval_corpus = generate_vnext_benchmark_corpus()
+    correction_corpus = generate_correction_suppression_corpus()
+    decision_corpus = generate_decision_recovery_corpus()
+    provenance_corpus = generate_provenance_explanation_corpus()
+    entity_corpus = generate_entity_resolution_corpus()
+    graph_corpus = generate_graph_hop_corpus()
+
+    return {
+        RETRIEVAL_QUALITY_SUITE_KEY: {
+            "title": RETRIEVAL_QUALITY_TITLE,
+            "cases": [
+                {
+                    "case_key": row["query_key"],
+                    "query": row["query"],
+                    "expected_memory_key": row["expected_memory_key"],
+                    "subset": row["subset"],
+                }
+                for row in cast(list[JsonObject], retrieval_corpus["queries"])
+            ],
+        },
+        CORRECTION_SUPPRESSION_SUITE_KEY: {
+            "title": CORRECTION_SUPPRESSION_TITLE,
+            "cases": [
+                {
+                    "case_key": row["case_key"],
+                    "query": row["query"],
+                    "original_memory_key": (
+                        "agentic_memory.semantic.vnext-eval/correction/"
+                        f"{row['case_key']}/original"
+                    ),
+                    "replacement_memory_key": (
+                        "agentic_memory.semantic.vnext-eval/correction/"
+                        f"{row['case_key']}/replacement"
+                    ),
+                    "rejected_memory_key": (
+                        "agentic_memory.semantic.vnext-eval/correction/"
+                        f"{row['case_key']}/rejected"
+                    ),
+                }
+                for row in cast(list[JsonObject], correction_corpus["cases"])
+            ],
+        },
+        DECISION_RECOVERY_SUITE_KEY: {
+            "title": DECISION_RECOVERY_TITLE,
+            "cases": [
+                {
+                    "case_key": row["query_key"],
+                    "query": row["query"],
+                    "expected_memory_key": row["expected_memory_key"],
+                }
+                for row in cast(list[JsonObject], decision_corpus["queries"])
+            ],
+        },
+        PROVENANCE_EXPLANATION_SUITE_KEY: {
+            "title": PROVENANCE_EXPLANATION_TITLE,
+            "cases": [
+                {
+                    "case_key": row["case_key"],
+                    "corrected": bool(row.get("corrected_text")),
+                }
+                for row in cast(list[JsonObject], provenance_corpus["memories"])
+            ],
+        },
+        ENTITY_RESOLUTION_SUITE_KEY: {
+            "title": ENTITY_RESOLUTION_TITLE,
+            "cases": [
+                {
+                    "case_key": row["group_key"],
+                    "canonical_normalized": normalize_entity_name(
+                        str(row["canonical_name"])
+                    ),
+                    "expected_alias": row.get("expected_alias"),
+                }
+                for row in cast(list[JsonObject], entity_corpus["groups"])
+            ],
+        },
+        GRAPH_HOP_RETRIEVAL_SUITE_KEY: {
+            "title": GRAPH_HOP_RETRIEVAL_TITLE,
+            "cases": [
+                {
+                    "case_key": row["group_key"],
+                    "query": row["query"],
+                    "expected_memory_key": f"{GRAPH_HOP_MEMORY_KEY_PREFIX}{index:03d}",
+                }
+                for index, row in enumerate(
+                    cast(list[JsonObject], graph_corpus["groups"]),
+                    start=1,
+                )
+            ],
+        },
+    }
+
+
 def _run_memory_quality_suite(suite_key: str, *, store: object | None) -> JsonObject:
     runner = _MEMORY_QUALITY_SUITE_RUNNERS[suite_key]
     if store is not None:
@@ -2720,14 +2910,15 @@ def run_vnext_evals(
 
     Overall ``status`` is ``"pass"`` only when every *executed* suite passed;
     skipped suites are listed separately and never counted as a pass. When no
-    suite could execute at all the report status is ``"skipped"``.
+    suite could execute at all the report status is ``"skipped"``. A release
+    gate is stricter: any skipped requested suite makes the aggregate fail.
 
     ``release_gate`` marks a canonical/release-designated run. In that mode the
     retrieval-quality suite refuses to report an unqualified ``"pass"`` when the
-    vector/paraphrase gate never ran (it reports ``"pass_fts_only"``), and the
-    aggregate status is ``"pass_fts_only"`` whenever an executed suite carries
-    that status and none hard-failed -- so the release gate can never be green
-    without measuring semantic retrieval quality.
+    vector/paraphrase gate never ran (it reports ``"pass_fts_only"``). The
+    aggregate fails unless every requested suite executes with nonempty,
+    passing cases and passing target checks, so the release gate can never be
+    green without measuring semantic retrieval quality.
     """
     corpus = load_vnext_benchmark_corpus(corpus_path)
     if corpus.get("schema_version") != VNEXT_EVAL_CORPUS_SCHEMA_VERSION:
@@ -2750,7 +2941,39 @@ def run_vnext_evals(
     executed_suites = [suite_report for suite_report in suites if suite_report["status"] != "skipped"]
     skipped_suites = [suite_report for suite_report in suites if suite_report["status"] == "skipped"]
     executed_statuses = [suite_report["status"] for suite_report in executed_suites]
-    if corpus_validation["status"] != "pass":
+    release_cases_pass = all(
+        isinstance(suite_report.get("cases"), list)
+        and bool(cast(list[object], suite_report["cases"]))
+        and all(
+            isinstance(case, dict) and case.get("status") == "pass"
+            for case in cast(list[object], suite_report["cases"])
+        )
+        for suite_report in executed_suites
+    )
+    release_target_checks_pass = all(
+        isinstance(suite_report.get("metrics"), dict)
+        and isinstance(cast(JsonObject, suite_report["metrics"]).get("target_checks"), dict)
+        and bool(cast(JsonObject, suite_report["metrics"])["target_checks"])
+        and all(
+            value == "pass"
+            for value in cast(
+                JsonObject,
+                cast(JsonObject, suite_report["metrics"])["target_checks"],
+            ).values()
+        )
+        for suite_report in executed_suites
+    )
+    if (
+        corpus_validation["status"] != "pass"
+        or (
+            release_gate
+            and (
+                bool(skipped_suites)
+                or not release_cases_pass
+                or not release_target_checks_pass
+            )
+        )
+    ):
         status = "fail"
     elif not executed_suites:
         status = "skipped"
@@ -2770,12 +2993,34 @@ def run_vnext_evals(
         for case in cast(list[JsonObject], suite_report["cases"])
         if case.get("status") == "pass"
     )
+    retrieval_suite = next(
+        (
+            suite_report
+            for suite_report in suites
+            if suite_report.get("suite_key") == RETRIEVAL_QUALITY_SUITE_KEY
+        ),
+        None,
+    )
+    retrieval_metrics = (
+        cast(JsonObject, retrieval_suite.get("metrics"))
+        if isinstance(retrieval_suite, dict)
+        and isinstance(retrieval_suite.get("metrics"), dict)
+        else {}
+    )
+    seeding = retrieval_metrics.get("seeding")
+    embedding_signature = (
+        cast(JsonObject, seeding.get("embedding_signature"))
+        if isinstance(seeding, dict)
+        and isinstance(seeding.get("embedding_signature"), dict)
+        else None
+    )
     report: JsonObject = {
         "schema_version": VNEXT_EVAL_REPORT_SCHEMA_VERSION,
         "generated_at": _generated_at(now_fn),
         "suite": requested_suite,
         "status": status,
         "release_gate": release_gate,
+        "embedding_signature": deepcopy(embedding_signature),
         "targets": deepcopy(VNEXT_ACCEPTANCE_TARGETS),
         "corpus": {
             "schema_version": corpus.get("schema_version"),
@@ -2799,16 +3044,9 @@ def run_vnext_evals(
         },
         "suites": suites,
     }
-    # The digest intentionally excludes generated_at so identical runs hash
-    # identically regardless of wall-clock time.
-    report["report_digest"] = _hash_payload(
-        {
-            "schema_version": report["schema_version"],
-            "suite": report["suite"],
-            "summary": report["summary"],
-            "corpus_digest": report["corpus"]["corpus_digest"],
-        }
-    )
+    # Wall-clock time is intentionally excluded, but every semantic field is
+    # included. This is separate from the attestation's byte-level file hash.
+    report["report_digest"] = semantic_eval_report_digest(report)
     return report
 
 
@@ -2845,6 +3083,7 @@ __all__ = [
     "PROVENANCE_MEMORY_KEY_PREFIX",
     "RETRIEVAL_QUALITY_RECALL_LIMIT",
     "RETRIEVAL_QUALITY_SUITE_KEY",
+    "RETRIEVAL_QUALITY_TITLE",
     "RETRIEVAL_QUALITY_TARGETS",
     "SUBSET_LEXICAL_OVERLAP",
     "SUBSET_PARAPHRASE",
@@ -2862,6 +3101,7 @@ __all__ = [
     "eval_content_tokens",
     "eval_token_overlap",
     "filtered_retrieval_fn",
+    "canonical_semantic_eval_release_contract",
     "generate_correction_suppression_corpus",
     "generate_decision_recovery_corpus",
     "generate_provenance_explanation_corpus",
@@ -2878,6 +3118,7 @@ __all__ = [
     "run_retrieval_quality_eval",
     "run_vnext_evals",
     "seed_retrieval_corpus",
+    "semantic_eval_report_digest",
     "write_vnext_benchmark_corpus",
     "write_vnext_eval_report",
 ]

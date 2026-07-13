@@ -19,6 +19,7 @@ type ContinuityCorrectionFormProps = {
   apiBaseUrl?: string;
   userId?: string;
   source: ApiSource | "unavailable";
+  mutationTargetSource?: ApiSource | "unavailable";
   review: ContinuityReviewDetail | null;
 };
 
@@ -42,9 +43,19 @@ function parseOptionalNumber(value: string) {
   return parsed;
 }
 
-export function ContinuityCorrectionForm({ apiBaseUrl, userId, source, review }: ContinuityCorrectionFormProps) {
+export function ContinuityCorrectionForm({
+  apiBaseUrl,
+  userId,
+  source,
+  mutationTargetSource,
+  review,
+}: ContinuityCorrectionFormProps) {
   const router = useRouter();
-  const liveModeReady = Boolean(apiBaseUrl && userId && source === "live" && review);
+  // Mutation provenance is independent from detail/history health. A target
+  // returned by the live queue remains safe to mutate if only its detail read
+  // fails; fixture-derived IDs remain display-only.
+  const targetSource = mutationTargetSource ?? source;
+  const liveModeReady = Boolean(apiBaseUrl && userId && review && targetSource === "live");
 
   const [action, setAction] = useState<ContinuityCorrectionAction>("confirm");
   const [reason, setReason] = useState("");
@@ -55,7 +66,11 @@ export function ContinuityCorrectionForm({ apiBaseUrl, userId, source, review }:
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [statusTone, setStatusTone] = useState<"info" | "success" | "danger">("info");
   const [statusText, setStatusText] = useState(
-    "Select one review object, then apply deterministic continuity corrections.",
+    liveModeReady
+      ? source === "live"
+        ? "Select one review object, then apply deterministic continuity corrections."
+        : "Live queue target verified. Detail and history are unavailable, but correction remains available."
+      : "Displayed fallback review objects are read-only until a live queue read succeeds.",
   );
 
   const selectedObject = review?.continuity_object ?? null;
@@ -151,6 +166,8 @@ export function ContinuityCorrectionForm({ apiBaseUrl, userId, source, review }:
             label={
               source === "live"
                 ? "Live correction"
+                : targetSource === "live"
+                  ? "Live target · detail unavailable"
                 : source === "fixture"
                   ? "Fixture correction"
                   : "Correction unavailable"

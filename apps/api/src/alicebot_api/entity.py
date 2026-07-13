@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import cast
 from uuid import UUID
 
 from alicebot_api.contracts import (
@@ -10,6 +11,7 @@ from alicebot_api.contracts import (
     EntityListResponse,
     EntityListSummary,
     EntityRecord,
+    EntityType,
 )
 from alicebot_api.store import ContinuityStore, EntityRow
 
@@ -25,7 +27,7 @@ class EntityNotFoundError(LookupError):
 def _serialize_entity(entity: EntityRow) -> EntityRecord:
     return {
         "id": str(entity["id"]),
-        "entity_type": entity["entity_type"],
+        "entity_type": cast(EntityType, entity["entity_type"]),
         "name": entity["name"],
         "source_memory_ids": entity["source_memory_ids"],
         "created_at": entity["created_at"].isoformat(),

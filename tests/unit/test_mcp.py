@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from io import BytesIO
@@ -40,6 +41,17 @@ CORE_TOOL_NAMES = [
 ]
 
 _DESCRIPTION_JARGON = ("continuity object", "bridge policy", "posture", "vnext", "deterministic")
+
+_INVALID_CONFIDENCE_CASES = [
+    pytest.param(-0.1, r"between 0 and 1", id="below-minimum"),
+    pytest.param(1.1, r"between 0 and 1", id="above-maximum"),
+    pytest.param(1.5, r"between 0 and 1", id="far-above-maximum"),
+    pytest.param(True, r"type number", id="true-is-not-a-number"),
+    pytest.param(False, r"type number", id="false-is-not-a-number"),
+    pytest.param(float("nan"), r"type number", id="nan-is-not-finite"),
+    pytest.param(float("inf"), r"type number", id="positive-infinity-is-not-finite"),
+    pytest.param(float("-inf"), r"type number", id="negative-infinity-is-not-finite"),
+]
 
 
 @pytest.fixture
@@ -131,6 +143,818 @@ def test_call_mcp_tool_rejects_unknown_tool() -> None:
     )
     with pytest.raises(MCPToolNotFoundError, match="unknown tool"):
         call_mcp_tool(context, name="alice_nonexistent", arguments={})
+
+
+def test_call_mcp_tool_enforces_closed_advertised_input_schema(core_surface) -> None:
+    with pytest.raises(MCPToolError, match="does not accept additional properties: surprise"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_recall",
+            arguments={"query": "schema contract", "surprise": True},
+        )
+
+
+def test_every_nested_mcp_object_schema_is_closed(legacy_tools_enabled) -> None:
+    def walk(schema: object, *, path: str) -> None:
+        if not isinstance(schema, dict):
+            return
+        if schema.get("type") == "object":
+            assert schema.get("additionalProperties") is False, path
+            properties = schema.get("properties", {})
+            assert isinstance(properties, dict), path
+            for key, child in properties.items():
+                walk(child, path=f"{path}.{key}")
+        items = schema.get("items")
+        if items is not None:
+            walk(items, path=f"{path}[]")
+
+    for tool in list_mcp_tools():
+        walk(tool["inputSchema"], path=str(tool["name"]))
+
+
+def test_nested_mcp_schemas_reject_unknown_candidate_and_provenance_fields(
+    legacy_tools_enabled,
+) -> None:
+    candidate = {
+        "candidate_id": "candidate-1",
+        "candidate_type": "decision",
+        "object_type": "Decision",
+        "normalized_text": "Ship only after review.",
+        "confidence": 0.95,
+        "trust_class": "human_curated",
+        "evidence_snippet": "Ship only after review.",
+        "explicit": True,
+        "source_role": "user",
+        "admission_reason": "explicit_prefix_decision",
+        "proposed_action": "auto_save_candidate",
+        "surprise": True,
+    }
+    with pytest.raises(MCPToolError, match=r"arguments\.candidates\[0\].*surprise"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_commit_captures",
+            arguments={"mode": "assist", "candidates": [candidate]},
+        )
+
+    with pytest.raises(MCPToolError, match=r"arguments\.provenance.*surprise"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_memory_correct",
+            arguments={
+                "action": "edit-and-approve",
+                "review_item_id": str(uuid4()),
+                "provenance": {"source_id": str(uuid4()), "surprise": True},
+            },
+        )
+
+
+def test_nested_mcp_schemas_enforce_candidate_and_provenance_requirements(
+    legacy_tools_enabled,
+) -> None:
+    with pytest.raises(MCPToolError, match=r"arguments\.candidates\[0\].*candidate_id"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_commit_captures",
+            arguments={
+                "candidates": [
+                    {
+                        "candidate_type": "decision",
+                        "object_type": "Decision",
+                        "normalized_text": "Ship only after review.",
+                        "confidence": 0.95,
+                        "trust_class": "human_curated",
+                        "evidence_snippet": "Ship only after review.",
+                        "explicit": True,
+                        "source_role": "user",
+                        "admission_reason": "explicit_prefix_decision",
+                        "proposed_action": "auto_save_candidate",
+                    }
+                ]
+            },
+        )
+
+    with pytest.raises(MCPToolError, match=r"arguments\.provenance.*source_id"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_memory_correct",
+            arguments={
+                "action": "edit-and-approve",
+                "review_item_id": str(uuid4()),
+                "provenance": {"evidence_role": "supports"},
+            },
+        )
+
+
+def _valid_capture_candidate() -> dict[str, object]:
+    return {
+        "candidate_id": "candidate-valid",
+        "candidate_type": "no_op",
+        "object_type": None,
+        "normalized_text": "",
+        "confidence": 0.0,
+        "trust_class": "deterministic",
+        "evidence_snippet": "",
+        "explicit": False,
+        "source_role": "combined",
+        "admission_reason": "no_actionable_candidate",
+        "proposed_action": "no_op",
+    }
+
+
+@pytest.mark.parametrize(
+    "field, invalid_value, error_pattern",
+    [
+        ("candidate_id", 42, r"candidate_id.*type string"),
+        ("candidate_type", "not-real", r"candidate_type.*must be one of"),
+        ("object_type", 7, r"object_type.*type string or null"),
+        ("normalized_text", False, r"normalized_text.*type string"),
+        ("confidence", "0.95", r"confidence.*type number"),
+        ("confidence", 1.1, r"confidence.*between 0 and 1"),
+        ("trust_class", "not-real", r"trust_class.*must be one of"),
+        ("evidence_snippet", 7, r"evidence_snippet.*type string"),
+        ("explicit", 1, r"explicit.*type boolean"),
+        ("source_role", 7, r"source_role.*type string"),
+        ("admission_reason", False, r"admission_reason.*type string"),
+        ("proposed_action", "not-real", r"proposed_action.*must be one of"),
+    ],
+)
+def test_capture_candidate_schema_rejects_invalid_nested_values_before_handler(
+    monkeypatch,
+    legacy_tools_enabled,
+    field: str,
+    invalid_value: object,
+    error_pattern: str,
+) -> None:
+    handler_calls = 0
+
+    def should_not_run(_context, _arguments):
+        nonlocal handler_calls
+        handler_calls += 1
+        raise AssertionError("schema-invalid candidate must not reach the handler")
+
+    monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, "alice_commit_captures", should_not_run)
+    candidate = _valid_capture_candidate()
+    candidate[field] = invalid_value
+    before = deepcopy(candidate)
+
+    with pytest.raises(MCPToolError, match=error_pattern):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_commit_captures",
+            arguments={"mode": "assist", "candidates": [candidate]},
+        )
+
+    assert candidate == before
+    assert handler_calls == 0
+
+
+@pytest.mark.parametrize(
+    "body, error_pattern",
+    [
+        ([], r"arguments\.body.*body must have type object"),
+        ({"text": 7}, r"body\.text.*text must have type string"),
+        ({"explicit_signal": 7}, r"explicit_signal.*type string or null"),
+        ({}, r"requires at least 1 properties at arguments\.body"),
+    ],
+)
+def test_correction_body_schema_rejects_values_without_mutating_candidate(
+    monkeypatch,
+    core_surface,
+    no_embedding_provider,
+    body: object,
+    error_pattern: str,
+) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory_id, _confirmation_id = _seed_pending_inline_confirmation(store)
+    before = deepcopy(store.get_memory(memory_id))
+
+    with pytest.raises(MCPToolError, match=error_pattern):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_memory_correct",
+            arguments={
+                "review_item_id": memory_id,
+                "action": "edit-and-approve",
+                "body": body,
+            },
+        )
+
+    assert store.get_memory(memory_id) == before
+    assert store.revisions == []
+
+
+@pytest.mark.parametrize(
+    "provenance_patch, error_pattern",
+    [
+        ({"source_id": 42}, r"source_id.*type string"),
+        ({"source_id": "not-a-uuid"}, r"source_id.*UUID string"),
+        (
+            {"source_id": "11111111-1111-4111-8111-111111111111", "source_chunk_id": "bad"},
+            r"source_chunk_id.*UUID string",
+        ),
+        (
+            {"source_id": "11111111-1111-4111-8111-111111111111", "evidence_role": "bad"},
+            r"evidence_role.*must be one of",
+        ),
+        (
+            {"source_id": "11111111-1111-4111-8111-111111111111", "confidence": True},
+            r"confidence.*type number",
+        ),
+        (
+            {"source_id": "11111111-1111-4111-8111-111111111111", "confidence": -0.1},
+            r"confidence.*between 0 and 1",
+        ),
+        (
+            {"source_id": "11111111-1111-4111-8111-111111111111", "quote": []},
+            r"quote.*type string",
+        ),
+    ],
+)
+def test_review_provenance_schema_rejects_values_without_mutation(
+    monkeypatch,
+    core_surface,
+    no_embedding_provider,
+    provenance_patch: dict[str, object],
+    error_pattern: str,
+) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory_id, _confirmation_id = _seed_pending_inline_confirmation(store)
+    before = deepcopy(store.get_memory(memory_id))
+
+    with pytest.raises(MCPToolError, match=error_pattern):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_memory_correct",
+            arguments={
+                "review_item_id": memory_id,
+                "action": "edit-and-approve",
+                "provenance": provenance_patch,
+            },
+        )
+
+    assert store.get_memory(memory_id) == before
+    assert store.revisions == []
+
+
+def test_requested_review_confidence_schemas_advertise_closed_unit_interval(
+    legacy_tools_enabled,
+) -> None:
+    core_properties = mcp_tools_module._TOOL_DEFINITIONS_BY_NAME["alice_memory_correct"][
+        "inputSchema"
+    ]["properties"]
+    legacy_properties = mcp_tools_module._TOOL_DEFINITIONS_BY_NAME["alice_review_apply"][
+        "inputSchema"
+    ]["properties"]
+
+    assert core_properties["confidence"] == {
+        "type": "number",
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "description": "For edit-and-approve: corrected confidence, between 0 and 1.",
+    }
+    assert core_properties["replacement_confidence"] == {
+        "type": "number",
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "description": (
+            "For supersede-existing: confidence of the replacement memory, between 0 and 1."
+        ),
+    }
+    assert legacy_properties["confidence"] == {
+        "type": "number",
+        "minimum": 0.0,
+        "maximum": 1.0,
+    }
+    assert legacy_properties["replacement_confidence"] == {
+        "type": "number",
+        "minimum": 0.0,
+        "maximum": 1.0,
+    }
+
+
+@pytest.mark.parametrize("invalid_confidence,error_detail", _INVALID_CONFIDENCE_CASES)
+def test_core_review_confidence_bounds_reject_before_mutation(
+    monkeypatch,
+    core_surface,
+    no_embedding_provider,
+    invalid_confidence: object,
+    error_detail: str,
+) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory_id, _confirmation_id = _seed_pending_inline_confirmation(store)
+    before = deepcopy(store.get_memory(memory_id))
+
+    with pytest.raises(MCPToolError, match=rf"confidence.*{error_detail}"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_memory_correct",
+            arguments={
+                "review_item_id": memory_id,
+                "action": "edit-and-approve",
+                "confidence": invalid_confidence,
+            },
+        )
+
+    assert store.get_memory(memory_id) == before
+    assert store.revisions == []
+    assert store.list_provenance_links(target_type="memory", target_id=memory_id) == []
+
+
+@pytest.mark.parametrize("boundary_confidence", [0.0, 1.0])
+def test_core_review_confidence_boundary_values_remain_accepted(
+    monkeypatch,
+    core_surface,
+    no_embedding_provider,
+    boundary_confidence: float,
+) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory_id, _confirmation_id = _seed_pending_inline_confirmation(store)
+
+    result = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_correct",
+        arguments={
+            "review_item_id": memory_id,
+            "action": "edit-and-approve",
+            "confidence": boundary_confidence,
+        },
+    )
+
+    assert result["memory"]["status"] == "active"
+    assert result["memory"]["confidence"] == boundary_confidence
+    assert len(store.revisions) == 1
+    assert store.list_provenance_links(target_type="memory", target_id=memory_id) == []
+
+
+@pytest.mark.parametrize("invalid_confidence,error_detail", _INVALID_CONFIDENCE_CASES)
+def test_core_replacement_confidence_bounds_reject_before_mutation(
+    monkeypatch,
+    core_surface,
+    no_embedding_provider,
+    invalid_confidence: object,
+    error_detail: str,
+) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory_id, _confirmation_id = _seed_pending_inline_confirmation(store)
+    before_memory = deepcopy(store.get_memory(memory_id))
+    before_memories = deepcopy(store.memories)
+    before_events = deepcopy(store.events)
+
+    with pytest.raises(MCPToolError, match=rf"replacement_confidence.*{error_detail}"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_memory_correct",
+            arguments={
+                "review_item_id": memory_id,
+                "action": "supersede-existing",
+                "replacement_title": "Replacement",
+                "replacement_confidence": invalid_confidence,
+            },
+        )
+
+    assert store.get_memory(memory_id) == before_memory
+    assert store.memories == before_memories
+    assert store.events == before_events
+    assert store.revisions == []
+    assert store.list_provenance_links(target_type="memory", target_id=memory_id) == []
+
+
+@pytest.mark.parametrize("boundary_confidence", [0.0, 1.0])
+def test_core_replacement_confidence_boundary_values_remain_accepted(
+    monkeypatch,
+    core_surface,
+    no_embedding_provider,
+    boundary_confidence: float,
+) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory_id, _confirmation_id = _seed_pending_inline_confirmation(store)
+
+    result = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_correct",
+        arguments={
+            "review_item_id": memory_id,
+            "action": "supersede-existing",
+            "replacement_title": "Replacement",
+            "replacement_confidence": boundary_confidence,
+        },
+    )
+
+    assert result["memory"]["status"] == "superseded"
+    assert result["replacement_object"]["status"] == "active"
+    assert result["replacement_object"]["confidence"] == boundary_confidence
+    assert len(store.memories) == 2
+    assert len(store.revisions) == 2
+
+
+@pytest.mark.parametrize("invalid_confidence,error_detail", _INVALID_CONFIDENCE_CASES)
+def test_legacy_confidence_bounds_reject_before_handler_or_mutation(
+    monkeypatch,
+    legacy_tools_enabled,
+    invalid_confidence: object,
+    error_detail: str,
+) -> None:
+    state = {"status": "needs_review", "confidence": 0.5}
+    revisions: list[object] = []
+    provenance: list[object] = []
+    before = deepcopy(state)
+    handler_calls = 0
+
+    def should_not_run(_context, _arguments):
+        nonlocal handler_calls
+        handler_calls += 1
+        state["status"] = "active"
+        revisions.append("mutated")
+        provenance.append("mutated")
+        raise AssertionError("out-of-range confidence must not reach the handler")
+
+    monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, "alice_review_apply", should_not_run)
+    with pytest.raises(MCPToolError, match=rf"confidence.*{error_detail}"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_review_apply",
+            arguments={
+                "review_item_id": str(uuid4()),
+                "action": "edit-and-approve",
+                "confidence": invalid_confidence,
+            },
+        )
+
+    assert handler_calls == 0
+    assert state == before
+    assert revisions == []
+    assert provenance == []
+
+
+@pytest.mark.parametrize("boundary_confidence", [0.0, 1.0])
+def test_legacy_confidence_boundary_values_remain_accepted(
+    monkeypatch,
+    legacy_tools_enabled,
+    boundary_confidence: float,
+) -> None:
+    def validated(_context, arguments):
+        return {"validated": True, "confidence": arguments["confidence"]}
+
+    monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, "alice_review_apply", validated)
+    result = call_mcp_tool(
+        _mcp_context(),
+        name="alice_review_apply",
+        arguments={
+            "review_item_id": str(uuid4()),
+            "action": "edit-and-approve",
+            "confidence": boundary_confidence,
+        },
+    )
+    assert result == {"validated": True, "confidence": boundary_confidence}
+
+
+@pytest.mark.parametrize("invalid_confidence,error_detail", _INVALID_CONFIDENCE_CASES)
+def test_legacy_replacement_confidence_bounds_reject_before_handler_or_mutation(
+    monkeypatch,
+    legacy_tools_enabled,
+    invalid_confidence: object,
+    error_detail: str,
+) -> None:
+    state = {"status": "active", "confidence": 0.5}
+    revisions: list[object] = []
+    provenance: list[object] = []
+    before = deepcopy(state)
+    handler_calls = 0
+
+    def should_not_run(_context, _arguments):
+        nonlocal handler_calls
+        handler_calls += 1
+        state["status"] = "superseded"
+        revisions.append("mutated")
+        provenance.append("mutated")
+        raise AssertionError("out-of-range confidence must not reach the handler")
+
+    monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, "alice_review_apply", should_not_run)
+    with pytest.raises(MCPToolError, match=rf"replacement_confidence.*{error_detail}"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_review_apply",
+            arguments={
+                "review_item_id": str(uuid4()),
+                "action": "supersede-existing",
+                "replacement_title": "Replacement",
+                "replacement_confidence": invalid_confidence,
+            },
+        )
+
+    assert handler_calls == 0
+    assert state == before
+    assert revisions == []
+    assert provenance == []
+
+
+@pytest.mark.parametrize("boundary_confidence", [0.0, 1.0])
+def test_legacy_replacement_confidence_boundary_values_remain_accepted(
+    monkeypatch,
+    legacy_tools_enabled,
+    boundary_confidence: float,
+) -> None:
+    def validated(_context, arguments):
+        return {"validated": True, "replacement_confidence": arguments["replacement_confidence"]}
+
+    monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, "alice_review_apply", validated)
+    result = call_mcp_tool(
+        _mcp_context(),
+        name="alice_review_apply",
+        arguments={
+            "review_item_id": str(uuid4()),
+            "action": "supersede-existing",
+            "replacement_title": "Replacement",
+            "replacement_confidence": boundary_confidence,
+        },
+    )
+    assert result == {"validated": True, "replacement_confidence": boundary_confidence}
+
+
+@pytest.mark.parametrize(
+    "tool_name, arguments, error_pattern",
+    [
+        ("alice_recall", {"query": "schema", "projects": "Apollo"}, r"projects.*type array"),
+        ("alice_recall", {"query": "schema", "projects": [7]}, r"projects\[0\].*type string"),
+        ("alice_recall", {"query": "schema", "limit": True}, r"limit.*type integer"),
+        ("alice_recall", {"query": "schema", "limit": 0}, r"limit.*between 1 and"),
+        (
+            "alice_context_pack",
+            {"query": "schema", "projects": [f"project-{index}" for index in range(51)]},
+            r"projects.*at most 50 items",
+        ),
+        (
+            "alice_recall",
+            {"query": "schema", "thread_id": "not-a-uuid"},
+            r"thread_id.*UUID string",
+        ),
+        (
+            "alice_recall",
+            {"query": "schema", "since": "2026-07-13"},
+            r"since.*RFC 3339 date-time",
+        ),
+        (
+            "alice_recall",
+            {"query": "schema", "until": "2026-02-30T00:00:00Z"},
+            r"until.*valid RFC 3339 date-time",
+        ),
+        (
+            "alice_context_pack",
+            {"query": "schema", "time_window": "yesterday"},
+            r"time_window.*match pattern",
+        ),
+        (
+            "alice_memory_commit",
+            {"title": "Schema", "canonical_text": "Schema", "domain": "not-real"},
+            r"domain.*must be one of",
+        ),
+    ],
+)
+def test_advertised_schema_rejects_array_bound_format_pattern_and_enum_values(
+    monkeypatch,
+    core_surface,
+    tool_name: str,
+    arguments: dict[str, object],
+    error_pattern: str,
+) -> None:
+    handler_calls = 0
+
+    def should_not_run(_context, _arguments):
+        nonlocal handler_calls
+        handler_calls += 1
+        raise AssertionError("schema-invalid call must not reach the handler")
+
+    monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, tool_name, should_not_run)
+    with pytest.raises(MCPToolError, match=error_pattern):
+        call_mcp_tool(_mcp_context(), name=tool_name, arguments=arguments)
+    assert handler_calls == 0
+
+
+@pytest.mark.parametrize(
+    "tool_name,invalid_date",
+    [
+        pytest.param("alice_generate_daily_brief", "not-a-date", id="daily-malformed"),
+        pytest.param("alice_generate_daily_brief", "2026-02-30", id="daily-impossible"),
+        pytest.param(
+            "alice_generate_weekly_synthesis", "not-a-date", id="weekly-malformed"
+        ),
+        pytest.param(
+            "alice_generate_weekly_synthesis", "2026-02-30", id="weekly-impossible"
+        ),
+    ],
+)
+def test_generated_for_date_format_rejects_before_handler(
+    monkeypatch,
+    legacy_tools_enabled,
+    tool_name: str,
+    invalid_date: str,
+) -> None:
+    handler_calls = 0
+
+    def should_not_run(_context, _arguments):
+        nonlocal handler_calls
+        handler_calls += 1
+        raise AssertionError("invalid generated_for must not reach the handler")
+
+    monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, tool_name, should_not_run)
+    with pytest.raises(MCPToolError, match=r"generated_for.*RFC 3339 full-date"):
+        call_mcp_tool(
+            _mcp_context(),
+            name=tool_name,
+            arguments={"generated_for": invalid_date},
+        )
+    assert handler_calls == 0
+
+
+@pytest.mark.parametrize(
+    "tool_name,valid_date",
+    [
+        pytest.param("alice_generate_daily_brief", "0001-01-01", id="daily-minimum"),
+        pytest.param("alice_generate_daily_brief", "2024-02-29", id="daily-leap-day"),
+        pytest.param("alice_generate_daily_brief", "2026-07-13", id="daily-ordinary"),
+        pytest.param("alice_generate_daily_brief", "9999-12-31", id="daily-maximum"),
+        pytest.param(
+            "alice_generate_weekly_synthesis", "0001-01-01", id="weekly-minimum"
+        ),
+        pytest.param(
+            "alice_generate_weekly_synthesis", "2024-02-29", id="weekly-leap-day"
+        ),
+        pytest.param(
+            "alice_generate_weekly_synthesis", "2026-07-13", id="weekly-ordinary"
+        ),
+        pytest.param(
+            "alice_generate_weekly_synthesis", "9999-12-31", id="weekly-maximum"
+        ),
+    ],
+)
+def test_generated_for_date_format_accepts_leap_and_boundary_dates(
+    monkeypatch,
+    legacy_tools_enabled,
+    tool_name: str,
+    valid_date: str,
+) -> None:
+    handler_calls = 0
+
+    def validated(_context, arguments):
+        nonlocal handler_calls
+        handler_calls += 1
+        return {"generated_for": arguments["generated_for"]}
+
+    monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, tool_name, validated)
+    assert call_mcp_tool(
+        _mcp_context(),
+        name=tool_name,
+        arguments={"generated_for": valid_date},
+    ) == {"generated_for": valid_date}
+    assert handler_calls == 1
+
+
+def test_advertised_schema_formats_are_known_and_unknown_formats_fail_closed(
+    monkeypatch, legacy_tools_enabled
+) -> None:
+    formats: set[str] = set()
+
+    def collect(schema: object) -> None:
+        if not isinstance(schema, dict):
+            return
+        schema_format = schema.get("format")
+        if isinstance(schema_format, str):
+            formats.add(schema_format)
+        for child in schema.get("properties", {}).values():
+            collect(child)
+        collect(schema.get("items"))
+
+    for definition in mcp_tools_module._TOOL_DEFINITIONS_BY_NAME.values():
+        collect(definition["inputSchema"])
+    assert formats == {"date", "date-time", "uuid"}
+
+    generated_for_schema = mcp_tools_module._TOOL_DEFINITIONS_BY_NAME[
+        "alice_generate_daily_brief"
+    ]["inputSchema"]["properties"]["generated_for"]
+    monkeypatch.setitem(generated_for_schema, "format", "future-unsupported-format")
+    handler_calls = 0
+
+    def should_not_run(_context, _arguments):
+        nonlocal handler_calls
+        handler_calls += 1
+        raise AssertionError("unsupported advertised formats must fail closed")
+
+    monkeypatch.setitem(
+        mcp_tools_module._TOOL_HANDLERS, "alice_generate_daily_brief", should_not_run
+    )
+    with pytest.raises(MCPToolError, match=r"unsupported advertised format"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_generate_daily_brief",
+            arguments={"generated_for": "2026-07-13"},
+        )
+    assert handler_calls == 0
+
+
+def test_schema_enforces_min_items_and_max_properties_before_handler(
+    monkeypatch, core_surface
+) -> None:
+    recall_schema = mcp_tools_module._TOOL_DEFINITIONS_BY_NAME["alice_recall"]["inputSchema"]
+    projects_schema = recall_schema["properties"]["projects"]
+    monkeypatch.setitem(projects_schema, "minItems", 1)
+    with pytest.raises(MCPToolError, match=r"projects.*at least 1 items"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_recall",
+            arguments={"query": "schema", "projects": []},
+        )
+
+    correction_schema = mcp_tools_module._TOOL_DEFINITIONS_BY_NAME["alice_memory_correct"][
+        "inputSchema"
+    ]
+    body_schema = correction_schema["properties"]["body"]
+    monkeypatch.setitem(body_schema, "maxProperties", 1)
+    with pytest.raises(MCPToolError, match=r"body.*at most 1 properties"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_memory_correct",
+            arguments={
+                "review_item_id": str(uuid4()),
+                "action": "edit-and-approve",
+                "body": {"text": "valid", "body": "second"},
+            },
+        )
+
+
+def test_schema_rejects_legacy_nested_array_item_types_before_handler(
+    monkeypatch, legacy_tools_enabled
+) -> None:
+    handler_calls = 0
+
+    def should_not_run(_context, _arguments):
+        nonlocal handler_calls
+        handler_calls += 1
+        raise AssertionError("schema-invalid provenance must not reach the handler")
+
+    monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, "alice_review_apply", should_not_run)
+    with pytest.raises(MCPToolError, match=r"source_event_ids\[0\].*type string"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_review_apply",
+            arguments={
+                "review_item_id": str(uuid4()),
+                "action": "edit-and-approve",
+                "provenance": {"thread_id": str(uuid4()), "source_event_ids": [7]},
+            },
+        )
+    assert handler_calls == 0
+
+
+def test_schema_value_validation_preserves_valid_nested_calls(
+    monkeypatch, legacy_tools_enabled
+) -> None:
+    def validated(_context, arguments):
+        return {"validated": True, "arguments": arguments}
+
+    monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, "alice_commit_captures", validated)
+    committed = call_mcp_tool(
+        _mcp_context(),
+        name="alice_commit_captures",
+        arguments={"mode": "assist", "candidates": [_valid_capture_candidate()]},
+    )
+    assert committed["validated"] is True
+
+    monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, "alice_recall", validated)
+    recalled = call_mcp_tool(
+        _mcp_context(),
+        name="alice_recall",
+        arguments={
+            "query": "schema",
+            "thread_id": "11111111-1111-4111-8111-111111111111",
+            "since": "2026-07-01T00:00:00Z",
+            "projects": ["Apollo"],
+            "limit": 5,
+        },
+    )
+    assert recalled["validated"] is True
+
+    monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, "alice_memory_correct", validated)
+    corrected = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_correct",
+        arguments={
+            "review_item_id": "22222222-2222-4222-8222-222222222222",
+            "action": "edit-and-approve",
+            "body": {"text": "Reviewed text", "explicit_signal": None},
+            "provenance": {
+                "source_id": "33333333-3333-4333-8333-333333333333",
+                "evidence_role": "supports",
+                "confidence": 0.9,
+            },
+        },
+    )
+    assert corrected["validated"] is True
 
 
 def test_call_mcp_tool_requires_object_arguments() -> None:
@@ -702,7 +1526,9 @@ def test_alice_vnext_agentic_memory_commit_mcp_tools(monkeypatch, legacy_tools_e
     assert audit_payload["revisions"][0]["action"] == "agentic_memory_commit"
 
 
-def test_alice_vnext_agentic_memory_commit_normalizes_quote_aliases(monkeypatch, legacy_tools_enabled) -> None:
+def test_alice_vnext_agentic_memory_commit_accepts_documented_quote_shape(
+    monkeypatch, legacy_tools_enabled
+) -> None:
     store = FakeVNextMCPStore()
 
     @contextmanager
@@ -724,8 +1550,8 @@ def test_alice_vnext_agentic_memory_commit_normalizes_quote_aliases(monkeypatch,
             "permission_profile": "trusted_local_agent",
             "title": "Quote to remember",
             "canonical_text": "Control your emotions or someone else will. - Unknown",
-            "memory_type": "quote",
-            "domain": "quotes",
+            "memory_type": "semantic",
+            "domain": "learning",
             "sensitivity": "private",
             "confidence": 0.96,
         },
@@ -1031,6 +1857,7 @@ def test_alice_vnext_ingest_agent_output_creates_review_only_records(monkeypatch
             "agent_type": "coding_agent",
             "permission_profile": "project_scoped_agent",
             "agent_run_id": "run-1",
+            "project_scope": ["Alice"],
             "title": "Sprint summary",
             "content": "Decision: Agent outputs remain review-only.",
             "output_type": "sprint_summary",
@@ -1045,7 +1872,9 @@ def test_alice_vnext_ingest_agent_output_creates_review_only_records(monkeypatch
     assert payload["artifact_id"] == "artifact-1"
     assert payload["memory_id"] is not None
     assert store.artifacts["artifact-1"]["status"] == "needs_review"
+    assert store.artifacts["artifact-1"]["metadata_json"]["project_scope"] == ["Alice"]
     assert store.memories[-1]["status"] == "candidate"
+    assert store.memories[-1]["project_scope"] == ["Alice"]
     assert any(event["event_type"] == "agent.output_ingested" for event in store.events)
 
 
@@ -1749,7 +2578,7 @@ def test_alice_recall_rejects_invalid_memory_types_before_store(monkeypatch, cor
 
     monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fail_if_store_opened)
 
-    with pytest.raises(MCPToolError, match="memory_types contains unsupported values"):
+    with pytest.raises(MCPToolError, match=r"memory_types\[0\] must be one of"):
         call_mcp_tool(
             _mcp_context(),
             name="alice_recall",
@@ -2077,6 +2906,282 @@ def _seed_pending_inline_confirmation(store: FakeVNextMCPStore) -> tuple[str, st
     return memory_id, confirmation_id
 
 
+def test_review_approval_closes_nested_inline_confirmation_metadata(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory_id, _confirmation_id = _seed_pending_inline_confirmation(store)
+
+    approved = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_correct",
+        arguments={
+            "review_item_id": memory_id,
+            "action": "approve",
+            "reason": "Reviewer accepted the pending fact.",
+        },
+    )
+
+    agentic = approved["memory"]["metadata_json"]["agentic_memory"]
+    assert approved["memory"]["status"] == "active"
+    assert agentic["confirmation"]["status"] == "confirmed"
+    assert agentic["confirmation"]["confirmed_at"]
+
+
+def test_review_edit_synchronizes_text_views_and_honors_provenance(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    class ProvenanceStore(FakeVNextMCPStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.created_provenance_links: list[dict[str, object]] = []
+
+        def get_source(self, source_id: str) -> dict[str, object] | None:
+            return next((row for row in self.sources if row.get("id") == source_id), None)
+
+        def create_provenance_link(self, link: dict[str, object], **_kwargs) -> dict[str, object]:
+            row = {**link, "id": f"provenance-{len(self.created_provenance_links) + 1}"}
+            self.created_provenance_links.append(row)
+            return row
+
+    store = ProvenanceStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory_id, _confirmation_id = _seed_pending_inline_confirmation(store)
+    source_id = str(uuid4())
+    store.sources.append({"id": source_id, "content_hash": "sha256:review-source"})
+    corrected = "The corrected fact now matches its reviewed source."
+
+    result = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_correct",
+        arguments={
+            "review_item_id": memory_id,
+            "action": "edit-and-approve",
+            "body": {"text": corrected},
+            "provenance": {"source_id": source_id, "evidence_role": "supports"},
+        },
+    )
+
+    memory = result["memory"]
+    assert memory["canonical_text"] == corrected
+    assert memory["title"] == corrected
+    assert memory["summary"] == corrected
+    assert memory["metadata_json"]["provenance"]["source_id"] == source_id
+    assert store.created_provenance_links[0]["source_id"] == source_id
+
+
+@pytest.mark.parametrize(
+    "provenance_factory, error_pattern",
+    [
+        (
+            lambda source_id, _chunk_id: {
+                "source_id": str(uuid4()),
+                "evidence_role": "supports",
+            },
+            "was not found in the current user scope",
+        ),
+        (
+            lambda source_id, _chunk_id: {
+                "source_id": source_id,
+                "source_chunk_id": str(uuid4()),
+                "evidence_role": "supports",
+            },
+            "does not belong to source",
+        ),
+        (
+            lambda source_id, _chunk_id: {
+                "source_id": source_id,
+                "evidence_role": "untrusted_role",
+            },
+            "evidence_role must be one of",
+        ),
+        (
+            lambda source_id, _chunk_id: {
+                "source_id": source_id,
+                "evidence_role": "supports",
+                "confidence": 1.5,
+            },
+            "confidence must be between 0 and 1",
+        ),
+    ],
+)
+def test_invalid_review_provenance_is_atomic_before_candidate_activation(
+    monkeypatch,
+    core_surface,
+    no_embedding_provider,
+    provenance_factory,
+    error_pattern: str,
+) -> None:
+    class ProvenanceValidationStore(FakeVNextMCPStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.created_provenance_links: list[dict[str, object]] = []
+
+        def get_source(self, source_id: str) -> dict[str, object] | None:
+            return next((row for row in self.sources if row.get("id") == source_id), None)
+
+        def list_source_chunks(self, source_id: str) -> list[dict[str, object]]:
+            return [row for row in self.chunks if row.get("source_id") == source_id]
+
+        def create_provenance_link(self, link: dict[str, object], **_kwargs) -> dict[str, object]:
+            self.created_provenance_links.append(dict(link))
+            return dict(link)
+
+    store = ProvenanceValidationStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory_id, _confirmation_id = _seed_pending_inline_confirmation(store)
+    source_id = str(uuid4())
+    chunk_id = str(uuid4())
+    store.sources.append({"id": source_id, "content_hash": "sha256:review-source"})
+    store.chunks.append({"id": chunk_id, "source_id": source_id})
+    before = deepcopy(store.get_memory(memory_id))
+
+    with pytest.raises(MCPToolError, match=error_pattern):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_memory_correct",
+            arguments={
+                "review_item_id": memory_id,
+                "action": "edit-and-approve",
+                "provenance": provenance_factory(source_id, chunk_id),
+            },
+        )
+
+    assert store.get_memory(memory_id) == before
+    assert store.created_provenance_links == []
+    assert store.revisions == []
+
+
+def test_review_provenance_validates_chunk_ownership_before_activation(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    class ChunkedProvenanceStore(FakeVNextMCPStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.created_provenance_links: list[dict[str, object]] = []
+
+        def get_source(self, source_id: str) -> dict[str, object] | None:
+            return next((row for row in self.sources if row.get("id") == source_id), None)
+
+        def list_source_chunks(self, source_id: str) -> list[dict[str, object]]:
+            return [row for row in self.chunks if row.get("source_id") == source_id]
+
+        def create_provenance_link(self, link: dict[str, object], **_kwargs) -> dict[str, object]:
+            self.created_provenance_links.append(dict(link))
+            return dict(link)
+
+    store = ChunkedProvenanceStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory_id, _confirmation_id = _seed_pending_inline_confirmation(store)
+    source_id = str(uuid4())
+    chunk_id = str(uuid4())
+    store.sources.append({"id": source_id, "content_hash": "sha256:review-source"})
+    store.chunks.append({"id": chunk_id, "source_id": source_id})
+
+    result = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_correct",
+        arguments={
+            "review_item_id": memory_id,
+            "action": "edit-and-approve",
+            "provenance": {
+                "source_id": source_id,
+                "source_chunk_id": chunk_id,
+                "evidence_role": "quoted_from",
+                "confidence": 0.88,
+                "quote": "Reviewed source quote.",
+            },
+        },
+    )
+
+    assert result["memory"]["status"] == "active"
+    assert store.created_provenance_links == [
+        {
+            "target_type": "memory",
+            "target_id": memory_id,
+            "source_id": source_id,
+            "source_chunk_id": chunk_id,
+            "quote": "Reviewed source quote.",
+            "evidence_role": "quoted_from",
+            "confidence": 0.88,
+        }
+    ]
+
+
+def test_review_supersession_locks_graph_before_target_row(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    class OrderedLockStore(FakeVNextMCPStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lock_order: list[str] = []
+
+        def lock_graph_mutation(self) -> None:
+            self.lock_order.append("graph")
+
+        def get_memory_for_update(self, memory_id: str) -> dict[str, object] | None:
+            self.lock_order.append(f"row:{memory_id}")
+            return self.get_memory(memory_id)
+
+    store = OrderedLockStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory_id, _confirmation_id = _seed_pending_inline_confirmation(store)
+
+    call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_correct",
+        arguments={
+            "review_item_id": memory_id,
+            "action": "supersede-existing",
+            "replacement_title": "Fresh fact",
+            "replacement_body": {"text": "The corrected replacement value."},
+            "reason": "Reviewer replaced the pending fact.",
+        },
+    )
+
+    assert store.lock_order == ["graph", f"row:{memory_id}"]
+
+
+@pytest.mark.parametrize(
+    "action_arguments",
+    [
+        {"action": "approve"},
+        {"action": "edit-and-approve", "body": {"text": "Reviewed edit."}},
+        {"action": "reject"},
+    ],
+)
+def test_every_non_superseding_review_action_locks_graph_before_target_row(
+    monkeypatch,
+    core_surface,
+    no_embedding_provider,
+    action_arguments: dict[str, object],
+) -> None:
+    class OrderedLockStore(FakeVNextMCPStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lock_order: list[str] = []
+
+        def lock_graph_mutation(self) -> None:
+            self.lock_order.append("graph")
+
+        def get_memory_for_update(self, memory_id: str) -> dict[str, object] | None:
+            self.lock_order.append(f"row:{memory_id}")
+            return self.get_memory(memory_id)
+
+    store = OrderedLockStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory_id, _confirmation_id = _seed_pending_inline_confirmation(store)
+
+    call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_correct",
+        arguments={"review_item_id": memory_id, **action_arguments},
+    )
+
+    assert store.lock_order == ["graph", f"row:{memory_id}"]
+
+
 def test_review_rejection_then_confirm_cannot_reactivate_the_memory(
     monkeypatch, core_surface, no_embedding_provider
 ) -> None:
@@ -2282,7 +3387,7 @@ def test_alice_memory_manage_rejects_unknown_actions(monkeypatch, core_surface) 
 
     monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fail_if_store_opened)
 
-    with pytest.raises(MCPToolError, match="action must be one of: confirm, undo, forget"):
+    with pytest.raises(MCPToolError, match="action must be one of"):
         call_mcp_tool(_mcp_context(), name="alice_memory_manage", arguments={"action": "erase"})
     with pytest.raises(MCPToolError, match="action must be one of"):
         call_mcp_tool(_mcp_context(), name="alice_memory_manage", arguments={})
@@ -2740,4 +3845,8 @@ def test_alice_memory_correct_invalid_action_error_matches_schema_enum(core_surf
             arguments={"action": "not-an-action"},
         )
 
-    assert str(excinfo.value) == f"action must be one of: {', '.join(schema_enum)}"
+    expected = ", ".join(json.dumps(item) for item in schema_enum)
+    assert str(excinfo.value) == (
+        "tool 'alice_memory_correct' has invalid value at arguments.action: "
+        f"action must be one of: {expected}"
+    )

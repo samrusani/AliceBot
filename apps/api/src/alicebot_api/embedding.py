@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from typing import cast
 from uuid import UUID
 
 import psycopg
@@ -15,6 +16,7 @@ from alicebot_api.contracts import (
     EmbeddingConfigListResponse,
     EmbeddingConfigListSummary,
     EmbeddingConfigRecord,
+    EmbeddingConfigStatus,
     MemoryEmbeddingDetailResponse,
     MemoryEmbeddingListResponse,
     MemoryEmbeddingListSummary,
@@ -77,7 +79,7 @@ def _serialize_embedding_config(config: EmbeddingConfigRow) -> EmbeddingConfigRe
         "model": config["model"],
         "version": config["version"],
         "dimensions": config["dimensions"],
-        "status": config["status"],
+        "status": cast(EmbeddingConfigStatus, config["status"]),
         "metadata": config["metadata"],
         "created_at": config["created_at"].isoformat(),
     }

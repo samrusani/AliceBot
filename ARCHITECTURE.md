@@ -1,8 +1,8 @@
 # Architecture
 
 ## Scope Boundary
-- **Shipped baseline:** `v0.9.4` is the latest published pre-1.0 release. Over the `v0.9.2` baseline (project-bound authorization, lifecycle consistency, backup/restore, installed-database upgrades, retrieval contracts, web dependencies, packaging, and release evidence, plus the round-2..6 retrieval and memory features already in the changelog), it carries the original five v0.9.3 fixes and resolves all nine P1 findings from the second (external) audit. It is tagged and published on PyPI and GitHub as an immutable release, with Trusted Publishing attestations and artifact digests recorded in `docs/release/v0.9.4-checksums.txt`. `v0.9.2` remains published but is no longer the latest published release.
-- **Current execution posture:** `v0.10.0` is the current development-cycle candidate: the reopened next cycle over the published `v0.9.4` baseline. It resumes feature work (multi-session synthesis, daily dogfooding, and reference integrations) and clears the second audit's P2 backlog (full-package mypy plus web typecheck, packaged-README PyPI links, backup/restore hardening, removing the N+1 retrieval fan-out, non-finite embedding validation, and related items). The original five v0.9.3 P1 fixes and all nine second-audit P1 findings already shipped in the published `v0.9.4`; `v0.9.3` was an internal security-hotfix candidate that was withdrawn and never published. No `v0.10.0` work has shipped yet.
+- **Shipped baseline:** `v0.9.4` is the latest published pre-1.0 release. It is tagged and immutable, with Trusted Publishing attestations and artifact digests in `docs/release/v0.9.4-checksums.txt`. It attempted the second-audit remediation, but a third independent audit found partial fixes and regressions; the published tag is a baseline, not proof that those findings are closed.
+- **Current execution posture:** `v0.10.0` is the active audit-remediation candidate. Correctness, exact-SHA semantic release evidence, typing, web quality, backup, packaging, and documentation gates take priority over new features. No v0.10.0 work has shipped.
 
 ## Current System Overview
 Alice is the continuity layer for AI agents: a modular continuity platform with shared continuity semantics across local, hosted, provider-runtime, CLI, MCP, Hermes-integrated, and imported-workflow surfaces.
@@ -163,6 +163,6 @@ Alice is the continuity layer for AI agents: a modular continuity platform with 
 
 ## Current Architectural Posture
 - `v0.9.4` is the active published release boundary and the latest published release, superseding `v0.9.2` in that role; `v0.9.2` remains published but is no longer the latest.
-- `v0.10.0` is the current development-cycle candidate, reopened over the published `v0.9.4` baseline to resume feature work and clear the second audit's P2 backlog; `v0.9.3` remains a withdrawn, never-published candidate. Release requires the canonical gates to pass against one exact clean source SHA and its installed artifacts.
+- `v0.10.0` is the current third-audit remediation candidate over the published `v0.9.4` baseline; unrelated feature work remains paused and `v0.9.3` remains a withdrawn, never-published candidate. Release requires the repaired tree, independent re-review, canonical gates, and protected semantic evidence to pass against one exact clean source SHA and its installed artifacts.
 - Alice is now a broader continuity platform with provider/runtime portability, model packs, runnable external-builder integrations, pilot launch/admin support, and safe local logging defaults.
 - The continuity substrate remains the same system of record; the delivered work packages that substrate into practical adoption paths without changing the core continuity semantics.

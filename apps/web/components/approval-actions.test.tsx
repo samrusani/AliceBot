@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApprovalActions } from "./approval-actions";
+import type { ApprovalItem } from "../lib/api";
 
 const { refreshMock, resolveApprovalMock, executeApprovalMock } = vi.hoisted(() => ({
   refreshMock: vi.fn(),
@@ -25,9 +26,10 @@ vi.mock("../lib/api", async () => {
   };
 });
 
-const pendingApproval = {
+const pendingApproval: ApprovalItem = {
   id: "approval-1",
   thread_id: "thread-1",
+  task_run_id: null,
   task_step_id: "step-1",
   status: "pending",
   request: {
@@ -73,7 +75,7 @@ function ApprovalActionsHarness({
   initialApproval = pendingApproval,
   initialHasExecution = false,
 }: {
-  initialApproval?: typeof pendingApproval;
+  initialApproval?: ApprovalItem;
   initialHasExecution?: boolean;
 }) {
   const [approval, setApproval] = React.useState(initialApproval);

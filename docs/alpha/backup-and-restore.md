@@ -14,9 +14,10 @@ source through SQLite, and it does not change source schema, logical content,
 file bytes (including the volatile `-shm` file), or permissions. Ordinary
 filesystem reads may still update access-time metadata. A source that stays
 busy through the bounded snapshot retries fails clearly so you can quiesce
-writers and retry. An unknown
-`--user-id`, unsupported newer schema, or corrupt source fails before any
-JSONL is published.
+writers and retry. An unknown `--user-id`, corrupt source, unknown column, or
+unknown application table fails before any JSONL is published. This prevents
+an older Alice exporter from silently dropping user-owned state introduced by
+a newer schema.
 
 The versioned JSONL is written through a `0600` sibling temporary file,
 `fsync`, and atomic replacement:
@@ -41,7 +42,13 @@ A v2 backup contains a schema version and fingerprint, per-record counts, and
 a SHA-256 footer over the canonical portable data records. That digest is
 stable across export, fresh import, and re-export when the records are
 unchanged; volatile manifest fields such as `exported_at` are not part of the
-digest. Import validates the complete envelope before staging a restore.
+digest. Import first copies the selected file from one stable source handle
+into an owner-only private snapshot. It validates and decodes that immutable
+snapshot once, then reuses the parsed, FK-ordered records during restore.
+Validated records are streamed through an owner-only disk spool, so restore
+memory stays bounded instead of retaining the complete decoded graph in RAM.
+Replacing the original path after import starts cannot substitute different
+bytes between validation and insertion.
 Restore into a new path first:
 
 ```bash

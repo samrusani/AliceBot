@@ -1,6 +1,41 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+import re
+
 import scripts.check_github_release_checks as release_checks
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _workflow_job_display_names(path: Path) -> set[str]:
+    """Parse job-level YAML names and expand the inline matrix used by CI."""
+    workflow = path.read_text(encoding="utf-8")
+    raw_names = re.findall(r"^    name:\s*(.+?)\s*$", workflow, flags=re.MULTILINE)
+    names: set[str] = set()
+    for raw_name in raw_names:
+        matrix_keys = re.findall(r"\$\{\{\s*matrix\.([\w-]+)\s*\}\}", raw_name)
+        if not matrix_keys:
+            names.add(raw_name)
+            continue
+        expanded = {raw_name}
+        for matrix_key in matrix_keys:
+            values_match = re.search(
+                rf"^        {re.escape(matrix_key)}:\s*(\[.*\])\s*$",
+                workflow,
+                flags=re.MULTILINE,
+            )
+            assert values_match is not None, matrix_key
+            values = json.loads(values_match.group(1))
+            expanded = {
+                name.replace(f"${{{{ matrix.{matrix_key} }}}}", str(value))
+                for name in expanded
+                for value in values
+            }
+        names.update(expanded)
+    return names
 
 
 def test_exact_sha_check_gate_requires_every_success() -> None:
@@ -44,3 +79,19 @@ def test_exact_sha_check_gate_uses_latest_rerun_only() -> None:
 
     issues = release_checks.validate_check_runs(failed_latest)
     assert any(required in issue and "latest" in issue for issue in issues)
+
+
+def test_required_checks_match_actual_workflow_job_display_names() -> None:
+    tests_jobs = _workflow_job_display_names(REPO_ROOT / ".github/workflows/tests.yml")
+    semantic_jobs = _workflow_job_display_names(
+        REPO_ROOT / ".github/workflows/semantic-release-gate.yml"
+    )
+    externally_managed_jobs = {
+        "Secrets Scan (Gitleaks)",
+        "CodeQL (python)",
+        "CodeQL (javascript)",
+    }
+
+    assert set(release_checks.REQUIRED_CHECKS) == (
+        tests_jobs | semantic_jobs | externally_managed_jobs
+    )

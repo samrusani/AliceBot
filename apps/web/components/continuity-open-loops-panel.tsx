@@ -44,11 +44,15 @@ export function ContinuityOpenLoopsPanel({
   unavailableReason,
 }: ContinuityOpenLoopsPanelProps) {
   const router = useRouter();
+  // Existing-object mutations are authorized only for IDs returned by a
+  // successful live dashboard read. Fixture fallback IDs are display-only.
   const liveModeReady = Boolean(apiBaseUrl && userId && source === "live");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [statusTone, setStatusTone] = useState<"info" | "success" | "danger">("info");
   const [statusText, setStatusText] = useState(
-    "Review one open-loop item and apply done/deferred/still_blocked actions.",
+    liveModeReady
+      ? "Review one open-loop item and apply done/deferred/still_blocked actions."
+      : "Displayed fallback open loops are read-only until a live dashboard read succeeds.",
   );
 
   async function handleAction(

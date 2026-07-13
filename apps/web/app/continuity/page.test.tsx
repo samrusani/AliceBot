@@ -44,7 +44,7 @@ vi.mock("next/link", () => ({
     href: string;
     children: React.ReactNode;
     className?: string;
-    "aria-current"?: string;
+    "aria-current"?: React.AriaAttributes["aria-current"];
   }) => (
     <a href={href} className={className} aria-current={ariaCurrent}>
       {children}
@@ -631,5 +631,180 @@ describe("ContinuityPage", () => {
       limit: 5,
     });
     expect(getThreadHealthDashboardMock).toHaveBeenCalledWith("https://api.example.com", "user-1");
+  });
+
+  it("renders configured-live fallback objects as non-actionable after read outages", async () => {
+    getApiConfigMock.mockReturnValue({
+      apiBaseUrl: "http://127.0.0.1:9",
+      userId: "user-1",
+      defaultThreadId: "thread-1",
+      defaultToolId: "tool-1",
+    });
+    hasLiveApiConfigMock.mockReturnValue(true);
+    for (const read of [
+      listContinuityCapturesMock,
+      queryContinuityRecallMock,
+      getContinuityResumptionBriefMock,
+      getContinuityOpenLoopDashboardMock,
+      getContinuityDailyBriefMock,
+      getContinuityWeeklyReviewMock,
+      getThreadHealthDashboardMock,
+      listContinuityReviewQueueMock,
+    ]) {
+      read.mockRejectedValue(new Error("configured live read unavailable"));
+    }
+
+    render(await ContinuityPage({ searchParams: Promise.resolve({}) }));
+
+    expect(screen.getByText("Open-loop dashboard unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Review queue unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Correction unavailable")).toBeInTheDocument();
+    for (const button of screen.getAllByRole("button", { name: "Done" })) {
+      expect(button).toBeDisabled();
+    }
+    expect(screen.getByRole("button", { name: "Apply correction" })).toBeDisabled();
+    expect(screen.getAllByText(/fallback open loops are read-only/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/fallback review objects are read-only/i).length).toBeGreaterThan(0);
+  });
+
+  it("keeps a live queue target actionable when only its detail read fails", async () => {
+    getApiConfigMock.mockReturnValue({
+      apiBaseUrl: "https://api.example.com",
+      userId: "user-1",
+      defaultThreadId: "thread-1",
+      defaultToolId: "tool-1",
+    });
+    hasLiveApiConfigMock.mockReturnValue(true);
+    for (const read of [
+      listContinuityCapturesMock,
+      queryContinuityRecallMock,
+      getContinuityResumptionBriefMock,
+      getContinuityOpenLoopDashboardMock,
+      getContinuityDailyBriefMock,
+      getContinuityWeeklyReviewMock,
+      getThreadHealthDashboardMock,
+    ]) {
+      read.mockRejectedValue(new Error("unrelated live read unavailable"));
+    }
+    listContinuityReviewQueueMock.mockResolvedValue({
+      items: [
+        {
+          id: "object-live-detail-outage",
+          capture_event_id: "capture-live-detail-outage",
+          object_type: "Decision",
+          status: "active",
+          title: "Decision: Live queue target remains correction-ready",
+          body: { decision_text: "Live queue target remains correction-ready" },
+          provenance: { capture_event_id: "capture-live-detail-outage" },
+          confidence: 0.9,
+          last_confirmed_at: null,
+          supersedes_object_id: null,
+          superseded_by_object_id: null,
+          created_at: "2026-07-13T10:00:00Z",
+          updated_at: "2026-07-13T10:00:00Z",
+        },
+      ],
+      summary: {
+        status: "correction_ready",
+        limit: 20,
+        returned_count: 1,
+        total_count: 1,
+        order: ["updated_at_desc", "created_at_desc", "id_desc"],
+      },
+    });
+    getContinuityReviewDetailMock.mockRejectedValue(new Error("detail history unavailable"));
+
+    render(await ContinuityPage({ searchParams: Promise.resolve({}) }));
+
+    expect(screen.getByText("Live review queue")).toBeInTheDocument();
+    expect(screen.getByText("Live target · detail unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/detail history unavailable/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apply correction" })).toBeEnabled();
+  });
+
+  it("starts review detail as soon as the review queue resolves", async () => {
+    getApiConfigMock.mockReturnValue({
+      apiBaseUrl: "https://api.example.com",
+      userId: "user-1",
+      defaultThreadId: "thread-1",
+      defaultToolId: "tool-1",
+    });
+    hasLiveApiConfigMock.mockReturnValue(true);
+
+    let releaseCaptures = () => {};
+    listContinuityCapturesMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseCaptures = () =>
+            resolve({
+              items: [],
+              summary: {
+                limit: 20,
+                returned_count: 0,
+                total_count: 0,
+                derived_count: 0,
+                triage_count: 0,
+                order: ["created_at_desc", "id_desc"],
+              },
+            });
+        }),
+    );
+    for (const read of [
+      queryContinuityRecallMock,
+      getContinuityResumptionBriefMock,
+      getContinuityOpenLoopDashboardMock,
+      getContinuityDailyBriefMock,
+      getContinuityWeeklyReviewMock,
+      getThreadHealthDashboardMock,
+    ]) {
+      read.mockRejectedValue(new Error("unrelated read unavailable"));
+    }
+
+    const reviewObject = {
+      id: "object-live-review",
+      capture_event_id: "capture-live-review",
+      object_type: "Decision" as const,
+      status: "active",
+      title: "Decision: Start detail without unrelated panels",
+      body: { decision_text: "Start detail without unrelated panels" },
+      provenance: { capture_event_id: "capture-live-review" },
+      confidence: 0.9,
+      last_confirmed_at: null,
+      supersedes_object_id: null,
+      superseded_by_object_id: null,
+      created_at: "2026-07-13T10:00:00Z",
+      updated_at: "2026-07-13T10:00:00Z",
+    };
+    listContinuityReviewQueueMock.mockResolvedValue({
+      items: [reviewObject],
+      summary: {
+        status: "correction_ready",
+        limit: 20,
+        returned_count: 1,
+        total_count: 1,
+        order: ["updated_at_desc", "created_at_desc", "id_desc"],
+      },
+    });
+    getContinuityReviewDetailMock.mockResolvedValue({
+      review: {
+        continuity_object: reviewObject,
+        correction_events: [],
+        supersession_chain: { supersedes: null, superseded_by: null },
+      },
+    });
+
+    const pagePromise = ContinuityPage({ searchParams: Promise.resolve({}) });
+
+    await vi.waitFor(() => {
+      expect(getContinuityReviewDetailMock).toHaveBeenCalledWith(
+        "https://api.example.com",
+        "object-live-review",
+        "user-1",
+      );
+    });
+    // The page is still blocked on captures here; detail already started from
+    // its parent queue promise rather than waiting behind that unrelated read.
+    releaseCaptures();
+    await pagePromise;
   });
 });

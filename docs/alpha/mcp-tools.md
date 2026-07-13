@@ -84,7 +84,10 @@ For the full Postgres stack from a checkout:
   merged with reciprocal-rank fusion. Falls back to full-text only (and
   says so) when no embedding endpoint is configured. Accepts optional
   `memory_types` (typed filter, e.g. only `decision` or `procedure`
-  memories) and `projects` (project-scope filter) arrays, plus
+  memories), `projects`/`project`, `people`/`person`, `thread_id`, `task_id`,
+  and absolute `since`/`until` bounds. These are hard predicates applied by
+  every ranked memory stage before its result limit; the singular forms are
+  compatibility aliases for the distributed Hermes contract. Also accepts
   `context_depth` (`minimal` runs full-text only and caps results at 4;
   `low` is the default hybrid behavior) and `budget_strategy`
   (`facts_first` / `recent_first` reorder results; `balanced` is the
