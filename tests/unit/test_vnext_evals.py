@@ -334,6 +334,65 @@ def test_run_vnext_evals_release_gate_downgrades_fts_only_aggregate() -> None:
     assert gated["status"] == "fail"
 
 
+def test_release_gate_uses_suite_targets_while_preserving_case_misses() -> None:
+    corpus = generate_vnext_benchmark_corpus()
+    query_contract = {
+        str(query["query"]): (
+            str(query["query_key"]),
+            str(query["expected_memory_key"]),
+        )
+        for query in corpus["queries"]
+    }
+
+    def run_with_misses(missed_case_keys: set[str]) -> dict[str, object]:
+        def retrieve(query: str, *, limit: int) -> dict[str, object]:
+            del limit
+            case_key, expected_key = query_contract[query]
+            return {
+                "ranked_memory_keys": (
+                    ["vnext-eval/retrieval/distractor-001"]
+                    if case_key in missed_case_keys
+                    else [expected_key]
+                ),
+                "vector_stage": "enabled",
+                "vector_candidate_count": 20,
+            }
+
+        return run_vnext_evals(
+            suite="retrieval_quality",
+            retrieval_fn=retrieve,
+            release_gate=True,
+        )
+
+    passing = run_with_misses(
+        {"paraphrase-004", "paraphrase-011", "paraphrase-016"}
+    )
+    failing = run_with_misses(
+        {
+            "paraphrase-004",
+            "paraphrase-007",
+            "paraphrase-011",
+            "paraphrase-015",
+            "paraphrase-016",
+        }
+    )
+
+    passing_suite = passing["suites"][0]
+    assert passing_suite["status"] == "pass"
+    assert passing_suite["metrics"]["subsets"][SUBSET_PARAPHRASE]["recall_at_5"] == 13 / 16
+    assert passing_suite["metrics"]["target_checks"]["paraphrase_recall_at_5"] == "pass"
+    assert passing["status"] == "pass"
+    assert passing["summary"]["passed_case_count"] == 45
+    assert passing["summary"]["failed_case_count"] == 3
+    assert passing["summary"]["pass_rate"] == 45 / 48
+
+    failing_suite = failing["suites"][0]
+    assert failing_suite["metrics"]["subsets"][SUBSET_PARAPHRASE]["recall_at_5"] == 11 / 16
+    assert failing_suite["metrics"]["target_checks"]["paraphrase_recall_at_5"] == "fail"
+    assert failing_suite["status"] == "fail"
+    assert failing["status"] == "fail"
+
+
 def test_release_gate_requires_nonzero_vector_candidates() -> None:
     corpus = {
         "queries": [

@@ -6,6 +6,10 @@
   `money` no longer creates an implicit hard `personal`-domain filter, restoring
   signed-vector participation while explicit caller-supplied domains remain
   strict.
+- Fixed semantic release aggregation and attestation to apply each suite's
+  declared targets instead of requiring perfect per-case recall; diagnostic
+  misses remain counted, while skips, missing vector participation, and failed
+  target checks still fail closed.
 
 ## v0.10.0 — 2026-07-13
 

@@ -118,7 +118,7 @@ release-artifacts:
 #
 # The release eval runs with --release-gate: a run that never exercises the
 # vector suite reports pass_fts_only, the aggregate fails because semantic
-# cases did not pass, and the CLI exits non-zero (fail closed), so the
+# targets were not measured, and the CLI exits non-zero (fail closed), so the
 # gate cannot go green without measuring semantic/paraphrase retrieval quality.
 # Point ALICEBOT_EVAL_DATABASE_URL at a pgvector database and set the
 # ALICE_EMBEDDINGS_* provider variables so the vector stage actually runs; the

@@ -2916,9 +2916,11 @@ def run_vnext_evals(
     ``release_gate`` marks a canonical/release-designated run. In that mode the
     retrieval-quality suite refuses to report an unqualified ``"pass"`` when the
     vector/paraphrase gate never ran (it reports ``"pass_fts_only"``). The
-    aggregate fails unless every requested suite executes with nonempty,
-    passing cases and passing target checks, so the release gate can never be
-    green without measuring semantic retrieval quality.
+    aggregate fails unless every requested suite executes with nonempty cases
+    and passing target checks, so the release gate can never be green without
+    measuring semantic retrieval quality. Individual case misses remain in the
+    report as diagnostics; the suite's declared aggregate targets determine
+    its verdict.
     """
     corpus = load_vnext_benchmark_corpus(corpus_path)
     if corpus.get("schema_version") != VNEXT_EVAL_CORPUS_SCHEMA_VERSION:
@@ -2941,13 +2943,9 @@ def run_vnext_evals(
     executed_suites = [suite_report for suite_report in suites if suite_report["status"] != "skipped"]
     skipped_suites = [suite_report for suite_report in suites if suite_report["status"] == "skipped"]
     executed_statuses = [suite_report["status"] for suite_report in executed_suites]
-    release_cases_pass = all(
+    release_cases_present = all(
         isinstance(suite_report.get("cases"), list)
         and bool(cast(list[object], suite_report["cases"]))
-        and all(
-            isinstance(case, dict) and case.get("status") == "pass"
-            for case in cast(list[object], suite_report["cases"])
-        )
         for suite_report in executed_suites
     )
     release_target_checks_pass = all(
@@ -2963,14 +2961,18 @@ def run_vnext_evals(
         )
         for suite_report in executed_suites
     )
+    release_suites_pass = all(
+        suite_report.get("status") == "pass" for suite_report in executed_suites
+    )
     if (
         corpus_validation["status"] != "pass"
         or (
             release_gate
             and (
                 bool(skipped_suites)
-                or not release_cases_pass
+                or not release_cases_present
                 or not release_target_checks_pass
+                or not release_suites_pass
             )
         )
     ):

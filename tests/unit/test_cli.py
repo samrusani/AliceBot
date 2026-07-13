@@ -881,6 +881,29 @@ def test_eval_run_cli_release_gate_partial_skip_exits_nonzero(monkeypatch, capsy
     assert payload["report"]["summary"]["skipped_suite_count"] == 1
 
 
+def test_eval_run_cli_release_gate_accepts_threshold_pass_with_case_misses(
+    monkeypatch, capsys
+) -> None:
+    report = _stub_eval_report("pass")
+    report["summary"] = {
+        "status": "pass",
+        "suite_count": 6,
+        "executed_suite_count": 6,
+        "skipped_suite_count": 0,
+        "case_count": 78,
+        "passed_case_count": 75,
+        "failed_case_count": 3,
+        "pass_rate": 75 / 78,
+    }
+    monkeypatch.setattr(cli_module, "run_vnext_evals", lambda **kwargs: report)
+
+    exit_code = cli_module.main(["eval", "run", "--suite", "all", "--release-gate"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["report"]["summary"]["failed_case_count"] == 3
+
+
 def test_eval_run_cli_exits_zero_on_pass(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli_module, "run_vnext_evals", lambda **kwargs: _stub_eval_report("pass"))
 
