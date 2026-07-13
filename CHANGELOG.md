@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v0.10.1 — 2026-07-13
+
+Supersedes the tagged-but-unpublished `v0.10.0` candidate, whose protected
+semantic release gate failed on a query-interpretation defect. All `v0.10.0`
+remediation is carried forward; this release closes the gate failure.
+
 - Fixed semantic retrieval for business budget queries: the ambiguous word
   `money` no longer creates an implicit hard `personal`-domain filter, restoring
   signed-vector participation while explicit caller-supplied domains remain

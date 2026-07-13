@@ -26,17 +26,17 @@
   A follow-up external audit returned NO-GO with nine additional P1 findings,
   so `v0.9.3` was withdrawn and never published. Nothing for `v0.9.3` ever
   reached PyPI or GitHub.
-- `v0.10.0` is the active audit-remediation development candidate over the
+- `v0.10.1` is the active audit-remediation development candidate over the
   immutable v0.9.4 tag. Correctness and release-evidence repair take priority
-  over feature work. No `v0.10.0` work is published yet.
+  over feature work. No `v0.10.1` work is published yet.
 - Alice is a local-first continuity layer for AI agents. Agent developers
   are the primary customer.
 
-## What `v0.10.0` Targets
+## What `v0.10.1` Targets
 
-`v0.10.0` is the reopened development-cycle candidate over the published
+`v0.10.1` is the reopened development-cycle candidate over the published
 `v0.9.4` baseline. It is a third-audit remediation cycle; unrelated feature
-work remains paused. No `v0.10.0` work has shipped yet. Release requires every
+work remains paused. No `v0.10.1` work has shipped yet. Release requires every
 reviewer repair, the canonical local gates, independent re-review, and the
 protected semantic gate to pass against one exact clean SHA.
 
@@ -90,7 +90,7 @@ passed unit, LongMemEval, packaging, and artifact checks, but it did not run a
 successful configured semantic-vector release eval. A later audit also found
 that the bundled eval seeded vectors without the production signature. The
 repository therefore does not claim that v0.9.4 cleared the current canonical
-release boundary. `v0.10.0` is releasable only after every gate passes on one
+release boundary. `v0.10.1` is releasable only after every gate passes on one
 exact clean SHA, the semantic report proves nonzero signed-vector candidates,
 and an independent reviewer reports no release blocker.
 
