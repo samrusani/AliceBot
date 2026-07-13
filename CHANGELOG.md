@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## v0.10.1 — 2026-07-13
+
+Supersedes the tagged-but-unpublished `v0.10.0` candidate, whose protected
+semantic release gate failed on a query-interpretation defect. All `v0.10.0`
+remediation is carried forward; this release closes the gate failure.
+
+- Fixed semantic retrieval for business budget queries: the ambiguous word
+  `money` no longer creates an implicit hard `personal`-domain filter, restoring
+  signed-vector participation while explicit caller-supplied domains remain
+  strict.
+- Fixed semantic release aggregation and attestation to apply each suite's
+  declared targets instead of requiring perfect per-case recall; diagnostic
+  misses remain counted, while skips, missing vector participation, and failed
+  target checks still fail closed.
+
 ## v0.10.0 — 2026-07-13
 
 Security, reliability, and quality release. Remediates every finding from the

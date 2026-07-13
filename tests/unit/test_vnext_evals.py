@@ -45,7 +45,11 @@ from alicebot_api.vnext_evals import (
     write_vnext_benchmark_corpus,
     write_vnext_eval_report,
 )
-from alicebot_api.vnext_retrieval import reciprocal_rank_fusion
+from alicebot_api.vnext_retrieval import (
+    VNextRetrievalRequest,
+    classify_query,
+    reciprocal_rank_fusion,
+)
 
 MEMORY_QUALITY_SUITE_KEYS = (
     CORRECTION_SUPPRESSION_SUITE_KEY,
@@ -135,6 +139,21 @@ def test_benchmark_corpus_is_deterministic_and_meets_size_floor() -> None:
     query_count = len(corpus["queries"])
     paraphrase_count = sum(1 for query in corpus["queries"] if query["subset"] == SUBSET_PARAPHRASE)
     assert 0.20 <= paraphrase_count / query_count <= 0.40
+
+
+def test_benchmark_queries_do_not_infer_a_domain_that_excludes_their_target() -> None:
+    corpus = generate_vnext_benchmark_corpus()
+    memories = _memory_lookup(corpus)
+
+    for query in corpus["queries"]:
+        target = memories[str(query["expected_memory_key"])]
+        inferred_domains = classify_query(
+            VNextRetrievalRequest(query=str(query["query"]))
+        )["domains"]
+        assert not inferred_domains or str(target["domain"]) in inferred_domains, (
+            f"{query['query_key']} inferred {inferred_domains}, excluding "
+            f"its {target['domain']} target"
+        )
 
 
 def test_queries_are_phrased_differently_from_their_target_memories() -> None:
@@ -313,6 +332,65 @@ def test_run_vnext_evals_release_gate_downgrades_fts_only_aggregate() -> None:
     # fails because the unmeasured paraphrase cases are not passing evidence.
     assert dev["status"] == "pass"
     assert gated["status"] == "fail"
+
+
+def test_release_gate_uses_suite_targets_while_preserving_case_misses() -> None:
+    corpus = generate_vnext_benchmark_corpus()
+    query_contract = {
+        str(query["query"]): (
+            str(query["query_key"]),
+            str(query["expected_memory_key"]),
+        )
+        for query in corpus["queries"]
+    }
+
+    def run_with_misses(missed_case_keys: set[str]) -> dict[str, object]:
+        def retrieve(query: str, *, limit: int) -> dict[str, object]:
+            del limit
+            case_key, expected_key = query_contract[query]
+            return {
+                "ranked_memory_keys": (
+                    ["vnext-eval/retrieval/distractor-001"]
+                    if case_key in missed_case_keys
+                    else [expected_key]
+                ),
+                "vector_stage": "enabled",
+                "vector_candidate_count": 20,
+            }
+
+        return run_vnext_evals(
+            suite="retrieval_quality",
+            retrieval_fn=retrieve,
+            release_gate=True,
+        )
+
+    passing = run_with_misses(
+        {"paraphrase-004", "paraphrase-011", "paraphrase-016"}
+    )
+    failing = run_with_misses(
+        {
+            "paraphrase-004",
+            "paraphrase-007",
+            "paraphrase-011",
+            "paraphrase-015",
+            "paraphrase-016",
+        }
+    )
+
+    passing_suite = passing["suites"][0]
+    assert passing_suite["status"] == "pass"
+    assert passing_suite["metrics"]["subsets"][SUBSET_PARAPHRASE]["recall_at_5"] == 13 / 16
+    assert passing_suite["metrics"]["target_checks"]["paraphrase_recall_at_5"] == "pass"
+    assert passing["status"] == "pass"
+    assert passing["summary"]["passed_case_count"] == 45
+    assert passing["summary"]["failed_case_count"] == 3
+    assert passing["summary"]["pass_rate"] == 45 / 48
+
+    failing_suite = failing["suites"][0]
+    assert failing_suite["metrics"]["subsets"][SUBSET_PARAPHRASE]["recall_at_5"] == 11 / 16
+    assert failing_suite["metrics"]["target_checks"]["paraphrase_recall_at_5"] == "fail"
+    assert failing_suite["status"] == "fail"
+    assert failing["status"] == "fail"
 
 
 def test_release_gate_requires_nonzero_vector_candidates() -> None:

@@ -10,7 +10,7 @@
   persistence, and hard people/time filter pagination) and attempting all nine
   P1 remediations from the follow-up external audit that returned NO-GO on
   `v0.9.3`. A third audit found incomplete fixes and new regressions, now in the
-  v0.10.0 remediation gate. Tagged and published on PyPI and GitHub as an immutable release,
+  v0.10.1 remediation gate. Tagged and published on PyPI and GitHub as an immutable release,
   with Trusted Publishing attestations and digests recorded in
   `docs/release/v0.9.4-checksums.txt`.
 - `v0.9.2`: prior published release. A security and reliability patch —
@@ -33,18 +33,18 @@
 
 ## Release Candidate
 
-- `v0.10.0`: active audit-remediation candidate over the published, immutable
+- `v0.10.1`: active audit-remediation candidate over the published, immutable
   `v0.9.4` baseline. It must close the third audit's correctness, reliability,
   performance, typing, web, backup, packaging, and documentation findings
   before feature work resumes. The gate includes a configured semantic eval
   that proves nonzero production-signed vector participation, full first-party
   Python and web type checks, installed-artifact smokes, and independent
-  review. No `v0.10.0` work has shipped; it is not tagged or published until
+  review. No `v0.10.1` work has shipped; it is not tagged or published until
   every required check passes on one exact clean SHA.
 
 ## Next
 
-After the v0.10.0 audit-remediation gate is approved, continue in this order:
+After the v0.10.1 audit-remediation gate is approved, continue in this order:
 
 1. **Multi-session synthesis** — still the weakest published LongMemEval
    category at 58.6%. Aggregation-aware retrieval now ships; the next work is

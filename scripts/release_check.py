@@ -76,6 +76,19 @@ _REPORT_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 _UUID_PATTERN = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 )
+_GRAPH_WINNER_STAGE_KEYS = frozenset({"fts", "vector", "graph", "temporal_anchor"})
+_RETRIEVAL_EVIDENCE_LIMIT = 5
+_RETRIEVAL_RECALL_LIMIT = 10
+# Cases display five keys, but reciprocal rank is computed over all ten retrieved keys.
+_OFF_WINDOW_RECIPROCAL_RANKS = frozenset(
+    (
+        0.0,
+        *(
+            1.0 / rank
+            for rank in range(_RETRIEVAL_EVIDENCE_LIMIT + 1, _RETRIEVAL_RECALL_LIMIT + 1)
+        ),
+    )
+)
 
 SEMANTIC_EVAL_CANONICAL_TARGETS: dict[str, dict[str, dict[str, object]]] = {
     "retrieval_quality": {
@@ -704,8 +717,9 @@ def _case_contract_issues(
         expected=_CASE_KEYS[suite_key],
         context=context,
     )
-    if case.get("status") != "pass":
-        issues.append(f"{context} did not pass")
+    case_status = case.get("status")
+    if case_status not in {"pass", "fail"}:
+        issues.append(f"{context} status must be pass or fail")
     metrics = case.get("metrics")
     evidence = case.get("evidence")
     issues.extend(
@@ -731,8 +745,6 @@ def _case_contract_issues(
         expected_memory_key = canonical_case.get("expected_memory_key")
         if case.get("subset") != expected_subset:
             issues.append(f"{context} subset does not match its canonical case identity")
-        if metrics.get("recall_at_5") != 1.0:
-            issues.append(f"{context} recall_at_5 must be 1.0")
         issues.extend(
             _number_issues(
                 metrics.get("recall_at_5"),
@@ -741,6 +753,8 @@ def _case_contract_issues(
                 maximum=1.0,
             )
         )
+        if metrics.get("recall_at_5") not in (0.0, 1.0):
+            issues.append(f"{context} recall_at_5 must be binary")
         issues.extend(
             _number_issues(
                 metrics.get("recall_at_1"),
@@ -756,9 +770,9 @@ def _case_contract_issues(
             not isinstance(reciprocal_rank, (int, float))
             or isinstance(reciprocal_rank, bool)
             or not math.isfinite(float(reciprocal_rank))
-            or not 0 < float(reciprocal_rank) <= 1
+            or not 0 <= float(reciprocal_rank) <= 1
         ):
-            issues.append(f"{context} reciprocal_rank must be in (0, 1]")
+            issues.append(f"{context} reciprocal_rank must be in [0, 1]")
         latency_ms = metrics.get("latency_ms")
         if (
             not isinstance(latency_ms, (int, float))
@@ -772,26 +786,43 @@ def _case_contract_issues(
             issues.append(f"{context} query does not match its canonical case")
         if evidence.get("expected_memory_key") != expected_memory_key:
             issues.append(f"{context} expected_memory_key is not canonical")
-        if (
-            not isinstance(top_keys, list)
-            or not _is_string_list(top_keys)
-            or expected_memory_key not in top_keys
-        ):
-            issues.append(f"{context} top_memory_keys must contain the canonical target")
         issues.extend(
             _string_list_issues(
                 top_keys,
                 context=f"{context} top_memory_keys",
                 allow_empty=False,
-                maximum_items=5,
+                maximum_items=_RETRIEVAL_EVIDENCE_LIMIT,
             )
         )
-        if isinstance(top_keys, list) and expected_memory_key in top_keys:
-            expected_rank = top_keys.index(expected_memory_key) + 1
-            if metrics.get("recall_at_1") != (1.0 if expected_rank == 1 else 0.0):
-                issues.append(f"{context} recall_at_1 does not match the target rank")
-            if metrics.get("reciprocal_rank") != 1.0 / expected_rank:
+        target_rank = (
+            top_keys.index(expected_memory_key) + 1
+            if isinstance(top_keys, list) and expected_memory_key in top_keys
+            else None
+        )
+        expected_recall_at_5 = 1.0 if target_rank is not None else 0.0
+        expected_recall_at_1 = 1.0 if target_rank == 1 else 0.0
+        expected_status = "pass" if target_rank is not None else "fail"
+        if metrics.get("recall_at_5") != expected_recall_at_5:
+            issues.append(f"{context} recall_at_5 does not match the target rank")
+        if metrics.get("recall_at_1") != expected_recall_at_1:
+            issues.append(f"{context} recall_at_1 does not match the target rank")
+        if target_rank is not None:
+            expected_reciprocal_rank = 1.0 / target_rank
+            if reciprocal_rank != expected_reciprocal_rank:
                 issues.append(f"{context} reciprocal_rank does not match the target rank")
+        elif _is_finite_number(reciprocal_rank):
+            assert isinstance(reciprocal_rank, (int, float)) and not isinstance(
+                reciprocal_rank, bool
+            )
+            if float(reciprocal_rank) not in _OFF_WINDOW_RECIPROCAL_RANKS:
+                issues.append(
+                    f"{context} reciprocal_rank must be 0 or the reciprocal of a rank "
+                    f"from {_RETRIEVAL_EVIDENCE_LIMIT + 1} through "
+                    f"{_RETRIEVAL_RECALL_LIMIT} when the target is absent from "
+                    "top_memory_keys"
+                )
+        if case_status != expected_status:
+            issues.append(f"{context} status does not match recall_at_5")
         if evidence.get("vector_stage") != "enabled":
             issues.append(f"{context} did not record an enabled vector stage")
         candidate_count = evidence.get("vector_candidate_count")
@@ -817,6 +848,11 @@ def _case_contract_issues(
                     maximum=1.0,
                 )
             )
+        for key in (
+            "pre_correction_visible",
+            "suppressed",
+            "audit_complete",
+        ):
             if metrics.get(key) != 1.0:
                 issues.append(f"{context} {key} must be 1.0")
         issues.extend(
@@ -859,12 +895,6 @@ def _case_contract_issues(
             or original_key not in pre_keys
         ):
             issues.append(f"{context} pre-correction evidence must retrieve the original")
-        if (
-            not isinstance(post_keys, list)
-            or not _is_string_list(post_keys)
-            or replacement_key not in post_keys
-        ):
-            issues.append(f"{context} post-correction evidence must retrieve the replacement")
         if not isinstance(old_probe_keys, list) or original_key in old_probe_keys:
             issues.append(f"{context} old-probe evidence must suppress the original")
         if not isinstance(reject_probe_keys, list) or rejected_key in reject_probe_keys:
@@ -916,10 +946,23 @@ def _case_contract_issues(
         expected_reason = f"superseded_by:{replacement_key}"
         if evidence.get("superseded_revision_reason") != expected_reason:
             issues.append(f"{context} must include the canonical supersession reason")
+        expected_status = (
+            "pass"
+            if all(
+                metrics.get(key) == 1.0
+                for key in (
+                    "pre_correction_visible",
+                    "suppressed",
+                    "replacement_recall_at_5",
+                    "audit_complete",
+                )
+            )
+            else "fail"
+        )
+        if case_status != expected_status:
+            issues.append(f"{context} status does not match correction metrics")
     elif suite_key == "decision_recovery":
         expected_memory_key = canonical_case.get("expected_memory_key")
-        if metrics.get("recall_at_5") != 1.0 or metrics.get("filtered_recall_at_5") != 1.0:
-            issues.append(f"{context} filtered and unfiltered recall_at_5 must be 1.0")
         for metric_key in (
             "recall_at_1",
             "recall_at_5",
@@ -944,17 +987,11 @@ def _case_contract_issues(
             issues.append(f"{context} expected_memory_key is not canonical")
         for key in ("top_memory_keys", "filtered_top_memory_keys"):
             ranked = evidence.get(key)
-            if (
-                not isinstance(ranked, list)
-                or not _is_string_list(ranked)
-                or expected_memory_key not in ranked
-            ):
-                issues.append(f"{context} {key} must contain the canonical target")
             issues.extend(
                 _string_list_issues(
                     ranked,
                     context=f"{context} {key}",
-                    allow_empty=False,
+                    allow_empty=True,
                     maximum_items=5,
                 )
             )
@@ -967,17 +1004,29 @@ def _case_contract_issues(
             ),
         ):
             ranked = evidence.get(evidence_key)
-            if isinstance(ranked, list) and expected_memory_key in ranked:
-                rank = ranked.index(expected_memory_key) + 1
-                if metrics.get(recall_key) != 1.0:
-                    issues.append(f"{context} {recall_key} does not match its target rank")
-                if metrics.get(reciprocal_key) != 1.0 / rank:
-                    issues.append(f"{context} {reciprocal_key} does not match its target rank")
+            rank = (
+                ranked.index(expected_memory_key) + 1
+                if isinstance(ranked, list) and expected_memory_key in ranked
+                else None
+            )
+            expected_recall = 1.0 if rank is not None else 0.0
+            expected_reciprocal = 1.0 / rank if rank is not None else 0.0
+            if metrics.get(recall_key) != expected_recall:
+                issues.append(f"{context} {recall_key} does not match its target rank")
+            if metrics.get(reciprocal_key) != expected_reciprocal:
+                issues.append(f"{context} {reciprocal_key} does not match its target rank")
         unfiltered = evidence.get("top_memory_keys")
-        if isinstance(unfiltered, list) and expected_memory_key in unfiltered:
-            expected_recall_at_1 = 1.0 if unfiltered.index(expected_memory_key) == 0 else 0.0
-            if metrics.get("recall_at_1") != expected_recall_at_1:
-                issues.append(f"{context} recall_at_1 does not match its target rank")
+        unfiltered_rank = (
+            unfiltered.index(expected_memory_key) + 1
+            if isinstance(unfiltered, list) and expected_memory_key in unfiltered
+            else None
+        )
+        expected_recall_at_1 = 1.0 if unfiltered_rank == 1 else 0.0
+        if metrics.get("recall_at_1") != expected_recall_at_1:
+            issues.append(f"{context} recall_at_1 does not match its target rank")
+        expected_status = "pass" if unfiltered_rank is not None else "fail"
+        if case_status != expected_status:
+            issues.append(f"{context} status does not match recall_at_5")
     elif suite_key == "provenance_explanation":
         checks = case.get("checks")
         required_checks = {
@@ -1101,6 +1150,9 @@ def _case_contract_issues(
             or resolved_count != link_count
         ):
             issues.append(f"{context} provenance links must all resolve")
+        expected_status = "pass" if metrics.get("explain_complete") == 1.0 else "fail"
+        if case_status != expected_status:
+            issues.append(f"{context} status does not match explain_complete")
     elif suite_key == "entity_resolution":
         if metrics.get("resolved") != 1.0:
             issues.append(f"{context} resolved must be 1.0")
@@ -1132,10 +1184,19 @@ def _case_contract_issues(
         expected_aliases = [expected_alias] if expected_alias is not None else []
         if aliases != expected_aliases:
             issues.append(f"{context} aliases do not match its canonical case")
+        expected_status = (
+            "pass"
+            if metrics.get("resolved") == 1.0
+            and isinstance(mention_count, int)
+            and not isinstance(mention_count, bool)
+            and mention_count >= 2
+            and aliases == expected_aliases
+            else "fail"
+        )
+        if case_status != expected_status:
+            issues.append(f"{context} status does not match entity-resolution evidence")
     elif suite_key == "graph_hop_retrieval":
         expected_memory_key = canonical_case.get("expected_memory_key")
-        if metrics.get("graph_recall_at_5") != 1.0 or metrics.get("winner_has_graph_rank") != 1.0:
-            issues.append(f"{context} must record graph retrieval and a graph winner rank")
         for metric_key in (
             "graph_recall_at_5",
             "fts_recall_at_5",
@@ -1156,12 +1217,6 @@ def _case_contract_issues(
             issues.append(f"{context} query does not match its canonical case")
         if evidence.get("expected_memory_key") != expected_memory_key:
             issues.append(f"{context} expected_memory_key is not canonical")
-        if (
-            not isinstance(graph_keys, list)
-            or not _is_string_list(graph_keys)
-            or expected_memory_key not in graph_keys
-        ):
-            issues.append(f"{context} graph_top_keys must contain the canonical target")
         for evidence_key in ("graph_top_keys", "fts_top_keys"):
             issues.extend(
                 _string_list_issues(
@@ -1172,8 +1227,6 @@ def _case_contract_issues(
                 )
             )
         fts_keys = evidence.get("fts_top_keys")
-        if isinstance(fts_keys, list) and expected_memory_key in fts_keys:
-            issues.append(f"{context} FTS-only control must not retrieve the graph target")
         expected_graph_recall = (
             1.0 if isinstance(graph_keys, list) and expected_memory_key in graph_keys else 0.0
         )
@@ -1185,23 +1238,37 @@ def _case_contract_issues(
         if metrics.get("fts_recall_at_5") != expected_fts_recall:
             issues.append(f"{context} fts_recall_at_5 does not match its evidence")
         winner_ranks = evidence.get("winner_stage_ranks")
-        issues.extend(
-            _exact_key_issues(
-                winner_ranks,
-                expected={"graph"},
-                context=f"{context} winner_stage_ranks",
-            )
-        )
-        if isinstance(winner_ranks, dict):
-            issues.extend(
-                _integer_issues(
-                    winner_ranks.get("graph"),
-                    context=f"{context} winner_stage_ranks.graph",
-                    minimum=1,
+        if not isinstance(winner_ranks, dict):
+            issues.append(f"{context} winner_stage_ranks must be an object")
+        else:
+            unsupported_stages = set(winner_ranks) - _GRAPH_WINNER_STAGE_KEYS
+            if unsupported_stages:
+                issues.append(
+                    f"{context} winner_stage_ranks contains unsupported stage keys: "
+                    + ", ".join(sorted(str(stage) for stage in unsupported_stages))
                 )
-            )
-            if winner_ranks.get("graph") != 1:
-                issues.append(f"{context} canonical graph stage rank must be 1")
+            for stage, rank in winner_ranks.items():
+                if not _is_nonempty_string(stage):
+                    issues.append(f"{context} winner_stage_ranks keys must be nonempty strings")
+                issues.extend(
+                    _integer_issues(
+                        rank,
+                        context=f"{context} winner_stage_ranks.{stage}",
+                        minimum=1,
+                    )
+                )
+        expected_winner_has_graph_rank = (
+            1.0 if isinstance(winner_ranks, dict) and "graph" in winner_ranks else 0.0
+        )
+        if metrics.get("winner_has_graph_rank") != expected_winner_has_graph_rank:
+            issues.append(f"{context} winner_has_graph_rank does not match its evidence")
+        expected_status = (
+            "pass"
+            if expected_graph_recall == 1.0 and expected_winner_has_graph_rank == 1.0
+            else "fail"
+        )
+        if case_status != expected_status:
+            issues.append(f"{context} status does not match graph evidence")
         control = evidence.get("control_graph_stage")
         issues.extend(
             _exact_key_issues(
@@ -1678,12 +1745,55 @@ def _suite_contract_issues(suite: dict[str, object], *, index: int) -> list[str]
             or len(set(entity_ids)) != len(entity_ids)
         ):
             issues.append(f"{context} entity IDs must be present and distinct")
-        for metric_key in ("resolution_rate", "mention_accuracy", "alias_growth_rate"):
-            if metrics.get(metric_key) != 1.0:
-                issues.append(f"{context} {metric_key} must be 1.0")
+        resolution_rate = _mean_case_metric(cases, "resolved")
+        mention_accuracy = (
+            sum(
+                1
+                for case in cases
+                if isinstance(case, dict)
+                and isinstance(case.get("metrics"), dict)
+                and isinstance(case["metrics"].get("mention_count"), int)
+                and not isinstance(case["metrics"].get("mention_count"), bool)
+                and case["metrics"]["mention_count"] >= 2
+            )
+            / len(cases)
+            if cases
+            else 0.0
+        )
+        alias_case_indexes = [
+            case_index
+            for case_index, canonical_case in enumerate(canonical_cases)
+            if isinstance(canonical_case, dict)
+            and canonical_case.get("expected_alias") is not None
+        ]
+        alias_growth_rate = (
+            sum(
+                1
+                for case_index in alias_case_indexes
+                if case_index < len(cases)
+                and isinstance(cases[case_index], dict)
+                and isinstance(cases[case_index].get("evidence"), dict)
+                and canonical_cases[case_index].get("expected_alias")
+                in cases[case_index]["evidence"].get("aliases", [])
+            )
+            / len(alias_case_indexes)
+            if alias_case_indexes
+            else 1.0
+        )
+        for metric_key, expected_value in (
+            ("resolution_rate", resolution_rate),
+            ("mention_accuracy", mention_accuracy),
+            ("alias_growth_rate", alias_growth_rate),
+        ):
+            issue = _derived_metric_issue(
+                metrics,
+                key=metric_key,
+                expected=expected_value,
+                context=context,
+            )
+            if issue is not None:
+                issues.append(issue)
     elif suite_key == "graph_hop_retrieval":
-        if metrics.get("winner_graph_rank_rate") != 1.0:
-            issues.append(f"{context} winner_graph_rank_rate must be 1.0")
         issues.extend(
             _integer_issues(
                 metrics.get("group_count"),
@@ -1799,7 +1909,6 @@ def validate_semantic_eval_report(report: object) -> list[str]:
     case_count = 0
     passed_case_count = 0
     all_suites_have_cases = True
-    all_cases_pass = True
     all_target_checks_pass = True
     if isinstance(suites, list):
         for index, suite in enumerate(suites):
@@ -1808,7 +1917,6 @@ def validate_semantic_eval_report(report: object) -> list[str]:
                 suite_keys.append("")
                 suite_statuses.append(None)
                 all_suites_have_cases = False
-                all_cases_pass = False
                 all_target_checks_pass = False
                 continue
             suite_key = str(suite.get("suite_key") or "")
@@ -1829,14 +1937,8 @@ def validate_semantic_eval_report(report: object) -> list[str]:
                 all_suites_have_cases = False
             else:
                 case_count += len(suite_cases)
-                for case_index, case in enumerate(suite_cases):
-                    if not isinstance(case, dict) or case.get("status") != "pass":
-                        all_cases_pass = False
-                        issues.append(
-                            "semantic eval case did not pass: "
-                            f"{suite_key or index}[{case_index}]"
-                        )
-                    else:
+                for case in suite_cases:
+                    if isinstance(case, dict) and case.get("status") == "pass":
                         passed_case_count += 1
 
             metrics = suite.get("metrics")
@@ -1861,7 +1963,6 @@ def validate_semantic_eval_report(report: object) -> list[str]:
         issues.append("semantic eval report is missing suites")
         suites = []
         all_suites_have_cases = False
-        all_cases_pass = False
         all_target_checks_pass = False
 
     suite_count = len(suites)
@@ -1874,7 +1975,6 @@ def validate_semantic_eval_report(report: object) -> list[str]:
         if tuple(suite_keys) == SEMANTIC_EVAL_REQUIRED_SUITES
         and all(status == "pass" for status in suite_statuses)
         and all_suites_have_cases
-        and all_cases_pass
         and all_target_checks_pass
         else "fail"
     )

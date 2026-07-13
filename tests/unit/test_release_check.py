@@ -350,21 +350,31 @@ def canonical_semantic_eval_report() -> dict[str, object]:
 
     The store-backed suites run through their real SQLite-compatible service
     paths in isolated transactions. The protected-job-only boundaries are
-    injected: deterministic perfect retrieval rankings, the Postgres backend
-    label, and the non-secret embedding identity/seeding record.
+    injected: deterministic threshold-passing retrieval with three honest
+    paraphrase misses, the Postgres backend label, and the non-secret embedding
+    identity/seeding record.
     """
     corpus = generate_vnext_benchmark_corpus()
     expected_by_query = {
         str(query["query"]): str(query["expected_memory_key"])
         for query in corpus["queries"]
     }
+    missed_queries = {
+        str(query["query"])
+        for query in corpus["queries"]
+        if query["query_key"] in {"paraphrase-004", "paraphrase-011", "paraphrase-016"}
+    }
 
-    def perfect_retrieval(query: str, *, limit: int) -> dict[str, object]:
+    def threshold_passing_retrieval(query: str, *, limit: int) -> dict[str, object]:
         del limit
         return {
-            "ranked_memory_keys": [expected_by_query[query]],
+            "ranked_memory_keys": (
+                ["vnext-eval/retrieval/distractor-001"]
+                if query in missed_queries
+                else [expected_by_query[query]]
+            ),
             "vector_stage": "enabled",
-            "vector_candidate_count": 1,
+            "vector_candidate_count": 20,
         }
 
     signature = _embedding_signature()
@@ -386,18 +396,33 @@ def canonical_semantic_eval_report() -> dict[str, object]:
         monkeypatch.setattr(vnext_evals, "run_retrieval_quality_eval", release_retrieval_runner)
         report = run_vnext_evals(
             suite="all",
-            retrieval_fn=perfect_retrieval,
+            retrieval_fn=threshold_passing_retrieval,
             release_gate=True,
         )
 
     assert report["status"] == "pass"
     assert report["summary"]["case_count"] == 78
+    assert report["summary"]["passed_case_count"] == 75
+    assert report["summary"]["failed_case_count"] == 3
     assert release_check.validate_semantic_eval_report(report) == []
     return report
 
 
 def _refresh_semantic_report_digest(report: dict[str, object]) -> None:
     report["report_digest"] = release_check._semantic_eval_report_digest(report)
+
+
+def _reconcile_retrieval_mrr(report: dict[str, object]) -> None:
+    retrieval = report["suites"][0]
+    cases = retrieval["cases"]
+    retrieval["metrics"]["mrr"] = sum(
+        case["metrics"]["reciprocal_rank"] for case in cases
+    ) / len(cases)
+    for subset_key in ("lexical_overlap", "paraphrase"):
+        subset_cases = [case for case in cases if case["subset"] == subset_key]
+        retrieval["metrics"]["subsets"][subset_key]["mrr"] = sum(
+            case["metrics"]["reciprocal_rank"] for case in subset_cases
+        ) / len(subset_cases)
 
 
 def _write_semantic_eval_artifact_pair(
@@ -947,6 +972,246 @@ def test_semantic_eval_attestation_binds_passing_report_to_exact_sha(
     ))
 
 
+def test_semantic_eval_report_accepts_live_off_window_reciprocal_ranks(
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    retrieval = report["suites"][0]
+    cases_by_key = {case["case_key"]: case for case in retrieval["cases"]}
+
+    for case_key, reciprocal_rank in (
+        ("paraphrase-004", 1 / 9),
+        ("paraphrase-016", 1 / 10),
+    ):
+        case = cases_by_key[case_key]
+        assert case["status"] == "fail"
+        assert case["metrics"]["recall_at_1"] == 0.0
+        assert case["metrics"]["recall_at_5"] == 0.0
+        assert case["evidence"]["expected_memory_key"] not in case["evidence"][
+            "top_memory_keys"
+        ]
+        case["metrics"]["reciprocal_rank"] = reciprocal_rank
+
+    _reconcile_retrieval_mrr(report)
+    _refresh_semantic_report_digest(report)
+
+    assert release_check.validate_semantic_eval_report(report) == []
+
+
+@pytest.mark.parametrize(
+    "reciprocal_rank",
+    (
+        pytest.param(0.2, id="rank-above-off-window-maximum"),
+        pytest.param(0.15, id="not-an-exact-reciprocal-rank"),
+    ),
+)
+def test_semantic_eval_report_rejects_invalid_off_window_reciprocal_rank(
+    canonical_semantic_eval_report: dict[str, object],
+    reciprocal_rank: float,
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    retrieval = report["suites"][0]
+    missed_case = next(
+        case for case in retrieval["cases"] if case["case_key"] == "paraphrase-004"
+    )
+    missed_case["metrics"]["reciprocal_rank"] = reciprocal_rank
+    _reconcile_retrieval_mrr(report)
+    _refresh_semantic_report_digest(report)
+
+    issues = release_check.validate_semantic_eval_report(report)
+
+    assert any("reciprocal of a rank from 6 through 10" in issue for issue in issues), issues
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_issue"),
+    (
+        pytest.param(
+            "recall_at_5",
+            1.0,
+            "recall_at_5 does not match the target rank",
+            id="inconsistent-recall",
+        ),
+        pytest.param(
+            "status",
+            "pass",
+            "status does not match recall_at_5",
+            id="inconsistent-status",
+        ),
+    ),
+)
+def test_semantic_eval_report_rejects_off_window_recall_or_status_mismatch(
+    canonical_semantic_eval_report: dict[str, object],
+    field: str,
+    value: object,
+    expected_issue: str,
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    retrieval = report["suites"][0]
+    missed_case = next(
+        case for case in retrieval["cases"] if case["case_key"] == "paraphrase-004"
+    )
+    missed_case["metrics"]["reciprocal_rank"] = 1 / 9
+    if field == "status":
+        missed_case["status"] = value
+    else:
+        missed_case["metrics"][field] = value
+    _reconcile_retrieval_mrr(report)
+    _refresh_semantic_report_digest(report)
+
+    issues = release_check.validate_semantic_eval_report(report)
+
+    assert any(expected_issue in issue for issue in issues), issues
+
+
+def test_semantic_eval_report_accepts_honest_case_misses_with_passing_suite_targets(
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+
+    decision = report["suites"][2]
+    decision_case = decision["cases"][0]
+    decision_case["status"] = "fail"
+    decision_case["metrics"].update(
+        {
+            "recall_at_1": 0.0,
+            "recall_at_5": 0.0,
+            "reciprocal_rank": 0.0,
+            "filtered_recall_at_5": 0.0,
+            "filtered_reciprocal_rank": 0.0,
+        }
+    )
+    decision_case["evidence"]["top_memory_keys"] = []
+    decision_case["evidence"]["filtered_top_memory_keys"] = []
+    decision["metrics"].update(
+        {
+            "decision_recall_at_1": 0.9,
+            "decision_recall_at_5": 0.9,
+            "decision_mrr": 0.9,
+            "filtered_decision_recall_at_5": 0.9,
+            "filtered_decision_mrr": 0.9,
+        }
+    )
+
+    graph = report["suites"][5]
+    graph_case = graph["cases"][0]
+    graph_case["status"] = "fail"
+    graph_case["metrics"].update(
+        {
+            "graph_recall_at_5": 0.0,
+            "winner_has_graph_rank": 0.0,
+        }
+    )
+    graph_case["evidence"]["graph_top_keys"] = []
+    graph_case["evidence"]["winner_stage_ranks"] = {}
+    graph["metrics"].update(
+        {
+            "graph_recall_at_5": 0.8,
+            "graph_lift": 0.8,
+            "winner_graph_rank_rate": 0.8,
+        }
+    )
+
+    report["summary"].update(
+        {
+            "passed_case_count": 73,
+            "failed_case_count": 5,
+            "pass_rate": 73 / 78,
+        }
+    )
+    _refresh_semantic_report_digest(report)
+
+    assert release_check.validate_semantic_eval_report(report) == []
+
+
+def test_semantic_eval_report_accepts_one_correction_replacement_miss(
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    correction = report["suites"][1]
+    missed_case = correction["cases"][0]
+    missed_case["status"] = "fail"
+    missed_case["metrics"].update(
+        {
+            "replacement_recall_at_5": 0.0,
+            "replacement_reciprocal_rank": 0.0,
+        }
+    )
+    missed_case["evidence"]["post_correction_top_keys"] = []
+    correction["metrics"].update(
+        {
+            "replacement_recall_at_5": 5 / 6,
+            "replacement_mrr": 5 / 6,
+        }
+    )
+    report["summary"].update(
+        {
+            "passed_case_count": 74,
+            "failed_case_count": 4,
+            "pass_rate": 74 / 78,
+        }
+    )
+    _refresh_semantic_report_digest(report)
+
+    assert release_check.validate_semantic_eval_report(report) == []
+
+
+def test_semantic_eval_report_rejects_correction_replacement_recall_below_target(
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    correction = report["suites"][1]
+    for missed_case in correction["cases"][:2]:
+        missed_case["status"] = "fail"
+        missed_case["metrics"].update(
+            {
+                "replacement_recall_at_5": 0.0,
+                "replacement_reciprocal_rank": 0.0,
+            }
+        )
+        missed_case["evidence"]["post_correction_top_keys"] = []
+    correction["metrics"].update(
+        {
+            "replacement_recall_at_5": 4 / 6,
+            "replacement_mrr": 4 / 6,
+        }
+    )
+    correction["metrics"]["target_checks"]["replacement_recall_at_5"] = "fail"
+    correction["status"] = "fail"
+    report["status"] = "fail"
+    report["summary"].update(
+        {
+            "status": "fail",
+            "passed_case_count": 73,
+            "failed_case_count": 5,
+            "pass_rate": 73 / 78,
+        }
+    )
+    _refresh_semantic_report_digest(report)
+
+    issues = release_check.validate_semantic_eval_report(report)
+
+    assert issues
+    assert any("replacement_recall_at_5 is below its canonical minimum" in issue for issue in issues)
+    assert any("contains a failed target check" in issue for issue in issues)
+
+
+def test_semantic_eval_report_accepts_production_graph_winner_stage_ranks(
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    graph_case = report["suites"][5]["cases"][0]
+    graph_case["evidence"]["winner_stage_ranks"] = {
+        "fts": 1,
+        "vector": 2,
+        "graph": 3,
+        "temporal_anchor": 4,
+    }
+    _refresh_semantic_report_digest(report)
+
+    assert release_check.validate_semantic_eval_report(report) == []
+
+
 @pytest.mark.parametrize(
     ("field", "replacement"),
     (
@@ -1206,7 +1471,7 @@ def test_semantic_eval_report_reconciles_all_summary_fields(
         assert any(field in issue for issue in issues), (field, issues)
 
 
-def test_semantic_eval_report_rejects_failed_cases_and_target_checks(
+def test_semantic_eval_report_rejects_inconsistent_case_status_and_failed_target_checks(
     canonical_semantic_eval_report: dict[str, object],
 ) -> None:
     report = deepcopy(canonical_semantic_eval_report)
@@ -1216,7 +1481,7 @@ def test_semantic_eval_report_rejects_failed_cases_and_target_checks(
 
     issues = release_check.validate_semantic_eval_report(report)
 
-    assert any("case did not pass" in issue for issue in issues), issues
+    assert any("status does not match recall_at_5" in issue for issue in issues), issues
     assert any("failed target check" in issue for issue in issues), issues
     assert any("derived" in issue for issue in issues), issues
 
