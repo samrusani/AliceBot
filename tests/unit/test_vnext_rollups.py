@@ -528,6 +528,45 @@ def test_create_candidate_memories_false_reports_without_writes() -> None:
     assert outcome.proposals[0]["candidate_memory_id"] is None
 
 
+def test_rollups_partition_same_topic_members_by_exact_project_scope() -> None:
+    store = FakeRollupStore()
+    for project_id in ("project-a", "project-b"):
+        for index, (_key, text, session_date, _speaker) in enumerate(GAME_SPECS[:3]):
+            store.create_memory(
+                {
+                    "memory_key": f"memory.{project_id}.{index}",
+                    "value": {"text": text},
+                    "status": "active",
+                    "memory_type": "episode",
+                    "title": text,
+                    "canonical_text": text,
+                    "summary": text,
+                    "domain": "project",
+                    "sensitivity": "internal",
+                    "project_id": project_id,
+                    "metadata_json": {
+                        "session_date": session_date,
+                        "project_scope": [project_id],
+                    },
+                }
+            )
+
+    outcome = VNextRollupService(store).propose_rollups(
+        options=RollupOptions(min_members=3)
+    )
+
+    assert len(outcome.proposals) == 2
+    candidates = _rollup_candidates(store)
+    assert len(candidates) == 2
+    assert {tuple(row["metadata_json"]["project_scope"]) for row in candidates} == {
+        ("project-a",),
+        ("project-b",),
+    }
+    assert len({row["metadata_json"]["rollup_key"] for row in candidates}) == 2
+    for candidate in candidates:
+        assert len(candidate["metadata_json"]["consolidation"]["cluster_member_ids"]) == 3
+
+
 def test_max_rollups_bound_is_reported() -> None:
     store = FakeRollupStore()
     _seed_game_memories(store)

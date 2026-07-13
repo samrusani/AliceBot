@@ -62,11 +62,12 @@ def calculate_precision_at_k(
         raise SemanticMemoryRetrievalValidationError("top_k must be greater than or equal to 1")
 
     top_results = returned_ids[:top_k]
-    if not top_results:
-        return 0.0
-
     hit_count = sum(1 for result_id in top_results if result_id in relevant_ids)
-    return hit_count / float(len(top_results))
+    # Precision@k is defined over k result slots. Missing results are empty
+    # (and therefore non-relevant) slots; dividing by the number actually
+    # returned inflates short result sets and makes runs with different
+    # candidate counts incomparable.
+    return hit_count / float(top_k)
 
 
 def calculate_mean_precision(precision_values: list[float]) -> float:

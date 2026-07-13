@@ -1859,10 +1859,10 @@ def _run_reindex_embeddings(args: argparse.Namespace) -> int:
     skipped = 0
     failed = 0
     batches = 0
-    with sqlite_user_connection(db_path, args.user_id) as conn:
-        store = SQLiteVNextStore(conn, args.user_id)
-        after_id: str | None = None
-        while True:
+    after_id: str | None = None
+    while True:
+        with sqlite_user_connection(db_path, args.user_id) as conn:
+            store = SQLiteVNextStore(conn, args.user_id)
             rows = store.list_memories_missing_embeddings(
                 limit=batch_size,
                 after_id=after_id,
@@ -1873,21 +1873,23 @@ def _run_reindex_embeddings(args: argparse.Namespace) -> int:
                 ),
                 embedding_signature_version=EMBEDDING_SIGNATURE_VERSION,
             )
-            if not rows:
-                break
-            batches += 1
-            after_id = str(rows[-1]["id"])
-            pending = [(row, memory_embedding_text(row)) for row in rows]
-            embeddable = [(row, text) for row, text in pending if text]
-            skipped += len(pending) - len(embeddable)
-            if not embeddable:
-                continue
-            try:
-                vectors = provider.embed_batch([text for _row, text in embeddable])
-            except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
-                failed += len(embeddable)
-                print(f"warning: embedding batch failed: {exc}", file=sys.stderr)
-                continue
+        if not rows:
+            break
+        batches += 1
+        after_id = str(rows[-1]["id"])
+        pending = [(row, memory_embedding_text(row)) for row in rows]
+        embeddable = [(row, text) for row, text in pending if text]
+        skipped += len(pending) - len(embeddable)
+        if not embeddable:
+            continue
+        try:
+            vectors = provider.embed_batch([text for _row, text in embeddable])
+        except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
+            failed += len(embeddable)
+            print(f"warning: embedding batch failed: {exc}", file=sys.stderr)
+            continue
+        with sqlite_user_connection(db_path, args.user_id) as conn:
+            store = SQLiteVNextStore(conn, args.user_id)
             for (row, _text), vector in zip(embeddable, vectors, strict=True):
                 store.update_memory_embedding(
                     **signed_memory_embedding_update(row, vector, provider=provider)

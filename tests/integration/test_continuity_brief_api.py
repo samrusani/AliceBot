@@ -9,8 +9,8 @@ from uuid import UUID
 import anyio
 import psycopg
 
-import apps.api.src.alicebot_api.main as main_module
-from apps.api.src.alicebot_api.config import Settings
+import alicebot_api.main as main_module
+from alicebot_api.config import Settings
 from alicebot_api.continuity_contradictions import sync_contradictions
 from alicebot_api.contracts import ContradictionSyncInput
 from alicebot_api.db import user_connection

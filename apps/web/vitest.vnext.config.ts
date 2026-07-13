@@ -7,7 +7,11 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./test/setup.ts"],
-    include: ["./test/vnext-coverage/vnext-coverage.test.tsx"],
+    include: [
+      "./test/vnext-coverage/vnext-coverage.test.tsx",
+      "./app/vnext/page.test.tsx",
+      "./components/vnext-operator-auth.test.tsx",
+    ],
     exclude: [
       "test/browser/**",
       "test/browser-outage/**",
@@ -35,6 +39,7 @@ export default defineConfig({
       reporter: ["text", "json-summary"],
       reportsDirectory: "coverage/vnext",
       include: [
+        "app/vnext/page.tsx",
         "components/vnext-brain-workspace.tsx",
         "components/vnext-workspace-model.ts",
         "components/vnext-workspace-overview.tsx",
@@ -42,14 +47,20 @@ export default defineConfig({
       exclude: ["**/*.{test,spec}.{ts,tsx}"],
       thresholds: {
         branches: 40,
-        functions: 25,
+        functions: 30,
         lines: 60,
         statements: 60,
         "components/vnext-brain-workspace.tsx": {
           branches: 40,
-          functions: 10,
+          functions: 14,
           lines: 60,
           statements: 60,
+        },
+        "app/vnext/page.tsx": {
+          branches: 18,
+          functions: 100,
+          lines: 90,
+          statements: 90,
         },
         "components/vnext-workspace-model.ts": {
           branches: 65,

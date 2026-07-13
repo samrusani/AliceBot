@@ -766,12 +766,65 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS memories_user_domain_sensitivity_updated_idx
       ON memories (user_id, domain, sensitivity, updated_at DESC, id DESC)
     """,
+    """
+    CREATE INDEX IF NOT EXISTS memories_user_live_canonical_text_idx
+      ON memories (user_id, lower(canonical_text), domain, sensitivity)
+      WHERE deleted_at IS NULL
+        AND canonical_text IS NOT NULL
+        AND status IN ('candidate', 'active', 'accepted', 'needs_review', 'private_only')
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS memories_user_pending_confirmation_idx
+      ON memories (user_id, updated_at DESC, id DESC)
+      WHERE deleted_at IS NULL
+        AND status = 'needs_review'
+        AND confirmation_status = 'unconfirmed'
+        AND json_extract(metadata_json, '$.agentic_memory.confirmation.status') = 'pending'
+    """,
     # Partial project-scope index (mirrors memories_user_project_idx from
     # Postgres migration 20260704_0076).
     """
     CREATE INDEX IF NOT EXISTS memories_user_project_idx
       ON memories (user_id, project_id)
       WHERE project_id IS NOT NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS memories_user_project_staleness_idx
+      ON memories (
+        user_id,
+        project_id,
+        memory_type,
+        COALESCE(last_confirmed_at, last_seen_at, created_at)
+      )
+      WHERE deleted_at IS NULL AND status = 'active'
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS memories_user_project_rollup_digest_idx
+      ON memories (
+        user_id,
+        project_id,
+        json_extract(metadata_json, '$.candidate_kind'),
+        json_extract(metadata_json, '$.rollup_digest'),
+        updated_at DESC,
+        id DESC
+      )
+      WHERE deleted_at IS NULL
+        AND status = 'candidate'
+        AND json_extract(metadata_json, '$.rollup_digest') IS NOT NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS memories_user_project_rollup_key_idx
+      ON memories (
+        user_id,
+        project_id,
+        json_extract(metadata_json, '$.candidate_kind'),
+        json_extract(metadata_json, '$.rollup_key'),
+        updated_at DESC,
+        id DESC
+      )
+      WHERE deleted_at IS NULL
+        AND status IN ('active', 'accepted')
+        AND json_extract(metadata_json, '$.rollup_key') IS NOT NULL
     """,
     # Partial supersession index (mirrors memories_user_superseded_by_idx
     # from Postgres migration 20260704_0077).
@@ -814,12 +867,33 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
       ON open_loops (user_id, status, opened_at DESC, created_at DESC, id DESC)
     """,
     """
+    CREATE INDEX IF NOT EXISTS open_loops_user_automation_digest_idx
+      ON open_loops (
+        user_id,
+        json_extract(metadata_json, '$.automation_digest'),
+        project_id,
+        person_id,
+        created_at DESC,
+        id DESC
+      )
+      WHERE json_extract(metadata_json, '$.automation_digest') IS NOT NULL
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS open_loops_user_idempotency_digest_uidx
+      ON open_loops (user_id, json_extract(metadata_json, '$.idempotency_digest'))
+      WHERE json_extract(metadata_json, '$.idempotency_digest') IS NOT NULL
+    """,
+    """
     CREATE INDEX IF NOT EXISTS event_log_user_type_occurred_idx
       ON event_log (user_id, event_type, occurred_at DESC, id DESC)
     """,
     """
     CREATE INDEX IF NOT EXISTS event_log_user_target_occurred_idx
       ON event_log (user_id, target_type, target_id, occurred_at DESC, id DESC)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS event_log_user_occurred_idx
+      ON event_log (user_id, occurred_at DESC, id DESC)
     """,
     """
     CREATE INDEX IF NOT EXISTS agent_api_keys_user_agent_idx
@@ -1086,9 +1160,7 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     # or the store's dict rows): resolve the "name" column positionally
     # from the cursor description instead of hardcoding an index.
     cursor = conn.execute(f"PRAGMA table_info({table})")
-    name_index = next(
-        index for index, description in enumerate(cursor.description) if description[0] == "name"
-    )
+    name_index = next(index for index, description in enumerate(cursor.description) if description[0] == "name")
     columns: set[str] = set()
     for row in cursor.fetchall():
         if isinstance(row, dict):
@@ -1101,9 +1173,7 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
 def _table_column_names(conn: sqlite3.Connection, table: str) -> list[str]:
     """Column names in storage order, tolerant of the caller's row factory."""
     cursor = conn.execute(f"PRAGMA table_info({table})")
-    name_index = next(
-        index for index, description in enumerate(cursor.description) if description[0] == "name"
-    )
+    name_index = next(index for index, description in enumerate(cursor.description) if description[0] == "name")
     names: list[str] = []
     for row in cursor.fetchall():
         names.append(str(row["name"] if isinstance(row, dict) else row[name_index]))
@@ -1111,9 +1181,7 @@ def _table_column_names(conn: sqlite3.Connection, table: str) -> list[str]:
 
 
 def _memories_table_sql(conn: sqlite3.Connection) -> str | None:
-    cursor = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memories'"
-    )
+    cursor = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memories'")
     row = cursor.fetchone()
     if row is None:
         return None
@@ -1153,9 +1221,7 @@ def _ensure_current_memories_status_constraint(conn: sqlite3.Connection) -> None
         conn.commit()
     foreign_keys_row = conn.execute("PRAGMA foreign_keys").fetchone()
     foreign_keys_value = (
-        next(iter(foreign_keys_row.values()))
-        if isinstance(foreign_keys_row, dict)
-        else foreign_keys_row[0]
+        next(iter(foreign_keys_row.values())) if isinstance(foreign_keys_row, dict) else foreign_keys_row[0]
     )
     foreign_keys_enabled = int(foreign_keys_value)
     old_columns = _table_column_names(conn, "memories")
@@ -1177,9 +1243,7 @@ def _ensure_current_memories_status_constraint(conn: sqlite3.Connection) -> None
         new_columns = _table_column_names(conn, temp_table)
         common_columns = [column for column in new_columns if column in old_columns]
         quoted = ", ".join(f'"{column}"' for column in common_columns)
-        conn.execute(
-            f"INSERT INTO {temp_table} ({quoted}) SELECT {quoted} FROM memories"
-        )
+        conn.execute(f"INSERT INTO {temp_table} ({quoted}) SELECT {quoted} FROM memories")
         conn.execute("DROP TABLE memories")
         conn.execute(f"ALTER TABLE {temp_table} RENAME TO memories")
         for table, column, _declaration in _ADDITIVE_COLUMNS:

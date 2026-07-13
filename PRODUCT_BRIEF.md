@@ -13,14 +13,27 @@ Agent developers — people building or operating AI agents who need durable, ex
 - Local-first: your data stays on your machine; models and embeddings are pluggable via OpenAI-compatible endpoints.
 
 ## Current Posture
-- `v0.9.4` is the latest published release and immutable baseline. It attempted the second-audit remediation, but a third independent audit found partial fixes and regressions; current closure evidence lives in the v0.10.2 handoff matrix. Trusted Publishing attestations and artifact digests remain recorded in `docs/release/v0.9.4-checksums.txt`. The product baseline includes hybrid retrieval, the eleven-tool core MCP surface, the Memory Operations Protocol, per-agent API keys, Context API v2, temporal graph memory/entity resolution, six live eval suites, and a historical **79.4% LongMemEval_s (397/500)** single run with per-question evidence.
-- `v0.9.2` is now a prior published release: a security and reliability patch for key-bound project authorization, lifecycle and upgrade correctness, safe local backup/restore, retrieval contracts, web dependencies, packaging, and release evidence. It remains tagged and published on PyPI and GitHub, but is no longer the latest published release — `v0.9.4` is.
-- `v0.10.2` is the active audit-remediation candidate. Correctness and release evidence take priority over feature work; no v0.10.2 work is published yet.
-- Pre-1.0, single-user, self-hosted. `alice-memory` is published on PyPI; `uvx alice-memory mcp` serves the core tools against a local SQLite file with no Docker or Postgres.
+- `v0.10.2` is the latest published release and immutable baseline. Its PyPI
+  wheel and source distribution have Trusted Publishing provenance, with exact
+  digests in `docs/release/v0.10.2-checksums.txt`.
+- The product baseline includes hybrid retrieval, the eleven-tool core MCP
+  surface, the Memory Operations Protocol, per-agent API keys, Context API v2,
+  temporal graph memory/entity resolution, and six live eval suites.
+- The **79.4% LongMemEval_s (397/500)** figure is one historical run from
+  2026-07-07 with per-question evidence. It is not a repeated-run estimate or a
+  fresh v0.10.2 benchmark.
+- `main` plus the reviewed remediation tree form the `v0.10.3` candidate.
+  It is a release candidate only. Those changes are unreleased and publish only after exact-SHA
+  gates and independent review pass.
+- Alice is public-alpha, pre-1.0, single-user, and self-hosted. `alice-memory`
+  is published on PyPI; `uvx alice-memory mcp` serves the core tools against a
+  local SQLite file with no Docker or Postgres.
 
 ## Non-Goals (Now)
 - Hosted service, SLA, or managed cloud.
-- OAuth connectors / automatic account syncing.
+- Managed OAuth consent/account-linking flows or automatic account syncing.
+  Manual operator-token Gmail and Calendar backends exist, but Alice does not
+  package managed consent or polling.
 - Automatic memory capture from arbitrary conversation.
 - Marketplace, channels, or vertical-agent products.
 

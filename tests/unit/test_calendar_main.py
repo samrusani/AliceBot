@@ -4,8 +4,8 @@ import json
 from contextlib import contextmanager
 from uuid import uuid4
 
-import apps.api.src.alicebot_api.main as main_module
-from apps.api.src.alicebot_api.config import Settings
+import alicebot_api.main as main_module
+from alicebot_api.config import Settings
 from alicebot_api.calendar import (
     CalendarAccountAlreadyExistsError,
     CalendarAccountNotFoundError,

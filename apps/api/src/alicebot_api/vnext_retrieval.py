@@ -84,6 +84,12 @@ from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_grounding import compute_query_grounding
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_project_scope import memory_project_scope
+from alicebot_api.vnext_ranking import (
+    CONTENT_EVENT_METADATA_KEYS,
+    TIE_BREAK_CONTENT_STABLE,
+    content_stable_event_time as _tiebreak_event_time,
+    content_stable_tiebreak,
+)
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_store import fts_fallback_tokens
 from alicebot_api.vnext_temporal_query import (
@@ -99,6 +105,7 @@ class QueryInterpretation(TypedDict):
     query_type: str
     terms: list[str]
     domains: list[str]
+    inferred_domains: list[str]
     projects: list[str]
     people: list[str]
     memory_types: list[str]
@@ -313,7 +320,7 @@ TEMPORAL_STAGE_DISABLED_NO_STORE_SUPPORT = "disabled: store does not support tim
 # (write time, the least honest fallback) — mirroring the capture
 # service's source_created_at-then-captured_at event-time convention.
 SOURCE_STAGE_TEMPORAL = "temporal_anchor"
-SOURCE_EVENT_METADATA_KEYS = ("session_date", "event_date", "date")
+SOURCE_EVENT_METADATA_KEYS = CONTENT_EVENT_METADATA_KEYS
 # Tiny stopword set for entity-name candidate generation: n-grams whose
 # first or last token is one of these never name an entity on their own.
 ENTITY_NAME_STOPWORDS = frozenset(
@@ -533,6 +540,11 @@ def _contains_any(query: str, words: tuple[str, ...]) -> bool:
     return any(word in lowered for word in words)
 
 
+def _contains_domain_cue(query: str, cue: str) -> bool:
+    """Match a domain cue as words, never as a substring of another word."""
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(cue)}(?![A-Za-z0-9_])", query) is not None
+
+
 def _validate_choice(value: str, *, field_name: str, choices: tuple[str, ...]) -> None:
     if value not in choices:
         raise VNextRetrievalValidationError(
@@ -589,7 +601,11 @@ def classify_query(request: VNextRetrievalRequest) -> QueryInterpretation:
     else:
         query_type = "strategic_synthesis"
 
-    domains = list(request.domains) or _infer_domains(lowered)
+    # Caller-supplied domains are authorization/retrieval predicates. Domain
+    # inference is necessarily heuristic, so disclose it separately and never
+    # turn it into a destructive store filter.
+    domains = list(request.domains)
+    inferred_domains = _infer_domains(lowered)
     sensitivity_allowed = list(request.sensitivity_allowed) or list(DEFAULT_SENSITIVITY_ALLOWED)
     requires_sources, requires_contradictions = _resolve_section_flags(request, query_type=query_type)
     return {
@@ -597,6 +613,7 @@ def classify_query(request: VNextRetrievalRequest) -> QueryInterpretation:
         "query_type": query_type,
         "terms": query_terms(query),
         "domains": domains,
+        "inferred_domains": inferred_domains,
         "projects": list(request.projects),
         "people": list(request.people),
         "memory_types": list(request.memory_types),
@@ -610,15 +627,17 @@ def classify_query(request: VNextRetrievalRequest) -> QueryInterpretation:
 
 def _infer_domains(lowered_query: str) -> list[str]:
     domains: list[str] = []
-    if _contains_any(lowered_query, ("alice", "project", "roadmap", "sprint", "build")):
+    if any(
+        _contains_domain_cue(lowered_query, cue)
+        for cue in ("alice", "project", "roadmap", "sprint", "build")
+    ):
         domains.extend(["project", "professional"])
-    # Inferred domains are applied as hard store predicates.  Keep the
-    # ambiguous ``money`` cue out of that path: business queries such as
-    # "advertising money" and "campaign budget" must remain unscoped unless
-    # the caller supplies an explicit domain.
-    if _contains_any(lowered_query, ("family", "health", "spiritual", "legal")):
+    if any(
+        _contains_domain_cue(lowered_query, cue)
+        for cue in ("family", "health", "spiritual", "legal")
+    ):
         domains.append("personal")
-    return domains
+    return list(dict.fromkeys(domains))
 
 
 def _allowed(item: JsonObject, *, domains: list[str], sensitivity_allowed: list[str]) -> str | None:
@@ -831,6 +850,7 @@ def _fetch_filtered_prefix(
     select_rows: "Callable[[Sequence[JsonObject]], list[JsonObject]]",
     target: int,
     predicate_applied_before_limit: bool = False,
+    initial_limit: int | None = None,
 ) -> tuple[list[JsonObject], StageSourceT]:
     """Fetch/select a ranked prefix with finite legacy compatibility deepening.
 
@@ -849,7 +869,7 @@ def _fetch_filtered_prefix(
         return _dedupe_retrieval_rows(select_rows(_dedupe_retrieval_rows(rows))), source
     limit = min(
         LEGACY_SCOPED_SCAN_MAX_ROWS,
-        max(target, SCOPED_ROW_OVERFETCH_LIMIT),
+        max(target, initial_limit or SCOPED_ROW_OVERFETCH_LIMIT),
     )
     previous_unique_count = -1
     while True:
@@ -942,6 +962,17 @@ def _supports_resource_scope_predicate(method: object) -> bool:
     return _RESOURCE_SCOPE_PARAMETERS <= names
 
 
+def _supports_explicit_parameters(method: object, names: Sequence[str]) -> bool:
+    """Return true only when a duck-typed method declares every capability."""
+    if not callable(method):
+        return False
+    try:
+        parameters = set(inspect.signature(method).parameters)
+    except (TypeError, ValueError):
+        return False
+    return set(names) <= parameters
+
+
 _GRAPH_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
@@ -1019,90 +1050,6 @@ def _graph_memory_admissible(
         if scope_window_end is not None and event_time > scope_window_end:
             return False
     return True
-
-
-# -- content-stable tie-breaks -------------------------------------------------
-# Equal-score ordering decisions (equal RRF fused scores, equal graph-stage
-# timestamps, equal temporal-boost distances) used to fall straight through
-# to the row id — a uuid minted at ingest. Within one store that is
-# deterministic, but across two ingests of the SAME content the uuids
-# differ, so every such tie was a coin flip re-rolled per ingest (measured
-# as pure pack churn between identical-config benchmark runs). The cascade
-# below decides those ties on row CONTENT instead: older event/session date
-# first, then longer content, then the content text, then a content
-# fingerprint; the id stays as the FINAL key — the total-order guarantee —
-# but no longer casts the deciding vote between near-equals. Every key is a
-# pure function of values the row already carries: no randomness, no store
-# lookups, no clock reads. Deliberately NO write-clock fallbacks
-# (created_at/first_seen_at/captured_at): a wall-clock key that collides in
-# one ingest but not another would re-introduce seed-dependent ordering.
-TIE_BREAK_CONTENT_STABLE = "content_stable_v1"
-# Rows with no parseable content event signal sort after any dated row.
-_TIEBREAK_UNDATED = datetime(9999, 12, 31, tzinfo=UTC)
-# Content-honest event signals only: explicit validity start (memories),
-# the source's own creation time, then connector-stamped metadata dates —
-# the same signals search_memories_by_time and _source_event_time trust,
-# minus their write-time fallbacks (see the seed-dependence note above).
-_TIEBREAK_EVENT_KEYS = ("valid_from", "source_created_at")
-_TIEBREAK_TEXT_KEYS = ("canonical_text", "text", "summary", "title")
-
-
-def _tiebreak_event_time(item: JsonObject) -> datetime | None:
-    """Content-stamped event/session time of a row, or None."""
-    for key in _TIEBREAK_EVENT_KEYS:
-        parsed = parse_event_datetime(item.get(key))
-        if parsed is not None:
-            return parsed
-    metadata = item.get("metadata_json")
-    if isinstance(metadata, Mapping):
-        for key in SOURCE_EVENT_METADATA_KEYS:
-            parsed = parse_event_datetime(metadata.get(key))
-            if parsed is not None:
-                return parsed
-    return None
-
-
-def _tiebreak_content_text(item: JsonObject) -> str:
-    for key in _TIEBREAK_TEXT_KEYS:
-        value = item.get(key)
-        if isinstance(value, str) and value.strip():
-            return value
-    return ""
-
-
-def _tiebreak_content_fingerprint(item: JsonObject) -> str:
-    """Stable content-derived discriminator for rows whose text also ties.
-
-    Sources carry ``content_hash`` (digest of the captured content); capture-
-    written memories carry the originating capture's digest and chunk index
-    in metadata. Two rows with identical text extracted from different
-    captures stay distinguishable by content, not by uuid.
-    """
-    content_hash = item.get("content_hash")
-    if isinstance(content_hash, str) and content_hash:
-        return content_hash
-    metadata = item.get("metadata_json")
-    if isinstance(metadata, Mapping):
-        capture_hash = metadata.get("capture_content_hash")
-        if isinstance(capture_hash, str) and capture_hash:
-            return f"{capture_hash}:{metadata.get('source_chunk_index')}"
-    return ""
-
-
-def content_stable_tiebreak(item: JsonObject) -> tuple[datetime, int, str, str]:
-    """Content-stable sort key for equal-score ties (ascending sorts first).
-
-    Cascade: older content-stamped event/session date first (undated rows
-    last), longer content first, then the content text itself, then the
-    content fingerprint. Callers append the id as the final key.
-    """
-    text = _tiebreak_content_text(item)
-    return (
-        _tiebreak_event_time(item) or _TIEBREAK_UNDATED,
-        -len(text),
-        text,
-        _tiebreak_content_fingerprint(item),
-    )
 
 
 def _stabilize_scored_rows(
@@ -2200,7 +2147,6 @@ class VNextRetrievalService:
         if callable(search_source_chunks) and has_source_resolver:
             chunk_fts_source = str(getattr(self.store, "fts_stage_source", "postgres_fts"))
             chunk_scope_filters = _resource_scope_filters(search_source_chunks)
-            chunk_store_scope_complete = bool(chunk_scope_filters)
 
             def _chunk_sources_for(rows: Sequence[JsonObject]) -> list[JsonObject]:
                 ordered_source_ids: list[str] = []
@@ -2228,16 +2174,18 @@ class VNextRetrievalService:
                         kwargs["match_any"] = True
                     return list(search_source_chunks(**kwargs)), chunk_fts_source
 
-                if not scope.active:
-                    rows, _source = _fetch(limit * SOURCE_CHUNK_CANDIDATE_MULTIPLIER)
-                    return _chunk_sources_for(rows)[:limit]
-                if chunk_store_scope_complete:
-                    rows, _source = _fetch(limit * SOURCE_CHUNK_CANDIDATE_MULTIPLIER)
-                    return _chunk_sources_for(rows)[:limit]
+                # The chunk query ranks chunk rows, while the context pack
+                # selects parent sources. A fixed ``limit * N`` prefix lets
+                # one long source consume the entire chunk arm. Deepen until
+                # enough distinct in-scope parents survive or the store proves
+                # exhaustion. Store-side scope predicates still apply before
+                # every prefix LIMIT; parent deduplication necessarily happens
+                # here and therefore cannot use the one-shot fast path.
                 selected, _source = _fetch_filtered_prefix(
                     _fetch,
                     select_rows=_chunk_sources_for,
                     target=limit,
+                    initial_limit=limit * SOURCE_CHUNK_CANDIDATE_MULTIPLIER,
                 )
                 return selected[:limit]
 
@@ -2507,20 +2455,20 @@ class VNextRetrievalService:
             if depth == CONTEXT_DEPTH_MINIMAL:
                 temporal_stage = STAGE_DISABLED_MINIMAL
             else:
-                temporal_rows, temporal_stage = self._memory_temporal_rows(
-                    anchor=anchor,
-                    domains=domains,
-                    sensitivity_allowed=sensitivity_allowed,
-                    limit=memory_candidate_limit,
-                    memory_types=memory_types,
-                    projects=projects,
-                    created_by_agent_ids=created_by_agent_ids,
-                    run_id=filter_run_id,
-                )
-                temporal_rows = _filter_rows_for_scope(
-                    temporal_rows,
-                    scope,
+                temporal_rows, temporal_stage = _fetch_scope_filtered(
+                    lambda n: self._memory_temporal_rows(
+                        anchor=anchor,
+                        domains=domains,
+                        sensitivity_allowed=sensitivity_allowed,
+                        limit=n,
+                        memory_types=memory_types,
+                        projects=projects,
+                        created_by_agent_ids=created_by_agent_ids,
+                        run_id=filter_run_id,
+                    ),
+                    scope=scope,
                     person_linked_memory_ids=person_linked_memory_ids,
+                    target=scope_target,
                 )
             temporal_stage_record = {
                 "source": "temporal_anchor",
@@ -2553,22 +2501,37 @@ class VNextRetrievalService:
             coverage_clauses = vnext_coverage_query.decompose_clauses(str(interpretation["query"]))
             if len(coverage_clauses) >= 2:
                 for clause_index, clause in enumerate(coverage_clauses, start=1):
-                    clause_rows, _clause_fts_source = self._memory_fts_rows(
-                        query=clause,
-                        domains=domains,
-                        sensitivity_allowed=sensitivity_allowed,
-                        limit=min(max_items, vnext_coverage_query.COVERAGE_CLAUSE_FETCH_LIMIT),
-                        memory_types=memory_types,
-                        projects=projects,
-                        created_by_agent_ids=created_by_agent_ids,
-                        run_id=filter_run_id,
+                    clause_target = min(
+                        max_items,
+                        vnext_coverage_query.COVERAGE_CLAUSE_FETCH_LIMIT,
                     )
-                    if clause_rows:
-                        clause_rows = _filter_rows_for_scope(
-                            clause_rows,
-                            scope,
+                    def _fetch_clause_rows(
+                        fetch_limit: int,
+                        clause_query: str = clause,
+                    ) -> tuple[list[JsonObject], str]:
+                        return self._memory_fts_rows(
+                            query=clause_query,
+                            domains=domains,
+                            sensitivity_allowed=sensitivity_allowed,
+                            limit=fetch_limit,
+                            memory_types=memory_types,
+                            projects=projects,
+                            created_by_agent_ids=created_by_agent_ids,
+                            run_id=filter_run_id,
+                            scope=scope,
                             person_linked_memory_ids=person_linked_memory_ids,
                         )
+
+                    clause_rows, _clause_fts_source = _fetch_scope_filtered(
+                        _fetch_clause_rows,
+                        scope=scope,
+                        person_linked_memory_ids=person_linked_memory_ids,
+                        target=clause_target,
+                        store_scope_complete=_supports_store_scope_predicate(
+                            getattr(self.store, "search_memories_fts", None)
+                            or getattr(self.store, "search_memories", None)
+                        ),
+                    )
                     if clause_rows:
                         coverage_clause_lists[vnext_coverage_query.clause_stage_name(clause_index)] = list(
                             clause_rows
@@ -3144,12 +3107,18 @@ class VNextRetrievalService:
         # without unsupported entities are byte-identical to the old path.
         # Skipped at minimal depth to preserve its cheapest-call promise.
         if depth != CONTEXT_DEPTH_MINIMAL and not scope.active:
-            grounding = compute_query_grounding(
-                self.store,
-                request.query,
-                domains=domains,
-                sensitivity_allowed=sensitivity_allowed,
-            )
+            try:
+                grounding = compute_query_grounding(
+                    self.store,
+                    request.query,
+                    domains=domains,
+                    sensitivity_allowed=sensitivity_allowed,
+                )
+            except Exception:
+                # Final best-effort boundary: operational probe failures must
+                # never abort a context pack. BaseException remains visible so
+                # cancellation and process-control signals are not swallowed.
+                grounding = None
             if grounding is not None and budget.admit(grounding, section=SECTION_GROUNDING):
                 pack["grounding"] = grounding
                 trace["grounding"] = dict(grounding)
@@ -3351,26 +3320,70 @@ class VNextRetrievalService:
         new_items = [memory for memory in memories if memory.get("memory_type") not in {"belief", "thesis"}]
         if not new_items:
             return [], CONTRADICTIONS_STAGE_ENABLED
-        beliefs = list_beliefs(
-            status="active",
-            domains=domains or None,
-            sensitivity_allowed=sensitivity_allowed,
-            limit=(SCOPED_ROW_OVERFETCH_LIMIT if scope.active else max(limit * 2, limit)),
-        )
+        belief_target = max(limit * 2, limit)
         if scope.active:
-            get_memory = getattr(self.store, "get_memory", None)
-            scoped_beliefs: list[JsonObject] = []
-            if callable(get_memory):
-                for belief in beliefs:
-                    memory_id = str(belief.get("memory_id") or "")
-                    backing_memory = get_memory(memory_id) if memory_id else None
-                    if backing_memory is not None and _row_matches_scope(
-                        backing_memory,
-                        scope,
-                        person_linked_memory_ids=person_linked_memory_ids,
-                    ):
-                        scoped_beliefs.append(belief)
-            beliefs = scoped_beliefs
+            scoped_belief_parameters = (
+                "scope_projects",
+                "scope_people",
+                "scope_person_memory_ids",
+                "scope_window_start",
+                "scope_window_end",
+            )
+            if _supports_explicit_parameters(list_beliefs, scoped_belief_parameters):
+                beliefs = list(
+                    list_beliefs(
+                        status="active",
+                        domains=domains or None,
+                        sensitivity_allowed=sensitivity_allowed,
+                        scope_projects=tuple(sorted(scope.projects)),
+                        scope_people=tuple(sorted(scope.people)),
+                        scope_person_memory_ids=tuple(sorted(person_linked_memory_ids)),
+                        scope_window_start=scope.window_start,
+                        scope_window_end=scope.window_end,
+                        limit=belief_target,
+                    )
+                )
+            else:
+                def _select_scoped_beliefs(rows: Sequence[JsonObject]) -> list[JsonObject]:
+                    backing_by_id = self._memories_by_ids(
+                        [str(row.get("memory_id") or "") for row in rows]
+                    )
+                    return [
+                        belief
+                        for belief in rows
+                        if (
+                            backing := backing_by_id.get(str(belief.get("memory_id") or ""))
+                        )
+                        is not None
+                        and _row_matches_scope(
+                            backing,
+                            scope,
+                            person_linked_memory_ids=person_linked_memory_ids,
+                        )
+                    ]
+
+                beliefs, _belief_source = _fetch_filtered_prefix(
+                    lambda n: (
+                        list(
+                            list_beliefs(
+                                status="active",
+                                domains=domains or None,
+                                sensitivity_allowed=sensitivity_allowed,
+                                limit=n,
+                            )
+                        ),
+                        "listing",
+                    ),
+                    select_rows=_select_scoped_beliefs,
+                    target=belief_target,
+                )
+        else:
+            beliefs = list_beliefs(
+                status="active",
+                domains=domains or None,
+                sensitivity_allowed=sensitivity_allowed,
+                limit=belief_target,
+            )
         candidates = vnext_contradictions._find_candidates(  # noqa: SLF001 - deliberate read-only reuse
             new_items=new_items,
             beliefs=list(beliefs),
@@ -3386,54 +3399,94 @@ class VNextRetrievalService:
         limit: int = DEFAULT_RECENT_CHANGES_LIMIT,
     ) -> list[JsonObject]:
         """Most recent ``memory.*`` events from the store event log."""
+        list_memory_events = getattr(self.store, "list_memory_events", None)
         list_events = getattr(self.store, "list_events", None)
-        if not callable(list_events):
+        if not callable(list_memory_events) and not callable(list_events):
             return []
-        # Fetch a few extra rows: memory-targeted events that are not
-        # memory.* (e.g. provenance_link.created) are filtered out below.
-        events = list_events(
-            target_type="memory",
-            limit=(SCOPED_ROW_OVERFETCH_LIMIT if scope.active else limit * 4),
-        )
-        get_memory = getattr(self.store, "get_memory", None)
         identity_scope = _ResolvedRetrievalScope(
             projects=scope.projects,
             people=scope.people,
             window_start=None,
             window_end=None,
         )
-        changes: list[JsonObject] = []
-        for event in events:
-            event_type = str(event.get("event_type") or "")
-            if not event_type.startswith("memory."):
-                continue
-            if scope.window_start is not None:
-                occurred_at = _row_scope_event_time(event)
-                if occurred_at is None or occurred_at < scope.window_start:
-                    continue
-                if scope.window_end is not None and occurred_at > scope.window_end:
-                    continue
-            if identity_scope.active:
-                target_id = str(event.get("target_id") or "")
-                target = get_memory(target_id) if callable(get_memory) and target_id else None
-                if target is None or not _row_matches_scope(
+        def _select_events(rows: Sequence[JsonObject]) -> list[JsonObject]:
+            eligible = [
+                event
+                for event in rows
+                if str(event.get("event_type") or "").startswith("memory.")
+                and (
+                    scope.window_start is None
+                    or (
+                        (occurred_at := _row_scope_event_time(event)) is not None
+                        and occurred_at >= scope.window_start
+                        and (scope.window_end is None or occurred_at <= scope.window_end)
+                    )
+                )
+            ]
+            if not identity_scope.active:
+                return eligible
+            targets = self._memories_by_ids(
+                [str(event.get("target_id") or "") for event in eligible]
+            )
+            return [
+                event
+                for event in eligible
+                if (
+                    target := targets.get(str(event.get("target_id") or ""))
+                )
+                is not None
+                and _row_matches_scope(
                     target,
                     identity_scope,
                     person_linked_memory_ids=person_linked_memory_ids,
-                ):
-                    continue
-            changes.append(
-                {
-                    "event_id": str(event.get("id")),
-                    "event_type": event_type,
-                    "target_id": event.get("target_id"),
-                    "occurred_at": event.get("occurred_at"),
-                    "actor_type": event.get("actor_type"),
-                }
+                )
+            ]
+
+        scoped_event_parameters = (
+            "event_type_prefix",
+            "scope_projects",
+            "scope_people",
+            "scope_person_memory_ids",
+            "scope_window_start",
+            "scope_window_end",
+        )
+        if _supports_explicit_parameters(list_memory_events, scoped_event_parameters):
+            scoped_list_memory_events = cast(
+                Callable[..., list[JsonObject]],
+                list_memory_events,
             )
-            if len(changes) >= limit:
-                break
-        return changes
+            events = _select_events(
+                scoped_list_memory_events(
+                    event_type_prefix="memory.",
+                    scope_projects=tuple(sorted(scope.projects)),
+                    scope_people=tuple(sorted(scope.people)),
+                    scope_person_memory_ids=tuple(sorted(person_linked_memory_ids)),
+                    scope_window_start=scope.window_start,
+                    scope_window_end=scope.window_end,
+                    limit=limit,
+                )
+            )
+        else:
+            assert callable(list_events)
+            events, _event_source = _fetch_filtered_prefix(
+                lambda n: (
+                    list(list_events(target_type="memory", limit=n)),
+                    "listing",
+                ),
+                select_rows=_select_events,
+                target=limit,
+                initial_limit=limit * 4,
+            )
+        return [
+            {
+                "event_id": str(event.get("id")),
+                "event_type": str(event.get("event_type") or ""),
+                "target_id": event.get("target_id"),
+                "occurred_at": event.get("occurred_at"),
+                "actor_type": event.get("actor_type"),
+            }
+            for event in events[:limit]
+        ]
 
     def _supporting_evidence(
         self,

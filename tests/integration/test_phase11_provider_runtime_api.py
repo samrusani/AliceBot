@@ -13,8 +13,11 @@ import anyio
 import psycopg
 import pytest
 
-import apps.api.src.alicebot_api.main as main_module
-from apps.api.src.alicebot_api.config import Settings, WorkspaceProviderConfig
+import alicebot_api.main as main_module
+from alicebot_api.config import Settings, WorkspaceProviderConfig
+from alicebot_api.provider_configuration import provider_config_fingerprint
+from alicebot_api.provider_secrets import decode_provider_secret_ref, resolve_provider_api_key
+from alicebot_api.store import ContinuityStore
 
 TEST_PROVIDER_SECRET_MANAGER_URL = (
     f"file://{(Path('/tmp').resolve() / 'alicebot-phase11-provider-runtime-secrets').as_posix()}"
@@ -48,6 +51,8 @@ def invoke_request(
     request_headers = [(b"content-type", b"application/json")]
     for key, value in (headers or {}).items():
         request_headers.append((key.lower().encode(), value.encode()))
+    if path == "/v1/runtime/invoke" and not any(key == b"idempotency-key" for key, _value in request_headers):
+        request_headers.append((b"idempotency-key", f"provider-runtime-{uuid4()}".encode()))
 
     scope = {
         "type": "http",
@@ -67,11 +72,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -225,11 +226,7 @@ def install_openai_compatible_success(
 ) -> list[dict[str, object]]:
     captured_requests: list[dict[str, object]] = []
     resolved_models = ["gpt-5-mini"] if models is None else models
-    resolved_usage = (
-        {"input_tokens": 12, "output_tokens": 5, "total_tokens": 17}
-        if usage is None
-        else usage
-    )
+    resolved_usage = {"input_tokens": 12, "output_tokens": 5, "total_tokens": 17} if usage is None else usage
 
     def fake_discovery_urlopen(request, timeout):
         captured_requests.append(
@@ -674,9 +671,7 @@ def test_phase14_provider_control_plane_requires_workspace_owner(
 ) -> None:
     _configure_settings(migrated_database_urls, monkeypatch)
     install_openai_compatible_success(monkeypatch)
-    owner_session_token, owner_workspace_id, _ = _bootstrap_workspace_session(
-        "provider-owner-control@example.com"
-    )
+    owner_session_token, owner_workspace_id, _ = _bootstrap_workspace_session("provider-owner-control@example.com")
     member_session_token, _, member_user_account_id = _bootstrap_workspace_session(
         "provider-member-control@example.com"
     )
@@ -933,6 +928,117 @@ def test_phase11_openai_compatible_registration_still_works(migrated_database_ur
     assert stored_api_key.startswith("provider_secret_ref:")
 
 
+def test_phase14_provider_update_uses_atomic_cas_and_hides_stale_capability(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    install_openai_compatible_success(monkeypatch)
+    session_token, workspace_id, _ = _bootstrap_workspace_session("provider-cas-stale-capability@example.com")
+    create_status, create_payload = invoke_request(
+        "POST",
+        "/v1/providers",
+        payload={
+            "provider_key": "openai_compatible",
+            "display_name": "CAS Provider",
+            "base_url": "https://provider.example/v1",
+            "api_key": "provider-secret-key",
+            "default_model": "gpt-5-mini",
+        },
+        headers=auth_header(session_token),
+    )
+    assert create_status == 201
+    provider_id = UUID(create_payload["provider"]["id"])
+
+    with psycopg.connect(
+        migrated_database_urls["admin"],
+        row_factory=psycopg.rows.dict_row,
+    ) as conn:
+        store = ContinuityStore(conn)
+        original = store.get_model_provider_for_workspace_optional(
+            provider_id=provider_id,
+            workspace_id=UUID(workspace_id),
+        )
+        assert original is not None
+        updated_display_name = "CAS Winner"
+        updated_fingerprint = provider_config_fingerprint(
+            provider_key=original["provider_key"],
+            model_provider=original["model_provider"],
+            display_name=updated_display_name,
+            base_url=original["base_url"],
+            api_key=original["api_key"],
+            auth_mode=original["auth_mode"],
+            default_model=original["default_model"],
+            status=original["status"],
+            model_list_path=original["model_list_path"],
+            healthcheck_path=original["healthcheck_path"],
+            invoke_path=original["invoke_path"],
+            azure_api_version=original["azure_api_version"],
+            azure_auth_secret_ref=original["azure_auth_secret_ref"],
+            metadata=original["metadata"],
+        )
+        winner = store.update_model_provider(
+            provider_id=provider_id,
+            workspace_id=UUID(workspace_id),
+            provider_key=original["provider_key"],
+            model_provider=original["model_provider"],
+            display_name=updated_display_name,
+            base_url=original["base_url"],
+            api_key=original["api_key"],
+            auth_mode=original["auth_mode"],
+            default_model=original["default_model"],
+            status=original["status"],
+            model_list_path=original["model_list_path"],
+            healthcheck_path=original["healthcheck_path"],
+            invoke_path=original["invoke_path"],
+            azure_api_version=original["azure_api_version"],
+            azure_auth_secret_ref=original["azure_auth_secret_ref"],
+            metadata=original["metadata"],
+            config_fingerprint_sha256=updated_fingerprint,
+            expected_config_revision=original["config_revision"],
+            expected_config_fingerprint_sha256=original["config_fingerprint_sha256"],
+        )
+        assert winner is not None
+        assert winner["config_revision"] == original["config_revision"] + 1
+        conn.commit()
+
+    with psycopg.connect(
+        migrated_database_urls["admin"],
+        row_factory=psycopg.rows.dict_row,
+    ) as conn:
+        lost_update = ContinuityStore(conn).update_model_provider(
+            provider_id=provider_id,
+            workspace_id=UUID(workspace_id),
+            provider_key=original["provider_key"],
+            model_provider=original["model_provider"],
+            display_name="CAS Loser",
+            base_url=original["base_url"],
+            api_key=original["api_key"],
+            auth_mode=original["auth_mode"],
+            default_model=original["default_model"],
+            status=original["status"],
+            model_list_path=original["model_list_path"],
+            healthcheck_path=original["healthcheck_path"],
+            invoke_path=original["invoke_path"],
+            azure_api_version=original["azure_api_version"],
+            azure_auth_secret_ref=original["azure_auth_secret_ref"],
+            metadata=original["metadata"],
+            config_fingerprint_sha256="f" * 64,
+            expected_config_revision=original["config_revision"],
+            expected_config_fingerprint_sha256=original["config_fingerprint_sha256"],
+        )
+        assert lost_update is None
+
+    detail_status, detail_payload = invoke_request(
+        "GET",
+        f"/v1/providers/{provider_id}",
+        headers=auth_header(session_token),
+    )
+    assert detail_status == 200
+    assert detail_payload["provider"]["display_name"] == "CAS Winner"
+    assert detail_payload["capabilities"] is None
+
+
 def test_phase14_workspace_bootstrap_config_seed_and_provider_update_refresh_capabilities(
     migrated_database_urls,
     monkeypatch,
@@ -1011,10 +1117,7 @@ def test_phase14_workspace_bootstrap_config_seed_and_provider_update_refresh_cap
     assert update_payload["capabilities"]["snapshot"]["models"] == ["gpt-4.1-mini", "gpt-5-mini"]
     assert update_payload["capabilities"]["snapshot"]["models_endpoint"] == "/custom-models"
     assert any(record["url"] == "https://provider.example/v1/models" for record in captured_requests)
-    assert any(
-        record["url"] == "https://updated-provider.example/v1/custom-models"
-        for record in captured_requests
-    )
+    assert any(record["url"] == "https://updated-provider.example/v1/custom-models" for record in captured_requests)
 
 
 def test_phase14_workspace_bootstrap_config_seeds_vllm_provider(
@@ -1106,9 +1209,7 @@ def test_phase14_provider_invocation_telemetry_persists_for_test_and_runtime(
         response_id="resp_telemetry_1",
         usage={"input_tokens": 14, "output_tokens": 3, "total_tokens": 17},
     )
-    session_token, workspace_id, user_account_id = _bootstrap_workspace_session(
-        "provider-telemetry@example.com"
-    )
+    session_token, workspace_id, user_account_id = _bootstrap_workspace_session("provider-telemetry@example.com")
 
     create_status, create_payload = invoke_request(
         "POST",
@@ -1196,9 +1297,7 @@ def test_phase14_provider_invocation_telemetry_respects_workspace_rls(
     owner_session_token, _, owner_user_account_id = _bootstrap_workspace_session(
         "provider-telemetry-rls-owner@example.com"
     )
-    _, _, other_user_account_id = _bootstrap_workspace_session(
-        "provider-telemetry-rls-other@example.com"
-    )
+    _, _, other_user_account_id = _bootstrap_workspace_session("provider-telemetry-rls-other@example.com")
 
     create_status, create_payload = invoke_request(
         "POST",
@@ -1400,6 +1499,97 @@ def test_phase11_azure_provider_registration_test_and_no_plaintext_storage(
     assert "authorization" not in invoke_headers
 
 
+def test_phase14_azure_auth_mode_rotation_requires_new_compatible_secret(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    session_token, workspace_id, _ = _bootstrap_workspace_session("provider-azure-auth-rotation@example.com")
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        if request.full_url.startswith("https://azure-rotation.example/openai/models"):
+            return FakeHTTPResponse(json.dumps({"data": [{"id": "gpt-4.1-mini"}]}).encode("utf-8"))
+        raise AssertionError(f"unexpected Azure rotation URL: {request.full_url}")
+
+    monkeypatch.setattr("alicebot_api.azure_provider_helpers.urlopen", fake_urlopen)
+    register_status, register_payload = invoke_request(
+        "POST",
+        "/v1/providers/azure/register",
+        payload={
+            "display_name": "Azure Rotation",
+            "base_url": "https://azure-rotation.example",
+            "auth_mode": "azure_api_key",
+            "api_key": "initial-azure-api-key",
+            "default_model": "gpt-4.1-mini",
+        },
+        headers=auth_header(session_token),
+    )
+    assert register_status == 201
+    provider_id = register_payload["provider"]["id"]
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT azure_auth_secret_ref
+                FROM model_providers
+                WHERE id = %s AND workspace_id = %s
+                """,
+                (provider_id, workspace_id),
+            )
+            old_secret_reference = cur.fetchone()[0]
+
+    secret_root = Path(TEST_PROVIDER_SECRET_MANAGER_URL.removeprefix("file://"))
+    old_secret_path = secret_root / decode_provider_secret_ref(old_secret_reference)
+    assert old_secret_path.is_file()
+
+    rejected_status, rejected_payload = invoke_request(
+        "PATCH",
+        f"/v1/providers/{provider_id}",
+        payload={"auth_mode": "azure_ad_token"},
+        headers=auth_header(session_token),
+    )
+    assert rejected_status == 400
+    assert rejected_payload["detail"] == ("ad_token is required when changing Azure auth_mode")
+    assert old_secret_path.is_file()
+
+    updated_status, updated_payload = invoke_request(
+        "PATCH",
+        f"/v1/providers/{provider_id}",
+        payload={
+            "auth_mode": "azure_ad_token",
+            "ad_token": "replacement-azure-ad-token",
+        },
+        headers=auth_header(session_token),
+    )
+    assert updated_status == 200
+    assert updated_payload["provider"]["auth_mode"] == "azure_ad_token"
+    assert updated_payload["capabilities"]["snapshot"]["azure_auth_mode"] == ("azure_ad_token")
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT azure_auth_secret_ref, auth_mode
+                FROM model_providers
+                WHERE id = %s AND workspace_id = %s
+                """,
+                (provider_id, workspace_id),
+            )
+            new_secret_reference, stored_auth_mode = cur.fetchone()
+    assert stored_auth_mode == "azure_ad_token"
+    assert new_secret_reference != old_secret_reference
+    assert (
+        resolve_provider_api_key(
+            settings=Settings(provider_secret_manager_url=TEST_PROVIDER_SECRET_MANAGER_URL),
+            api_key_field=new_secret_reference,
+        )
+        == "replacement-azure-ad-token"
+    )
+    assert not old_secret_path.exists()
+
+
 def test_phase11_azure_runtime_invoke_workspace_isolation_and_ad_token_auth(
     migrated_database_urls,
     monkeypatch,
@@ -1484,9 +1674,7 @@ def test_phase11_azure_runtime_invoke_workspace_isolation_and_ad_token_auth(
         headers=auth_header(session_token_a),
     )
     assert invalid_register_status == 422
-    assert "api_key must be empty when auth_mode is azure_ad_token" in json.dumps(
-        invalid_register_payload["detail"]
-    )
+    assert "api_key must be empty when auth_mode is azure_ad_token" in json.dumps(invalid_register_payload["detail"])
 
     thread_id = _seed_thread_for_user(
         admin_db_url=migrated_database_urls["admin"],
@@ -1547,6 +1735,61 @@ def test_phase11_provider_registration_rejects_disallowed_targets(
         )
         assert status == 400
         assert "not allowed by outbound policy" in payload["detail"]
+
+
+def test_phase14_provider_dns_rejection_leaves_no_durable_configuration(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    session_token, workspace_id, _ = _bootstrap_workspace_session("provider-private-dns-precommit@example.com")
+    allowed_getaddrinfo = socket.getaddrinfo
+
+    def private_dns_getaddrinfo(hostname: str, port, type=0, proto=0):
+        if hostname == "private-dns.example":
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    socket.IPPROTO_TCP,
+                    "",
+                    ("10.20.30.40", 0),
+                )
+            ]
+        return allowed_getaddrinfo(hostname, port, type=type, proto=proto)
+
+    monkeypatch.setattr(
+        "alicebot_api.provider_security.socket.getaddrinfo",
+        private_dns_getaddrinfo,
+    )
+
+    status, payload = invoke_request(
+        "POST",
+        "/v1/providers",
+        payload={
+            "provider_key": "openai_compatible",
+            "display_name": "Private DNS Provider",
+            "base_url": "https://private-dns.example/v1",
+            "api_key": "must-not-be-persisted",
+            "default_model": "gpt-5-mini",
+        },
+        headers=auth_header(session_token),
+    )
+    assert status == 400
+    assert "not allowed by outbound policy" in payload["detail"]
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT count(*)
+                FROM model_providers
+                WHERE workspace_id = %s
+                  AND display_name = 'Private DNS Provider'
+                """,
+                (workspace_id,),
+            )
+            assert cur.fetchone()[0] == 0
 
 
 def test_phase11_provider_test_and_runtime_reject_disallowed_target_without_outbound(
@@ -1629,7 +1872,9 @@ def test_phase11_provider_rejects_userinfo_and_redacts_legacy_rows(
     monkeypatch,
 ) -> None:
     _configure_settings(migrated_database_urls, monkeypatch)
-    session_token, workspace_id, user_account_id = _bootstrap_workspace_session("provider-security-userinfo@example.com")
+    session_token, workspace_id, user_account_id = _bootstrap_workspace_session(
+        "provider-security-userinfo@example.com"
+    )
 
     rejected_status, rejected_payload = invoke_request(
         "POST",
@@ -1719,9 +1964,7 @@ def test_phase11_provider_error_reflection_and_persistence_are_sanitized(
 ) -> None:
     _configure_settings(migrated_database_urls, monkeypatch)
     install_openai_compatible_success(monkeypatch)
-    session_token, _, user_account_id = _bootstrap_workspace_session(
-        "provider-security-sanitized-errors@example.com"
-    )
+    session_token, _, user_account_id = _bootstrap_workspace_session("provider-security-sanitized-errors@example.com")
     sensitive_detail = "UPSTREAM_SECRET_TOKEN_ABC123"
 
     def fake_urlopen(request, timeout):
@@ -1731,9 +1974,7 @@ def test_phase11_provider_error_reflection_and_persistence_are_sanitized(
             code=502,
             msg="Bad Gateway",
             hdrs=None,
-            fp=BytesIO(
-                json.dumps({"error": {"message": f"provider failed with {sensitive_detail}"}}).encode("utf-8")
-            ),
+            fp=BytesIO(json.dumps({"error": {"message": f"provider failed with {sensitive_detail}"}}).encode("utf-8")),
         )
 
     monkeypatch.setattr("alicebot_api.response_generation.urlopen", fake_urlopen)

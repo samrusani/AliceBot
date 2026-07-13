@@ -25,14 +25,12 @@ def normalize_project_scope(value: object) -> tuple[str, ...]:
 
 def memory_project_scope(memory: Mapping[str, object]) -> tuple[str, ...]:
     """Canonical array scope with non-widening singular legacy fallbacks."""
-    direct_scope = normalize_project_scope(memory.get("project_scope"))
-    if direct_scope:
-        return direct_scope
+    if "project_scope" in memory:
+        return normalize_project_scope(memory.get("project_scope"))
     metadata = memory.get("metadata_json")
     if isinstance(metadata, Mapping):
-        metadata_scope = normalize_project_scope(metadata.get("project_scope"))
-        if metadata_scope:
-            return metadata_scope
+        if "project_scope" in metadata:
+            return normalize_project_scope(metadata.get("project_scope"))
         agentic = metadata.get("agentic_memory")
         if isinstance(agentic, Mapping):
             legacy_agentic_scope = normalize_project_scope(agentic.get("project_scope"))
@@ -50,7 +48,9 @@ def canonical_memory_metadata(memory: Mapping[str, object]) -> JsonObject:
     metadata = memory.get("metadata_json")
     result = dict(metadata) if isinstance(metadata, Mapping) else {}
     scope = memory_project_scope(memory)
-    if scope:
+    if scope or "project_scope" in memory or (
+        isinstance(metadata, Mapping) and "project_scope" in metadata
+    ):
         result["project_scope"] = list(scope)
     return result
 

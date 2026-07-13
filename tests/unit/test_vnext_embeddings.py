@@ -7,16 +7,21 @@ import pytest
 
 import alicebot_api.vnext_embeddings as vnext_embeddings
 from alicebot_api.vnext_embeddings import (
+    DeferredMemoryEmbedding,
     EMBEDDING_VECTOR_DIMENSIONS,
     OpenAICompatibleEmbeddingProvider,
     VNextEmbeddingConfigurationError,
     VNextEmbeddingProviderError,
     attach_memory_embedding,
+    attach_memory_embeddings,
     endpoint_fingerprint,
     get_embedding_provider,
     memory_embedding_signature,
     memory_embedding_text,
     pad_embedding_vector,
+    persist_deferred_memory_embeddings_best_effort,
+    persist_prepared_memory_embeddings,
+    prepare_memory_embeddings,
     signed_memory_embedding_update,
 )
 
@@ -119,6 +124,79 @@ def test_embed_batch_posts_openai_shape_and_pads_vectors(monkeypatch) -> None:
     assert vectors[0][:2] == [0.1, 0.3]
     assert vectors[1][:2] == [0.2, 0.4]
     assert all(len(vector) == EMBEDDING_VECTOR_DIMENSIONS for vector in vectors)
+
+
+def test_embed_batch_normalizes_non_utf8_response_to_typed_provider_error(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        vnext_embeddings,
+        "urlopen",
+        lambda request, timeout: _FakeResponse(b"\xff\xfe\xfa"),
+    )
+    provider = OpenAICompatibleEmbeddingProvider(
+        base_url="http://localhost:1234/v1",
+        model="local-embed",
+    )
+
+    with pytest.raises(VNextEmbeddingProviderError, match="embeddings request failed"):
+        provider.embed_batch(["fact"])
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        [
+            {"index": 0, "embedding": [0.1]},
+            {"index": 0, "embedding": [0.2]},
+        ],
+        [
+            {"index": 5, "embedding": [0.1]},
+            {"index": 9, "embedding": [0.2]},
+        ],
+        [
+            {"index": True, "embedding": [0.1]},
+            {"index": False, "embedding": [0.2]},
+        ],
+        [
+            {"index": 0, "embedding": [0.1]},
+            {"embedding": [0.2]},
+        ],
+    ],
+    ids=["duplicate", "out-of-range", "boolean", "mixed-indexed"],
+)
+def test_embed_batch_rejects_non_permutation_indices(monkeypatch, data) -> None:
+    monkeypatch.setattr(
+        vnext_embeddings,
+        "urlopen",
+        lambda request, timeout: _FakeResponse(json.dumps({"data": data}).encode("utf-8")),
+    )
+    provider = OpenAICompatibleEmbeddingProvider(
+        base_url="http://localhost:1234/v1", model="local-embed"
+    )
+
+    with pytest.raises(VNextEmbeddingProviderError, match="indices|index every"):
+        provider.embed_batch(["first", "second"])
+
+
+def test_embed_batch_without_indices_preserves_response_order(monkeypatch) -> None:
+    monkeypatch.setattr(
+        vnext_embeddings,
+        "urlopen",
+        lambda request, timeout: _FakeResponse(
+            json.dumps(
+                {"data": [{"embedding": [0.1]}, {"embedding": [0.2]}]}
+            ).encode("utf-8")
+        ),
+    )
+    provider = OpenAICompatibleEmbeddingProvider(
+        base_url="http://localhost:1234/v1", model="local-embed"
+    )
+
+    vectors = provider.embed_batch(["first", "second"])
+
+    assert vectors[0][0] == 0.1
+    assert vectors[1][0] == 0.2
 
 
 def test_embed_batch_omits_authorization_header_without_api_key(monkeypatch) -> None:
@@ -273,6 +351,7 @@ class _StubProvider:
 
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
+        self.batch_calls: list[list[str]] = []
 
     def embed_text(self, text: str) -> list[float]:
         if self.fail:
@@ -280,6 +359,7 @@ class _StubProvider:
         return pad_embedding_vector([0.5, 0.5])
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        self.batch_calls.append(list(texts))
         return [self.embed_text(text) for text in texts]
 
 
@@ -334,3 +414,204 @@ def test_attach_memory_embedding_logs_event_but_never_blocks_on_failure() -> Non
     assert store.events[-1]["event_type"] == "memory.embedding_failed"
     assert store.events[-1]["actor_id"] == "hermes"
     assert "connection refused" in str(store.events[-1]["payload_json"])
+
+
+def test_attach_memory_embedding_never_blocks_on_store_write_failure() -> None:
+    class FailingStore(_AttachStore):
+        def update_memory_embedding(self, **kwargs):
+            raise RuntimeError("database temporarily unavailable")
+
+    store = FailingStore()
+
+    attached = attach_memory_embedding(
+        store,
+        {"id": "memory-1", "canonical_text": "Fact text."},
+        provider=_StubProvider(),
+    )
+
+    assert attached is False
+    assert store.events[-1]["event_type"] == "memory.embedding_failed"
+    assert "database temporarily unavailable" in str(store.events[-1]["payload_json"])
+
+
+def test_attach_memory_embeddings_batches_provider_call_and_isolates_store_failures() -> None:
+    class PartiallyFailingStore(_AttachStore):
+        def update_memory_embedding(self, **kwargs):
+            if kwargs["memory_id"] == "memory-2":
+                raise RuntimeError("one row failed")
+            return super().update_memory_embedding(**kwargs)
+
+    store = PartiallyFailingStore()
+    provider = _StubProvider()
+
+    attached = attach_memory_embeddings(
+        store,
+        [
+            {"id": "memory-1", "canonical_text": "First fact."},
+            {"id": "memory-2", "canonical_text": "Second fact."},
+            {"id": "memory-3", "canonical_text": "Third fact."},
+        ],
+        provider=provider,
+    )
+
+    assert attached == 2
+    assert len(provider.batch_calls) == 1
+    assert len(provider.batch_calls[0]) == 3
+    assert [memory_id for memory_id, _vector in store.embeddings] == ["memory-1", "memory-3"]
+    assert len([event for event in store.events if event["event_type"] == "memory.embedding_failed"]) == 1
+
+
+def test_two_phase_embedding_prepares_without_store_then_persists_best_effort() -> None:
+    class PartiallyFailingStore(_AttachStore):
+        def update_memory_embedding(self, **kwargs):
+            if kwargs["memory_id"] == "memory-2":
+                raise RuntimeError("one row failed")
+            return super().update_memory_embedding(**kwargs)
+
+    inputs = tuple(
+        DeferredMemoryEmbedding.from_memory(
+            {"id": f"memory-{index}", "canonical_text": f"Fact {index}."}
+        )
+        for index in range(1, 4)
+    )
+    provider = _StubProvider()
+
+    preparation = prepare_memory_embeddings(inputs, provider=provider)
+
+    assert len(provider.batch_calls) == 1
+    assert len(preparation.prepared) == 3
+    assert preparation.failures == ()
+    assert preparation.provider == "stub"
+    assert preparation.model == "stub-embedding"
+
+    store = PartiallyFailingStore()
+    persisted = persist_prepared_memory_embeddings(store, preparation)
+
+    assert persisted == 2
+    assert [memory_id for memory_id, _vector in store.embeddings] == ["memory-1", "memory-3"]
+    assert len([event for event in store.events if event["event_type"] == "memory.embedding_failed"]) == 1
+
+
+def test_two_phase_embedding_does_not_count_stale_compare_and_set_miss() -> None:
+    class StaleStore(_AttachStore):
+        def update_memory_embedding(self, **_kwargs):
+            return None
+
+    inputs = (
+        DeferredMemoryEmbedding.from_memory(
+            {"id": "memory-1", "canonical_text": "Text before an edit."}
+        ),
+    )
+    preparation = prepare_memory_embeddings(inputs, provider=_StubProvider())
+
+    assert persist_prepared_memory_embeddings(StaleStore(), preparation) == 0
+
+
+def test_two_phase_embedding_carries_provider_failures_to_persistence_log() -> None:
+    inputs = (
+        DeferredMemoryEmbedding.from_memory(
+            {"id": "memory-1", "canonical_text": "Fact text."}
+        ),
+    )
+
+    preparation = prepare_memory_embeddings(inputs, provider=_StubProvider(fail=True))
+
+    assert preparation.prepared == ()
+    assert preparation.failures[0].memory_id == "memory-1"
+    store = _AttachStore()
+    assert persist_prepared_memory_embeddings(store, preparation) == 0
+    assert store.events[-1]["event_type"] == "memory.embedding_failed"
+    assert "connection refused" in str(store.events[-1]["payload_json"])
+
+
+def test_best_effort_deferred_embedding_swallows_connection_acquire_failure(
+    caplog,
+) -> None:
+    class AcquireFailure:
+        def __enter__(self):
+            raise RuntimeError("pool exhausted")
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    deferred = (
+        DeferredMemoryEmbedding.from_memory(
+            {"id": "memory-1", "canonical_text": "Fact text."}
+        ),
+    )
+
+    with caplog.at_level("WARNING"):
+        persisted = persist_deferred_memory_embeddings_best_effort(
+            deferred,
+            store_context=AcquireFailure,
+            provider=_StubProvider(),
+        )
+
+    assert persisted == 0
+    assert "persistence failed after the primary commit" in caplog.text
+    assert "pool exhausted" in caplog.text
+
+
+def test_best_effort_deferred_embedding_isolates_store_write_failure() -> None:
+    class WriteFailureStore(_AttachStore):
+        def update_memory_embedding(self, **_kwargs):
+            raise RuntimeError("vector write failed")
+
+    class StoreContext:
+        def __init__(self, store: WriteFailureStore) -> None:
+            self.store = store
+
+        def __enter__(self) -> WriteFailureStore:
+            return self.store
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    store = WriteFailureStore()
+    deferred = (
+        DeferredMemoryEmbedding.from_memory(
+            {"id": "memory-1", "canonical_text": "Fact text."}
+        ),
+    )
+
+    persisted = persist_deferred_memory_embeddings_best_effort(
+        deferred,
+        store_context=lambda: StoreContext(store),
+        provider=_StubProvider(),
+    )
+
+    assert persisted == 0
+    assert store.events[-1]["event_type"] == "memory.embedding_failed"
+    assert "vector write failed" in str(store.events[-1]["payload_json"])
+
+
+def test_best_effort_deferred_embedding_swallows_followup_commit_failure(
+    caplog,
+) -> None:
+    class CommitFailure:
+        def __init__(self, store: _AttachStore) -> None:
+            self.store = store
+
+        def __enter__(self) -> _AttachStore:
+            return self.store
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            raise RuntimeError("commit failed")
+
+    store = _AttachStore()
+    deferred = (
+        DeferredMemoryEmbedding.from_memory(
+            {"id": "memory-1", "canonical_text": "Fact text."}
+        ),
+    )
+
+    with caplog.at_level("WARNING"):
+        persisted = persist_deferred_memory_embeddings_best_effort(
+            deferred,
+            store_context=lambda: CommitFailure(store),
+            provider=_StubProvider(),
+        )
+
+    assert persisted == 0
+    assert "persistence failed after the primary commit" in caplog.text
+    assert "commit failed" in caplog.text

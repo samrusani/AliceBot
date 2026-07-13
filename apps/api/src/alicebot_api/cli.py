@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -50,7 +50,7 @@ from alicebot_api.cli_formatting import (
     format_trusted_fact_playbook_explain_output,
     format_trusted_fact_playbook_list_output,
 )
-from alicebot_api.config import Settings, get_settings
+from alicebot_api.config import Settings, get_runtime_settings, get_settings
 from alicebot_api.continuity_capture import (
     ContinuityCaptureValidationError,
     capture_continuity_input,
@@ -215,10 +215,13 @@ from alicebot_api.vnext_connections import (
     VNextConnectionValidationError,
 )
 from alicebot_api.vnext_connectors import (
+    TelegramPollContext,
     VNextConnectorService,
     VNextConnectorValidationError,
     list_connector_definitions,
     load_connector_items_from_file,
+    poll_telegram_updates,
+    scan_local_folder,
 )
 from alicebot_api.vnext_context_tree import (
     ContextTreeRequest,
@@ -267,22 +270,23 @@ from alicebot_api.vnext_scheduler_runtime import (
     DEFAULT_STATUS_FILE,
     SchedulerRuntimeConfig,
     daemon_status,
+    run_due_workflows_durable,
     run_foreground_daemon,
+    run_now_durable,
     start_background_daemon,
     stop_daemon,
 )
 from alicebot_api.vnext_embeddings import (
+    DeferredMemoryEmbedding,
     EMBEDDINGS_API_KEY_ENV,
     EMBEDDINGS_BASE_URL_ENV,
     EMBEDDINGS_MODEL_ENV,
     EMBEDDING_SIGNATURE_VERSION,
     MAX_EMBEDDINGS_BATCH_SIZE,
-    VNextEmbeddingConfigurationError,
-    VNextEmbeddingProviderError,
     endpoint_fingerprint,
     get_embedding_provider,
     memory_embedding_text,
-    signed_memory_embedding_update,
+    persist_deferred_memory_embeddings_best_effort,
 )
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_json import json_safe
@@ -292,7 +296,7 @@ from alicebot_api.vnext_memory_commit import (
     VNextMemoryCommitValidationError,
     memory_commit_request_from_payload,
 )
-from alicebot_api.vnext_secrets import InMemorySecretProvider
+from alicebot_api.vnext_secrets import InMemorySecretProvider, VNextSecretError, default_secret_provider
 from alicebot_api.vnext_store import PostgresVNextStore
 
 DEFAULT_CLI_USER_ID = "00000000-0000-0000-0000-000000000001"
@@ -327,6 +331,14 @@ class EmbeddingBackfillFailure(Exception):
         self.output = output
 
 
+class PartialCommandFailure(Exception):
+    """A batch command produced useful JSON output but did not fully succeed."""
+
+    def __init__(self, output: str) -> None:
+        super().__init__("command completed with failed items")
+        self.output = output
+
+
 @dataclass(frozen=True, slots=True)
 class CLIContext:
     settings: Settings
@@ -357,14 +369,10 @@ def _parse_datetime(value: str) -> datetime:
     try:
         return datetime.fromisoformat(normalized)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError(
-            f"invalid datetime value '{value}'. Use ISO-8601 format."
-        ) from exc
+        raise argparse.ArgumentTypeError(f"invalid datetime value '{value}'. Use ISO-8601 format.") from exc
 
 
-def _parse_optional_json_object(
-    raw_value: str | None, *, option_name: str
-) -> ContinuityJsonObject | None:
+def _parse_optional_json_object(raw_value: str | None, *, option_name: str) -> ContinuityJsonObject | None:
     if raw_value is None:
         return None
     try:
@@ -428,7 +436,9 @@ def _add_model_generation_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--model-provider", default=None, help="Optional model provider id.")
     parser.add_argument("--model", default=None, help="Optional model id.")
-    parser.add_argument("--model-temperature", type=float, default=0.2, help="Model temperature for model-backed generation.")
+    parser.add_argument(
+        "--model-temperature", type=float, default=0.2, help="Model temperature for model-backed generation."
+    )
     parser.add_argument(
         "--allow-cloud-private",
         action="store_true",
@@ -539,9 +549,36 @@ def _resolve_user_id(settings: Settings, user_id_flag: str | None) -> UUID:
     return UUID(os.getenv("ALICEBOT_AUTH_USER_ID", DEFAULT_CLI_USER_ID))
 
 
+def _settings_with_command_overrides(args: argparse.Namespace) -> Settings:
+    """Load CLI settings after applying its explicit database/user overrides.
+
+    The API server validates every hosted production dependency. Local CLI
+    commands only require their database and acting-user context, so explicit
+    flags must be usable even when unrelated hosted services are not configured.
+    """
+
+    if args.database_url is None and args.user_id is None:
+        if os.getenv("APP_ENV", "development") in {"development", "test"}:
+            return get_settings()
+        return get_runtime_settings()
+    effective_env = dict(os.environ)
+    if args.database_url is not None:
+        effective_env["DATABASE_URL"] = args.database_url
+    if args.user_id is not None:
+        try:
+            UUID(args.user_id)
+        except ValueError as exc:
+            raise ValueError(f"--user-id must be a UUID, got: {args.user_id}") from exc
+        effective_env["ALICEBOT_AUTH_USER_ID"] = args.user_id
+    return Settings.from_env(
+        effective_env,
+        require_production_services=False,
+    )
+
+
 def _build_context(args: argparse.Namespace) -> CLIContext:
-    settings = get_settings()
-    database_url = args.database_url if args.database_url is not None else settings.database_url
+    settings = _settings_with_command_overrides(args)
+    database_url = settings.database_url
     if database_url.startswith("sqlite:"):
         raise ValueError(
             "the 'alicebot' CLI requires a Postgres DATABASE_URL, got a SQLite URL. "
@@ -665,6 +702,13 @@ def _json_dumps(value: object) -> str:
     return json.dumps(json_safe(value), indent=2, sort_keys=True)
 
 
+def _checked_batch_output(record: dict[str, object]) -> str:
+    output = _json_dumps(record)
+    if record.get("status") in {"partial", "failed"}:
+        raise PartialCommandFailure(output)
+    return output
+
+
 def _vnext_sensitivity_allowed(args: argparse.Namespace) -> tuple[str, ...]:
     values = getattr(args, "sensitivity_allowed", None)
     return tuple(values) if values else DEFAULT_VNEXT_SENSITIVITY_ALLOWED
@@ -715,7 +759,12 @@ def _vnext_policy_checked_for_args(
         write_policy=write_policy,
     )
     append_policy_events(store, identity=identity, decision=decision)
-    return identity, ("agent" if identity is not None else "user"), identity.agent_id if identity is not None else None, decision
+    return (
+        identity,
+        ("agent" if identity is not None else "user"),
+        identity.agent_id if identity is not None else None,
+        decision,
+    )
 
 
 def _scheduler_service(store: PostgresVNextStore) -> VNextSchedulerService:
@@ -736,46 +785,89 @@ def _retrieval_service(store: PostgresVNextStore) -> VNextRetrievalService:
     return VNextRetrievalService(cast(VNextRetrievalStore, store))
 
 
+def _persist_deferred_capture_embeddings(
+    ctx: CLIContext,
+    result: object,
+    *,
+    actor_type: str = "system",
+    actor_id: str | None = None,
+    trace_id: str | None = None,
+) -> None:
+    """Call the embedding provider between capture and persistence transactions."""
+
+    deferred_inputs = getattr(result, "deferred_embedding_inputs", ())
+    _persist_deferred_embedding_inputs(
+        ctx,
+        deferred_inputs,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        trace_id=trace_id,
+    )
+
+
+def _persist_deferred_embedding_inputs(
+    ctx: CLIContext,
+    deferred_inputs: Sequence[DeferredMemoryEmbedding],
+    *,
+    actor_type: str = "system",
+    actor_id: str | None = None,
+    trace_id: str | None = None,
+) -> None:
+    """Prepare a collected embedding batch, then persist it separately."""
+
+    persist_deferred_memory_embeddings_best_effort(
+        deferred_inputs,
+        store_context=lambda: _vnext_store_context(ctx),
+        actor_type=actor_type,
+        actor_id=actor_id,
+        trace_id=trace_id,
+    )
+
+
 def _run_vnext_sources_capture_text(ctx: CLIContext, args: argparse.Namespace) -> str:
     raw_text = " ".join(args.raw_text).strip()
     with _vnext_store_context(ctx) as store:
-        result = VNextCaptureService(store).capture_text(
+        result = VNextCaptureService(store, defer_embeddings=True).capture_text(
             raw_text,
             title=args.title,
             domain=args.domain,
             sensitivity=args.sensitivity,
         )
+    _persist_deferred_capture_embeddings(ctx, result)
     return _json_dumps(result.to_record())
 
 
 def _run_vnext_sources_capture_file(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
-        result = VNextCaptureService(store).capture_file(
+        result = VNextCaptureService(store, defer_embeddings=True).capture_file(
             args.path,
             domain=args.domain,
             sensitivity=args.sensitivity,
         )
+    _persist_deferred_capture_embeddings(ctx, result)
     return _json_dumps(result.to_record())
 
 
 def _run_vnext_sources_import_markdown(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
-        result = VNextCaptureService(store).import_markdown_folder(
+        result = VNextCaptureService(store, defer_embeddings=True).import_markdown_folder(
             args.folder,
             domain=args.domain,
             sensitivity=args.sensitivity,
         )
-    return _json_dumps(result.to_record())
+    _persist_deferred_capture_embeddings(ctx, result)
+    return _checked_batch_output(result.to_record())
 
 
 def _run_vnext_sources_import_chatgpt(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
-        result = VNextCaptureService(store).import_chatgpt_export_file(
+        result = VNextCaptureService(store, defer_embeddings=True).import_chatgpt_export_file(
             args.path,
             domain=args.domain,
             sensitivity=args.sensitivity,
         )
-    return _json_dumps(result.to_record())
+    _persist_deferred_capture_embeddings(ctx, result)
+    return _checked_batch_output(result.to_record())
 
 
 def _run_vnext_connectors_list(_ctx: CLIContext, _args: argparse.Namespace) -> str:
@@ -790,13 +882,14 @@ def _run_vnext_connectors_list(_ctx: CLIContext, _args: argparse.Namespace) -> s
 def _run_vnext_connectors_ingest(ctx: CLIContext, args: argparse.Namespace) -> str:
     items = load_connector_items_from_file(args.payload_path)
     with _vnext_store_context(ctx) as store:
-        result = VNextConnectorService(store).sync_items(
+        result = VNextConnectorService(store, defer_embeddings=True).sync_items(
             args.connector_name,
             items,
             default_domain=args.domain,
             default_sensitivity=args.sensitivity,
         )
-    return _json_dumps(result.to_record())
+    _persist_deferred_capture_embeddings(ctx, result)
+    return _checked_batch_output(result.to_record())
 
 
 def _path_identity(value: object) -> str | None:
@@ -883,7 +976,9 @@ def _run_vnext_connectors_health(ctx: CLIContext, _args: argparse.Namespace) -> 
 
 def _run_vnext_telegram_configure(ctx: CLIContext, args: argparse.Namespace) -> str:
     args.connector_name = "telegram"
-    args.secret_ref = args.secret_ref or ("telegram.bot_token.default" if getattr(args, "bot_token", None) else f"env:{args.bot_token_env}")
+    args.secret_ref = args.secret_ref or (
+        "telegram.bot_token.default" if getattr(args, "bot_token", None) else f"env:{args.bot_token_env}"
+    )
     if getattr(args, "bot_token", None):
         with _vnext_store_context(ctx) as store:
             VNextConnectorService(store).set_connector_secret(
@@ -899,63 +994,95 @@ def _run_vnext_telegram_test(ctx: CLIContext, args: argparse.Namespace) -> str:
         service = VNextConnectorService(store)
         config = service.get_config("telegram")
         config_json = _object_dict(config.get("config_json"))
-        payload = {
-            "connector_name": "telegram",
-            "configured": bool(config.get("configured")),
-            "enabled": bool(config.get("enabled")),
-            "secret_ref": config.get("secret_ref") or f"env:{args.bot_token_env}",
-            "secret_resolved": service.secret_provider.has_secret(str(config.get("secret_ref") or f"env:{args.bot_token_env}")),
-            "allowed_chat_ids_configured": bool(config_json.get("allowed_chat_ids")),
-            "cursor": service.get_cursor("telegram"),
-        }
-        if getattr(args, "live", False):
-            service.fetch_telegram_updates(bot_token_env=args.bot_token_env, timeout=1, limit=1, retries=0)
-            payload["live_poll"] = "ok"
+        cursor = service.get_cursor("telegram")
+        secret_ref = str(config.get("secret_ref") or f"env:{args.bot_token_env}")
+
+    # Secret-file access and the live network poll are both external I/O. Keep
+    # them outside the connector store transaction used for config/cursor reads.
+    secret_provider = default_secret_provider()
+    try:
+        token = secret_provider.get_secret(secret_ref) or os.environ.get(args.bot_token_env)
+    except VNextSecretError as exc:
+        raise VNextConnectorValidationError("telegram bot token could not be resolved") from exc
+    payload = {
+        "connector_name": "telegram",
+        "configured": bool(config.get("configured")),
+        "enabled": bool(config.get("enabled")),
+        "secret_ref": secret_ref,
+        "secret_resolved": bool(token),
+        "allowed_chat_ids_configured": bool(config_json.get("allowed_chat_ids")),
+        "cursor": cursor,
+    }
+    if getattr(args, "live", False):
+        if not token:
+            raise VNextConnectorValidationError("telegram bot token is not configured")
+        poll_telegram_updates(
+            TelegramPollContext(token=token, cursor=cursor, secret_ref=secret_ref),
+            timeout=1,
+            limit=1,
+            retries=0,
+        )
+        payload["live_poll"] = "ok"
     return _json_dumps(payload)
 
 
 def _run_vnext_telegram_sync(ctx: CLIContext, args: argparse.Namespace) -> str:
+    updates = load_connector_items_from_file(args.payload_path) if args.payload_path else None
     with _vnext_store_context(ctx) as store:
-        service = VNextConnectorService(store)
-        if args.payload_path:
-            updates = load_connector_items_from_file(args.payload_path)
-        else:
-            updates = service.fetch_telegram_updates(
-                bot_token_env=args.bot_token_env,
-                timeout=args.timeout,
-                limit=args.limit,
-                retries=args.retries,
-            )
+        service = VNextConnectorService(store, defer_embeddings=True)
+        poll_context = None if updates is not None else service.prepare_telegram_poll(bot_token_env=args.bot_token_env)
         config = service.get_config("telegram")
         config_json = _object_dict(config.get("config_json"))
         configured_allowed = _object_list(config_json.get("allowed_chat_ids"))
-        allowed_chat_ids = tuple(args.allowed_chat_id or [str(value) for value in configured_allowed if isinstance(value, (str, int))])
+        allowed_chat_ids = tuple(
+            args.allowed_chat_id or [str(value) for value in configured_allowed if isinstance(value, (str, int))]
+        )
+    if poll_context is not None:
+        updates = poll_telegram_updates(
+            poll_context,
+            timeout=args.timeout,
+            limit=args.limit,
+            retries=args.retries,
+        )
+    if updates is None:
+        raise RuntimeError("telegram sync did not load updates")
+    with _vnext_store_context(ctx) as store:
+        service = VNextConnectorService(store, defer_embeddings=True)
         result = service.sync_telegram_updates(
             updates,
             allowed_chat_ids=allowed_chat_ids,
             default_domain=args.domain,
             default_sensitivity=args.sensitivity,
         )
-    return _json_dumps(result.to_record())
+    _persist_deferred_capture_embeddings(ctx, result)
+    return _checked_batch_output(result.to_record())
 
 
 def _run_vnext_local_folder_sync(ctx: CLIContext, args: argparse.Namespace) -> str:
-    with _vnext_store_context(ctx) as store:
-        paths = list(args.path)
-        if not paths:
+    paths = list(args.path)
+    if not paths:
+        with _vnext_store_context(ctx) as store:
             config = VNextConnectorService(store).get_config("local_folder")
             config_json = _object_dict(config.get("config_json"))
             configured_paths = _object_list(config_json.get("paths"))
             paths = [str(path) for path in configured_paths if isinstance(path, str)]
-        result = VNextConnectorService(store).sync_local_folder(
-            paths,
-            recursive=not args.no_recursive,
-            extensions=tuple(args.extension),
-            ignore_patterns=tuple(args.ignore_pattern),
+    scan = scan_local_folder(
+        paths,
+        recursive=not args.no_recursive,
+        extensions=tuple(args.extension),
+        ignore_patterns=tuple(args.ignore_pattern),
+    )
+    with _vnext_store_context(ctx) as store:
+        result = VNextConnectorService(
+            store,
+            defer_embeddings=True,
+        ).sync_local_folder_scan(
+            scan,
             default_domain=args.domain,
             default_sensitivity=args.sensitivity,
         )
-    return _json_dumps(result.to_record())
+    _persist_deferred_capture_embeddings(ctx, result)
+    return _checked_batch_output(result.to_record())
 
 
 def _run_vnext_local_folder_watch(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -975,7 +1102,7 @@ def _run_vnext_browser_clip(ctx: CLIContext, args: argparse.Namespace) -> str:
     if args.file:
         page_text = Path(args.file).read_text(encoding="utf-8")
     with _vnext_store_context(ctx) as store:
-        result = VNextConnectorService(store).capture_browser_clip(
+        result = VNextConnectorService(store, defer_embeddings=True).capture_browser_clip(
             {
                 "url": args.url,
                 "title": args.title,
@@ -988,6 +1115,7 @@ def _run_vnext_browser_clip(ctx: CLIContext, args: argparse.Namespace) -> str:
             default_domain=args.domain,
             default_sensitivity=args.sensitivity,
         )
+    _persist_deferred_capture_embeddings(ctx, result)
     return _json_dumps(result.to_record())
 
 
@@ -1005,6 +1133,8 @@ def _run_vnext_agents_ingest_output(ctx: CLIContext, args: argparse.Namespace) -
             "permission_profile": args.permission_profile,
         }
     )
+    if identity is None:  # Defensive guard for malformed direct Namespace callers.
+        raise VNextConnectorValidationError("agent identity is required")
     with _vnext_store_context(ctx) as store:
         decision = evaluate_agent_policy(
             identity=identity,
@@ -1014,9 +1144,11 @@ def _run_vnext_agents_ingest_output(ctx: CLIContext, args: argparse.Namespace) -
             project_scope=tuple(args.project_scope),
             write_policy="proposal_only" if args.propose_memory else None,
         )
-        append_policy_events(store, identity=identity, decision=decision, target_type="connector", target_id="agent_output")
+        append_policy_events(
+            store, identity=identity, decision=decision, target_type="connector", target_id="agent_output"
+        )
         ensure_policy_allowed(decision)
-        result = VNextConnectorService(store).ingest_agent_output(
+        result = VNextConnectorService(store, defer_embeddings=True).ingest_agent_output(
             {
                 "agent_id": args.agent_id,
                 "agent_type": args.agent_type,
@@ -1034,6 +1166,13 @@ def _run_vnext_agents_ingest_output(ctx: CLIContext, args: argparse.Namespace) -
             },
             policy_decision=decision.to_record(),
         )
+    _persist_deferred_capture_embeddings(
+        ctx,
+        result,
+        actor_type="agent",
+        actor_id=identity.agent_id,
+        trace_id=decision.trace_id,
+    )
     return _json_dumps(result.to_record())
 
 
@@ -1069,7 +1208,9 @@ def _load_vnext_demo_dataset(path: str | Path) -> JsonObject:
     serialized = json.dumps(payload, sort_keys=True).casefold()
     leaked_markers = [marker for marker in DEMO_SECRET_MARKERS if marker in serialized]
     if leaked_markers:
-        raise VNextCaptureValidationError(f"vNext demo dataset contains forbidden marker(s): {', '.join(leaked_markers)}")
+        raise VNextCaptureValidationError(
+            f"vNext demo dataset contains forbidden marker(s): {', '.join(leaked_markers)}"
+        )
     return payload
 
 
@@ -1224,11 +1365,12 @@ def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
     created_artifact_ids: list[str] = []
     created_project_ids: list[str] = []
     created_open_loop_ids: list[str] = []
+    deferred_embedding_inputs: list[DeferredMemoryEmbedding] = []
 
     with _vnext_store_context(ctx) as store:
         if args.reset:
             _reset_vnext_demo_dataset(store, dataset_id=dataset_id)
-        connector_service = VNextConnectorService(store)
+        connector_service = VNextConnectorService(store, defer_embeddings=True)
         connector_service.ensure_default_settings()
         for project in _object_list(dataset.get("projects")):
             if not isinstance(project, dict):
@@ -1248,7 +1390,7 @@ def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
             )
             created_project_ids.append(str(row["id"]))
 
-        capture_service = VNextCaptureService(store)
+        capture_service = VNextCaptureService(store, defer_embeddings=True)
         for source in _object_list(dataset.get("sources")):
             if not isinstance(source, dict):
                 continue
@@ -1261,36 +1403,33 @@ def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
             )
             if capture_result.source_id is not None:
                 created_source_ids.add(capture_result.source_id)
+            deferred_embedding_inputs.extend(capture_result.deferred_embedding_inputs)
 
-        connector_payloads = dataset.get("connector_payloads") if isinstance(dataset.get("connector_payloads"), dict) else {}
+        connector_payloads = (
+            dataset.get("connector_payloads") if isinstance(dataset.get("connector_payloads"), dict) else {}
+        )
         browser_payload = connector_payloads.get("browser_clipper") if isinstance(connector_payloads, dict) else None
         if isinstance(browser_payload, dict) and isinstance(browser_payload.get("items"), list):
             browser_result = connector_service.sync_items(
                 "browser_clipper",
-                [
-                    {**item, **_demo_tag(dataset_id)}
-                    for item in browser_payload["items"]
-                    if isinstance(item, dict)
-                ],
+                [{**item, **_demo_tag(dataset_id)} for item in browser_payload["items"] if isinstance(item, dict)],
                 default_domain="project",
                 default_sensitivity="private",
                 use_cursor=False,
             )
             created_source_ids.update(browser_result.source_ids)
+            deferred_embedding_inputs.extend(browser_result.deferred_embedding_inputs)
 
         telegram_payload = connector_payloads.get("telegram") if isinstance(connector_payloads, dict) else None
         if isinstance(telegram_payload, dict) and isinstance(telegram_payload.get("items"), list):
             telegram_result = connector_service.sync_telegram_updates(
-                [
-                    {**item, **_demo_tag(dataset_id)}
-                    for item in telegram_payload["items"]
-                    if isinstance(item, dict)
-                ],
+                [{**item, **_demo_tag(dataset_id)} for item in telegram_payload["items"] if isinstance(item, dict)],
                 allowed_chat_ids=("9001001",),
                 default_domain="personal",
                 default_sensitivity="private",
             )
             created_source_ids.update(telegram_result.source_ids)
+            deferred_embedding_inputs.extend(telegram_result.deferred_embedding_inputs)
 
         project_id = created_project_ids[0] if created_project_ids else None
         agent_outputs = _object_list(dataset.get("agent_outputs"))
@@ -1301,10 +1440,7 @@ def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
             agent_run_id=str(fixture_agent_output.get("agent_run_id") or f"demo-{dataset_id}"),
             task_id=str(fixture_agent_output.get("task_id") or "demo-public-alpha"),
             project_scope=tuple(
-                str(value)
-                for value in (
-                    _object_list(fixture_agent_output.get("project_scope")) or ["Alice"]
-                )
+                str(value) for value in (_object_list(fixture_agent_output.get("project_scope")) or ["Alice"])
             ),
             permission_profile=str(fixture_agent_output.get("permission_profile") or "project_scoped_agent"),
         )
@@ -1327,7 +1463,9 @@ def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
             project_scope=identity.project_scope,
             write_policy="proposal_only",
         )
-        append_policy_events(store, identity=identity, decision=agent_decision, target_type="connector", target_id="agent_output")
+        append_policy_events(
+            store, identity=identity, decision=agent_decision, target_type="connector", target_id="agent_output"
+        )
         ensure_policy_allowed(agent_decision)
         agent_result = connector_service.ingest_agent_output(
             {
@@ -1354,6 +1492,7 @@ def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
         )
         if agent_result.source_id:
             created_source_ids.add(agent_result.source_id)
+        deferred_embedding_inputs.extend(agent_result.deferred_embedding_inputs)
         if agent_result.artifact_id:
             created_artifact_ids.append(agent_result.artifact_id)
             _tag_demo_artifact(store, artifact_id=agent_result.artifact_id, dataset_id=dataset_id)
@@ -1365,7 +1504,9 @@ def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
             sensitivity_allowed=("private", "highly_sensitive"),
             project_scope=identity.project_scope,
         )
-        append_policy_events(store, identity=identity, decision=blocked_decision, target_type="context_pack", target_id=dataset_id)
+        append_policy_events(
+            store, identity=identity, decision=blocked_decision, target_type="context_pack", target_id=dataset_id
+        )
 
         _tag_demo_candidate_memories(store, dataset_id=dataset_id, source_ids=created_source_ids)
         if project_id is not None and created_source_ids:
@@ -1462,6 +1603,7 @@ def _run_vnext_demo_load(ctx: CLIContext, args: argparse.Namespace) -> str:
             },
         )
 
+    _persist_deferred_embedding_inputs(ctx, deferred_embedding_inputs)
     payload = {
         "status": "loaded",
         "dataset_id": dataset_id,
@@ -1535,6 +1677,7 @@ def _run_vnext_context_tree(ctx: CLIContext, args: argparse.Namespace) -> str:
 def _brain_artifact_request_from_args(args: argparse.Namespace) -> BrainArtifactRequest:
     return BrainArtifactRequest(
         domains=tuple(args.domain),
+        projects=tuple(getattr(args, "project", ())),
         sensitivity_allowed=_vnext_sensitivity_allowed(args),
         generated_for=args.generated_for,
         source_limit=args.source_limit,
@@ -1605,7 +1748,11 @@ def _run_vnext_agent_propose_memory(ctx: CLIContext, args: argparse.Namespace) -
                 {
                     "memory_type": args.memory_type,
                     "memory_key": f"agent_proposal.{args.proposal_type}.{uuid4()}",
-                    "value": {"proposal_type": args.proposal_type, "text": args.canonical_text, "rationale": args.rationale},
+                    "value": {
+                        "proposal_type": args.proposal_type,
+                        "text": args.canonical_text,
+                        "rationale": args.rationale,
+                    },
                     "status": "candidate",
                     "confidence": args.confidence,
                     "title": args.title,
@@ -1661,25 +1808,43 @@ def _run_vnext_memory_commit(ctx: CLIContext, args: argparse.Namespace) -> str:
             },
             user_id=ctx.user_id,
         )
-        payload = VNextMemoryCommitService(store).commit(identity=identity, request=request)
+        service = VNextMemoryCommitService(store, defer_embeddings=True)
+        payload = service.commit(identity=identity, request=request)
+        deferred_embedding_inputs = service.deferred_embedding_inputs
+    _persist_deferred_embedding_inputs(
+        ctx,
+        deferred_embedding_inputs,
+        actor_type="agent" if identity is not None else "user",
+        actor_id=identity.agent_id if identity is not None else None,
+        trace_id=request.trace_id,
+    )
     return _json_dumps(payload)
 
 
 def _run_vnext_memory_confirm(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
-        identity, _actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
+        identity, actor_type, actor_id, decision = _vnext_policy_checked_for_args(
             store,
             args,
             action="memory.confirm",
         )
         ensure_policy_allowed(decision)
-        payload = VNextMemoryCommitService(store).confirm(
+        service = VNextMemoryCommitService(store, defer_embeddings=True)
+        payload = service.confirm(
             identity=identity,
             confirmation_id=args.confirmation_id,
             action=args.action,
             canonical_text=args.text,
             rationale=args.rationale,
         )
+        deferred_embedding_inputs = service.deferred_embedding_inputs
+    _persist_deferred_embedding_inputs(
+        ctx,
+        deferred_embedding_inputs,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        trace_id=getattr(args, "trace_id", None),
+    )
     return _json_dumps(payload)
 
 
@@ -1701,18 +1866,27 @@ def _run_vnext_memory_undo(ctx: CLIContext, args: argparse.Namespace) -> str:
 
 def _run_vnext_memory_correct(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
-        identity, _actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
+        identity, actor_type, actor_id, decision = _vnext_policy_checked_for_args(
             store,
             args,
             action="memory.correct",
         )
         ensure_policy_allowed(decision)
-        payload = VNextMemoryCommitService(store).correct(
+        service = VNextMemoryCommitService(store, defer_embeddings=True)
+        payload = service.correct(
             identity=identity,
             memory_id=args.memory_id,
             canonical_text=args.text,
             reason=args.reason,
         )
+        deferred_embedding_inputs = service.deferred_embedding_inputs
+    _persist_deferred_embedding_inputs(
+        ctx,
+        deferred_embedding_inputs,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        trace_id=getattr(args, "trace_id", None),
+    )
     return _json_dumps(payload)
 
 
@@ -1724,7 +1898,9 @@ def _run_vnext_memory_forget(ctx: CLIContext, args: argparse.Namespace) -> str:
             action="memory.forget",
         )
         ensure_policy_allowed(decision)
-        payload = VNextMemoryCommitService(store).forget(identity=identity, memory_id=args.memory_id, reason=args.reason)
+        payload = VNextMemoryCommitService(store).forget(
+            identity=identity, memory_id=args.memory_id, reason=args.reason
+        )
     return _json_dumps(payload)
 
 
@@ -1759,11 +1935,19 @@ def _run_vnext_memory_accept_consolidation(ctx: CLIContext, args: argparse.Names
     # internally (human or admin agent only).
     with _vnext_store_context(ctx) as store:
         identity = _vnext_agent_identity_from_args(args)
-        payload = VNextMemoryCommitService(store).accept_consolidation_candidate(
+        service = VNextMemoryCommitService(store, defer_embeddings=True)
+        payload = service.accept_consolidation_candidate(
             args.memory_id,
             reason=args.reason,
             identity=identity,
         )
+        deferred_embedding_inputs = service.deferred_embedding_inputs
+    _persist_deferred_embedding_inputs(
+        ctx,
+        deferred_embedding_inputs,
+        actor_type="agent" if identity is not None else "user",
+        actor_id=identity.agent_id if identity is not None else None,
+    )
     return _json_dumps(payload)
 
 
@@ -1822,9 +2006,11 @@ def _run_vnext_memories_backfill_embeddings(ctx: CLIContext, args: argparse.Name
     skipped = 0
     failed = 0
     batches = 0
-    with _vnext_store_context(ctx) as store:
-        after_id: str | None = None
-        while True:
+    after_id: str | None = None
+    while True:
+        # Snapshot one page in a short transaction. Provider I/O and vector
+        # persistence both happen only after this read transaction closes.
+        with _vnext_store_context(ctx) as store:
             rows = store.list_memories_missing_embeddings(
                 limit=batch_size,
                 after_id=after_id,
@@ -1833,28 +2019,34 @@ def _run_vnext_memories_backfill_embeddings(ctx: CLIContext, args: argparse.Name
                 embedding_endpoint=endpoint_fingerprint(getattr(provider, "base_url", "")),
                 embedding_signature_version=EMBEDDING_SIGNATURE_VERSION,
             )
-            if not rows:
-                break
-            batches += 1
-            after_id = str(rows[-1]["id"])
-            pending = [(row, memory_embedding_text(row)) for row in rows]
-            embeddable = [(row, text) for row, text in pending if text != ""]
-            skipped += len(pending) - len(embeddable)
-            if not embeddable:
-                continue
-            try:
-                vectors = provider.embed_batch([text for _row, text in embeddable])
-            except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
-                failed += len(embeddable)
-                print(f"warning: embedding batch failed: {exc}", file=sys.stderr)
-                continue
-            for (row, _text), vector in zip(embeddable, vectors, strict=True):
-                store.update_memory_embedding(
-                    **signed_memory_embedding_update(row, vector, provider=provider)
-                )
-                if row.get("embedding_present") is True:
-                    reindexed_incompatible += 1
-                embedded += 1
+        if not rows:
+            break
+        batches += 1
+        after_id = str(rows[-1]["id"])
+        pending = [(row, memory_embedding_text(row)) for row in rows]
+        embeddable = [(row, text) for row, text in pending if text != ""]
+        skipped += len(pending) - len(embeddable)
+        if not embeddable:
+            continue
+        deferred_inputs = tuple(DeferredMemoryEmbedding.from_memory(row) for row, _text in embeddable)
+        attached = persist_deferred_memory_embeddings_best_effort(
+            deferred_inputs,
+            store_context=lambda: _vnext_store_context(ctx),
+            provider=provider,
+        )
+        embedded += attached
+        batch_failed = len(embeddable) - attached
+        failed += batch_failed
+        if batch_failed:
+            print(
+                f"warning: embedding batch failed for {batch_failed} of {len(embeddable)} memories",
+                file=sys.stderr,
+            )
+        # Exact for a fully persisted batch. For partial persistence, report a
+        # guaranteed lower bound instead of claiming an incompatible vector
+        # was replaced when only fresh rows may have succeeded.
+        fresh_count = sum(row.get("embedding_present") is not True for row, _text in embeddable)
+        reindexed_incompatible += max(0, attached - fresh_count)
     output = _json_dumps(
         {
             "provider": provider.provider,
@@ -1885,10 +2077,17 @@ def _run_maintenance_sync_contradictions(ctx: CLIContext, args: argparse.Namespa
 
 
 def _run_vnext_agent_policy_telemetry(ctx: CLIContext, args: argparse.Namespace) -> str:
+    bounded_limit = min(max(args.limit, 1), 200)
     with _vnext_store_context(ctx) as store:
-        events = store.list_agent_events(agent_id=args.agent_id, limit=args.limit)
-        artifacts = store.list_artifacts(limit=args.limit)
-        memories = store.list_memories(status=None)
+        events = store.list_agent_events(agent_id=args.agent_id, limit=bounded_limit)
+        artifacts = store.list_agent_policy_artifacts(
+            agent_id=args.agent_id,
+            limit=bounded_limit,
+        )
+        memories = store.list_agent_policy_memories(
+            agent_id=args.agent_id,
+            limit=bounded_limit,
+        )
     return _json_dumps(
         {
             "summary": summarize_agent_policy_telemetry(
@@ -1959,9 +2158,7 @@ def _run_agent_keys_revoke(ctx: CLIContext, args: argparse.Namespace) -> str:
         if not matches:
             raise AgentKeyValidationError(f"no agent API key matches '{selector}'")
         if len(matches) > 1:
-            raise AgentKeyValidationError(
-                f"key prefix '{selector}' matches multiple keys; revoke by key id instead"
-            )
+            raise AgentKeyValidationError(f"key prefix '{selector}' matches multiple keys; revoke by key id instead")
         revoked = store.revoke_agent_api_key(key_id=str(matches[0]["id"]))
         if revoked is None:
             raise AgentKeyValidationError(f"agent API key '{selector}' is already revoked")
@@ -1984,7 +2181,9 @@ def _run_vnext_scheduler_failures(ctx: CLIContext, args: argparse.Namespace) -> 
     with _vnext_store_context(ctx) as store:
         runs = [
             run
-            for run in store.list_scheduler_runs(workflow_type=args.workflow_type, limit=max(args.limit * 4, args.limit))
+            for run in store.list_scheduler_runs(
+                workflow_type=args.workflow_type, limit=max(args.limit * 4, args.limit)
+            )
             if run.get("status") == "failed"
         ][: args.limit]
     return _json_dumps({"items": runs, "count": len(runs)})
@@ -1992,8 +2191,8 @@ def _run_vnext_scheduler_failures(ctx: CLIContext, args: argparse.Namespace) -> 
 
 def _run_vnext_scheduler_run_now(ctx: CLIContext, args: argparse.Namespace) -> str:
     blocked_decision = None
-    payload = None
     decision = None
+    scheduler_request: SchedulerRunRequest | None = None
     with _vnext_store_context(ctx) as store:
         identity, actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
             store,
@@ -2005,29 +2204,38 @@ def _run_vnext_scheduler_run_now(ctx: CLIContext, args: argparse.Namespace) -> s
         if decision.decision == "blocked":
             blocked_decision = decision
         else:
-            payload = _scheduler_service(store).run_now(
-                SchedulerRunRequest(
-                    workflow_type=args.workflow_type,
-                    domains=decision.effective_domains,
-                    sensitivity_allowed=decision.effective_sensitivity_allowed,
-                    generated_for=args.generated_for,
-                    triggered_by=actor_type,
-                    agent_identity=identity,
-                    policy_decision=decision,
-                    options=_model_generation_options_from_args(args),
-                )
+            scheduler_request = SchedulerRunRequest(
+                workflow_type=args.workflow_type,
+                domains=decision.effective_domains,
+                projects=decision.effective_project_scope,
+                sensitivity_allowed=decision.effective_sensitivity_allowed,
+                generated_for=args.generated_for,
+                triggered_by=actor_type,
+                agent_identity=identity,
+                policy_decision=decision,
+                options=_model_generation_options_from_args(args),
             )
     if blocked_decision is not None:
         ensure_policy_allowed(blocked_decision)
-    if payload is None or decision is None:
+    if scheduler_request is None or decision is None:
         raise RuntimeError("scheduler run-now did not complete")
-    return _json_dumps({**payload, "policy_decision": decision.to_record()})
+    payload = run_now_durable(
+        database_url=ctx.database_url,
+        user_id=ctx.user_id,
+        request=scheduler_request,
+    )
+    output = _json_dumps({**payload, "policy_decision": decision.to_record()})
+    run_record = payload.get("run")
+    if isinstance(run_record, dict) and run_record.get("status") == "failed":
+        raise PartialCommandFailure(output)
+    return output
 
 
 def _run_vnext_scheduler_run_due(ctx: CLIContext, args: argparse.Namespace) -> str:
     blocked_decision = None
-    payload = None
     decision = None
+    identity = None
+    actor_type = "scheduler"
     with _vnext_store_context(ctx) as store:
         identity, actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
             store,
@@ -2036,18 +2244,22 @@ def _run_vnext_scheduler_run_due(ctx: CLIContext, args: argparse.Namespace) -> s
         )
         if decision.decision == "blocked":
             blocked_decision = decision
-        else:
-            payload = _scheduler_service(store).run_due_workflows(
-                limit=args.limit,
-                triggered_by=actor_type if identity is not None else "scheduler",
-                agent_identity=identity,
-                policy_decision=decision,
-            )
     if blocked_decision is not None:
         ensure_policy_allowed(blocked_decision)
-    if payload is None or decision is None:
+    if decision is None:
         raise RuntimeError("scheduler run-due did not complete")
-    return _json_dumps({**payload, "policy_decision": decision.to_record()})
+    payload = run_due_workflows_durable(
+        database_url=ctx.database_url,
+        user_id=ctx.user_id,
+        limit=args.limit,
+        triggered_by=actor_type if identity is not None else "scheduler",
+        agent_identity=identity,
+        policy_decision=decision,
+    )
+    output = _json_dumps({**payload, "policy_decision": decision.to_record()})
+    if payload.get("failed_count", 0):
+        raise PartialCommandFailure(output)
+    return output
 
 
 def _scheduler_runtime_config(ctx: CLIContext, args: argparse.Namespace) -> SchedulerRuntimeConfig:
@@ -2066,7 +2278,11 @@ def _scheduler_runtime_config(ctx: CLIContext, args: argparse.Namespace) -> Sche
 def _run_vnext_scheduler_daemon_start(ctx: CLIContext, args: argparse.Namespace) -> str:
     config = _scheduler_runtime_config(ctx, args)
     if args.foreground:
-        return _json_dumps(run_foreground_daemon(config))
+        payload = run_foreground_daemon(config)
+        output = _json_dumps(payload)
+        if payload.get("exit_code") not in {None, 0} or (config.once and payload.get("last_error") not in {None, ""}):
+            raise PartialCommandFailure(output)
+        return output
     return _json_dumps(start_background_daemon(config))
 
 
@@ -2253,12 +2469,16 @@ def _run_vnext_smoke_agentic_scheduler(ctx: CLIContext, _args: argparse.Namespac
             patch={"enabled": True, "paused": False, "next_run_at": "2000-01-01T00:00:00+00:00"},
             actor_type="system",
         )
-        due_payload = service.run_due_workflows(
-            limit=1,
-            triggered_by="agent",
-            agent_identity=identity,
-            policy_decision=due_decision,
-        )
+    due_payload = run_due_workflows_durable(
+        database_url=ctx.database_url,
+        user_id=ctx.user_id,
+        limit=1,
+        triggered_by="agent",
+        agent_identity=identity,
+        policy_decision=due_decision,
+    )
+    with _vnext_store_context(ctx) as store:
+        service = _scheduler_service(store)
         readonly_identity = AgentIdentity(
             agent_id="readonly-smoke",
             agent_type="unknown",
@@ -2284,10 +2504,8 @@ def _run_vnext_smoke_agentic_scheduler(ctx: CLIContext, _args: argparse.Namespac
         "memory_proposal_candidate": proposal.get("status") == "candidate",
         "daily_run_succeeded": daily_run_record.get("status") == "succeeded",
         "weekly_run_succeeded": weekly_run_record.get("status") == "succeeded",
-        "due_scan_executed": due_payload.get("due_count") == 1
-        and first_due_run.get("status") == "succeeded",
-        "scheduler_artifacts_reviewable": _object_dict(daily_run.get("artifact")).get("status")
-        == "needs_review"
+        "due_scan_executed": due_payload.get("due_count") == 1 and first_due_run.get("status") == "succeeded",
+        "scheduler_artifacts_reviewable": _object_dict(daily_run.get("artifact")).get("status") == "needs_review"
         and _object_dict(weekly_run.get("artifact")).get("status") == "needs_review",
         "blocked_policy_recorded": blocked_decision.decision == "blocked",
         "pause_resume_completed": _object_int(pause_payload.get("paused_count")) >= 6
@@ -2417,15 +2635,16 @@ def _run_vnext_smoke_local_runtime(ctx: CLIContext, _args: argparse.Namespace) -
         )
 
     last_due_scan = _object_dict(daemon_payload.get("last_due_scan"))
-    due_runs = [
-        _object_dict(item) for item in _object_list(last_due_scan.get("runs"))
-    ]
-    artifacts = [
-        _object_dict(run.get("artifact"))
-        for run in due_runs
-        if isinstance(run.get("artifact"), dict)
-    ]
-    required_metadata = {"workflow_type", "scheduler_run_id", "trace_id", "source_refs", "generated_by", "review_status"}
+    due_runs = [_object_dict(item) for item in _object_list(last_due_scan.get("runs"))]
+    artifacts = [_object_dict(run.get("artifact")) for run in due_runs if isinstance(run.get("artifact"), dict)]
+    required_metadata = {
+        "workflow_type",
+        "scheduler_run_id",
+        "trace_id",
+        "source_refs",
+        "generated_by",
+        "review_status",
+    }
     observed_workflows = {str(run.get("workflow_type")) for run in due_runs}
     metadata_complete = all(
         artifact.get("generated_by") == "scheduler"
@@ -2517,7 +2736,12 @@ def _run_vnext_smoke_model_backed(ctx: CLIContext, _args: argparse.Namespace) ->
             },
             actor_type="system",
         )
-        payload = service.run_due_workflows(limit=1, triggered_by="scheduler")
+    payload = run_due_workflows_durable(
+        database_url=ctx.database_url,
+        user_id=ctx.user_id,
+        limit=1,
+        triggered_by="scheduler",
+    )
 
     runs = _object_list(payload.get("runs"))
     run = _object_dict(runs[0]) if runs else {}
@@ -2533,7 +2757,10 @@ def _run_vnext_smoke_model_backed(ctx: CLIContext, _args: argparse.Namespace) ->
         "artifact_reviewable": artifact.get("status") == "needs_review",
         "artifact_model_backed": metadata.get("generation_mode") == "model_backed",
         "local_route_enforced": model_routing.get("route_mode") == "local_only",
-        "provider_metadata_present": all(model_info.get(key) for key in ("provider", "model", "prompt_hash", "input_context_hash", "created_at", "policy_mode")),
+        "provider_metadata_present": all(
+            model_info.get(key)
+            for key in ("provider", "model", "prompt_hash", "input_context_hash", "created_at", "policy_mode")
+        ),
         "source_grounded_sections_present": all(
             section in content
             for section in (
@@ -2576,8 +2803,9 @@ def _run_vnext_smoke_live_capture_connectors(ctx: CLIContext, _args: argparse.Na
         ignored_dir.mkdir()
         note_path.write_text(f"Fact: live capture smoke {smoke_id} reaches Alice.\n", encoding="utf-8")
         (ignored_dir / "skip.md").write_text("Fact: generated output should be ignored.\n", encoding="utf-8")
+        local_scan = scan_local_folder((temp_dir,))
         with _vnext_store_context(ctx) as store:
-            service = VNextConnectorService(store, secret_provider=secrets)
+            service = VNextConnectorService(store, secret_provider=secrets, defer_embeddings=True)
             service.update_config(
                 "telegram",
                 enabled=True,
@@ -2610,7 +2838,11 @@ def _run_vnext_smoke_live_capture_connectors(ctx: CLIContext, _args: argparse.Na
                 ],
                 allowed_chat_ids=("999001",),
             )
-            local = service.sync_local_folder((temp_dir,), default_domain="project", default_sensitivity="private")
+            local = service.sync_local_folder_scan(
+                local_scan,
+                default_domain="project",
+                default_sensitivity="private",
+            )
             browser = service.capture_browser_clip(
                 {
                     "url": f"https://example.test/live-capture/{smoke_id}",
@@ -2638,6 +2870,15 @@ def _run_vnext_smoke_live_capture_connectors(ctx: CLIContext, _args: argparse.Na
                 policy_decision={"decision": "allowed", "action": "source.capture"},
             )
             health = service.connector_health_all()
+    _persist_deferred_embedding_inputs(
+        ctx,
+        (
+            *telegram.deferred_embedding_inputs,
+            *local.deferred_embedding_inputs,
+            *browser.deferred_embedding_inputs,
+            *agent.deferred_embedding_inputs,
+        ),
+    )
     health_items = {
         str(item["connector_name"]): item
         for item in _object_list(health.get("items"))
@@ -2652,7 +2893,11 @@ def _run_vnext_smoke_live_capture_connectors(ctx: CLIContext, _args: argparse.Na
             name in health_items for name in ("telegram", "local_folder", "browser_clipper", "agent_output")
         ),
     }
-    payload = {"status": "passed" if all(gates.values()) else "failed", "smoke": "live-capture-connectors", "gates": gates}
+    payload = {
+        "status": "passed" if all(gates.values()) else "failed",
+        "smoke": "live-capture-connectors",
+        "gates": gates,
+    }
     if payload["status"] != "passed":
         raise RuntimeError(_json_dumps(payload))
     return _json_dumps(payload)
@@ -2663,7 +2908,7 @@ def _run_vnext_smoke_capture_to_brief(ctx: CLIContext, _args: argparse.Namespace
     browser_capture_token = f"brief-smoke-{smoke_id}"
     secrets = InMemorySecretProvider({"browser.capture_token.brief_smoke": browser_capture_token})
     with _vnext_store_context(ctx) as store:
-        connector_service = VNextConnectorService(store, secret_provider=secrets)
+        connector_service = VNextConnectorService(store, secret_provider=secrets, defer_embeddings=True)
         connector_service.update_config("browser_clipper", enabled=True, secret_ref="browser.capture_token.brief_smoke")
         capture = connector_service.capture_browser_clip(
             {
@@ -2681,7 +2926,9 @@ def _run_vnext_smoke_capture_to_brief(ctx: CLIContext, _args: argparse.Namespace
             VNextRetrievalRequest(query=smoke_id, domains=("project",), sensitivity_allowed=("private", "unknown"))
         )
         artifact = VNextBrainService(store).generate_daily_brief(
-            BrainArtifactRequest(domains=("project",), sensitivity_allowed=("private", "unknown"), generated_for="2026-05-11")
+            BrainArtifactRequest(
+                domains=("project",), sensitivity_allowed=("private", "unknown"), generated_for="2026-05-11"
+            )
         )
         rating = store.create_artifact_quality_rating(
             {
@@ -2699,22 +2946,19 @@ def _run_vnext_smoke_capture_to_brief(ctx: CLIContext, _args: argparse.Namespace
             actor_type="system",
         )
         dogfooding = VNextDogfoodingService(store).dashboard()
+    _persist_deferred_capture_embeddings(ctx, capture)
     artifact_refs = _object_dict(artifact.get("metadata_json")).get("source_refs")
     pack_source_ids = [
-        str(source.get("id"))
-        for source in _object_list(pack.get("sources"))
-        if isinstance(source, dict)
+        str(source.get("id")) for source in _object_list(pack.get("sources")) if isinstance(source, dict)
     ]
     gates = {
         "source_captured": source_id is not None,
         "context_pack_includes_source": source_id in pack_source_ids,
-        "daily_brief_created": artifact.get("artifact_type") == "daily_brief" and artifact.get("status") == "needs_review",
+        "daily_brief_created": artifact.get("artifact_type") == "daily_brief"
+        and artifact.get("status") == "needs_review",
         "artifact_has_source_reference": bool(artifact_refs),
         "rating_recorded": str(rating.get("artifact_id")) == str(artifact["id"]),
-        "dogfooding_reflects_rating": _object_int(
-            dogfooding.get("artifact_quality_rating_count")
-        )
-        >= 1,
+        "dogfooding_reflects_rating": _object_int(dogfooding.get("artifact_quality_rating_count")) >= 1,
     }
     payload = {"status": "passed" if all(gates.values()) else "failed", "smoke": "capture-to-brief", "gates": gates}
     if payload["status"] != "passed":
@@ -2732,10 +2976,12 @@ def _run_vnext_smoke_operator_console(ctx: CLIContext, _args: argparse.Namespace
         }
     )
     with _vnext_store_context(ctx) as store:
-        connector_service = VNextConnectorService(store, secret_provider=secrets)
+        connector_service = VNextConnectorService(store, secret_provider=secrets, defer_embeddings=True)
         connector_service.ensure_default_settings()
         connector_service.update_config("telegram", enabled=False, secret_ref="telegram.bot_token.default")
-        connector_service.update_config("browser_clipper", enabled=True, secret_ref="browser.capture_token.operator_console")
+        connector_service.update_config(
+            "browser_clipper", enabled=True, secret_ref="browser.capture_token.operator_console"
+        )
         capture = connector_service.capture_browser_clip(
             {
                 "url": f"https://example.test/operator-console/{smoke_id}",
@@ -2752,9 +2998,7 @@ def _run_vnext_smoke_operator_console(ctx: CLIContext, _args: argparse.Namespace
             raise RuntimeError("operator console smoke failed to capture source")
 
         source = store.get_source(source_id)
-        source_metadata = _object_dict(
-            source.get("metadata_json") if source is not None else None
-        )
+        source_metadata = _object_dict(source.get("metadata_json") if source is not None else None)
         reviewed_source = store.update_source(
             source_id=source_id,
             patch={
@@ -2792,8 +3036,7 @@ def _run_vnext_smoke_operator_console(ctx: CLIContext, _args: argparse.Namespace
             (
                 memory
                 for memory in store.list_memories(status="candidate")
-                if str(_object_dict(memory.get("metadata_json")).get("source_id"))
-                == source_id
+                if str(_object_dict(memory.get("metadata_json")).get("source_id")) == source_id
             ),
             None,
         )
@@ -2804,7 +3047,11 @@ def _run_vnext_smoke_operator_console(ctx: CLIContext, _args: argparse.Namespace
             memory_id=str(candidate_memory["id"]),
             patch={
                 "status": "active",
-                "metadata_json": {**memory_metadata, "project_id": str(project["id"]), "reviewed_by": "operator-console-smoke"},
+                "metadata_json": {
+                    **memory_metadata,
+                    "project_id": str(project["id"]),
+                    "reviewed_by": "operator-console-smoke",
+                },
                 "last_reviewed_at": datetime.now(UTC).isoformat(),
             },
             actor_type="user",
@@ -2889,6 +3136,7 @@ def _run_vnext_smoke_operator_console(ctx: CLIContext, _args: argparse.Namespace
         health = connector_service.connector_health_all()
         doctor = VNextDoctorService(store, secret_provider=secrets).run(fix_safe=True, ci=True)
         events = store.list_events(limit=100)
+    _persist_deferred_capture_embeddings(ctx, capture)
 
     health_items = {
         str(item["connector_name"]): item
@@ -2896,16 +3144,12 @@ def _run_vnext_smoke_operator_console(ctx: CLIContext, _args: argparse.Namespace
         if isinstance(item, dict) and "connector_name" in item
     }
     pack_source_ids = [
-        str(source.get("id"))
-        for source in _object_list(pack.get("sources"))
-        if isinstance(source, dict)
+        str(source.get("id")) for source in _object_list(pack.get("sources")) if isinstance(source, dict)
     ]
     artifact_refs = _object_dict(artifact.get("metadata_json")).get("source_refs")
     serialized_refs = _json_dumps(artifact_refs)
     gates = {
-        "source_review_action_persisted": _object_dict(
-            reviewed_source.get("metadata_json")
-        ).get("review_status")
+        "source_review_action_persisted": _object_dict(reviewed_source.get("metadata_json")).get("review_status")
         == "reviewed",
         "memory_review_action_persisted": reviewed_memory.get("status") == "active",
         "artifact_review_and_rating_persisted": reviewed_artifact.get("status") == "reviewed"
@@ -2914,7 +3158,8 @@ def _run_vnext_smoke_operator_console(ctx: CLIContext, _args: argparse.Namespace
         "scheduler_run_now_created_artifact": scheduled.get("artifact") is not None
         and _object_dict(scheduled.get("run")).get("status") == "succeeded",
         "connector_health_visible": "browser_clipper" in health_items,
-        "doctor_readiness_available": doctor.get("status") in {"pass", "warn"} and doctor.get("blocking_failure_count") == 0,
+        "doctor_readiness_available": doctor.get("status") in {"pass", "warn"}
+        and doctor.get("blocking_failure_count") == 0,
         "capture_to_brief_trace_exists": source_id in pack_source_ids or source_id in serialized_refs,
         "event_log_records_actions": any(event.get("event_type") == "source.reviewed" for event in events),
     }
@@ -2928,7 +3173,7 @@ def _run_vnext_smoke_agent_integration_pack(ctx: CLIContext, _args: argparse.Nam
     smoke_id = str(uuid4())
     agent_run_id = f"agent-pack-smoke-{smoke_id}"
     with _vnext_store_context(ctx) as store:
-        source = VNextCaptureService(store).capture_text(
+        source = VNextCaptureService(store, defer_embeddings=True).capture_text(
             "\n".join(
                 [
                     f"Decision: Agent integration pack smoke {smoke_id} uses scoped project context.",
@@ -2980,7 +3225,9 @@ def _run_vnext_smoke_agent_integration_pack(ctx: CLIContext, _args: argparse.Nam
             sensitivity_allowed=("public", "internal", "private", "unknown"),
             project_scope=identity.project_scope,
         )
-        append_policy_events(store, identity=identity, decision=context_decision, target_type="context_pack", target_id=smoke_id)
+        append_policy_events(
+            store, identity=identity, decision=context_decision, target_type="context_pack", target_id=smoke_id
+        )
         ensure_policy_allowed(context_decision)
         context_pack = _retrieval_service(store).compile_context_pack(
             VNextRetrievalRequest(
@@ -3010,9 +3257,11 @@ def _run_vnext_smoke_agent_integration_pack(ctx: CLIContext, _args: argparse.Nam
             project_scope=identity.project_scope,
             write_policy="proposal_only",
         )
-        append_policy_events(store, identity=identity, decision=output_decision, target_type="connector", target_id="agent_output")
+        append_policy_events(
+            store, identity=identity, decision=output_decision, target_type="connector", target_id="agent_output"
+        )
         ensure_policy_allowed(output_decision)
-        agent_output = VNextConnectorService(store).ingest_agent_output(
+        agent_output = VNextConnectorService(store, defer_embeddings=True).ingest_agent_output(
             {
                 "agent_id": identity.agent_id,
                 "agent_type": identity.agent_type,
@@ -3066,7 +3315,9 @@ def _run_vnext_smoke_agent_integration_pack(ctx: CLIContext, _args: argparse.Nam
             sensitivity_allowed=("private", "highly_sensitive"),
             project_scope=identity.project_scope,
         )
-        append_policy_events(store, identity=identity, decision=blocked_decision, target_type="context_pack", target_id=smoke_id)
+        append_policy_events(
+            store, identity=identity, decision=blocked_decision, target_type="context_pack", target_id=smoke_id
+        )
         events = store.list_agent_events(agent_id=identity.agent_id, limit=100)
         event_types = {str(event.get("event_type")) for event in events}
         candidate_memories = store.list_memories(status="candidate")
@@ -3078,10 +3329,12 @@ def _run_vnext_smoke_agent_integration_pack(ctx: CLIContext, _args: argparse.Nam
         )
         agent_identities = store.list_agent_identities(limit=20)
 
+    _persist_deferred_embedding_inputs(
+        ctx,
+        (*source.deferred_embedding_inputs, *agent_output.deferred_embedding_inputs),
+    )
     pack_source_ids = [
-        str(item.get("id"))
-        for item in _object_list(context_pack.get("sources"))
-        if isinstance(item, dict)
+        str(item.get("id")) for item in _object_list(context_pack.get("sources")) if isinstance(item, dict)
     ]
     candidate_ids = {str(memory.get("id")) for memory in candidate_memories}
 
@@ -3097,14 +3350,14 @@ def _run_vnext_smoke_agent_integration_pack(ctx: CLIContext, _args: argparse.Nam
         and agent_identity.get("permission_profile") == "project_scoped_agent",
         "agent_requested_project_context_pack": context_decision.decision == "allowed"
         and source.source_id in pack_source_ids,
-        "scoped_context_pack_returned": _object_int(
-            _object_dict(context_pack.get("trace")).get("selected_count")
-        )
-        >= 1,
+        "scoped_context_pack_returned": _object_int(_object_dict(context_pack.get("trace")).get("selected_count")) >= 1,
         "agent_output_stored_as_reviewable_source_or_artifact": agent_output.source_id is not None
         and agent_output.artifact_id is not None,
-        "memory_proposal_in_review_queue": agent_output.memory_id is not None and agent_output.memory_id in candidate_ids,
-        "no_trusted_memory_auto_promoted": not any(_matches_smoke_active_agent_memory(memory) for memory in active_memories),
+        "memory_proposal_in_review_queue": agent_output.memory_id is not None
+        and agent_output.memory_id in candidate_ids,
+        "no_trusted_memory_auto_promoted": not any(
+            _matches_smoke_active_agent_memory(memory) for memory in active_memories
+        ),
         "event_log_records_full_flow": {
             "agent.context_pack_requested",
             "agent.output_ingested",
@@ -3193,7 +3446,12 @@ def _run_vnext_smoke_headless_ubuntu(_ctx: CLIContext, _args: argparse.Namespace
         ),
         "hermes_guide_covers_identity_and_policy": _headless_file_contains(
             doc_paths["hermes"],
-            ("agent_id: hermes", "trusted_local_agent", "policy-boundary test", "alicebot vnext smoke agent-integration-pack"),
+            (
+                "agent_id: hermes",
+                "trusted_local_agent",
+                "policy-boundary test",
+                "alicebot vnext smoke agent-integration-pack",
+            ),
         ),
         "rc_release_notes_exist": _headless_file_contains(
             doc_paths["release_notes"],
@@ -3307,7 +3565,9 @@ def _run_vnext_smoke_agentic_memory_commit(ctx: CLIContext, _args: argparse.Name
         )
         committed_memory = _object_dict(committed.get("memory"))
         committed_memory_id = str(committed_memory.get("id"))
-        gates["trusted_hermes_commit_active"] = committed.get("status") == "committed" and committed_memory.get("status") == "active"
+        gates["trusted_hermes_commit_active"] = (
+            committed.get("status") == "committed" and committed_memory.get("status") == "active"
+        )
 
         before_undo_context = _retrieval_service(store).compile_context_pack(
             VNextRetrievalRequest(
@@ -3337,10 +3597,14 @@ def _run_vnext_smoke_agentic_memory_commit(ctx: CLIContext, _args: argparse.Name
             ),
         )
         confirmation_id = str(sensitive.get("confirmation_id"))
-        gates["sensitive_memory_requires_confirmation"] = sensitive.get("status") == "confirmation_required" and confirmation_id.startswith("confirm-")
+        gates["sensitive_memory_requires_confirmation"] = sensitive.get(
+            "status"
+        ) == "confirmation_required" and confirmation_id.startswith("confirm-")
         confirmed = service.confirm(identity=hermes, confirmation_id=confirmation_id)
         confirmed_memory = _object_dict(confirmed.get("memory"))
-        gates["inline_confirmation_commits"] = confirmed.get("status") == "committed" and confirmed_memory.get("status") == "active"
+        gates["inline_confirmation_commits"] = (
+            confirmed.get("status") == "committed" and confirmed_memory.get("status") == "active"
+        )
 
         external = service.commit(
             identity=hermes,
@@ -3357,7 +3621,9 @@ def _run_vnext_smoke_agentic_memory_commit(ctx: CLIContext, _args: argparse.Name
             ),
         )
         external_memory = _object_dict(external.get("memory"))
-        gates["external_source_review_required"] = external.get("status") == "review_required" and external_memory.get("status") == "candidate"
+        gates["external_source_review_required"] = (
+            external.get("status") == "review_required" and external_memory.get("status") == "candidate"
+        )
 
         blocked = service.commit(
             identity=read_only,
@@ -3421,14 +3687,15 @@ def _run_vnext_smoke_agentic_memory_commit(ctx: CLIContext, _args: argparse.Name
             memory_id=str(confirmed_memory.get("id")),
             reason="Agentic memory smoke forget.",
         )
-        gates["forget_preserves_audit_and_excludes_context"] = forgotten.get("status") == "forgotten" and (
-            _object_dict(forgotten.get("memory"))
-        ).get("status") == "superseded"
+        gates["forget_preserves_audit_and_excludes_context"] = (
+            forgotten.get("status") == "forgotten"
+            and (_object_dict(forgotten.get("memory"))).get("status") == "superseded"
+        )
 
         undone = service.undo(identity=hermes, memory_id=committed_memory_id, reason="Agentic memory smoke undo.")
-        gates["undo_supersedes_committed_memory"] = undone.get("status") == "undone" and (
-            _object_dict(undone.get("memory"))
-        ).get("status") == "superseded"
+        gates["undo_supersedes_committed_memory"] = (
+            undone.get("status") == "undone" and (_object_dict(undone.get("memory"))).get("status") == "superseded"
+        )
 
         after_undo_context = _retrieval_service(store).compile_context_pack(
             VNextRetrievalRequest(
@@ -3457,7 +3724,11 @@ def _run_vnext_smoke_agentic_memory_commit(ctx: CLIContext, _args: argparse.Name
             if isinstance(memory, dict)
         )
 
-    payload = {"status": "passed" if all(gates.values()) else "failed", "smoke": "agentic-memory-commit", "gates": gates}
+    payload = {
+        "status": "passed" if all(gates.values()) else "failed",
+        "smoke": "agentic-memory-commit",
+        "gates": gates,
+    }
     if payload["status"] != "passed":
         raise RuntimeError(_json_dumps(payload))
     return _json_dumps(payload)
@@ -3523,8 +3794,16 @@ def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
         }
         if args.demo_cycle:
             try:
-                demo_load = json.loads(_run_vnext_demo_load(ctx, argparse.Namespace(fixture=str(DEFAULT_VNEXT_DEMO_DATASET_PATH), reset=True)))
-                demo_reset = json.loads(_run_vnext_demo_reset(ctx, argparse.Namespace(dataset_id=None, fixture=str(DEFAULT_VNEXT_DEMO_DATASET_PATH))))
+                demo_load = json.loads(
+                    _run_vnext_demo_load(
+                        ctx, argparse.Namespace(fixture=str(DEFAULT_VNEXT_DEMO_DATASET_PATH), reset=True)
+                    )
+                )
+                demo_reset = json.loads(
+                    _run_vnext_demo_reset(
+                        ctx, argparse.Namespace(dataset_id=None, fixture=str(DEFAULT_VNEXT_DEMO_DATASET_PATH))
+                    )
+                )
                 headless["demo_cycle"] = {"status": "passed", "load": demo_load, "reset": demo_reset}
             except Exception as exc:
                 headless["demo_cycle"] = {"status": "failed", "error_type": type(exc).__name__, "error": str(exc)}
@@ -3549,7 +3828,9 @@ def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
     blocking: list[str] = []
     if doctor.get("status") == "fail" or _object_int(doctor.get("blocking_failure_count")) > 0:
         blocking.append("doctor")
-    if not bool(connector_storage.get("connector_settings_exists")) or not bool(connector_storage.get("connector_state_exists")):
+    if not bool(connector_storage.get("connector_settings_exists")) or not bool(
+        connector_storage.get("connector_state_exists")
+    ):
         blocking.append("connector_storage")
     failed_smokes = [str(smoke.get("name")) for smoke in smokes if smoke.get("status") != "passed"]
     blocking.extend(f"smoke:{name}" for name in failed_smokes)
@@ -3610,8 +3891,9 @@ def _run_vnext_smoke_connector_hardening(ctx: CLIContext, _args: argparse.Namesp
         generated_dir = root / "generated"
         generated_dir.mkdir()
         (generated_dir / "loop.md").write_text("Fact: generated output should not recapture.\n", encoding="utf-8")
+        local_scan = scan_local_folder((root,))
         with _vnext_store_context(ctx) as store:
-            service = VNextConnectorService(store, secret_provider=secrets)
+            service = VNextConnectorService(store, secret_provider=secrets, defer_embeddings=True)
             service.ensure_default_settings()
             service.update_config(
                 "telegram",
@@ -3652,7 +3934,7 @@ def _run_vnext_smoke_connector_hardening(ctx: CLIContext, _args: argparse.Namesp
                 ],
                 allowed_chat_ids=("999001",),
             )
-            restarted = VNextConnectorService(store, secret_provider=secrets)
+            restarted = VNextConnectorService(store, secret_provider=secrets, defer_embeddings=True)
             repeated = restarted.sync_telegram_updates(
                 [
                     {
@@ -3668,25 +3950,42 @@ def _run_vnext_smoke_connector_hardening(ctx: CLIContext, _args: argparse.Namesp
                 ],
                 allowed_chat_ids=("999001",),
             )
-            local_first = restarted.sync_local_folder((root,), default_domain="project", default_sensitivity="private")
-            local_second = restarted.sync_local_folder((root,), default_domain="project", default_sensitivity="private")
+            local_first = restarted.sync_local_folder_scan(
+                local_scan,
+                default_domain="project",
+                default_sensitivity="private",
+            )
+            local_second = restarted.sync_local_folder_scan(
+                local_scan,
+                default_domain="project",
+                default_sensitivity="private",
+            )
             health = restarted.connector_health_all()
             events = store.list_events(target_type="connector", target_id="telegram", limit=25)
+    _persist_deferred_embedding_inputs(
+        ctx,
+        (
+            *telegram.deferred_embedding_inputs,
+            *repeated.deferred_embedding_inputs,
+            *local_first.deferred_embedding_inputs,
+            *local_second.deferred_embedding_inputs,
+        ),
+    )
     health_items = {
         str(item["connector_name"]): item
         for item in _object_list(health.get("items"))
         if isinstance(item, dict) and "connector_name" in item
     }
     gates = {
-        "settings_rows_available": all(name in health_items for name in ("telegram", "local_folder", "browser_clipper", "agent_output")),
-        "telegram_cursor_persisted": telegram.sync_cursor == str(telegram_update_id + 1) and repeated.status == "skipped",
+        "settings_rows_available": all(
+            name in health_items for name in ("telegram", "local_folder", "browser_clipper", "agent_output")
+        ),
+        "telegram_cursor_persisted": telegram.sync_cursor == str(telegram_update_id + 1)
+        and repeated.status == "skipped",
         "telegram_rejected_chat_logged": any(event.get("event_type") == "connector.item_rejected" for event in events),
         "local_folder_ignores_generated": local_first.imported_count == 1,
         "local_folder_dedupes_unchanged_restart": local_second.duplicate_count >= 1,
-        "health_counts_present": _object_int(
-            health_items.get("telegram", {}).get("items_seen")
-        )
-        >= 2,
+        "health_counts_present": _object_int(health_items.get("telegram", {}).get("items_seen")) >= 2,
     }
     payload = {"status": "passed" if all(gates.values()) else "failed", "smoke": "connector-hardening", "gates": gates}
     if payload["status"] != "passed":
@@ -3702,8 +4001,13 @@ def _run_vnext_smoke_secret_redaction(ctx: CLIContext, _args: argparse.Namespace
         }
     )
     with _vnext_store_context(ctx) as store:
-        service = VNextConnectorService(store, secret_provider=secrets)
-        service.update_config("telegram", enabled=True, secret_ref="telegram.bot_token.default", config_json={"allowed_chat_ids": ["999001"]})
+        service = VNextConnectorService(store, secret_provider=secrets, defer_embeddings=True)
+        service.update_config(
+            "telegram",
+            enabled=True,
+            secret_ref="telegram.bot_token.default",
+            config_json={"allowed_chat_ids": ["999001"]},
+        )
         service.update_config("browser_clipper", enabled=True, secret_ref="browser.capture_token.default")
         clip = service.capture_browser_clip(
             {
@@ -3715,6 +4019,7 @@ def _run_vnext_smoke_secret_redaction(ctx: CLIContext, _args: argparse.Namespace
         )
         sources = store.list_sources(limit=10)
         events = store.list_events(limit=50)
+    _persist_deferred_capture_embeddings(ctx, clip)
     serialized = _json_dumps({"sources": sources, "events": events})
     gates = {
         "clip_imported_or_deduped": clip.imported_count + clip.duplicate_count >= 1,
@@ -3744,7 +4049,12 @@ def _run_vnext_smoke_dogfood_doctor(ctx: CLIContext, _args: argparse.Namespace) 
             if isinstance(check, dict)
         ),
     }
-    result = {"status": "passed" if all(gates.values()) else "failed", "smoke": "dogfood-doctor", "gates": gates, "doctor": payload}
+    result = {
+        "status": "passed" if all(gates.values()) else "failed",
+        "smoke": "dogfood-doctor",
+        "gates": gates,
+        "doctor": payload,
+    }
     if result["status"] != "passed":
         raise RuntimeError(_json_dumps(result))
     return _json_dumps(result)
@@ -3754,6 +4064,7 @@ def _connection_finder_request_from_args(args: argparse.Namespace) -> Connection
     return ConnectionFinderRequest(
         query=getattr(args, "query", "") or "",
         domains=tuple(args.domain),
+        projects=tuple(getattr(args, "project", ())),
         sensitivity_allowed=_vnext_sensitivity_allowed(args),
         max_connections=args.max_connections,
         auto_accept_threshold=args.auto_accept_threshold,
@@ -3783,6 +4094,7 @@ def _contradiction_finder_request_from_args(args: argparse.Namespace) -> Contrad
     return ContradictionFinderRequest(
         query=getattr(args, "query", "") or "",
         domains=tuple(args.domain),
+        projects=tuple(getattr(args, "project", ())),
         sensitivity_allowed=_vnext_sensitivity_allowed(args),
         max_contradictions=args.max_contradictions,
         **_model_generation_kwargs_from_args(args),
@@ -3827,17 +4139,21 @@ def _project_automation_request_from_args(args: argparse.Namespace) -> ProjectAu
 
 def _run_vnext_project_update_candidate(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
-        artifact = VNextProjectService(store).generate_project_update_candidate(_project_automation_request_from_args(args))
+        artifact = VNextProjectService(store).generate_project_update_candidate(
+            _project_automation_request_from_args(args)
+        )
     return _json_dumps(artifact)
 
 
 def _run_vnext_project_update_review(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
-        artifact = VNextProjectService(store).review_project_update(
+        service = VNextProjectService(store, defer_embeddings=True)
+        artifact = service.review_project_update(
             artifact_id=args.artifact_id,
             action=args.action,
             edited_current_state=args.edited_current_state,
         )
+    _persist_deferred_embedding_inputs(ctx, service.deferred_embedding_inputs)
     return _json_dumps(artifact)
 
 
@@ -3889,7 +4205,7 @@ def _run_vnext_queue_add(ctx: CLIContext, args: argparse.Namespace) -> str:
 def _run_vnext_queue_process_next(ctx: CLIContext, _args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
         result = VNextQueueService(store).process_next_task()
-    return _json_dumps(result.to_record())
+    return _checked_batch_output(result.to_record())
 
 
 def _run_vnext_artifact_review(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -4332,9 +4648,7 @@ def _run_contradictions_resolve(ctx: CLIContext, args: argparse.Namespace) -> st
                 note=args.note,
             ),
         )
-    return format_contradiction_case_detail_output(
-        {"contradiction_case": payload["contradiction_case"]}
-    )
+    return format_contradiction_case_detail_output({"contradiction_case": payload["contradiction_case"]})
 
 
 def _run_trust_signals(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -4682,13 +4996,7 @@ def _run_vnext_eval_run(_ctx: CLIContext, args: argparse.Namespace) -> str:
     # labelled skip.
     report_status = report.get("status")
     summary = report.get("summary")
-    release_has_skips = (
-        args.release_gate
-        and (
-            not isinstance(summary, dict)
-            or summary.get("skipped_suite_count") != 0
-        )
-    )
+    release_has_skips = args.release_gate and (not isinstance(summary, dict) or summary.get("skipped_suite_count") != 0)
     if report_status not in {"pass", "skipped"} or (
         args.release_gate and (report_status == "skipped" or release_has_skips)
     ):
@@ -4734,8 +5042,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--user-id",
         default=None,
         help=(
-            "Override acting user UUID. Defaults to ALICEBOT_AUTH_USER_ID when set, "
-            f"otherwise {DEFAULT_CLI_USER_ID}."
+            f"Override acting user UUID. Defaults to ALICEBOT_AUTH_USER_ID when set, otherwise {DEFAULT_CLI_USER_ID}."
         ),
     )
 
@@ -4811,6 +5118,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     daily_brief_parser.add_argument("--generated-for", default=None, help="ISO date for the brief.")
     daily_brief_parser.add_argument("--domain", action="append", default=[], help="Allowed domain. Repeatable.")
+    daily_brief_parser.add_argument("--project", action="append", default=[], help="Project scope. Repeatable.")
     daily_brief_parser.add_argument(
         "--sensitivity-allowed",
         action="append",
@@ -4845,6 +5153,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     weekly_synthesis_parser.add_argument("--generated-for", default=None, help="ISO date inside the target week.")
     weekly_synthesis_parser.add_argument("--domain", action="append", default=[], help="Allowed domain. Repeatable.")
+    weekly_synthesis_parser.add_argument("--project", action="append", default=[], help="Project scope. Repeatable.")
     weekly_synthesis_parser.add_argument(
         "--sensitivity-allowed",
         action="append",
@@ -4854,7 +5163,9 @@ def build_parser() -> argparse.ArgumentParser:
     weekly_synthesis_parser.add_argument("--source-limit", type=int, default=8, help="Maximum source inputs.")
     weekly_synthesis_parser.add_argument("--memory-limit", type=int, default=8, help="Maximum memory inputs.")
     weekly_synthesis_parser.add_argument("--open-loop-limit", type=int, default=8, help="Maximum open-loop inputs.")
-    weekly_synthesis_parser.add_argument("--artifact-limit", type=int, default=4, help="Maximum recent artifact inputs.")
+    weekly_synthesis_parser.add_argument(
+        "--artifact-limit", type=int, default=4, help="Maximum recent artifact inputs."
+    )
     weekly_synthesis_parser.add_argument(
         "--no-discover-open-loops",
         action="store_true",
@@ -4875,7 +5186,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate a vNext connection report and candidate graph edges.",
     )
     connections_generate_parser.add_argument("--query", default="", help="Optional search query for candidate inputs.")
-    connections_generate_parser.add_argument("--domain", action="append", default=[], help="Allowed domain. Repeatable.")
+    connections_generate_parser.add_argument(
+        "--domain", action="append", default=[], help="Allowed domain. Repeatable."
+    )
+    connections_generate_parser.add_argument(
+        "--project", action="append", default=[], help="Project scope. Repeatable."
+    )
     connections_generate_parser.add_argument(
         "--sensitivity-allowed",
         action="append",
@@ -4953,29 +5269,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="Configure a vNext connector without storing raw secrets.",
     )
     vnext_connectors_configure_parser.add_argument("connector_name", help="Connector name.")
-    vnext_connectors_configure_parser.add_argument("--enabled", action="store_true", help="Enable connector.")
-    vnext_connectors_configure_parser.add_argument("--secret-ref", default=None, help="Secret reference such as env:TELEGRAM_BOT_TOKEN.")
+    vnext_connectors_configure_parser.add_argument(
+        "--enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable the connector; omit to preserve its current state.",
+    )
+    vnext_connectors_configure_parser.add_argument(
+        "--secret-ref", default=None, help="Secret reference such as env:TELEGRAM_BOT_TOKEN."
+    )
     vnext_connectors_configure_parser.add_argument(
         "--sync-mode",
         choices=("manual", "polling", "watch", "on_demand", "disabled"),
         default=None,
         help="Connector sync mode.",
     )
-    vnext_connectors_configure_parser.add_argument("--poll-interval-seconds", type=int, default=None, help="Polling interval.")
+    vnext_connectors_configure_parser.add_argument(
+        "--poll-interval-seconds", type=int, default=None, help="Polling interval."
+    )
     vnext_connectors_configure_parser.add_argument("--domain", default=None, help="Default domain.")
     vnext_connectors_configure_parser.add_argument("--sensitivity", default=None, help="Default sensitivity.")
-    vnext_connectors_configure_parser.add_argument("--allowed-chat-id", action="append", default=[], help="Allowed Telegram chat id. Repeatable.")
-    vnext_connectors_configure_parser.add_argument("--path", action="append", default=[], help="Watched local folder path. Repeatable.")
-    vnext_connectors_configure_parser.add_argument("--recursive", action="store_true", default=None, help="Enable recursive local folder scans.")
-    vnext_connectors_configure_parser.add_argument("--extension", action="append", default=[], help="Allowed local file extension. Repeatable.")
-    vnext_connectors_configure_parser.add_argument("--ignore-pattern", action="append", default=[], help="Local folder ignore glob. Repeatable.")
+    vnext_connectors_configure_parser.add_argument(
+        "--allowed-chat-id", action="append", default=[], help="Allowed Telegram chat id. Repeatable."
+    )
+    vnext_connectors_configure_parser.add_argument(
+        "--path", action="append", default=[], help="Watched local folder path. Repeatable."
+    )
+    vnext_connectors_configure_parser.add_argument(
+        "--recursive", action="store_true", default=None, help="Enable recursive local folder scans."
+    )
+    vnext_connectors_configure_parser.add_argument(
+        "--extension", action="append", default=[], help="Allowed local file extension. Repeatable."
+    )
+    vnext_connectors_configure_parser.add_argument(
+        "--ignore-pattern", action="append", default=[], help="Local folder ignore glob. Repeatable."
+    )
     vnext_connectors_configure_parser.set_defaults(handler=_run_vnext_connectors_configure)
 
     vnext_connectors_status_parser = vnext_connectors_subparsers.add_parser("status", help="Show connector status.")
-    vnext_connectors_status_parser.add_argument("connector_name", nargs="?", default=None, help="Optional connector name.")
+    vnext_connectors_status_parser.add_argument(
+        "connector_name", nargs="?", default=None, help="Optional connector name."
+    )
     vnext_connectors_status_parser.set_defaults(handler=_run_vnext_connectors_status)
 
-    vnext_connectors_health_parser = vnext_connectors_subparsers.add_parser("health", help="Show connector health telemetry.")
+    vnext_connectors_health_parser = vnext_connectors_subparsers.add_parser(
+        "health", help="Show connector health telemetry."
+    )
     vnext_connectors_health_parser.set_defaults(handler=_run_vnext_connectors_health)
 
     vnext_connectors_ingest_parser = vnext_connectors_subparsers.add_parser(
@@ -4992,44 +5331,87 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vnext_connectors_ingest_parser.set_defaults(handler=_run_vnext_connectors_ingest)
 
-    vnext_connectors_telegram_parser = vnext_connectors_subparsers.add_parser("telegram", help="Live Telegram capture controls.")
-    vnext_telegram_subparsers = vnext_connectors_telegram_parser.add_subparsers(dest="vnext_telegram_command", required=True)
-    vnext_telegram_configure_parser = vnext_telegram_subparsers.add_parser("configure", help="Configure local Telegram bot capture.")
-    vnext_telegram_configure_parser.add_argument("--enabled", action="store_true", help="Enable Telegram capture.")
-    vnext_telegram_configure_parser.add_argument("--bot-token-env", default="TELEGRAM_BOT_TOKEN", help="Environment variable holding bot token.")
-    vnext_telegram_configure_parser.add_argument("--bot-token", default=None, help="Store/update the bot token in the local secret store.")
+    vnext_connectors_telegram_parser = vnext_connectors_subparsers.add_parser(
+        "telegram", help="Live Telegram capture controls."
+    )
+    vnext_telegram_subparsers = vnext_connectors_telegram_parser.add_subparsers(
+        dest="vnext_telegram_command", required=True
+    )
+    vnext_telegram_configure_parser = vnext_telegram_subparsers.add_parser(
+        "configure", help="Configure local Telegram bot capture."
+    )
+    vnext_telegram_configure_parser.add_argument(
+        "--enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable Telegram capture; omit to preserve its current state.",
+    )
+    vnext_telegram_configure_parser.add_argument(
+        "--bot-token-env", default="TELEGRAM_BOT_TOKEN", help="Environment variable holding bot token."
+    )
+    vnext_telegram_configure_parser.add_argument(
+        "--bot-token", default=None, help="Store/update the bot token in the local secret store."
+    )
     vnext_telegram_configure_parser.add_argument("--secret-ref", default=None, help="Secret reference.")
-    vnext_telegram_configure_parser.add_argument("--sync-mode", choices=("polling", "manual", "disabled"), default="polling")
+    vnext_telegram_configure_parser.add_argument(
+        "--sync-mode", choices=("polling", "manual", "disabled"), default="polling"
+    )
     vnext_telegram_configure_parser.add_argument("--poll-interval-seconds", type=int, default=60)
-    vnext_telegram_configure_parser.add_argument("--allowed-chat-id", action="append", default=[], required=True, help="Allowed chat id. Repeatable.")
+    vnext_telegram_configure_parser.add_argument(
+        "--allowed-chat-id", action="append", default=[], required=True, help="Allowed chat id. Repeatable."
+    )
     vnext_telegram_configure_parser.add_argument("--domain", default="personal", help="Default domain.")
     vnext_telegram_configure_parser.add_argument("--sensitivity", default="private", help="Default sensitivity.")
     vnext_telegram_configure_parser.set_defaults(handler=_run_vnext_telegram_configure)
-    vnext_telegram_test_parser = vnext_telegram_subparsers.add_parser("test", help="Check Telegram connector local configuration.")
-    vnext_telegram_test_parser.add_argument("--bot-token-env", default="TELEGRAM_BOT_TOKEN", help="Environment variable holding bot token.")
-    vnext_telegram_test_parser.add_argument("--live", action="store_true", help="Perform a one-item live Telegram poll.")
+    vnext_telegram_test_parser = vnext_telegram_subparsers.add_parser(
+        "test", help="Check Telegram connector local configuration."
+    )
+    vnext_telegram_test_parser.add_argument(
+        "--bot-token-env", default="TELEGRAM_BOT_TOKEN", help="Environment variable holding bot token."
+    )
+    vnext_telegram_test_parser.add_argument(
+        "--live", action="store_true", help="Perform a one-item live Telegram poll."
+    )
     vnext_telegram_test_parser.set_defaults(handler=_run_vnext_telegram_test)
     vnext_telegram_sync_parser = vnext_telegram_subparsers.add_parser("sync", help="Poll or ingest Telegram updates.")
-    vnext_telegram_sync_parser.add_argument("--payload-path", default=None, help="Optional JSON file of Telegram updates.")
-    vnext_telegram_sync_parser.add_argument("--allowed-chat-id", action="append", default=[], help="Allowed chat id. Repeatable.")
-    vnext_telegram_sync_parser.add_argument("--bot-token-env", default="TELEGRAM_BOT_TOKEN", help="Environment variable holding bot token.")
+    vnext_telegram_sync_parser.add_argument(
+        "--payload-path", default=None, help="Optional JSON file of Telegram updates."
+    )
+    vnext_telegram_sync_parser.add_argument(
+        "--allowed-chat-id", action="append", default=[], help="Allowed chat id. Repeatable."
+    )
+    vnext_telegram_sync_parser.add_argument(
+        "--bot-token-env", default="TELEGRAM_BOT_TOKEN", help="Environment variable holding bot token."
+    )
     vnext_telegram_sync_parser.add_argument("--timeout", type=int, default=10, help="Telegram polling timeout.")
     vnext_telegram_sync_parser.add_argument("--limit", type=int, default=100, help="Telegram update limit.")
-    vnext_telegram_sync_parser.add_argument("--retries", type=int, default=1, help="Network retry count before failing.")
+    vnext_telegram_sync_parser.add_argument(
+        "--retries", type=int, default=1, help="Network retry count before failing."
+    )
     vnext_telegram_sync_parser.add_argument("--domain", default=None, help="Default domain.")
     vnext_telegram_sync_parser.add_argument("--sensitivity", default=None, help="Default sensitivity.")
     vnext_telegram_sync_parser.set_defaults(handler=_run_vnext_telegram_sync)
-    vnext_telegram_status_parser = vnext_telegram_subparsers.add_parser("status", help="Show Telegram connector status.")
+    vnext_telegram_status_parser = vnext_telegram_subparsers.add_parser(
+        "status", help="Show Telegram connector status."
+    )
     vnext_telegram_status_parser.set_defaults(connector_name="telegram", handler=_run_vnext_connectors_status)
 
-    vnext_connectors_local_parser = vnext_connectors_subparsers.add_parser("local-folder", help="Local folder and Obsidian capture controls.")
-    vnext_local_subparsers = vnext_connectors_local_parser.add_subparsers(dest="vnext_local_folder_command", required=True)
+    vnext_connectors_local_parser = vnext_connectors_subparsers.add_parser(
+        "local-folder", help="Local folder and Obsidian capture controls."
+    )
+    vnext_local_subparsers = vnext_connectors_local_parser.add_subparsers(
+        dest="vnext_local_folder_command", required=True
+    )
     vnext_local_add_parser = vnext_local_subparsers.add_parser("add-path", help="Configure a watched folder path.")
     vnext_local_add_parser.add_argument("path", action="append", help="Watched folder path.")
-    vnext_local_add_parser.add_argument("--enabled", action="store_true", default=True, help="Enable local folder connector.")
+    vnext_local_add_parser.add_argument(
+        "--enabled", action="store_true", default=True, help="Enable local folder connector."
+    )
     vnext_local_add_parser.add_argument("--domain", default="project", help="Default domain.")
     vnext_local_add_parser.add_argument("--sensitivity", default="private", help="Default sensitivity.")
-    vnext_local_add_parser.add_argument("--extension", action="append", default=[".md", ".txt"], help="Allowed extension.")
+    vnext_local_add_parser.add_argument(
+        "--extension", action="append", default=[".md", ".txt"], help="Allowed extension."
+    )
     vnext_local_add_parser.add_argument("--ignore-pattern", action="append", default=[], help="Ignore glob.")
     vnext_local_add_parser.set_defaults(
         connector_name="local_folder",
@@ -5041,7 +5423,9 @@ def build_parser() -> argparse.ArgumentParser:
         remove_paths=False,
         handler=_run_vnext_connectors_configure,
     )
-    vnext_local_remove_parser = vnext_local_subparsers.add_parser("remove-path", help="Record a watched folder removal.")
+    vnext_local_remove_parser = vnext_local_subparsers.add_parser(
+        "remove-path", help="Record a watched folder removal."
+    )
     vnext_local_remove_parser.add_argument("path", action="append", help="Path to remove from config.")
     vnext_local_remove_parser.add_argument("--domain", default="project")
     vnext_local_remove_parser.add_argument("--sensitivity", default="private")
@@ -5061,7 +5445,9 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_local_sync_parser = vnext_local_subparsers.add_parser("sync", help="Scan watched folder paths now.")
     vnext_local_sync_parser.add_argument("--path", action="append", default=[], help="Folder path. Repeatable.")
     vnext_local_sync_parser.add_argument("--no-recursive", action="store_true", help="Disable recursive scan.")
-    vnext_local_sync_parser.add_argument("--extension", action="append", default=[".md", ".txt"], help="Allowed extension.")
+    vnext_local_sync_parser.add_argument(
+        "--extension", action="append", default=[".md", ".txt"], help="Allowed extension."
+    )
     vnext_local_sync_parser.add_argument("--ignore-pattern", action="append", default=[], help="Ignore glob.")
     vnext_local_sync_parser.add_argument("--domain", default=None, help="Default domain.")
     vnext_local_sync_parser.add_argument("--sensitivity", default=None, help="Default sensitivity.")
@@ -5069,10 +5455,14 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_local_watch_parser = vnext_local_subparsers.add_parser("watch", help="Poll watched folders for changes.")
     vnext_local_watch_parser.add_argument("--path", action="append", default=[], help="Folder path. Repeatable.")
     vnext_local_watch_parser.add_argument("--once", action="store_true", help="Run one scan and exit.")
-    vnext_local_watch_parser.add_argument("--max-runs", type=int, default=1, help="Maximum polling scans for non-daemon use.")
+    vnext_local_watch_parser.add_argument(
+        "--max-runs", type=int, default=1, help="Maximum polling scans for non-daemon use."
+    )
     vnext_local_watch_parser.add_argument("--interval-seconds", type=float, default=2.0, help="Polling interval.")
     vnext_local_watch_parser.add_argument("--no-recursive", action="store_true", help="Disable recursive scan.")
-    vnext_local_watch_parser.add_argument("--extension", action="append", default=[".md", ".txt"], help="Allowed extension.")
+    vnext_local_watch_parser.add_argument(
+        "--extension", action="append", default=[".md", ".txt"], help="Allowed extension."
+    )
     vnext_local_watch_parser.add_argument("--ignore-pattern", action="append", default=[], help="Ignore glob.")
     vnext_local_watch_parser.add_argument("--domain", default=None, help="Default domain.")
     vnext_local_watch_parser.add_argument("--sensitivity", default=None, help="Default sensitivity.")
@@ -5080,7 +5470,9 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_local_status_parser = vnext_local_subparsers.add_parser("status", help="Show local folder connector status.")
     vnext_local_status_parser.set_defaults(connector_name="local_folder", handler=_run_vnext_connectors_status)
 
-    vnext_browser_parser = vnext_connectors_subparsers.add_parser("browser-clipper", help="Browser clipper MVP controls.")
+    vnext_browser_parser = vnext_connectors_subparsers.add_parser(
+        "browser-clipper", help="Browser clipper MVP controls."
+    )
     vnext_browser_subparsers = vnext_browser_parser.add_subparsers(dest="vnext_browser_command", required=True)
     vnext_browser_capture_parser = vnext_browser_subparsers.add_parser("capture", help="Capture a browser clip.")
     vnext_browser_capture_parser.add_argument("--url", required=True, help="Page URL.")
@@ -5088,7 +5480,9 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_browser_capture_parser.add_argument("--selected-text", default=None, help="Selected text.")
     vnext_browser_capture_parser.add_argument("--page-text", default=None, help="Optional page text.")
     vnext_browser_capture_parser.add_argument("--user-note", default=None, help="User note.")
-    vnext_browser_capture_parser.add_argument("--capture-token", default=None, help="Optional local browser clipper capture token.")
+    vnext_browser_capture_parser.add_argument(
+        "--capture-token", default=None, help="Optional local browser clipper capture token."
+    )
     vnext_browser_capture_parser.add_argument("--file", default=None, help="Optional file containing page text.")
     vnext_browser_capture_parser.add_argument("--domain", default="professional", help="Default domain.")
     vnext_browser_capture_parser.add_argument("--sensitivity", default="private", help="Default sensitivity.")
@@ -5097,26 +5491,44 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_browser_status_parser.set_defaults(connector_name="browser_clipper", handler=_run_vnext_connectors_status)
 
     vnext_doctor_parser = vnext_subparsers.add_parser("doctor", help="Check local vNext dogfooding readiness.")
-    vnext_doctor_parser.add_argument("--fix-safe", action="store_true", help="Initialize missing safe connector defaults.")
+    vnext_doctor_parser.add_argument(
+        "--fix-safe", action="store_true", help="Initialize missing safe connector defaults."
+    )
     vnext_doctor_parser.add_argument("--ci", action="store_true", help="Run in CI/smoke mode with non-secret checks.")
     vnext_doctor_parser.set_defaults(handler=_run_vnext_doctor)
 
     vnext_migrations_parser = vnext_subparsers.add_parser("migrations", help="Inspect vNext migration readiness.")
     vnext_migrations_subparsers = vnext_migrations_parser.add_subparsers(dest="vnext_migrations_command", required=True)
-    vnext_migrations_status_parser = vnext_migrations_subparsers.add_parser("status", help="Show vNext migration status.")
+    vnext_migrations_status_parser = vnext_migrations_subparsers.add_parser(
+        "status", help="Show vNext migration status."
+    )
     vnext_migrations_status_parser.set_defaults(handler=_run_vnext_migrations_status)
 
     vnext_alpha_parser = vnext_subparsers.add_parser("alpha", help="Run public alpha readiness checks.")
     vnext_alpha_subparsers = vnext_alpha_parser.add_subparsers(dest="vnext_alpha_command", required=True)
     vnext_alpha_check_parser = vnext_alpha_subparsers.add_parser("check", help="Check public alpha local readiness.")
-    vnext_alpha_check_parser.add_argument("--skip-smokes", action="store_true", help="Only summarize storage, doctor, and scheduler posture.")
-    vnext_alpha_check_parser.add_argument("--headless", action="store_true", help="Include headless Ubuntu packaging and optional service reachability checks.")
-    vnext_alpha_check_parser.add_argument("--api-url", default=None, help="Optional local API URL to check, for example http://127.0.0.1:8000/healthz.")
-    vnext_alpha_check_parser.add_argument("--web-url", default=None, help="Optional local web URL to check, for example http://127.0.0.1:3000/vnext.")
-    vnext_alpha_check_parser.add_argument("--demo-cycle", action="store_true", help="Run demo load/reset as part of the headless check.")
+    vnext_alpha_check_parser.add_argument(
+        "--skip-smokes", action="store_true", help="Only summarize storage, doctor, and scheduler posture."
+    )
+    vnext_alpha_check_parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Include headless Ubuntu packaging and optional service reachability checks.",
+    )
+    vnext_alpha_check_parser.add_argument(
+        "--api-url", default=None, help="Optional local API URL to check, for example http://127.0.0.1:8000/healthz."
+    )
+    vnext_alpha_check_parser.add_argument(
+        "--web-url", default=None, help="Optional local web URL to check, for example http://127.0.0.1:3000/vnext."
+    )
+    vnext_alpha_check_parser.add_argument(
+        "--demo-cycle", action="store_true", help="Run demo load/reset as part of the headless check."
+    )
     vnext_alpha_check_parser.set_defaults(handler=_run_vnext_alpha_check)
 
-    vnext_demo_parser = vnext_subparsers.add_parser("demo", help="Load or reset the safe vNext public alpha demo dataset.")
+    vnext_demo_parser = vnext_subparsers.add_parser(
+        "demo", help="Load or reset the safe vNext public alpha demo dataset."
+    )
     vnext_demo_subparsers = vnext_demo_parser.add_subparsers(dest="vnext_demo_command", required=True)
     vnext_demo_load_parser = vnext_demo_subparsers.add_parser("load", help="Load the synthetic vNext demo dataset.")
     vnext_demo_load_parser.add_argument(
@@ -5124,10 +5536,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(DEFAULT_VNEXT_DEMO_DATASET_PATH),
         help="Path to the synthetic vNext demo dataset JSON.",
     )
-    vnext_demo_load_parser.add_argument("--reset", action="store_true", help="Archive prior rows for this dataset before loading.")
+    vnext_demo_load_parser.add_argument(
+        "--reset", action="store_true", help="Archive prior rows for this dataset before loading."
+    )
     vnext_demo_load_parser.set_defaults(handler=_run_vnext_demo_load)
-    vnext_demo_reset_parser = vnext_demo_subparsers.add_parser("reset", help="Archive rows from a synthetic vNext demo dataset.")
-    vnext_demo_reset_parser.add_argument("--dataset-id", default=None, help="Dataset id to reset. Defaults to the fixture dataset id.")
+    vnext_demo_reset_parser = vnext_demo_subparsers.add_parser(
+        "reset", help="Archive rows from a synthetic vNext demo dataset."
+    )
+    vnext_demo_reset_parser.add_argument(
+        "--dataset-id", default=None, help="Dataset id to reset. Defaults to the fixture dataset id."
+    )
     vnext_demo_reset_parser.add_argument(
         "--fixture",
         default=str(DEFAULT_VNEXT_DEMO_DATASET_PATH),
@@ -5221,10 +5639,16 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_quality_rate_parser.add_argument("--reviewer-id", default=None, help="Optional reviewer id.")
     vnext_quality_rate_parser.add_argument("--usefulness", type=int, default=None, help="Usefulness rating 1-5.")
     vnext_quality_rate_parser.add_argument("--accuracy", type=int, default=None, help="Accuracy rating 1-5.")
-    vnext_quality_rate_parser.add_argument("--source-grounding", type=int, default=None, help="Source grounding rating 1-5.")
-    vnext_quality_rate_parser.add_argument("--novel-connections", type=int, default=None, help="Novel connections rating 1-5.")
+    vnext_quality_rate_parser.add_argument(
+        "--source-grounding", type=int, default=None, help="Source grounding rating 1-5."
+    )
+    vnext_quality_rate_parser.add_argument(
+        "--novel-connections", type=int, default=None, help="Novel connections rating 1-5."
+    )
     vnext_quality_rate_parser.add_argument("--actionability", type=int, default=None, help="Actionability rating 1-5.")
-    vnext_quality_rate_parser.add_argument("--hallucination-risk", type=int, default=None, help="Hallucination risk rating 1-5.")
+    vnext_quality_rate_parser.add_argument(
+        "--hallucination-risk", type=int, default=None, help="Hallucination risk rating 1-5."
+    )
     vnext_quality_rate_parser.add_argument(
         "--verbosity",
         choices=("too_shallow", "right_sized", "too_verbose", "unknown"),
@@ -5238,7 +5662,9 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_quality_export_parser.add_argument("--artifact-id", default=None, help="Optional artifact id filter.")
     vnext_quality_export_parser.add_argument("--limit", type=int, default=100, help="Maximum ratings to export.")
     vnext_quality_export_parser.set_defaults(handler=_run_vnext_quality_export)
-    vnext_quality_insight_parser = vnext_quality_subparsers.add_parser("insight", help="Record a quick useful-insight signal.")
+    vnext_quality_insight_parser = vnext_quality_subparsers.add_parser(
+        "insight", help="Record a quick useful-insight signal."
+    )
     vnext_quality_insight_parser.add_argument("artifact_id", help="Artifact id.")
     vnext_quality_insight_parser.add_argument(
         "--useful-insight",
@@ -5257,7 +5683,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     vnext_dogfooding_parser = vnext_subparsers.add_parser("dogfooding", help="Show vNext dogfooding metrics.")
     vnext_dogfooding_subparsers = vnext_dogfooding_parser.add_subparsers(dest="vnext_dogfooding_command", required=True)
-    vnext_dogfooding_dashboard_parser = vnext_dogfooding_subparsers.add_parser("dashboard", help="Show capture and usefulness metrics.")
+    vnext_dogfooding_dashboard_parser = vnext_dogfooding_subparsers.add_parser(
+        "dashboard", help="Show capture and usefulness metrics."
+    )
     vnext_dogfooding_dashboard_parser.set_defaults(handler=_run_vnext_dogfooding_dashboard)
 
     vnext_graph_parser = vnext_subparsers.add_parser("graph", help="Review and inspect vNext graph edges.")
@@ -5298,6 +5726,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="Allowed domain. Repeatable.",
+    )
+    vnext_contradictions_generate_parser.add_argument(
+        "--project",
+        action="append",
+        default=[],
+        help="Project scope. Repeatable.",
     )
     vnext_contradictions_generate_parser.add_argument(
         "--sensitivity-allowed",
@@ -5344,7 +5778,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate a project update candidate artifact.",
     )
     vnext_project_update_parser.add_argument("--project-id", default=None, help="Project id.")
-    vnext_project_update_parser.add_argument("--domain", action="append", default=[], help="Allowed domain. Repeatable.")
+    vnext_project_update_parser.add_argument(
+        "--domain", action="append", default=[], help="Allowed domain. Repeatable."
+    )
     vnext_project_update_parser.add_argument(
         "--sensitivity-allowed",
         action="append",
@@ -5364,7 +5800,9 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_project_review_parser.add_argument("--edited-current-state", default=None, help="Edited current state.")
     vnext_project_review_parser.set_defaults(handler=_run_vnext_project_update_review)
 
-    vnext_project_dashboard_parser = vnext_projects_subparsers.add_parser("dashboard", help="Show project dashboard data.")
+    vnext_project_dashboard_parser = vnext_projects_subparsers.add_parser(
+        "dashboard", help="Show project dashboard data."
+    )
     vnext_project_dashboard_parser.add_argument("project_id", help="Project id.")
     vnext_project_dashboard_parser.add_argument(
         "--sensitivity-allowed",
@@ -5385,7 +5823,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vnext_open_loops_extract_parser.add_argument("--project-id", default=None, help="Project id.")
     vnext_open_loops_extract_parser.add_argument("--person-id", default=None, help="Person id.")
-    vnext_open_loops_extract_parser.add_argument("--domain", action="append", default=[], help="Allowed domain. Repeatable.")
+    vnext_open_loops_extract_parser.add_argument(
+        "--domain", action="append", default=[], help="Allowed domain. Repeatable."
+    )
     vnext_open_loops_extract_parser.add_argument(
         "--sensitivity-allowed",
         action="append",
@@ -5426,35 +5866,51 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_memory_commit_parser.add_argument("--sensitivity", default="unknown", help="Sensitivity label.")
     vnext_memory_commit_parser.add_argument("--confidence", type=float, default=0.9, help="Confidence from 0.0 to 1.0.")
     vnext_memory_commit_parser.add_argument("--source-type", default="direct_user_instruction", help="Source type.")
-    vnext_memory_commit_parser.add_argument("--source-ref", action="append", default=[], help="Source reference. Repeatable.")
-    vnext_memory_commit_parser.add_argument("--conversation-excerpt", default=None, help="Short user conversation excerpt.")
+    vnext_memory_commit_parser.add_argument(
+        "--source-ref", action="append", default=[], help="Source reference. Repeatable."
+    )
+    vnext_memory_commit_parser.add_argument(
+        "--conversation-excerpt", default=None, help="Short user conversation excerpt."
+    )
     vnext_memory_commit_parser.add_argument("--rationale", default=None, help="Agent rationale.")
     vnext_memory_commit_parser.add_argument("--idempotency-key", default=None, help="Idempotency key for retry safety.")
-    vnext_memory_commit_parser.add_argument("--contradiction-ref", action="append", default=[], help="Contradicted memory or edge id. Repeatable.")
+    vnext_memory_commit_parser.add_argument(
+        "--contradiction-ref", action="append", default=[], help="Contradicted memory or edge id. Repeatable."
+    )
     vnext_memory_commit_parser.set_defaults(handler=_run_vnext_memory_commit)
 
-    vnext_memory_confirm_parser = vnext_memories_subparsers.add_parser("confirm", help="Confirm, reject, or edit an inline memory confirmation.")
+    vnext_memory_confirm_parser = vnext_memories_subparsers.add_parser(
+        "confirm", help="Confirm, reject, or edit an inline memory confirmation."
+    )
     _add_vnext_agent_arguments(vnext_memory_confirm_parser)
     vnext_memory_confirm_parser.add_argument("confirmation_id", help="Confirmation id.")
-    vnext_memory_confirm_parser.add_argument("--action", choices=("confirm", "reject", "edit"), default="confirm", help="Confirmation action.")
+    vnext_memory_confirm_parser.add_argument(
+        "--action", choices=("confirm", "reject", "edit"), default="confirm", help="Confirmation action."
+    )
     vnext_memory_confirm_parser.add_argument("--text", default=None, help="Edited canonical memory text.")
     vnext_memory_confirm_parser.add_argument("--rationale", default=None, help="Confirmation rationale.")
     vnext_memory_confirm_parser.set_defaults(handler=_run_vnext_memory_confirm)
 
     vnext_memory_undo_parser = vnext_memories_subparsers.add_parser("undo", help="Undo an agentic memory commit.")
     _add_vnext_agent_arguments(vnext_memory_undo_parser)
-    vnext_memory_undo_parser.add_argument("--memory-id", default=None, help="Memory id. Defaults to the latest matching agentic commit.")
+    vnext_memory_undo_parser.add_argument(
+        "--memory-id", default=None, help="Memory id. Defaults to the latest matching agentic commit."
+    )
     vnext_memory_undo_parser.add_argument("--reason", default=None, help="Undo reason.")
     vnext_memory_undo_parser.set_defaults(handler=_run_vnext_memory_undo)
 
-    vnext_memory_correct_parser = vnext_memories_subparsers.add_parser("correct", help="Correct an agentic memory commit.")
+    vnext_memory_correct_parser = vnext_memories_subparsers.add_parser(
+        "correct", help="Correct an agentic memory commit."
+    )
     _add_vnext_agent_arguments(vnext_memory_correct_parser)
     vnext_memory_correct_parser.add_argument("memory_id", help="Memory id.")
     vnext_memory_correct_parser.add_argument("--text", required=True, help="Corrected canonical memory text.")
     vnext_memory_correct_parser.add_argument("--reason", default=None, help="Correction reason.")
     vnext_memory_correct_parser.set_defaults(handler=_run_vnext_memory_correct)
 
-    vnext_memory_forget_parser = vnext_memories_subparsers.add_parser("forget", help="Forget an agentic memory commit without deleting audit history.")
+    vnext_memory_forget_parser = vnext_memories_subparsers.add_parser(
+        "forget", help="Forget an agentic memory commit without deleting audit history."
+    )
     _add_vnext_agent_arguments(vnext_memory_forget_parser)
     vnext_memory_forget_parser.add_argument("memory_id", help="Memory id.")
     vnext_memory_forget_parser.add_argument("--reason", default=None, help="Forget reason.")
@@ -5476,7 +5932,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_vnext_agent_arguments(vnext_memory_unexpire_parser)
     vnext_memory_unexpire_parser.add_argument("memory_id", help="Memory id.")
-    vnext_memory_unexpire_parser.add_argument("--reason", required=True, help="Unexpire reason. Stored in the audit trail.")
+    vnext_memory_unexpire_parser.add_argument(
+        "--reason", required=True, help="Unexpire reason. Stored in the audit trail."
+    )
     vnext_memory_unexpire_parser.set_defaults(handler=_run_vnext_memory_unexpire)
 
     vnext_memory_accept_consolidation_parser = vnext_memories_subparsers.add_parser(
@@ -5485,7 +5943,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_vnext_agent_arguments(vnext_memory_accept_consolidation_parser)
     vnext_memory_accept_consolidation_parser.add_argument("memory_id", help="Consolidation candidate memory id.")
-    vnext_memory_accept_consolidation_parser.add_argument("--reason", required=True, help="Acceptance reason. Stored in the audit trail.")
+    vnext_memory_accept_consolidation_parser.add_argument(
+        "--reason", required=True, help="Acceptance reason. Stored in the audit trail."
+    )
     vnext_memory_accept_consolidation_parser.set_defaults(handler=_run_vnext_memory_accept_consolidation)
 
     vnext_memory_redact_parser = vnext_memories_subparsers.add_parser(
@@ -5494,10 +5954,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_vnext_agent_arguments(vnext_memory_redact_parser)
     vnext_memory_redact_parser.add_argument("memory_id", help="Memory id.")
-    vnext_memory_redact_parser.add_argument("--reason", required=True, help="Redaction reason. Stored in the audit trail.")
+    vnext_memory_redact_parser.add_argument(
+        "--reason", required=True, help="Redaction reason. Stored in the audit trail."
+    )
     vnext_memory_redact_parser.set_defaults(handler=_run_vnext_memory_redact)
 
-    vnext_memory_recent_parser = vnext_memories_subparsers.add_parser("recent", help="List recent agentic memory commits.")
+    vnext_memory_recent_parser = vnext_memories_subparsers.add_parser(
+        "recent", help="List recent agentic memory commits."
+    )
     _add_vnext_agent_arguments(vnext_memory_recent_parser)
     vnext_memory_recent_parser.add_argument("--limit", type=int, default=20, help="Maximum commits to list.")
     vnext_memory_recent_parser.set_defaults(handler=_run_vnext_memory_recent)
@@ -5549,8 +6013,12 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_agent_ingest_parser.add_argument("--agent-type", default="unknown", help="Agent type.")
     vnext_agent_ingest_parser.add_argument("--agent-run-id", default=None, help="Agent run id.")
     vnext_agent_ingest_parser.add_argument("--task-id", default=None, help="Task id.")
-    vnext_agent_ingest_parser.add_argument("--project-scope", action="append", default=[], help="Project scope. Repeatable.")
-    vnext_agent_ingest_parser.add_argument("--permission-profile", default="project_scoped_agent", help="Agent permission profile.")
+    vnext_agent_ingest_parser.add_argument(
+        "--project-scope", action="append", default=[], help="Project scope. Repeatable."
+    )
+    vnext_agent_ingest_parser.add_argument(
+        "--permission-profile", default="project_scoped_agent", help="Agent permission profile."
+    )
     vnext_agent_ingest_parser.add_argument("--title", required=True, help="Output title.")
     vnext_agent_ingest_parser.add_argument("--file", default=None, help="File containing output content.")
     vnext_agent_ingest_parser.add_argument("content", nargs="*", help="Inline output content.")
@@ -5562,16 +6030,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vnext_agent_ingest_parser.add_argument("--domain", default="project", help="Domain label.")
     vnext_agent_ingest_parser.add_argument("--sensitivity", default="private", help="Sensitivity label.")
-    vnext_agent_ingest_parser.add_argument("--source-ref", action="append", default=[], help="Source reference. Repeatable.")
+    vnext_agent_ingest_parser.add_argument(
+        "--source-ref", action="append", default=[], help="Source reference. Repeatable."
+    )
     vnext_agent_ingest_parser.add_argument("--rationale", default=None, help="Optional rationale.")
-    vnext_agent_ingest_parser.add_argument("--propose-memory", action="store_true", help="Create review-only memory proposal.")
+    vnext_agent_ingest_parser.add_argument(
+        "--propose-memory", action="store_true", help="Create review-only memory proposal."
+    )
     vnext_agent_ingest_parser.set_defaults(handler=_run_vnext_agents_ingest_output)
     vnext_agent_telemetry_parser = vnext_agents_subparsers.add_parser(
         "policy-telemetry",
         help="Summarize vNext agent policy blocks, filters, reviews, workflows, and proposals.",
     )
     vnext_agent_telemetry_parser.add_argument("--agent-id", default=None, help="Optional agent id filter.")
-    vnext_agent_telemetry_parser.add_argument("--limit", type=int, default=200, help="Maximum agent events to summarize.")
+    vnext_agent_telemetry_parser.add_argument(
+        "--limit", type=int, default=200, help="Maximum agent events to summarize."
+    )
     vnext_agent_telemetry_parser.set_defaults(handler=_run_vnext_agent_policy_telemetry)
 
     vnext_scheduler_parser = vnext_subparsers.add_parser("scheduler", help="Governed local vNext scheduler controls.")
@@ -5582,7 +6056,9 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_scheduler_runs_parser.add_argument("--workflow-type", default=None, help="Optional workflow type filter.")
     vnext_scheduler_runs_parser.add_argument("--limit", type=int, default=20, help="Maximum runs to return.")
     vnext_scheduler_runs_parser.set_defaults(handler=_run_vnext_scheduler_runs)
-    vnext_scheduler_failures_parser = vnext_scheduler_subparsers.add_parser("failures", help="List failed scheduler runs.")
+    vnext_scheduler_failures_parser = vnext_scheduler_subparsers.add_parser(
+        "failures", help="List failed scheduler runs."
+    )
     vnext_scheduler_failures_parser.add_argument("--workflow-type", default=None, help="Optional workflow type filter.")
     vnext_scheduler_failures_parser.add_argument("--limit", type=int, default=20, help="Maximum failed runs to return.")
     vnext_scheduler_failures_parser.set_defaults(handler=_run_vnext_scheduler_failures)
@@ -5599,34 +6075,70 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_model_generation_arguments(vnext_scheduler_run_parser)
     vnext_scheduler_run_parser.set_defaults(handler=_run_vnext_scheduler_run_now)
-    vnext_scheduler_run_due_parser = vnext_scheduler_subparsers.add_parser("run-due", help="Run enabled workflows whose next_run_at is due.")
+    vnext_scheduler_run_due_parser = vnext_scheduler_subparsers.add_parser(
+        "run-due", help="Run enabled workflows whose next_run_at is due."
+    )
     _add_vnext_agent_arguments(vnext_scheduler_run_due_parser)
     vnext_scheduler_run_due_parser.add_argument("--limit", type=int, default=10, help="Maximum due workflows to run.")
     vnext_scheduler_run_due_parser.set_defaults(handler=_run_vnext_scheduler_run_due)
     vnext_scheduler_pause_parser = vnext_scheduler_subparsers.add_parser("pause", help="Pause all scheduler workflows.")
     _add_vnext_agent_arguments(vnext_scheduler_pause_parser)
     vnext_scheduler_pause_parser.set_defaults(handler=_run_vnext_scheduler_pause)
-    vnext_scheduler_resume_parser = vnext_scheduler_subparsers.add_parser("resume", help="Resume all scheduler workflows.")
+    vnext_scheduler_resume_parser = vnext_scheduler_subparsers.add_parser(
+        "resume", help="Resume all scheduler workflows."
+    )
     _add_vnext_agent_arguments(vnext_scheduler_resume_parser)
     vnext_scheduler_resume_parser.set_defaults(handler=_run_vnext_scheduler_resume)
-    vnext_scheduler_daemon_parser = vnext_scheduler_subparsers.add_parser("daemon", help="Run or inspect the local scheduler daemon.")
-    vnext_scheduler_daemon_subparsers = vnext_scheduler_daemon_parser.add_subparsers(dest="vnext_scheduler_daemon_command", required=True)
-    vnext_scheduler_daemon_start_parser = vnext_scheduler_daemon_subparsers.add_parser("start", help="Start the local scheduler daemon.")
-    vnext_scheduler_daemon_start_parser.add_argument("--foreground", action="store_true", help="Run in the foreground instead of spawning a background process.")
-    vnext_scheduler_daemon_start_parser.add_argument("--once", action="store_true", help="Run one due scan, then exit. Useful for local smoke tests.")
-    vnext_scheduler_daemon_start_parser.add_argument("--interval-seconds", type=float, default=60.0, help="Due-scan polling interval.")
-    vnext_scheduler_daemon_start_parser.add_argument("--limit", type=int, default=10, help="Maximum due workflows per scan.")
-    vnext_scheduler_daemon_start_parser.add_argument("--pid-file", default=str(DEFAULT_PID_FILE), help="Daemon pid file.")
-    vnext_scheduler_daemon_start_parser.add_argument("--status-file", default=str(DEFAULT_STATUS_FILE), help="Daemon status JSON file.")
-    vnext_scheduler_daemon_start_parser.add_argument("--log-file", default=str(DEFAULT_LOG_FILE), help="Daemon log file.")
+    vnext_scheduler_daemon_parser = vnext_scheduler_subparsers.add_parser(
+        "daemon", help="Run or inspect the local scheduler daemon."
+    )
+    vnext_scheduler_daemon_subparsers = vnext_scheduler_daemon_parser.add_subparsers(
+        dest="vnext_scheduler_daemon_command", required=True
+    )
+    vnext_scheduler_daemon_start_parser = vnext_scheduler_daemon_subparsers.add_parser(
+        "start", help="Start the local scheduler daemon."
+    )
+    vnext_scheduler_daemon_start_parser.add_argument(
+        "--foreground", action="store_true", help="Run in the foreground instead of spawning a background process."
+    )
+    vnext_scheduler_daemon_start_parser.add_argument(
+        "--once", action="store_true", help="Run one due scan, then exit. Useful for local smoke tests."
+    )
+    vnext_scheduler_daemon_start_parser.add_argument(
+        "--interval-seconds", type=float, default=60.0, help="Due-scan polling interval."
+    )
+    vnext_scheduler_daemon_start_parser.add_argument(
+        "--limit", type=int, default=10, help="Maximum due workflows per scan."
+    )
+    vnext_scheduler_daemon_start_parser.add_argument(
+        "--pid-file", default=str(DEFAULT_PID_FILE), help="Daemon pid file."
+    )
+    vnext_scheduler_daemon_start_parser.add_argument(
+        "--status-file", default=str(DEFAULT_STATUS_FILE), help="Daemon status JSON file."
+    )
+    vnext_scheduler_daemon_start_parser.add_argument(
+        "--log-file", default=str(DEFAULT_LOG_FILE), help="Daemon log file."
+    )
     vnext_scheduler_daemon_start_parser.set_defaults(handler=_run_vnext_scheduler_daemon_start)
-    vnext_scheduler_daemon_status_parser = vnext_scheduler_daemon_subparsers.add_parser("status", help="Show local scheduler daemon process status.")
-    vnext_scheduler_daemon_status_parser.add_argument("--pid-file", default=str(DEFAULT_PID_FILE), help="Daemon pid file.")
-    vnext_scheduler_daemon_status_parser.add_argument("--status-file", default=str(DEFAULT_STATUS_FILE), help="Daemon status JSON file.")
+    vnext_scheduler_daemon_status_parser = vnext_scheduler_daemon_subparsers.add_parser(
+        "status", help="Show local scheduler daemon process status."
+    )
+    vnext_scheduler_daemon_status_parser.add_argument(
+        "--pid-file", default=str(DEFAULT_PID_FILE), help="Daemon pid file."
+    )
+    vnext_scheduler_daemon_status_parser.add_argument(
+        "--status-file", default=str(DEFAULT_STATUS_FILE), help="Daemon status JSON file."
+    )
     vnext_scheduler_daemon_status_parser.set_defaults(handler=_run_vnext_scheduler_daemon_status)
-    vnext_scheduler_daemon_stop_parser = vnext_scheduler_daemon_subparsers.add_parser("stop", help="Stop the local scheduler daemon process.")
-    vnext_scheduler_daemon_stop_parser.add_argument("--pid-file", default=str(DEFAULT_PID_FILE), help="Daemon pid file.")
-    vnext_scheduler_daemon_stop_parser.add_argument("--status-file", default=str(DEFAULT_STATUS_FILE), help="Daemon status JSON file.")
+    vnext_scheduler_daemon_stop_parser = vnext_scheduler_daemon_subparsers.add_parser(
+        "stop", help="Stop the local scheduler daemon process."
+    )
+    vnext_scheduler_daemon_stop_parser.add_argument(
+        "--pid-file", default=str(DEFAULT_PID_FILE), help="Daemon pid file."
+    )
+    vnext_scheduler_daemon_stop_parser.add_argument(
+        "--status-file", default=str(DEFAULT_STATUS_FILE), help="Daemon status JSON file."
+    )
     vnext_scheduler_daemon_stop_parser.set_defaults(handler=_run_vnext_scheduler_daemon_stop)
 
     vnext_smoke_parser = vnext_subparsers.add_parser("smoke", help="Run vNext smoke checks.")
@@ -6477,7 +6989,7 @@ def main(argv: list[str] | None = None) -> int:
         output = handler(ctx, args)
     except (
         ValueError,
-        PermissionError,
+        OSError,
         psycopg.Error,
         ContinuityCaptureValidationError,
         VNextCaptureValidationError,
@@ -6489,6 +7001,7 @@ def main(argv: list[str] | None = None) -> int:
         VNextQueueValidationError,
         VNextRetrievalValidationError,
         VNextSchedulerValidationError,
+        RuntimeError,
         ContinuityLifecycleValidationError,
         ContinuityLifecycleNotFoundError,
         ContinuityRecallValidationError,
@@ -6514,6 +7027,9 @@ def main(argv: list[str] | None = None) -> int:
         print(exc.output)
         return 1
     except EmbeddingBackfillFailure as exc:
+        print(exc.output)
+        return 1
+    except PartialCommandFailure as exc:
         print(exc.output)
         return 1
 

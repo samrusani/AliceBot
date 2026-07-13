@@ -95,3 +95,89 @@ def test_required_checks_match_actual_workflow_job_display_names() -> None:
     assert set(release_checks.REQUIRED_CHECKS) == (
         tests_jobs | semantic_jobs | externally_managed_jobs
     )
+
+
+def _active_main_ruleset(
+    *contexts: str,
+    strict: bool = True,
+    includes: tuple[str, ...] = ("~DEFAULT_BRANCH",),
+    excludes: tuple[str, ...] = (),
+) -> dict[str, object]:
+    return {
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {
+            "ref_name": {"include": list(includes), "exclude": list(excludes)}
+        },
+        "rules": [
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "strict_required_status_checks_policy": strict,
+                    "required_status_checks": [
+                        {"context": context} for context in contexts
+                    ],
+                },
+            }
+        ],
+    }
+
+
+def test_branch_ruleset_check_accepts_current_strict_contexts() -> None:
+    ruleset = _active_main_ruleset(
+        *release_checks.BRANCH_PROTECTION_REQUIRED_CHECKS
+    )
+
+    assert release_checks.validate_branch_rulesets([ruleset]) == []
+
+
+def test_branch_ruleset_check_rejects_renamed_missing_and_nonstrict_contexts() -> None:
+    contexts = list(release_checks.BRANCH_PROTECTION_REQUIRED_CHECKS)
+    contexts.remove("Web tests, types, accessibility, and budgets")
+    contexts.append("Web tests, lint, build")
+
+    issues = release_checks.validate_branch_rulesets(
+        [_active_main_ruleset(*contexts, strict=False)]
+    )
+
+    assert any("not strict" in issue for issue in issues)
+    assert any("missing current required check" in issue for issue in issues)
+
+
+def test_branch_ruleset_check_allows_additional_organization_contexts() -> None:
+    ruleset = _active_main_ruleset(
+        *release_checks.BRANCH_PROTECTION_REQUIRED_CHECKS,
+        "Organization release policy",
+    )
+
+    assert release_checks.validate_branch_rulesets([ruleset]) == []
+
+
+def test_branch_ruleset_check_matches_and_excludes_ref_patterns() -> None:
+    wildcard = _active_main_ruleset(
+        *release_checks.BRANCH_PROTECTION_REQUIRED_CHECKS,
+        includes=("refs/heads/m*",),
+    )
+    excluded = _active_main_ruleset(
+        *release_checks.BRANCH_PROTECTION_REQUIRED_CHECKS,
+        includes=("refs/heads/*",),
+        excludes=("refs/heads/m*",),
+    )
+
+    assert release_checks.validate_branch_rulesets([wildcard]) == []
+    assert release_checks.validate_branch_rulesets([excluded]) == [
+        "no active strict status-check ruleset applies to main"
+    ]
+
+
+def test_branch_ruleset_check_ignores_inactive_or_other_branch_rulesets() -> None:
+    inactive = _active_main_ruleset(*release_checks.BRANCH_PROTECTION_REQUIRED_CHECKS)
+    inactive["enforcement"] = "disabled"
+    other = _active_main_ruleset(*release_checks.BRANCH_PROTECTION_REQUIRED_CHECKS)
+    other["conditions"] = {
+        "ref_name": {"include": ["refs/heads/develop"], "exclude": []}
+    }
+
+    issues = release_checks.validate_branch_rulesets([inactive, other])
+
+    assert issues == ["no active strict status-check ruleset applies to main"]

@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass
 import json
+import logging
 import math
 import os
 from hashlib import sha256
-from typing import Mapping, Protocol, Sequence, TypedDict
+from typing import Iterator, Mapping, Protocol, Sequence, TypedDict
 from urllib.error import HTTPError, URLError
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_repositories import JsonObject
+
+
+logger = logging.getLogger(__name__)
 
 
 EMBEDDING_VECTOR_DIMENSIONS = 1536
@@ -54,6 +61,84 @@ class SignedMemoryEmbeddingUpdate(TypedDict):
     endpoint: str
     content_sha256: str
     signature_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class DeferredMemoryEmbedding:
+    """Immutable id/text snapshot safe to carry across a commit boundary."""
+
+    memory_id: str
+    title: str | None
+    canonical_text: str | None
+    summary: str | None
+
+    @classmethod
+    def from_memory(cls, memory: Mapping[str, object]) -> "DeferredMemoryEmbedding":
+        memory_id = str(memory.get("id") or "").strip()
+        if not memory_id:
+            raise VNextEmbeddingConfigurationError(
+                "deferred memory embedding inputs require a non-empty id"
+            )
+
+        def text_field(name: str) -> str | None:
+            value = memory.get(name)
+            return value if isinstance(value, str) else None
+
+        return cls(
+            memory_id=memory_id,
+            title=text_field("title"),
+            canonical_text=text_field("canonical_text"),
+            summary=text_field("summary"),
+        )
+
+    def to_memory_record(self) -> Mapping[str, object]:
+        return {
+            "id": self.memory_id,
+            "title": self.title,
+            "canonical_text": self.canonical_text,
+            "summary": self.summary,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedMemoryEmbedding:
+    """Validated vector write prepared without an open database transaction."""
+
+    memory_id: str
+    vector: tuple[float, ...]
+    provider: str
+    model: str
+    endpoint: str
+    content_sha256: str
+    signature_version: int
+
+    def to_update(self) -> SignedMemoryEmbeddingUpdate:
+        return {
+            "memory_id": self.memory_id,
+            "vector": list(self.vector),
+            "provider": self.provider,
+            "model": self.model,
+            "endpoint": self.endpoint,
+            "content_sha256": self.content_sha256,
+            "signature_version": self.signature_version,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryEmbeddingFailure:
+    memory_id: str
+    error_type: str
+    error_message: str
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryEmbeddingPreparation:
+    """Provider result ready for a separate, short persistence transaction."""
+
+    prepared: tuple[PreparedMemoryEmbedding, ...]
+    failures: tuple[MemoryEmbeddingFailure, ...]
+    provider: str | None
+    model: str | None
 
 
 def _canonical_endpoint(base_url: str) -> str:
@@ -195,7 +280,7 @@ class OpenAICompatibleEmbeddingProvider:
                 response_payload = json.loads(response.read())
         except HTTPError as exc:
             raise VNextEmbeddingProviderError(f"embeddings endpoint returned HTTP {exc.code}") from exc
-        except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+        except (URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise VNextEmbeddingProviderError(f"embeddings request failed: {exc}") from exc
         return _extract_embeddings(response_payload, expected_count=len(texts))
 
@@ -203,14 +288,21 @@ class OpenAICompatibleEmbeddingProvider:
 def _extract_embeddings(payload: object, *, expected_count: int) -> list[list[float]]:
     if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
         raise VNextEmbeddingProviderError("embeddings response did not include a data array")
-    rows: list[tuple[int, list[float]]] = []
-    for index, item in enumerate(payload["data"]):
+    rows: list[tuple[int | None, list[float]]] = []
+    index_presence: list[bool] = []
+    for item in payload["data"]:
         if not isinstance(item, dict) or not isinstance(item.get("embedding"), list):
             raise VNextEmbeddingProviderError("embeddings response item did not include an embedding")
-        item_index = item.get("index")
+        has_index = "index" in item
+        item_index = item.get("index") if has_index else None
+        if has_index and (isinstance(item_index, bool) or not isinstance(item_index, int)):
+            raise VNextEmbeddingProviderError(
+                "embeddings response indices must be non-boolean integers"
+            )
+        index_presence.append(has_index)
         rows.append(
             (
-                item_index if isinstance(item_index, int) else index,
+                item_index,
                 pad_embedding_vector(item["embedding"]),
             )
         )
@@ -218,7 +310,18 @@ def _extract_embeddings(payload: object, *, expected_count: int) -> list[list[fl
         raise VNextEmbeddingProviderError(
             f"embeddings response returned {len(rows)} vectors for {expected_count} inputs"
         )
-    rows.sort(key=lambda row: row[0])
+    indexed = [row_index for row_index, _vector in rows if row_index is not None]
+    if any(index_presence) and not all(index_presence):
+        raise VNextEmbeddingProviderError(
+            "embeddings response must either index every vector or omit every index"
+        )
+    if indexed:
+        expected_indices = list(range(expected_count))
+        if sorted(indexed) != expected_indices:
+            raise VNextEmbeddingProviderError(
+                "embeddings response indices must be an exact 0-based permutation of the inputs"
+            )
+        rows.sort(key=lambda row: row[0] if row[0] is not None else -1)
     return [vector for _index, vector in rows]
 
 
@@ -341,38 +444,273 @@ def attach_memory_embedding(
     the event log and the ``embedding_vector`` column stays NULL for the
     ``alicebot vnext memories backfill-embeddings`` pass.
     """
-    resolved_provider = provider if provider is not None else get_embedding_provider()
-    if resolved_provider is None:
-        return False
-    update_memory_embedding = getattr(store, "update_memory_embedding", None)
-    if not callable(update_memory_embedding):
-        return False
-    text = memory_embedding_text(memory)
-    if text == "":
-        return False
-    try:
-        vector = resolved_provider.embed_text(text)
-        update_memory_embedding(
-            **signed_memory_embedding_update(memory, vector, provider=resolved_provider)
-        )
-        return True
-    except (TypeError, VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
-        append_event(
-            store,  # type: ignore[arg-type]
-            event_type="memory.embedding_failed",
+    return (
+        attach_memory_embeddings(
+            store,
+            [memory],
+            provider=provider,
             actor_type=actor_type,
             actor_id=actor_id,
-            target_type="memory",
-            target_id=str(memory.get("id")),
             trace_id=trace_id,
-            payload={
-                "error_type": type(exc).__name__,
-                "error_message": str(exc),
-                "provider": resolved_provider.provider,
-                "model": resolved_provider.model,
-            },
         )
-        return False
+        == 1
+    )
+
+
+def _log_embedding_failure(
+    store: object,
+    memory_id: str,
+    *,
+    error_type: str,
+    error_message: str,
+    provider: str | None,
+    model: str | None,
+    actor_type: str,
+    actor_id: str | None,
+    trace_id: str | None,
+) -> None:
+    """Best-effort diagnostic for an already best-effort vector write."""
+    try:
+        with _embedding_write_savepoint(store):
+            append_event(
+                store,  # type: ignore[arg-type]
+                event_type="memory.embedding_failed",
+                actor_type=actor_type,
+                actor_id=actor_id,
+                target_type="memory",
+                target_id=memory_id,
+                trace_id=trace_id,
+                payload={
+                    "error_type": error_type,
+                    "error_message": error_message,
+                    "provider": provider,
+                    "model": model,
+                },
+            )
+    except Exception:
+        # Event persistence is diagnostic only. A second store failure must not
+        # turn an optional embedding write into a failed memory operation.
+        return
+
+
+@contextmanager
+def _embedding_write_savepoint(store: object) -> Iterator[None]:
+    """Isolate one optional vector/event write from its caller transaction."""
+    conn = getattr(store, "conn", None)
+    transaction = getattr(conn, "transaction", None)
+    if callable(transaction):
+        with transaction():
+            yield
+        return
+    execute = getattr(conn, "execute", None)
+    if callable(execute):
+        name = "alice_embedding_write"
+        execute(f"SAVEPOINT {name}")
+        try:
+            yield
+        except Exception:
+            execute(f"ROLLBACK TO SAVEPOINT {name}")
+            execute(f"RELEASE SAVEPOINT {name}")
+            raise
+        else:
+            execute(f"RELEASE SAVEPOINT {name}")
+        return
+    yield
+
+
+def prepare_memory_embeddings(
+    inputs: Sequence[DeferredMemoryEmbedding],
+    *,
+    provider: EmbeddingProvider | None = None,
+) -> MemoryEmbeddingPreparation:
+    """Call the provider in batches without touching a database connection."""
+    resolved_provider = provider if provider is not None else get_embedding_provider()
+    if resolved_provider is None:
+        return MemoryEmbeddingPreparation((), (), None, None)
+    embeddable = [
+        (item, text)
+        for item in inputs
+        if (text := memory_embedding_text(item.to_memory_record())) != ""
+    ]
+    prepared: list[PreparedMemoryEmbedding] = []
+    failures: list[MemoryEmbeddingFailure] = []
+    for batch_start in range(0, len(embeddable), MAX_EMBEDDINGS_BATCH_SIZE):
+        batch = embeddable[batch_start : batch_start + MAX_EMBEDDINGS_BATCH_SIZE]
+        try:
+            vectors = resolved_provider.embed_batch([text for _item, text in batch])
+            if len(vectors) != len(batch):
+                raise VNextEmbeddingProviderError(
+                    f"embedding provider returned {len(vectors)} vectors for {len(batch)} inputs"
+                )
+        except Exception as exc:
+            failures.extend(
+                MemoryEmbeddingFailure(item.memory_id, type(exc).__name__, str(exc))
+                for item, _text in batch
+            )
+            continue
+
+        for (item, _text), vector in zip(batch, vectors, strict=True):
+            try:
+                update = signed_memory_embedding_update(
+                    item.to_memory_record(), vector, provider=resolved_provider
+                )
+                prepared.append(
+                    PreparedMemoryEmbedding(
+                        memory_id=update["memory_id"],
+                        vector=tuple(update["vector"]),
+                        provider=update["provider"],
+                        model=update["model"],
+                        endpoint=update["endpoint"],
+                        content_sha256=update["content_sha256"],
+                        signature_version=update["signature_version"],
+                    )
+                )
+            except Exception as exc:
+                failures.append(
+                    MemoryEmbeddingFailure(item.memory_id, type(exc).__name__, str(exc))
+                )
+    return MemoryEmbeddingPreparation(
+        tuple(prepared),
+        tuple(failures),
+        resolved_provider.provider,
+        resolved_provider.model,
+    )
+
+
+def persist_prepared_memory_embeddings(
+    store: object,
+    preparation: MemoryEmbeddingPreparation,
+    *,
+    actor_type: str = "system",
+    actor_id: str | None = None,
+    trace_id: str | None = None,
+) -> int:
+    """Best-effort persistence half of the two-phase embedding contract."""
+    update_memory_embedding = getattr(store, "update_memory_embedding", None)
+    if not callable(update_memory_embedding):
+        return 0
+    for failure in preparation.failures:
+        _log_embedding_failure(
+            store,
+            failure.memory_id,
+            error_type=failure.error_type,
+            error_message=failure.error_message,
+            provider=preparation.provider,
+            model=preparation.model,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            trace_id=trace_id,
+        )
+    attached_count = 0
+    for prepared in preparation.prepared:
+        try:
+            with _embedding_write_savepoint(store):
+                updated = update_memory_embedding(**prepared.to_update())
+            # Bundled stores use the signed content digest as an optimistic
+            # compare-and-set token.  ``None`` means the memory changed after
+            # provider preparation, so the stale vector must be discarded.
+            if updated is not None:
+                attached_count += 1
+        except Exception as exc:
+            _log_embedding_failure(
+                store,
+                prepared.memory_id,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                provider=prepared.provider,
+                model=prepared.model,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                trace_id=trace_id,
+            )
+    return attached_count
+
+
+def persist_deferred_memory_embeddings_best_effort(
+    inputs: Sequence[DeferredMemoryEmbedding],
+    *,
+    store_context: Callable[[], AbstractContextManager[object]],
+    provider: EmbeddingProvider | None = None,
+    actor_type: str = "system",
+    actor_id: str | None = None,
+    trace_id: str | None = None,
+) -> int:
+    """Prepare vectors without a connection and persist after the primary commit.
+
+    Embeddings are an optional derived index. Once the authoritative memory
+    transaction has committed, failure to acquire the follow-up connection,
+    write a vector, or commit that follow-up transaction must not turn the
+    successful memory operation into an error. Store-level failures are logged
+    through ``memory.embedding_failed`` when possible; connection/commit
+    failures are logged through the process logger because no usable store may
+    remain.
+    """
+
+    if not inputs:
+        return 0
+    try:
+        preparation = prepare_memory_embeddings(inputs, provider=provider)
+    except Exception as exc:
+        logger.warning(
+            "best-effort memory embedding preparation failed: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return 0
+    if not preparation.prepared and not preparation.failures:
+        return 0
+    try:
+        with store_context() as store:
+            return persist_prepared_memory_embeddings(
+                store,
+                preparation,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                trace_id=trace_id,
+            )
+    except Exception as exc:
+        logger.warning(
+            "best-effort memory embedding persistence failed after the primary commit: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return 0
+
+
+def attach_memory_embeddings(
+    store: object,
+    memories: Sequence[Mapping[str, object]],
+    *,
+    provider: EmbeddingProvider | None = None,
+    actor_type: str = "system",
+    actor_id: str | None = None,
+    trace_id: str | None = None,
+) -> int:
+    """Best-effort batched embed-on-write for memory rows.
+
+    Provider calls are bounded to ``MAX_EMBEDDINGS_BATCH_SIZE``. A failed
+    provider batch or individual store write is logged for the affected rows
+    and never blocks the already-completed memory writes.
+    """
+    update_memory_embedding = getattr(store, "update_memory_embedding", None)
+    if not callable(update_memory_embedding):
+        return 0
+    try:
+        inputs = tuple(DeferredMemoryEmbedding.from_memory(memory) for memory in memories)
+    except VNextEmbeddingConfigurationError:
+        inputs = tuple(
+            DeferredMemoryEmbedding.from_memory(memory)
+            for memory in memories
+            if str(memory.get("id") or "").strip()
+        )
+    preparation = prepare_memory_embeddings(inputs, provider=provider)
+    return persist_prepared_memory_embeddings(
+        store,
+        preparation,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        trace_id=trace_id,
+    )
 
 
 __all__ = [
@@ -383,7 +721,11 @@ __all__ = [
     "EMBEDDINGS_MODEL_ENV",
     "EMBEDDING_SIGNATURE_METADATA_KEY",
     "EMBEDDING_SIGNATURE_VERSION",
+    "DeferredMemoryEmbedding",
     "EmbeddingProvider",
+    "MemoryEmbeddingFailure",
+    "MemoryEmbeddingPreparation",
+    "PreparedMemoryEmbedding",
     "SignedMemoryEmbeddingUpdate",
     "endpoint_fingerprint",
     "MAX_EMBEDDINGS_BATCH_SIZE",
@@ -391,11 +733,15 @@ __all__ = [
     "VNextEmbeddingConfigurationError",
     "VNextEmbeddingProviderError",
     "attach_memory_embedding",
+    "attach_memory_embeddings",
     "get_embedding_provider",
     "memory_embedding_content_sha256",
     "memory_embedding_signature_is_current",
     "memory_embedding_text",
     "memory_embedding_signature",
     "pad_embedding_vector",
+    "persist_prepared_memory_embeddings",
+    "persist_deferred_memory_embeddings_best_effort",
+    "prepare_memory_embeddings",
     "signed_memory_embedding_update",
 ]

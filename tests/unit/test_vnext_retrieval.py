@@ -114,6 +114,7 @@ class InMemoryVNextRetrievalStore:
         self.time_search_calls: list[dict[str, object]] = []
         self.fts_limits: list[int] = []
         self.vector_limits: list[int] = []
+        self.memory_bulk_reads = 0
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
@@ -318,6 +319,15 @@ class InMemoryVNextRetrievalStore:
                 return row
         return None
 
+    def get_memories_by_ids(self, memory_ids: tuple[str, ...]) -> list[dict[str, object]]:
+        self.memory_bulk_reads += 1
+        wanted = set(memory_ids)
+        return [
+            row
+            for row in [*self.memories, *(self.vector_memories or [])]
+            if str(row.get("id")) in wanted
+        ]
+
     def search_source_chunks(
         self,
         *,
@@ -431,6 +441,37 @@ def test_query_classifier_does_not_hard_scope_ambiguous_business_money_query() -
 
     assert inferred["domains"] == []
     assert explicit["domains"] == ["personal"]
+
+
+def test_inferred_domains_are_disclosed_but_never_used_as_hard_filters() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[
+            _memory_row(
+                "memory-legal",
+                "Legal approved the updated data processing agreement.",
+                domain="professional",
+            )
+        ],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="What did legal approve for data processing?")
+    )
+
+    assert pack["query_interpretation"]["domains"] == []
+    assert pack["query_interpretation"]["inferred_domains"] == ["personal"]
+    assert store.memory_search_domains is None
+    assert [row["id"] for row in pack["relevant_memories"]] == ["memory-legal"]
+
+
+def test_domain_inference_uses_word_boundaries() -> None:
+    assert classify_query(VNextRetrievalRequest(query="prevent malice in the queue"))[
+        "inferred_domains"
+    ] == []
+    assert classify_query(VNextRetrievalRequest(query="review the illegal campaign"))[
+        "inferred_domains"
+    ] == []
 
 
 def test_reciprocal_rank_fusion_scores_and_orders_candidates() -> None:
@@ -662,6 +703,39 @@ def test_unscoped_query_does_not_filter_to_unknown_domain() -> None:
     assert store.source_search_domains is None
     assert store.open_loop_domains is None
     assert pack["relevant_memories"][0]["id"] == "memory-personal"
+
+
+def test_grounding_runtime_failure_does_not_abort_context_pack_but_baseexception_does(
+    monkeypatch,
+) -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-1", "Marcus Chen approved the launch.")],
+        sources=[],
+    )
+
+    monkeypatch.setattr(
+        vnext_retrieval_module,
+        "compute_query_grounding",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("probe failed")),
+    )
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Did Marcus Chen approve the launch?")
+    )
+    assert [row["id"] for row in pack["relevant_memories"]] == ["memory-1"]
+    assert "grounding" not in pack
+
+    class ProbeCancelled(BaseException):
+        pass
+
+    monkeypatch.setattr(
+        vnext_retrieval_module,
+        "compute_query_grounding",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ProbeCancelled("cancelled")),
+    )
+    with pytest.raises(ProbeCancelled, match="cancelled"):
+        VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(query="Did Marcus Chen approve the launch?")
+        )
 
 
 def test_context_pack_records_missing_information_when_no_candidates_match() -> None:
@@ -1079,6 +1153,56 @@ def test_source_stage_fuses_chunk_content_provenance_and_title_recency() -> None
     assert source_trace["source-chunk"]["stage_ranks"] == {"chunk_fts": 1, "title_recency": 2}
     assert source_trace["source-prov"]["stage_ranks"] == {"provenance": 1, "title_recency": 3}
     assert source_trace["source-title"]["stage_ranks"] == {"title_recency": 1}
+
+
+def test_chunk_fts_deepens_until_it_finds_distinct_parent_sources() -> None:
+    class ChunkOnlyStore(InMemoryVNextRetrievalStore):
+        def search_sources(self, **_kwargs) -> list[dict[str, object]]:  # type: ignore[override]
+            return []
+
+    sources = [
+        {
+            "id": "source-long",
+            "source_type": "document",
+            "title": "Long document",
+            "content_hash": "sha256:long",
+            "domain": "project",
+            "sensitivity": "private",
+        },
+        {
+            "id": "source-other",
+            "source_type": "document",
+            "title": "Other document",
+            "content_hash": "sha256:other",
+            "domain": "project",
+            "sensitivity": "private",
+        },
+    ]
+    chunks = [
+        {
+            "id": f"chunk-long-{index}",
+            "source_id": "source-long",
+            "chunk_index": index,
+            "text": "release completeness needle",
+        }
+        for index in range(33)
+    ]
+    chunks.append(
+        {
+            "id": "chunk-other",
+            "source_id": "source-other",
+            "chunk_index": 0,
+            "text": "release completeness needle",
+        }
+    )
+    store = ChunkOnlyStore(memories=[], sources=sources, source_chunks=chunks)
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="release completeness needle")
+    )
+
+    assert [row["id"] for row in pack["sources"]] == ["source-long", "source-other"]
+    assert pack["trace"]["stages"]["sources"]["chunk_fts"] == 2
 
 
 def test_provenance_fusion_pulls_source_with_no_lexical_match() -> None:
@@ -1528,6 +1652,34 @@ def test_context_pack_project_scope_uses_overlap_for_multi_project_memories() ->
     assert [row["id"] for row in alice["relevant_memories"]] == ["memory-shared"]
     assert [row["id"] for row in hermes["relevant_memories"]] == ["memory-shared"]
     assert unrelated["relevant_memories"] == []
+
+
+def test_context_pack_does_not_widen_explicit_empty_memory_scope() -> None:
+    explicitly_unscoped = _memory_row(
+        "memory-explicitly-unscoped",
+        "Release coordination project fact.",
+        project_scope=[],
+        project_id="alicebot",
+        metadata_json={
+            "project_id": "alicebot",
+            "agentic_memory": {"project_scope": ["alicebot"]},
+        },
+    )
+    in_scope = _memory_row(
+        "memory-alicebot",
+        "Release coordination project fact.",
+        project_scope=["alicebot"],
+    )
+    store = InMemoryVNextRetrievalStore(
+        memories=[explicitly_unscoped, in_scope],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="release coordination project", projects=("alicebot",))
+    )
+
+    assert [row["id"] for row in pack["relevant_memories"]] == ["memory-alicebot"]
 
 
 def test_scoped_pack_rejects_cross_project_source_metadata_and_derivations(monkeypatch) -> None:
@@ -2313,6 +2465,67 @@ def test_context_pack_populates_contradicting_evidence_from_active_beliefs() -> 
     assert [event["event_type"] for event in store.events] == ["retrieval.context_pack_compiled"]
 
 
+def test_scoped_contradictions_deepen_beyond_200_and_bulk_load_backing_memories() -> None:
+    new_memory = _memory_row(
+        "memory-new",
+        "The deployment pipeline is not ready for production launch.",
+        project_id="alicebot",
+    )
+    decoy_backing = [
+        _memory_row(
+            f"belief-memory-decoy-{index:03d}",
+            "Unrelated archived belief backing row.",
+            memory_type="belief",
+            project_id="hermes",
+        )
+        for index in range(210)
+    ]
+    target_backing = _memory_row(
+        "belief-memory-target",
+        "Deployment readiness belief backing row.",
+        memory_type="belief",
+        project_id="alicebot",
+    )
+    beliefs = [
+        {
+            "id": f"belief-decoy-{index:03d}",
+            "memory_id": row["id"],
+            "claim": "The unrelated Hermes archive is current.",
+            "status": "active",
+            "memory_type": "belief",
+        }
+        for index, row in enumerate(decoy_backing)
+    ]
+    beliefs.append(
+        {
+            "id": "belief-target",
+            "memory_id": "belief-memory-target",
+            "claim": "The deployment pipeline is ready for production launch.",
+            "status": "active",
+            "memory_type": "belief",
+        }
+    )
+    store = InMemoryVNextRetrievalStore(
+        memories=[new_memory, *decoy_backing, target_backing],
+        sources=[],
+        beliefs=beliefs,
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="deployment pipeline production launch",
+            projects=("alicebot",),
+            include_sources=False,
+        )
+    )
+
+    assert [row["belief_id"] for row in pack["contradicting_evidence"]] == [
+        "belief-target"
+    ]
+    # Prefix deepening performs bounded bulk reads, never one read per belief.
+    assert 1 <= store.memory_bulk_reads < 10
+
+
 def test_context_pack_degrades_contradictions_when_store_lacks_beliefs() -> None:
     store = InMemoryVNextRetrievalStore(
         memories=[_memory_row("memory-1", "Alice degrade check row.")],
@@ -2371,6 +2584,59 @@ def test_context_pack_populates_recent_changes_from_memory_events() -> None:
     assert recent[0]["event_id"] == "event-8"
     assert set(recent[0]) == {"event_id", "event_type", "target_id", "occurred_at", "actor_type"}
     assert pack["trace"]["stages"]["recent_changes"] == {"candidate_count": 5}
+
+
+def test_scoped_recent_changes_deepen_beyond_200_and_bulk_load_targets() -> None:
+    target = _memory_row(
+        "memory-alicebot",
+        "AliceBot release status changed.",
+        project_id="alicebot",
+    )
+    decoys = [
+        _memory_row(
+            f"memory-hermes-{index:03d}",
+            "Hermes unrelated status.",
+            project_id="hermes",
+        )
+        for index in range(210)
+    ]
+    target_event = {
+        "id": "event-alicebot",
+        "event_type": "memory.updated",
+        "actor_type": "system",
+        "target_type": "memory",
+        "target_id": "memory-alicebot",
+        "occurred_at": "2026-07-01T00:00:00Z",
+    }
+    decoy_events = [
+        {
+            "id": f"event-hermes-{index:03d}",
+            "event_type": "memory.updated",
+            "actor_type": "system",
+            "target_type": "memory",
+            "target_id": row["id"],
+            "occurred_at": "2026-07-02T00:00:00Z",
+        }
+        for index, row in enumerate(decoys)
+    ]
+    # The stub returns newest-first by reversing this list, so every decoy
+    # ranks ahead of the one requested project event.
+    store = InMemoryVNextRetrievalStore(
+        memories=[target, *decoys],
+        sources=[],
+        seeded_events=[target_event, *decoy_events],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="AliceBot release status",
+            projects=("alicebot",),
+            include_sources=False,
+        )
+    )
+
+    assert [row["event_id"] for row in pack["recent_changes"]] == ["event-alicebot"]
+    assert 1 <= store.memory_bulk_reads < 20
 
 
 # -- type-aware sections -------------------------------------------------------------
@@ -4152,6 +4418,38 @@ def test_temporal_anchor_surfaces_right_dated_memory_over_stronger_lexical_hit()
             "window_end": datetime(2023, 4, 1, tzinfo=UTC),
         }
     ]
+
+
+def test_scoped_temporal_stage_deepens_beyond_200_decoys() -> None:
+    decoys = [
+        _memory_row(
+            f"memory-alex-{index:03d}",
+            "Museum visit downtown.",
+            valid_from="2023-03-15T00:00:00Z",
+            metadata_json={"people": ["Alex"]},
+        )
+        for index in range(210)
+    ]
+    target = _memory_row(
+        "memory-sam",
+        "Museum visit downtown.",
+        valid_from="2023-03-15T00:00:00Z",
+        metadata_json={"people": ["Sam"]},
+    )
+    store = InMemoryVNextRetrievalStore(memories=[*decoys, target], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="Which museum did I visit in March 2023?",
+            people=("Sam",),
+            max_items=1,
+            include_sources=False,
+        )
+    )
+
+    assert [row["id"] for row in pack["relevant_memories"]] == ["memory-sam"]
+    assert pack["trace"]["stages"]["temporal_anchor"]["candidate_count"] == 1
+    assert len(store.time_search_calls) == 2
 
 
 def test_no_anchor_query_has_no_temporal_stage_and_no_store_call() -> None:

@@ -6,6 +6,8 @@ const routes = [
   { path: "/chat", heading: "Chat with the assistant or route a governed request" },
   { path: "/continuity", heading: "Continuity workspace" },
   { path: "/vnext", heading: "True second-brain workspace" },
+  { path: "/approvals", heading: "Approval inbox and review" },
+  { path: "/gmail", heading: "Gmail account review workspace" },
 ];
 
 test("navigates through the operator shell with current-page semantics", async ({ page }) => {

@@ -10,7 +10,7 @@ from uuid import uuid4
 import anyio
 import pytest
 
-import apps.api.src.alicebot_api.main as main_module
+import alicebot_api.main as main_module
 from alicebot_api.config import Settings
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
@@ -60,6 +60,9 @@ class FakeVNextStore:
     def list_sources(self, **kwargs) -> list[dict[str, object]]:
         return list(self.sources.values())[: kwargs.get("limit", 20)]
 
+    def get_sources_by_ids(self, source_ids: list[str]) -> list[dict[str, object]]:
+        return [self.sources[source_id] for source_id in source_ids if source_id in self.sources]
+
     def update_source(self, *, source_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         source = self.sources[source_id]
         source.update(patch)
@@ -75,8 +78,8 @@ class FakeVNextStore:
         self.chunks.append(row)
         return row
 
-    def list_source_chunks(self, source_id: str) -> list[dict[str, object]]:
-        return [chunk for chunk in self.chunks if chunk.get("source_id") == source_id]
+    def list_source_chunks(self, source_id: str, *, limit: int = 500) -> list[dict[str, object]]:
+        return [chunk for chunk in self.chunks if chunk.get("source_id") == source_id][:limit]
 
     def create_memory(self, memory: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**memory, "id": f"memory-{len(self.memories) + 1}"}
@@ -85,6 +88,11 @@ class FakeVNextStore:
 
     def list_memories(self, *, status: str | None = None) -> list[dict[str, object]]:
         return [memory for memory in self.memories if status is None or memory.get("status") == status]
+
+    def list_memories_referencing_source(self, *, source_id: str, limit: int = 500) -> list[dict[str, object]]:
+        return [
+            memory for memory in self.memories if main_module._vnext_row_references_source(memory, source_id)
+        ][:limit]
 
     def update_memory(self, *, memory_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         for memory in self.memories:
@@ -98,6 +106,9 @@ class FakeVNextStore:
             if str(memory["id"]) == str(memory_id):
                 return memory
         return None
+
+    def get_memory_for_update(self, memory_id: str) -> dict[str, object] | None:
+        return self.get_memory(memory_id)
 
     def redact_memory_content(self, *, memory_id: str, actor_type: str = "user") -> dict[str, object]:
         memory = self.get_memory(memory_id)
@@ -216,6 +227,13 @@ class FakeVNextStore:
         ]
         return rows[:limit]
 
+    def list_open_loops_referencing_source(self, *, source_id: str, limit: int = 500) -> list[dict[str, object]]:
+        return [
+            open_loop
+            for open_loop in self.open_loops
+            if main_module._vnext_row_references_source(open_loop, source_id)
+        ][:limit]
+
     def get_open_loop(self, loop_id: str) -> dict[str, object] | None:
         for loop in self.open_loops:
             if loop["id"] == loop_id:
@@ -295,6 +313,7 @@ class FakeVNextStore:
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = 4,
+        **_filters: object,
     ) -> list[dict[str, object]]:
         del domains, sensitivity_allowed
         rows = [
@@ -303,6 +322,13 @@ class FakeVNextStore:
             if artifact_type is None or row.get("artifact_type") == artifact_type
         ]
         return rows[:limit]
+
+    def list_artifacts_referencing_source(self, *, source_id: str, limit: int = 500) -> list[dict[str, object]]:
+        return [
+            artifact
+            for artifact in self.artifacts.values()
+            if main_module._vnext_row_references_source(artifact, source_id)
+        ][:limit]
 
     def update_artifact_status(self, *, artifact_id: str, status: str, **_kwargs) -> dict[str, object]:
         artifact = self.artifacts[artifact_id]
@@ -329,6 +355,9 @@ class FakeVNextStore:
 
     def get_project(self, project_id: str) -> dict[str, object] | None:
         return self.projects.get(project_id)
+
+    def get_project_for_update(self, project_id: str) -> dict[str, object] | None:
+        return self.get_project(project_id)
 
     def list_projects(
         self,
@@ -431,6 +460,60 @@ class FakeVNextStore:
             and (target_id is None or event.get("target_id") == target_id)
         ]
         return rows[:limit] if limit is not None else rows
+
+    def list_events_for_source_trace(
+        self,
+        *,
+        source_id: str,
+        memory_ids: list[str] | tuple[str, ...] = (),
+        artifact_ids: list[str] | tuple[str, ...] = (),
+        open_loop_ids: list[str] | tuple[str, ...] = (),
+        limit: int = 500,
+    ) -> list[dict[str, object]]:
+        return [
+            event
+            for event in self.events
+            if main_module._vnext_event_references(
+                event,
+                source_id=source_id,
+                memory_ids=set(memory_ids),
+                artifact_ids=set(artifact_ids),
+                open_loop_ids=set(open_loop_ids),
+            )
+        ][:limit]
+
+    def list_agent_events(self, *, agent_id: str | None = None, limit: int = 50) -> list[dict[str, object]]:
+        return [
+            event
+            for event in self.events
+            if event.get("actor_type") == "agent" and (agent_id is None or event.get("actor_id") == agent_id)
+        ][:limit]
+
+    def list_agent_policy_artifacts(
+        self,
+        *,
+        agent_id: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        return [
+            artifact
+            for artifact in self.artifacts.values()
+            if main_module._vnext_metadata(artifact).get("generated_by") == "agent"
+            and (agent_id is None or main_module._vnext_metadata(artifact).get("agent_id") == agent_id)
+        ][:limit]
+
+    def list_agent_policy_memories(
+        self,
+        *,
+        agent_id: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        return [
+            memory
+            for memory in self.memories
+            if main_module._vnext_metadata(memory).get("agent_id") is not None
+            and (agent_id is None or main_module._vnext_metadata(memory).get("agent_id") == agent_id)
+        ][:limit]
 
     def upsert_agent_identity(self, identity: dict[str, object], **_kwargs) -> dict[str, object]:
         self.agent_identities[str(identity["agent_id"])] = identity
@@ -1079,6 +1162,202 @@ def test_vnext_source_review_trace_and_doctor_endpoints(monkeypatch) -> None:
     assert any(check["name"] == "migrations" for check in doctor_payload["checks"])
 
 
+def test_vnext_agent_policy_telemetry_scopes_supporting_rows_to_requested_agent(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    store.events.extend(
+        [
+            {
+                "id": "event-hermes",
+                "event_type": "agent.memory_proposed",
+                "actor_type": "agent",
+                "actor_id": "hermes",
+                "target_id": "memory-hermes",
+                "payload_json": {},
+            },
+            {
+                "id": "event-other",
+                "event_type": "agent.memory_proposed",
+                "actor_type": "agent",
+                "actor_id": "other",
+                "target_id": "memory-other",
+                "payload_json": {},
+            },
+        ]
+    )
+    store.memories.extend(
+        [
+            {"id": "memory-hermes", "metadata_json": {"agent_id": "hermes"}},
+            {"id": "memory-other", "metadata_json": {"agent_id": "other"}},
+        ]
+    )
+    store.artifacts.update(
+        {
+            "artifact-hermes": {
+                "id": "artifact-hermes",
+                "metadata_json": {"generated_by": "agent", "agent_id": "hermes"},
+            },
+            "artifact-other": {
+                "id": "artifact-other",
+                "metadata_json": {"generated_by": "agent", "agent_id": "other"},
+            },
+        }
+    )
+    _install_fake_vnext_store(monkeypatch, store)
+
+    response = main_module.get_vnext_agent_policy_telemetry(
+        user_id=uuid4(),
+        agent_id="hermes",
+        limit=200,
+    )
+
+    assert response.status_code == 200
+    summary = json.loads(response.body)["summary"]
+    assert summary["total_agent_events"] == 1
+    assert summary["memory_proposals_by_agent"] == [{"agent_id": "hermes", "count": 1}]
+    assert summary["artifact_generation_by_agent"] == [{"agent_id": "hermes", "count": 1}]
+
+
+def test_vnext_source_trace_caps_every_collection_and_reports_truncation(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    source_id = str(uuid4())
+    store.sources[source_id] = {
+        "id": source_id,
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {},
+    }
+    for index in range(main_module._VNEXT_SOURCE_TRACE_COLLECTION_LIMIT + 1):
+        store.chunks.append(
+            {"id": f"chunk-{index}", "source_id": source_id, "chunk_index": index}
+        )
+        store.memories.append(
+            {
+                "id": f"memory-{index}",
+                "source_id": source_id,
+                "metadata_json": {},
+            }
+        )
+        store.artifacts[f"artifact-{index}"] = {
+            "id": f"artifact-{index}",
+            "source_id": source_id,
+            "metadata_json": {},
+        }
+        store.open_loops.append(
+            {
+                "id": f"loop-{index}",
+                "source_id": source_id,
+                "metadata_json": {},
+            }
+        )
+        store.events.append(
+            {
+                "id": f"event-{index}",
+                "target_type": "source",
+                "target_id": source_id,
+                "payload_json": {},
+            }
+        )
+    _install_fake_vnext_store(monkeypatch, store)
+
+    response = main_module.get_vnext_source_trace(main_module.UUID(source_id), user_id=uuid4())
+
+    payload = json.loads(response.body)
+    assert response.status_code == 200
+    for key in ("chunks", "candidate_memories", "artifacts", "open_loops", "events"):
+        assert len(payload[key]) == main_module._VNEXT_SOURCE_TRACE_COLLECTION_LIMIT
+    assert payload["sampling"]["trace_complete"] is False
+    assert payload["sampling"]["memory_history_complete"] is False
+    assert set(payload["sampling"]["truncated_collections"]) == {
+        "chunks",
+        "candidate_memories",
+        "artifacts",
+        "open_loops",
+        "events",
+    }
+
+
+def test_vnext_agent_policy_telemetry_clamps_direct_call_limit(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    observed_limits: list[int] = []
+
+    def capture_limit(*, agent_id: str | None = None, limit: int = 200):
+        del agent_id
+        observed_limits.append(limit)
+        return []
+
+    store.list_agent_events = capture_limit  # type: ignore[method-assign]
+    store.list_agent_policy_artifacts = capture_limit  # type: ignore[method-assign]
+    store.list_agent_policy_memories = capture_limit  # type: ignore[method-assign]
+    _install_fake_vnext_store(monkeypatch, store)
+
+    response = main_module.get_vnext_agent_policy_telemetry(
+        user_id=uuid4(),
+        limit=10_000,
+    )
+
+    assert response.status_code == 200
+    assert observed_limits == [200, 200, 200]
+
+
+def test_vnext_artifact_trace_loads_exact_referenced_source_and_events_before_limit(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    for index in range(101):
+        decoy_id = str(uuid4())
+        store.sources[decoy_id] = {
+            "id": decoy_id,
+            "domain": "project",
+            "sensitivity": "private",
+            "metadata_json": {},
+        }
+        store.events.append(
+            {
+                "id": f"decoy-event-{index}",
+                "event_type": "source.updated",
+                "target_type": "source",
+                "target_id": decoy_id,
+                "payload_json": {},
+            }
+        )
+    source_id = str(uuid4())
+    artifact_id = str(uuid4())
+    store.sources[source_id] = {
+        "id": source_id,
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {"raw_text": "Exact provenance target"},
+    }
+    store.artifacts[artifact_id] = {
+        "id": artifact_id,
+        "artifact_type": "daily_brief",
+        "title": "Exact trace",
+        "content_markdown": "# Exact trace",
+        "status": "needs_review",
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {"source_refs": [f"source:{source_id}"]},
+    }
+    store.events.append(
+        {
+            "id": "artifact-event",
+            "event_type": "artifact.generated",
+            "target_type": "artifact",
+            "target_id": artifact_id,
+            "payload_json": {},
+        }
+    )
+    _install_fake_vnext_store(monkeypatch, store)
+
+    response = main_module.get_vnext_artifact_trace(
+        main_module.UUID(artifact_id),
+        user_id=uuid4(),
+    )
+
+    assert response.status_code == 200
+    payload = json.loads(response.body)
+    assert [source["id"] for source in payload["sources"]] == [source_id]
+    assert [event["id"] for event in payload["events"]] == ["artifact-event"]
+
+
 def test_create_vnext_context_pack_endpoint_returns_structured_pack(monkeypatch) -> None:
     store = FakeVNextStore(None)
     source_id = str(uuid4())
@@ -1159,10 +1438,28 @@ def test_vnext_brain_artifact_generation_endpoints(monkeypatch) -> None:
 
     daily_payload = json.loads(daily_response.body)
     weekly_payload = json.loads(weekly_response.body)
+    daily_contract = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[
+        ("POST", "/v0/vnext/artifacts/generate/daily-brief")
+    ][1]
+    weekly_contract = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[
+        ("POST", "/v0/vnext/artifacts/generate/weekly-synthesis")
+    ][1]
     assert daily_response.status_code == 201
+    assert set(daily_payload) == set(daily_contract["properties"]) - {
+        "created_at",
+        "promoted_at",
+        "reviewed_at",
+        "user_id",
+    }
     assert daily_payload["artifact_type"] == "daily_brief"
     assert daily_payload["metadata_json"]["candidate_open_loop_ids"] == ["loop-1"]
     assert weekly_response.status_code == 201
+    assert set(weekly_payload) == set(weekly_contract["properties"]) - {
+        "created_at",
+        "promoted_at",
+        "reviewed_at",
+        "user_id",
+    }
     assert weekly_payload["artifact_type"] == "weekly_synthesis"
     assert weekly_payload["metadata_json"]["candidate_memory_ids"] == ["memory-2"]
     assert store.events[-1]["event_type"] == "artifact.generated"
@@ -1211,6 +1508,11 @@ def test_vnext_connection_and_graph_endpoints(monkeypatch) -> None:
     review_payload = json.loads(review_response.body)
     neighborhood_payload = json.loads(neighborhood_response.body)
     assert generate_response.status_code == 201
+    assert set(generate_payload) == set(
+        main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[
+            ("POST", "/v0/vnext/artifacts/generate/connections")
+        ][1]["properties"]
+    ) - {"created_at", "promoted_at", "reviewed_at", "user_id"}
     assert generate_payload["artifact_type"] == "connection_report"
     assert generate_payload["metadata_json"]["candidate_edge_ids"] == ["edge-1"]
     assert review_response.status_code == 200
@@ -1263,6 +1565,11 @@ def test_vnext_contradiction_and_belief_endpoints(monkeypatch) -> None:
     review_payload = json.loads(review_response.body)
     state_payload = json.loads(state_response.body)
     assert generate_response.status_code == 201
+    assert set(generate_payload) == set(
+        main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[
+            ("POST", "/v0/vnext/artifacts/generate/contradictions")
+        ][1]["properties"]
+    ) - {"created_at", "promoted_at", "reviewed_at", "user_id"}
     assert generate_payload["artifact_type"] == "contradiction_report"
     assert generate_payload["metadata_json"]["candidate_edge_ids"] == ["edge-1"]
     assert review_response.status_code == 200
@@ -1291,10 +1598,11 @@ def test_vnext_project_and_open_loop_endpoints(monkeypatch) -> None:
         "content_hash": "sha256:abc",
         "captured_at": "2026-05-10T00:00:00Z",
         "domain": "project",
-        "sensitivity": "private",
-        "metadata_json": {
-            "raw_text": "Project: Alice vNext needs project automation.\nTODO: validate dashboard Owner: Samir"
-        },
+            "sensitivity": "private",
+            "metadata_json": {
+                "project_scope": ["project-1"],
+                "raw_text": "Project: Alice vNext needs project automation.\nTODO: validate dashboard Owner: Samir"
+            },
     }
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
@@ -1330,18 +1638,78 @@ def test_vnext_project_and_open_loop_endpoints(monkeypatch) -> None:
     review_loop_payload = json.loads(review_loop_response.body)
     dashboard_payload = json.loads(dashboard_response.body)
     assert update_response.status_code == 201
+    assert set(update_payload) == set(
+        main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[
+            ("POST", "/v0/vnext/projects/update-candidates")
+        ][1]["properties"]
+    ) - {"created_at", "promoted_at", "reviewed_at", "user_id"}
     assert update_payload["artifact_type"] == "project_update"
     assert update_payload["metadata_json"]["candidate_memory_id"] == "memory-1"
     assert extract_response.status_code == 201
     assert extract_payload["created_count"] == 1
     assert extract_payload["open_loops"][0]["metadata_json"]["owner"] == "Samir"
     assert review_update_response.status_code == 200
+    assert set(review_update_payload) == set(
+        main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[
+            ("POST", "/v0/vnext/projects/update-candidates/{artifact_id}/review")
+        ][1]["properties"]
+    ) - {"created_at", "promoted_at", "reviewed_at", "user_id"}
     assert review_update_payload["status"] == "accepted"
     assert store.projects["project-1"]["current_state"] == "Project automation reviewed."
     assert review_loop_response.status_code == 200
     assert review_loop_payload["due_at"] == "2026-05-12T09:00:00Z"
     assert dashboard_response.status_code == 200
     assert dashboard_payload["counts"]["open_loops"] == 1
+
+
+def test_project_automation_uses_canonical_project_scope() -> None:
+    converted = main_module._vnext_project_automation_request(
+        main_module.VNextProjectAutomationRequest(
+            user_id=uuid4(),
+            scope={"domains": ["project"]},
+            project_scope=["project-canonical"],
+        )
+    )
+
+    assert converted.project_id == "project-canonical"
+
+
+def test_project_automation_rejects_ambiguous_canonical_project_scope() -> None:
+    with pytest.raises(ValueError, match="requires one project_id"):
+        main_module._vnext_project_automation_request(
+            main_module.VNextProjectAutomationRequest(
+                user_id=uuid4(),
+                scope={"domains": ["project"]},
+                project_scope=["project-a", "project-b"],
+            )
+        )
+
+
+def test_project_automation_endpoints_map_ambiguous_and_mismatched_scope_to_400(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+
+    ambiguous = main_module.generate_vnext_project_update_candidate(
+        main_module.VNextProjectAutomationRequest(
+            user_id=user_id,
+            scope={"domains": ["project"]},
+            project_scope=["project-a", "project-b"],
+        )
+    )
+    mismatched = main_module.extract_vnext_open_loops(
+        main_module.VNextProjectAutomationRequest(
+            user_id=user_id,
+            scope={"domains": ["project"]},
+            project_scope=["project-a"],
+            options={"project_id": "project-b"},
+        )
+    )
+
+    assert ambiguous.status_code == 400
+    assert json.loads(ambiguous.body) == {"detail": "vNext project update request is invalid"}
+    assert mismatched.status_code == 400
+    assert json.loads(mismatched.body) == {"detail": "vNext open-loop extraction request is invalid"}
 
 
 def test_vnext_queue_and_artifact_endpoints(monkeypatch, tmp_path) -> None:
@@ -1453,6 +1821,57 @@ def test_vnext_artifact_review_endpoint_maps_validation_errors(monkeypatch) -> N
     assert missing_response.status_code == 404
 
 
+def test_generic_artifact_review_preserves_applied_project_update_state(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    store.projects["project-1"] = {
+        "id": "project-1",
+        "name": "Alice vNext",
+        "slug": "alice-vnext",
+        "status": "active",
+        "current_state": "Sprint 7 complete.",
+        "domain": "project",
+        "sensitivity": "private",
+    }
+    store.sources["source-1"] = {
+        "id": "source-1",
+        "source_type": "manual_text",
+        "title": "Alice project note",
+        "content_hash": "sha256:project-review-guard",
+        "captured_at": "2026-05-10T00:00:00Z",
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {
+            "project_scope": ["project-1"],
+            "raw_text": "Alice vNext is ready for the public release candidate.",
+        },
+    }
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    artifact = main_module.VNextProjectService(store).generate_project_update_candidate(
+        main_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact_id = str(artifact["id"])
+    candidate_memory_id = str(artifact["metadata_json"]["candidate_memory_id"])
+    expected_state = str(artifact["metadata_json"]["suggested_current_state"])
+
+    accepted_response = main_module.review_vnext_artifact(
+        main_module.UUID(artifact_id),
+        main_module.VNextArtifactReviewRequest(user_id=user_id, action="accept"),
+    )
+    rejected_response = main_module.review_vnext_artifact(
+        main_module.UUID(artifact_id),
+        main_module.VNextArtifactReviewRequest(user_id=user_id, action="reject"),
+    )
+
+    assert accepted_response.status_code == 200
+    assert json.loads(accepted_response.body)["status"] == "accepted"
+    assert rejected_response.status_code == 400
+    assert store.artifacts[artifact_id]["status"] == "accepted"
+    assert store.projects["project-1"]["current_state"] == expected_state
+    assert store.get_memory(candidate_memory_id)["status"] == "active"
+    assert not any(event.get("event_type") == "project.update_candidate_rejected" for event in store.events)
+
+
 def test_live_capture_connector_api_endpoints(monkeypatch) -> None:
     store = FakeVNextStore(None)
     _install_fake_vnext_store(monkeypatch, store)
@@ -1503,6 +1922,73 @@ def test_live_capture_connector_api_endpoints(monkeypatch) -> None:
     health_payload = json.loads(health_response.body)
     assert health_payload["count"] >= 4
     assert any(item["connector_name"] == "telegram" for item in health_payload["items"])
+
+
+def test_connector_external_io_runs_without_database_connection(monkeypatch, tmp_path) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    connection_depth = 0
+    poll_depths: list[int] = []
+    scan_depths: list[int] = []
+
+    @contextmanager
+    def tracked_user_connection(database_url, current_user_id):
+        nonlocal connection_depth
+        assert database_url == "postgresql://db"
+        assert current_user_id == user_id
+        connection_depth += 1
+        try:
+            yield object()
+        finally:
+            connection_depth -= 1
+
+    original_scan_local_folder = main_module.scan_local_folder
+
+    def fake_poll_telegram_updates(_context, **_kwargs):
+        poll_depths.append(connection_depth)
+        return [
+            {
+                "update_id": 7,
+                "message": {
+                    "message_id": 70,
+                    "date": 1_778_400_000,
+                    "chat": {"id": 999001},
+                    "from": {"id": 1001, "username": "samir"},
+                    "text": "Fact: Telegram polling releases the database connection.",
+                },
+            }
+        ]
+
+    def tracked_scan_local_folder(*args, **kwargs):
+        scan_depths.append(connection_depth)
+        return original_scan_local_folder(*args, **kwargs)
+
+    monkeypatch.setattr(main_module, "user_connection", tracked_user_connection)
+    monkeypatch.setattr(main_module, "poll_telegram_updates", fake_poll_telegram_updates)
+    monkeypatch.setattr(main_module, "scan_local_folder", tracked_scan_local_folder)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-test-token")
+    watched_file = tmp_path / "release-note.md"
+    watched_file.write_text("Fact: local folder scans release the database connection.", encoding="utf-8")
+
+    telegram_response = main_module.sync_vnext_telegram_connector(
+        main_module.VNextTelegramSyncRequest(
+            user_id=user_id,
+            allowed_chat_ids=["999001"],
+        )
+    )
+    local_response = main_module.sync_vnext_local_folder_connector(
+        main_module.VNextLocalFolderSyncRequest(
+            user_id=user_id,
+            paths=[str(tmp_path)],
+        )
+    )
+
+    assert telegram_response.status_code == 201
+    assert local_response.status_code == 201
+    assert poll_depths == [0]
+    assert scan_depths == [0]
+    assert connection_depth == 0
 
 
 def test_vnext_agent_endpoint_with_bearer_key_uses_key_identity(monkeypatch) -> None:

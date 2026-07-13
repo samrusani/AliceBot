@@ -1,5 +1,11 @@
 # Alice vNext Technical Specification
 
+> **Historical design draft — not an active specification.** This document is
+> retained as planning provenance. It contains aspirational surfaces and old
+> product language that do not define shipped behavior. Use `CURRENT_STATE.md`,
+> `PRODUCT_BRIEF.md`, `ARCHITECTURE.md`, `RULES.md`, and the current `docs/vnext/`
+> guides as the authoritative product and engineering contract.
+
 **Version:** v2.0 Draft 1  
 **Product Codename:** Alice Brain / True Second Brain  
 **Primary Goal:** Expand Alice from a local-first agent memory layer into a multi-layer memory infrastructure platform for humans and agents.
@@ -2633,4 +2639,3 @@ Do not let generated text become unreviewed truth.
 Do not sacrifice provenance, correction, and temporal reasoning for demo speed.
 
 Alice wins if it becomes the system people trust with their most important context.
-

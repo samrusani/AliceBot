@@ -121,6 +121,51 @@ def test_direct_user_commit_keeps_non_identity_safeguards() -> None:
     assert "sensitive_memory_requires_confirmation" in sensitive.reasons
 
 
+def test_memory_commit_can_defer_embedding_provider_work_until_after_commit(
+    monkeypatch,
+) -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store, defer_embeddings=True)
+    monkeypatch.setattr(
+        "alicebot_api.vnext_memory_commit.attach_memory_embedding",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider-backed embedding must be deferred")
+        ),
+    )
+
+    result = service.commit(
+        identity=_identity("trusted_local_agent"),
+        request=_request(domain="professional", sensitivity="internal"),
+    )
+
+    assert result["status"] == "committed"
+    assert len(service.deferred_embedding_inputs) == 1
+    deferred = service.deferred_embedding_inputs[0]
+    assert deferred.memory_id == result["memory"]["id"]
+    assert deferred.canonical_text == "Sam prefers coffee before noon."
+
+
+def test_memory_correction_defers_reembedding_of_updated_text() -> None:
+    store = TargetedLookupStore()
+    initial = VNextMemoryCommitService(store).commit(
+        identity=_identity("trusted_local_agent"),
+        request=_request(domain="professional", sensitivity="internal"),
+    )
+    service = VNextMemoryCommitService(store, defer_embeddings=True)
+
+    corrected = service.correct(
+        identity=_identity("trusted_local_agent"),
+        memory_id=str(initial["memory"]["id"]),
+        canonical_text="Sam prefers tea before noon.",
+    )
+
+    assert corrected["status"] == "committed"
+    assert len(service.deferred_embedding_inputs) == 1
+    assert service.deferred_embedding_inputs[0].canonical_text == (
+        "Sam prefers tea before noon."
+    )
+
+
 def test_read_only_agent_is_rejected() -> None:
     decision = evaluate_memory_commit_policy(
         identity=_identity("read_only_agent"),
@@ -615,6 +660,34 @@ def test_confirmation_and_review_candidates_also_carry_scope_columns() -> None:
     assert review_row["project_id"] == "alicebot"
     assert review_row["created_by_agent_id"] == "hermes"
     assert review_row["run_id"] == "run-9"
+
+
+def test_inline_confirmation_queue_contains_only_pending_actionable_rows() -> None:
+    class ConfirmationQueueStore(TargetedLookupStore):
+        def list_memories(self, *, status: str | None = None) -> list[dict[str, object]]:
+            return [
+                row
+                for row in self.memories.values()
+                if status is None or row.get("status") == status
+            ]
+
+    store = ConfirmationQueueStore()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+    pending = service.commit(
+        identity=identity,
+        request=_request(domain="professional", sensitivity="internal", confidence=0.7),
+    )
+
+    assert [row["id"] for row in service.inline_confirmations()] == [pending["memory"]["id"]]
+
+    service.confirm(
+        identity=identity,
+        confirmation_id=str(pending["confirmation_id"]),
+        action="confirm",
+    )
+
+    assert service.inline_confirmations() == []
 
 
 def test_undo_without_memory_id_uses_latest_agentic_commit_lookup() -> None:
@@ -1305,19 +1378,48 @@ def test_accept_dedup_candidate_points_supersedes_at_the_survivor() -> None:
     result = service.accept_consolidation_candidate(candidate_id, reason="Dedup accepted.")
 
     # Dedup pointer semantics: the single-valued supersedes column records
-    # the survivor the candidate's text descends from; the survivor itself
-    # was never proposed for supersession and stays active.
+    # the survivor the candidate's text descends from, while every original
+    # member is retired so there is exactly one active representative.
     accepted = store.memories[candidate_id]
     assert result["supersedes"] == survivor
     assert accepted["supersedes"] == survivor
     assert accepted["metadata_json"]["supersedes"] == survivor
     assert "merged_from" not in accepted["metadata_json"]
-    assert store.memories[survivor]["status"] == "active"
-    assert store.memories[survivor].get("superseded_by") is None
-    for member_id in dropped:
+    for member_id in [survivor, *dropped]:
         assert store.memories[member_id]["status"] == "superseded"
         assert store.memories[member_id]["superseded_by"] == candidate_id
-    assert result["superseded_member_ids"] == dropped
+    assert result["superseded_member_ids"] == [survivor, *dropped]
+
+
+def test_accept_rejects_consolidation_candidate_that_crosses_project_scopes() -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    member_a = _seed_row(
+        store,
+        title="Project A",
+        text="Shared fact.",
+        metadata={"project_scope": ["project-a"]},
+    )
+    member_b = _seed_row(
+        store,
+        title="Project B",
+        text="Shared fact.",
+        metadata={"project_scope": ["project-b"]},
+    )
+    candidate_id = _seed_consolidation_candidate(
+        store,
+        member_ids=[member_a, member_b],
+        proposal_kind="merge",
+        survivor_memory_id=None,
+        proposed_supersede=[member_a, member_b],
+    )
+
+    with pytest.raises(VNextMemoryCommitValidationError, match="crosses project scopes"):
+        service.accept_consolidation_candidate(candidate_id, reason="Must not cross scopes.")
+
+    assert store.memories[member_a]["status"] == "active"
+    assert store.memories[member_b]["status"] == "active"
+    assert store.memories[candidate_id]["status"] == "candidate"
 
 
 def test_accept_rejects_candidate_when_member_changed_after_proposal() -> None:

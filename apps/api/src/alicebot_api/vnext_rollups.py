@@ -144,9 +144,10 @@ Storage: no new tables or columns. Cards reuse the memories table
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from hashlib import sha256
+from inspect import Parameter, signature
 import json
 import re
 from typing import Protocol
@@ -161,6 +162,7 @@ from alicebot_api.vnext_embeddings import (
     get_embedding_provider,
     memory_embedding_text,
 )
+from alicebot_api.vnext_agent_control import resource_project_scope
 from alicebot_api.vnext_entities import extract_entity_candidates
 from alicebot_api.vnext_model_intelligence import (
     NON_SYNTHESIZING_PROVIDERS,
@@ -415,6 +417,7 @@ class VNextRollupStore(Protocol):
         sensitivity_allowed: list[str],
         excluded_candidate_kind: str,
         limit: int,
+        projects: tuple[str, ...] = (),
     ) -> list[JsonObject]: ...
 
     def list_pending_rollup_candidates(
@@ -425,6 +428,7 @@ class VNextRollupStore(Protocol):
         sensitivity_allowed: list[str],
         candidate_kind: str,
         limit: int,
+        projects: tuple[str, ...] = (),
     ) -> list[JsonObject]: ...
 
     def list_accepted_rollup_cards(
@@ -435,6 +439,7 @@ class VNextRollupStore(Protocol):
         sensitivity_allowed: list[str],
         candidate_kind: str,
         limit: int,
+        projects: tuple[str, ...] = (),
     ) -> list[JsonObject]: ...
 
     def count_rollup_input_memories(
@@ -443,6 +448,7 @@ class VNextRollupStore(Protocol):
         domains: list[str] | None,
         sensitivity_allowed: list[str],
         excluded_candidate_kind: str,
+        projects: tuple[str, ...] = (),
     ) -> int: ...
 
 
@@ -614,6 +620,20 @@ def _member_text(row: JsonObject) -> str:
         if isinstance(raw, str) and raw.strip():
             return " ".join(raw.split())
     return str(row.get("id", "item"))
+
+
+def _project_scope_key(row: JsonObject) -> tuple[str, ...]:
+    return tuple(sorted({value.casefold() for value in resource_project_scope(row)}))
+
+
+def _shared_project_scope(rows: tuple[JsonObject, ...] | list[JsonObject]) -> tuple[str, ...]:
+    if not rows:
+        return ()
+    first = resource_project_scope(rows[0])
+    first_key = _project_scope_key(rows[0])
+    if all(_project_scope_key(row) == first_key for row in rows[1:]):
+        return first
+    return ()
 
 
 def _light_stem(token: str) -> str:
@@ -1456,6 +1476,7 @@ def _scoped_rows(
     *,
     domains: list[str] | None,
     sensitivity_allowed: list[str],
+    projects: tuple[str, ...] = (),
 ) -> list[JsonObject]:
     """Domain/sensitivity scoping, mirroring the consolidation service."""
     allowed = set(sensitivity_allowed)
@@ -1468,8 +1489,30 @@ def _scoped_rows(
             domain = str(row.get("domain") or "unknown")
             if domain not in domains and domain != "unknown":
                 continue
+        if projects:
+            allowed_projects = {value.casefold() for value in projects}
+            if not any(
+                value.casefold() in allowed_projects
+                for value in resource_project_scope(row)
+            ):
+                continue
         scoped.append(row)
     return scoped
+
+
+def _supports_explicit_parameter(method: object, name: str) -> bool:
+    if not callable(method):
+        return False
+    try:
+        parameters = signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == name
+        and parameter.kind
+        in {Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY}
+        for parameter in parameters
+    )
 
 
 def _is_rollup_card(row: JsonObject) -> bool:
@@ -1634,30 +1677,57 @@ class VNextRollupService:
         *,
         domains: list[str] | None,
         sensitivity_allowed: list[str],
+        projects: tuple[str, ...],
         options: RollupOptions,
     ) -> tuple[list[JsonObject], bool, int, bool]:
         # Ask for one sentinel row beyond the configured cap. The store
         # applies status, scope, roll-up-card exclusion, deterministic order,
         # and LIMIT in SQL, so neither a large corpus nor existing cards are
         # materialized before the service enforces its bound.
-        rows = self.store.list_rollup_input_memories(
-            domains=domains,
-            sensitivity_allowed=sensitivity_allowed,
-            excluded_candidate_kind=ROLLUP_CANDIDATE_KIND,
-            limit=options.max_groupable_memories + 1,
-        )
+        list_inputs = self.store.list_rollup_input_memories
+        if projects and not _supports_explicit_parameter(list_inputs, "projects"):
+            raise VNextRollupValidationError(
+                "project-scoped roll-ups require input lookup with explicit projects support"
+            )
+        if projects:
+            rows = list_inputs(
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                excluded_candidate_kind=ROLLUP_CANDIDATE_KIND,
+                limit=options.max_groupable_memories + 1,
+                projects=projects,
+            )
+        else:
+            rows = list_inputs(
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                excluded_candidate_kind=ROLLUP_CANDIDATE_KIND,
+                limit=options.max_groupable_memories + 1,
+            )
         count_inputs = getattr(self.store, "count_rollup_input_memories", None)
         total_exact = False
         total_count = len(rows)
-        if callable(count_inputs):
+        if callable(count_inputs) and (
+            not projects or _supports_explicit_parameter(count_inputs, "projects")
+        ):
             try:
-                total_count = int(
-                    count_inputs(
-                        domains=domains,
-                        sensitivity_allowed=sensitivity_allowed,
-                        excluded_candidate_kind=ROLLUP_CANDIDATE_KIND,
+                if projects:
+                    total_count = int(
+                        count_inputs(
+                            domains=domains,
+                            sensitivity_allowed=sensitivity_allowed,
+                            excluded_candidate_kind=ROLLUP_CANDIDATE_KIND,
+                            projects=projects,
+                        )
                     )
-                )
+                else:
+                    total_count = int(
+                        count_inputs(
+                            domains=domains,
+                            sensitivity_allowed=sensitivity_allowed,
+                            excluded_candidate_kind=ROLLUP_CANDIDATE_KIND,
+                        )
+                    )
                 total_exact = total_count >= len(rows)
             except Exception:  # noqa: BLE001 - legacy adapters may expose a narrower method
                 pass
@@ -1672,7 +1742,17 @@ class VNextRollupService:
         rows = rows[: options.max_groupable_memories]
         # Defensive parity for non-SQL protocol implementations. Production
         # stores already apply these predicates before LIMIT.
-        rows = _scoped_rows(rows, domains=domains, sensitivity_allowed=sensitivity_allowed)
+        scoped_rows = _scoped_rows(
+            rows,
+            domains=domains,
+            sensitivity_allowed=sensitivity_allowed,
+            projects=projects,
+        )
+        if projects and len(scoped_rows) != len(rows):
+            raise VNextRollupValidationError(
+                "roll-up input lookup returned rows outside the requested project scope"
+            )
+        rows = scoped_rows
         rows = [row for row in rows if not _is_rollup_card(row)]
         # Insertion-order independent: grouping sees one canonical order.
         rows.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id"))))
@@ -1711,6 +1791,96 @@ class VNextRollupService:
         return mapping
 
     def _group_members(
+        self,
+        rows: list[JsonObject],
+        *,
+        options: RollupOptions,
+        exclude_member_id_sets: list[set[str]],
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+    ) -> tuple[list[_RollupGroup], list[str], JsonObject, JsonObject | None]:
+        """Group only within exact project-scope partitions.
+
+        A card scoped to project A must never aggregate a member also visible
+        to project B with an A-only member. Exact partitioning is deliberately
+        stricter than overlap-based retrieval scope.
+        """
+
+        partitions: dict[tuple[str, ...], list[JsonObject]] = {}
+        for row in rows:
+            partitions.setdefault(_project_scope_key(row), []).append(row)
+        if len(partitions) <= 1:
+            groups, skipped, gate, semantic = self._group_members_same_scope(
+                rows,
+                options=options,
+                exclude_member_id_sets=exclude_member_id_sets,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+            )
+            only_scope = next(iter(partitions), ())
+            if only_scope:
+                scope_digest = _digest({"project_scope": only_scope})
+                groups = [
+                    replace(group, rollup_key=f"scope:{scope_digest}:{group.rollup_key}")
+                    for group in groups
+                ]
+            return groups, skipped, gate, semantic
+
+        all_groups: list[_RollupGroup] = []
+        all_skipped: list[str] = []
+        gate_records: list[JsonObject] = []
+        semantic_records: list[JsonObject] = []
+        for scope_key in sorted(partitions):
+            groups, skipped, gate, semantic = self._group_members_same_scope(
+                partitions[scope_key],
+                options=options,
+                exclude_member_id_sets=exclude_member_id_sets,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+            )
+            scope_digest = _digest({"project_scope": scope_key})
+            all_groups.extend(
+                replace(
+                    group,
+                    rollup_key=(
+                        f"scope:{scope_digest}:{group.rollup_key}"
+                        if scope_key
+                        else group.rollup_key
+                    ),
+                )
+                for group in groups
+            )
+            all_skipped.extend(f"scope:{scope_digest}: {reason}" for reason in skipped)
+            gate_records.append({"project_scope": list(scope_key), **gate})
+            if semantic is not None:
+                semantic_records.append({"project_scope": list(scope_key), **semantic})
+
+        all_groups.sort(key=lambda group: (-group.utility.score, -len(group.members), group.rollup_key))
+
+        def _record_int(record: JsonObject, key: str) -> int:
+            value = record.get(key)
+            return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+        gate_record: JsonObject = {
+            "scope_partitioned": True,
+            "partition_count": len(partitions),
+            "partitions": gate_records,
+            "dropped_group_count": sum(_record_int(record, "dropped_group_count") for record in gate_records),
+        }
+        semantic_record: JsonObject | None = None
+        if semantic_records:
+            semantic_record = {
+                "scope_partitioned": True,
+                "partition_count": len(semantic_records),
+                "partitions": semantic_records,
+                "clusters_formed": sum(_record_int(record, "clusters_formed") for record in semantic_records),
+                "groups_admitted": sum(_record_int(record, "groups_admitted") for record in semantic_records),
+                "chosen_threshold": "per_project_scope",
+                "mean_silhouette": None,
+            }
+        return all_groups, all_skipped, gate_record, semantic_record
+
+    def _group_members_same_scope(
         self,
         rows: list[JsonObject],
         *,
@@ -2116,17 +2286,28 @@ class VNextRollupService:
         rollup_keys: tuple[str, ...],
         domains: list[str] | None,
         sensitivity_allowed: list[str],
+        projects: tuple[str, ...],
     ) -> tuple[dict[str, str], dict[str, JsonObject]]:
         """(pending candidate by rollup_digest, accepted card by rollup_key)."""
         pending: dict[str, str] = {}
         unique_digests = tuple(sorted(set(rollup_digests)))
+        pending_reader = self.store.list_pending_rollup_candidates
+        accepted_reader = self.store.list_accepted_rollup_cards
+        if projects and (
+            not _supports_explicit_parameter(pending_reader, "projects")
+            or not _supports_explicit_parameter(accepted_reader, "projects")
+        ):
+            raise VNextRollupValidationError(
+                "project-scoped roll-ups require candidate/card lookups with explicit projects support"
+            )
         pending_rows = (
-            self.store.list_pending_rollup_candidates(
+            pending_reader(
                 rollup_digests=unique_digests,
                 domains=domains,
                 sensitivity_allowed=sensitivity_allowed,
                 candidate_kind=ROLLUP_CANDIDATE_KIND,
                 limit=len(unique_digests),
+                **({"projects": projects} if projects else {}),
             )
             if unique_digests
             else []
@@ -2141,12 +2322,13 @@ class VNextRollupService:
         accepted: dict[str, JsonObject] = {}
         unique_keys = tuple(sorted(set(rollup_keys)))
         accepted_rows = (
-            self.store.list_accepted_rollup_cards(
+            accepted_reader(
                 rollup_keys=unique_keys,
                 domains=domains,
                 sensitivity_allowed=sensitivity_allowed,
                 candidate_kind=ROLLUP_CANDIDATE_KIND,
                 limit=len(unique_keys),
+                **({"projects": projects} if projects else {}),
             )
             if unique_keys
             else []
@@ -2158,6 +2340,19 @@ class VNextRollupService:
             key = metadata.get("rollup_key")
             if isinstance(key, str) and key and key not in accepted:
                 accepted[key] = row
+        if projects:
+            combined = [*pending_rows, *accepted_rows]
+            if len(
+                _scoped_rows(
+                    combined,
+                    domains=domains,
+                    sensitivity_allowed=sensitivity_allowed,
+                    projects=projects,
+                )
+            ) != len(combined):
+                raise VNextRollupValidationError(
+                    "roll-up candidate/card lookup returned rows outside the requested project scope"
+                )
         return pending, accepted
 
 
@@ -2298,6 +2493,7 @@ class VNextRollupService:
         reviewer_instructions.append(
             "Roll-ups never promote or supersede anything automatically; nothing changes until a reviewer accepts."
         )
+        project_scope = _shared_project_scope(group.members)
         rollup_value: JsonObject = {
             "rollup_key": group.rollup_key,
             "group_kind": group.group_kind,
@@ -2328,6 +2524,7 @@ class VNextRollupService:
                 "summary": summary,
                 "domain": _dominant_domain(group.members),
                 "sensitivity": _highest_sensitivity(group.members),
+                "project_id": project_scope[0] if len(project_scope) == 1 else None,
                 "source_event_ids": source_event_ids,
                 "metadata_json": {
                     "candidate_kind": ROLLUP_CANDIDATE_KIND,
@@ -2335,6 +2532,7 @@ class VNextRollupService:
                     "rollup_key": group.rollup_key,
                     "review_required": True,
                     "source_refs": source_refs,
+                    "project_scope": list(project_scope),
                     "trace_id": trace_id,
                     # accept_consolidation_candidate compatibility: the
                     # existing review/acceptance path reads this block.
@@ -2365,6 +2563,7 @@ class VNextRollupService:
         self,
         *,
         domains: list[str] | None = None,
+        projects: tuple[str, ...] = (),
         sensitivity_allowed: list[str] | None = None,
         options: RollupOptions | None = None,
         create_candidate_memories: bool = True,
@@ -2396,6 +2595,7 @@ class VNextRollupService:
         rows, bounded, total_count, total_exact = self._collect_rows(
             domains=domains,
             sensitivity_allowed=sensitivity,
+            projects=projects,
             options=options,
         )
         outcome.groupable_count = len(rows)
@@ -2476,6 +2676,7 @@ class VNextRollupService:
             rollup_keys=tuple(item.group.rollup_key for item in prepared_groups),
             domains=domains,
             sensitivity_allowed=sensitivity,
+            projects=projects,
         )
 
         for prepared in prepared_groups:

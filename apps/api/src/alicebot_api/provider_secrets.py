@@ -49,9 +49,7 @@ def _ensure_no_symlink_components(path: Path) -> None:
             if current.is_symlink():
                 raise ProviderSecretManagerError("provider secret paths must not contain symlinks")
         except OSError as exc:
-            raise ProviderSecretManagerError(
-                "provider secret path could not be validated"
-            ) from exc
+            raise ProviderSecretManagerError("provider secret path could not be validated") from exc
 
 
 def _normalize_secret_path(path: Path) -> Path:
@@ -75,29 +73,21 @@ def _ensure_private_directory(directory: Path) -> None:
 def _resolve_secret_path(*, root: Path, secret_ref: str) -> Path:
     secret_path = Path(secret_ref)
     if secret_path.is_absolute():
-        raise ProviderSecretManagerError(
-            f"provider secret {secret_ref} is outside the configured root"
-        )
+        raise ProviderSecretManagerError(f"provider secret {secret_ref} is outside the configured root")
     candidate = Path(os.path.abspath(os.fspath(root / secret_path)))
     try:
         candidate.relative_to(root)
     except ValueError as exc:
-        raise ProviderSecretManagerError(
-            f"provider secret {secret_ref} is outside the configured root"
-        ) from exc
+        raise ProviderSecretManagerError(f"provider secret {secret_ref} is outside the configured root") from exc
     return candidate
 
 
 def _ensure_secret_file_is_not_symlink(*, path: Path, secret_ref: str) -> None:
     try:
         if path.is_symlink():
-            raise ProviderSecretManagerError(
-                f"provider secret {secret_ref} must not be stored behind a symlink"
-            )
+            raise ProviderSecretManagerError(f"provider secret {secret_ref} must not be stored behind a symlink")
     except OSError as exc:
-        raise ProviderSecretManagerError(
-            f"provider secret {secret_ref} could not be validated"
-        ) from exc
+        raise ProviderSecretManagerError(f"provider secret {secret_ref} could not be validated") from exc
 
 
 def encode_provider_secret_ref(*, secret_ref: str) -> str:
@@ -108,7 +98,7 @@ def is_provider_secret_ref(value: str) -> bool:
     return value.startswith(_SECRET_REF_PREFIX)
 
 
-def _decode_provider_secret_ref(value: str) -> str:
+def decode_provider_secret_ref(value: str) -> str:
     if not is_provider_secret_ref(value):
         raise ProviderSecretManagerError("provider API key is not a provider secret reference")
     return value[len(_SECRET_REF_PREFIX) :]
@@ -144,16 +134,27 @@ def write_provider_api_key(*, settings: Settings, secret_ref: str, api_key: str)
             temp_path.unlink(missing_ok=True)
         except OSError:
             pass
-        raise ProviderSecretManagerError(
-            f"provider secret {secret_ref} could not be written"
-        ) from exc
+        raise ProviderSecretManagerError(f"provider secret {secret_ref} could not be written") from exc
+
+
+def delete_provider_api_key(*, settings: Settings, secret_ref: str) -> None:
+    """Delete a provider secret after durable references have been retired."""
+
+    root = _secret_root(settings)
+    path = _resolve_secret_path(root=root, secret_ref=secret_ref)
+    _ensure_no_symlink_components(path.parent)
+    _ensure_secret_file_is_not_symlink(path=path, secret_ref=secret_ref)
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise ProviderSecretManagerError(f"provider secret {secret_ref} could not be deleted") from exc
 
 
 def resolve_provider_api_key(*, settings: Settings, api_key_field: str) -> str:
     if not is_provider_secret_ref(api_key_field):
         return api_key_field
 
-    secret_ref = _decode_provider_secret_ref(api_key_field)
+    secret_ref = decode_provider_secret_ref(api_key_field)
     path = _resolve_secret_path(root=_secret_root(settings), secret_ref=secret_ref)
     _ensure_no_symlink_components(path.parent)
     _ensure_secret_file_is_not_symlink(path=path, secret_ref=secret_ref)

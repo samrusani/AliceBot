@@ -6,6 +6,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from alicebot_api.migrations import make_alembic_config
+from alicebot_api.provider_configuration import provider_config_fingerprint
 from alicebot_api.vnext_store import PostgresVNextStore
 
 
@@ -151,9 +152,7 @@ def test_lifecycle_invariant_upgrade_canonicalizes_retry_ids_and_installs_edge_t
             rows = cur.fetchall()
             assert rows[0][0:3] == (first_id, "duplicate-digest", "duplicate-confirmation")
             assert rows[1][0:3] == (second_id, None, None)
-            assert rows[1][3]["lifecycle_migration"][
-                "duplicate_commit_digest_canonical_memory_id"
-            ] == first_id
+            assert rows[1][3]["lifecycle_migration"]["duplicate_commit_digest_canonical_memory_id"] == first_id
             cur.execute(
                 "UPDATE memories SET canonical_text = 'Changed text' WHERE id = %s",
                 (first_id,),
@@ -208,9 +207,7 @@ def test_lifecycle_invariant_upgrade_keeps_identifiers_on_live_row_over_tombston
     command.upgrade(config, "20260707_0082")
 
     with psycopg.connect(database_urls["admin"]) as conn:
-        _seed_tombstone_and_live_duplicate(
-            conn, user_id=user_id, tombstone_id=tombstone_id, live_id=live_id
-        )
+        _seed_tombstone_and_live_duplicate(conn, user_id=user_id, tombstone_id=tombstone_id, live_id=live_id)
 
     command.upgrade(config, "head")
 
@@ -230,9 +227,7 @@ def test_lifecycle_invariant_upgrade_keeps_identifiers_on_live_row_over_tombston
         assert by_id[tombstone_id]["commit_digest"] is None
         assert by_id[tombstone_id]["confirmation_id"] is None
         assert (
-            by_id[tombstone_id]["metadata_json"]["lifecycle_migration"][
-                "duplicate_commit_digest_canonical_memory_id"
-            ]
+            by_id[tombstone_id]["metadata_json"]["lifecycle_migration"]["duplicate_commit_digest_canonical_memory_id"]
             == live_id
         )
 
@@ -258,9 +253,7 @@ def test_lifecycle_identifier_repair_corrects_database_mis_upgraded_by_0083(data
     command.upgrade(config, "20260707_0082")
 
     with psycopg.connect(database_urls["admin"]) as conn:
-        _seed_tombstone_and_live_duplicate(
-            conn, user_id=user_id, tombstone_id=tombstone_id, live_id=live_id
-        )
+        _seed_tombstone_and_live_duplicate(conn, user_id=user_id, tombstone_id=tombstone_id, live_id=live_id)
 
     # Apply only the shipped (buggy) 0083 and document the mis-assignment.
     command.upgrade(config, "20260711_0083")
@@ -280,9 +273,7 @@ def test_lifecycle_identifier_repair_corrects_database_mis_upgraded_by_0083(data
         assert mis[tombstone_id]["confirmation_id"] == "duplicate-confirmation"
         assert mis[live_id]["commit_digest"] is None
         assert (
-            mis[live_id]["metadata_json"]["lifecycle_migration"][
-                "duplicate_commit_digest_canonical_memory_id"
-            ]
+            mis[live_id]["metadata_json"]["lifecycle_migration"]["duplicate_commit_digest_canonical_memory_id"]
             == tombstone_id
         )
 
@@ -302,14 +293,12 @@ def test_lifecycle_identifier_repair_corrects_database_mis_upgraded_by_0083(data
             assert fixed[live_id]["confirmation_id"] == "duplicate-confirmation"
             assert fixed[tombstone_id]["commit_digest"] is None
             assert fixed[tombstone_id]["confirmation_id"] is None
-            assert "duplicate_commit_digest_canonical_memory_id" not in fixed[live_id][
-                "metadata_json"
-            ].get("lifecycle_migration", {})
+            assert "duplicate_commit_digest_canonical_memory_id" not in fixed[live_id]["metadata_json"].get(
+                "lifecycle_migration", {}
+            )
             store = PostgresVNextStore(conn)
             assert str(store.get_memory_by_commit_digest("duplicate-digest")["id"]) == live_id
-            assert (
-                str(store.get_memory_by_confirmation_id("duplicate-confirmation")["id"]) == live_id
-            )
+            assert str(store.get_memory_by_confirmation_id("duplicate-confirmation")["id"]) == live_id
 
     # Corrective follow-up moves the identifiers onto the live row.
     command.upgrade(config, "head")
@@ -322,7 +311,7 @@ def test_lifecycle_identifier_repair_corrects_database_mis_upgraded_by_0083(data
     _assert_corrected()
 
 
-def test_released_0084_database_upgrades_through_0085_and_0086(database_urls):
+def test_released_0084_database_upgrades_through_current_head(database_urls):
     """A database already stamped with released 0084 receives the 3+ repair.
 
     The published 0084 moved the identifiers but left the third row pointing
@@ -384,8 +373,9 @@ def test_released_0084_database_upgrades_through_0085_and_0086(database_urls):
         assert released_rows[tombstone_id]["commit_digest"] is None
         assert released_rows[later_live_id]["commit_digest"] is None
         assert (
-            released_rows[later_live_id]["metadata_json"]["lifecycle_migration"]
-            ["duplicate_commit_digest_canonical_memory_id"]
+            released_rows[later_live_id]["metadata_json"]["lifecycle_migration"][
+                "duplicate_commit_digest_canonical_memory_id"
+            ]
             == tombstone_id
         )
 
@@ -407,17 +397,9 @@ def test_released_0084_database_upgrades_through_0085_and_0086(database_urls):
             assert rows[later_live_id]["commit_digest"] is None
             for duplicate_id in (tombstone_id, later_live_id):
                 migration = rows[duplicate_id]["metadata_json"]["lifecycle_migration"]
-                assert (
-                    migration["duplicate_commit_digest_canonical_memory_id"]
-                    == canonical_live_id
-                )
-                assert (
-                    migration["duplicate_confirmation_id_canonical_memory_id"]
-                    == canonical_live_id
-                )
-            canonical_migration = rows[canonical_live_id]["metadata_json"].get(
-                "lifecycle_migration", {}
-            )
+                assert migration["duplicate_commit_digest_canonical_memory_id"] == canonical_live_id
+                assert migration["duplicate_confirmation_id_canonical_memory_id"] == canonical_live_id
+            canonical_migration = rows[canonical_live_id]["metadata_json"].get("lifecycle_migration", {})
             assert "duplicate_commit_digest_canonical_memory_id" not in canonical_migration
             assert "duplicate_confirmation_id_canonical_memory_id" not in canonical_migration
 
@@ -427,14 +409,324 @@ def test_released_0084_database_upgrades_through_0085_and_0086(database_urls):
     with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT version_num FROM alembic_version")
-            assert cur.fetchone()["version_num"] == "20260713_0086"
+            assert cur.fetchone()["version_num"] == "20260713_0089"
 
-    # Repeat 0086 through its no-op downgrade boundary. The already repaired
-    # data remains correct and the second upgrade matches nothing.
+    # Repeat the additive post-release migrations through their downgrade
+    # boundary. The already repaired data remains correct and the second
+    # upgrade matches nothing.
     command.downgrade(config, "20260713_0085")
     _assert_all_pointers_truthful()
     command.upgrade(config, "head")
     _assert_all_pointers_truthful()
+
+
+def test_migration_0088_supports_rolling_provider_writes_and_rejects_token_rewind(
+    database_urls,
+):
+    config = make_alembic_config(database_urls["admin"])
+    user_account_id = "00000000-0000-0000-0000-000000000131"
+    workspace_id = "00000000-0000-0000-0000-000000000132"
+    provider_id = "00000000-0000-0000-0000-000000000133"
+
+    command.upgrade(config, "20260713_0087")
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO user_accounts (id, email, display_name)
+                VALUES (%s, 'migration-0088@example.com', 'Migration 0088')
+                """,
+                (user_account_id,),
+            )
+            cur.execute(
+                """
+                INSERT INTO workspaces (
+                  id, owner_user_account_id, slug, name, bootstrap_status
+                )
+                VALUES (%s, %s, 'migration-0088', 'Migration 0088', 'ready')
+                """,
+                (workspace_id, user_account_id),
+            )
+            cur.execute(
+                """
+                INSERT INTO model_providers (
+                  id,
+                  workspace_id,
+                  created_by_user_account_id,
+                  provider_key,
+                  model_provider,
+                  display_name,
+                  base_url,
+                  api_key,
+                  auth_mode,
+                  default_model,
+                  status,
+                  model_list_path,
+                  healthcheck_path,
+                  invoke_path,
+                  azure_api_version,
+                  azure_auth_secret_ref,
+                  metadata
+                )
+                VALUES (
+                  %s, %s, %s, 'openai_compatible', 'openai_responses',
+                  'Pre-0088 Provider', 'https://provider.example/v1',
+                  'provider_secret_ref:migration-0088', 'bearer', 'gpt-5-mini',
+                  'active', '/models', '/models', '/responses', '', '', '{}'::jsonb
+                )
+                """,
+                (provider_id, workspace_id, user_account_id),
+            )
+            cur.execute(
+                """
+                INSERT INTO provider_capabilities (
+                  workspace_id,
+                  provider_id,
+                  discovered_by_user_account_id,
+                  adapter_key,
+                  discovery_status,
+                  capability_snapshot,
+                  discovery_error
+                )
+                VALUES (
+                  %s, %s, %s, 'openai_compatible', 'ready',
+                  '{"models":["pre-0088"]}'::jsonb, NULL
+                )
+                """,
+                (workspace_id, provider_id, user_account_id),
+            )
+
+    command.upgrade(config, "head")
+
+    with psycopg.connect(
+        database_urls["admin"],
+        autocommit=True,
+        row_factory=dict_row,
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT config_revision, config_fingerprint_sha256
+                FROM model_providers
+                WHERE id = %s
+                """,
+                (provider_id,),
+            )
+            provider_fence = cur.fetchone()
+            assert provider_fence is not None
+            assert provider_fence["config_revision"] == 1
+            expected_migrated_fingerprint = provider_config_fingerprint(
+                provider_key="openai_compatible",
+                model_provider="openai_responses",
+                display_name="Pre-0088 Provider",
+                base_url="https://provider.example/v1",
+                api_key="provider_secret_ref:migration-0088",
+                auth_mode="bearer",
+                default_model="gpt-5-mini",
+                status="active",
+                model_list_path="/models",
+                healthcheck_path="/models",
+                invoke_path="/responses",
+                azure_api_version="",
+                azure_auth_secret_ref="",
+                metadata={},
+            )
+            assert provider_fence["config_fingerprint_sha256"] == expected_migrated_fingerprint
+
+            cur.execute(
+                """
+                SELECT
+                  provider_config_revision,
+                  provider_config_fingerprint_sha256
+                FROM provider_capabilities
+                WHERE provider_id = %s
+                """,
+                (provider_id,),
+            )
+            backfilled_capability_fence = cur.fetchone()
+            assert backfilled_capability_fence == {
+                "provider_config_revision": provider_fence["config_revision"],
+                "provider_config_fingerprint_sha256": provider_fence["config_fingerprint_sha256"],
+            }
+
+            cur.execute(
+                "DELETE FROM provider_capabilities WHERE provider_id = %s",
+                (provider_id,),
+            )
+
+            # This is the exact pre-0088 column set. During a rolling deploy,
+            # the previous binary must still be able to take both INSERT and
+            # ON CONFLICT paths without knowing about the new fence columns.
+            legacy_upsert_sql = """
+                INSERT INTO provider_capabilities (
+                  workspace_id,
+                  provider_id,
+                  discovered_by_user_account_id,
+                  adapter_key,
+                  discovery_status,
+                  capability_snapshot,
+                  discovery_error,
+                  discovered_at,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  %s, %s, %s, 'openai_compatible', 'ready', %s::jsonb, NULL,
+                  clock_timestamp(), clock_timestamp(), clock_timestamp()
+                )
+                ON CONFLICT (provider_id) DO UPDATE
+                SET workspace_id = EXCLUDED.workspace_id,
+                    discovered_by_user_account_id = EXCLUDED.discovered_by_user_account_id,
+                    adapter_key = EXCLUDED.adapter_key,
+                    discovery_status = EXCLUDED.discovery_status,
+                    capability_snapshot = EXCLUDED.capability_snapshot,
+                    discovery_error = EXCLUDED.discovery_error,
+                    discovered_at = EXCLUDED.discovered_at,
+                    updated_at = clock_timestamp()
+                RETURNING id
+            """
+            cur.execute(
+                legacy_upsert_sql,
+                (
+                    workspace_id,
+                    provider_id,
+                    user_account_id,
+                    '{"models":["legacy-insert"]}',
+                ),
+            )
+            assert cur.fetchone() is not None
+            cur.execute(
+                legacy_upsert_sql,
+                (
+                    workspace_id,
+                    provider_id,
+                    user_account_id,
+                    '{"models":["legacy-conflict-update"]}',
+                ),
+            )
+            assert cur.fetchone() is not None
+
+            cur.execute(
+                """
+                SELECT
+                  provider_config_revision,
+                  provider_config_fingerprint_sha256,
+                  capability_snapshot
+                FROM provider_capabilities
+                WHERE provider_id = %s
+                """,
+                (provider_id,),
+            )
+            rolling_capability = cur.fetchone()
+            assert rolling_capability is not None
+            assert rolling_capability["provider_config_revision"] == 1
+            assert len(rolling_capability["provider_config_fingerprint_sha256"]) == 64
+            assert rolling_capability["capability_snapshot"] == {"models": ["legacy-conflict-update"]}
+
+            current_fingerprint = provider_fence["config_fingerprint_sha256"]
+            # A migrated row must immediately accept the current application's
+            # semantic no-op contract: one revision advance with the exact
+            # canonical fingerprint unchanged.
+            cur.execute(
+                """
+                UPDATE model_providers
+                SET config_revision = config_revision + 1,
+                    config_fingerprint_sha256 = %s,
+                    updated_at = clock_timestamp()
+                WHERE id = %s
+                RETURNING config_revision, config_fingerprint_sha256
+                """,
+                (current_fingerprint, provider_id),
+            )
+            assert cur.fetchone() == {
+                "config_revision": 2,
+                "config_fingerprint_sha256": current_fingerprint,
+            }
+
+            application_fingerprint = "a" * 64 if current_fingerprint != "a" * 64 else "b" * 64
+            cur.execute(
+                """
+                UPDATE model_providers
+                SET display_name = 'Application Updated Provider',
+                    config_revision = config_revision + 1,
+                    config_fingerprint_sha256 = %s,
+                    updated_at = clock_timestamp()
+                WHERE id = %s
+                RETURNING config_revision, config_fingerprint_sha256
+                """,
+                (application_fingerprint, provider_id),
+            )
+            assert cur.fetchone() == {
+                "config_revision": 3,
+                "config_fingerprint_sha256": application_fingerprint,
+            }
+
+            with pytest.raises(
+                psycopg.errors.CheckViolation,
+                match="cannot be rewound independently of active configuration",
+            ):
+                cur.execute(
+                    """
+                    UPDATE model_providers
+                    SET config_revision = 1,
+                        config_fingerprint_sha256 = %s
+                    WHERE id = %s
+                    """,
+                    (current_fingerprint, provider_id),
+                )
+
+            cur.execute(
+                """
+                SELECT config_revision, config_fingerprint_sha256
+                FROM model_providers
+                WHERE id = %s
+                """,
+                (provider_id,),
+            )
+            assert cur.fetchone() == {
+                "config_revision": 3,
+                "config_fingerprint_sha256": application_fingerprint,
+            }
+
+            # A previous binary changes active configuration without mentioning
+            # either token. The trigger must advance both on its behalf.
+            cur.execute(
+                """
+                UPDATE model_providers
+                SET display_name = 'Legacy Updated Provider',
+                    updated_at = clock_timestamp()
+                WHERE id = %s
+                RETURNING config_revision, config_fingerprint_sha256
+                """,
+                (provider_id,),
+            )
+            legacy_update_fence = cur.fetchone()
+            assert legacy_update_fence is not None
+            assert legacy_update_fence["config_revision"] == 4
+            assert legacy_update_fence["config_fingerprint_sha256"] != application_fingerprint
+
+            # The current application can legitimately issue a semantic no-op:
+            # the revision advances once while the deterministic fingerprint is
+            # unchanged.
+            cur.execute(
+                """
+                UPDATE model_providers
+                SET config_revision = config_revision + 1,
+                    config_fingerprint_sha256 = %s,
+                    updated_at = clock_timestamp()
+                WHERE id = %s
+                RETURNING config_revision, config_fingerprint_sha256
+                """,
+                (
+                    legacy_update_fence["config_fingerprint_sha256"],
+                    provider_id,
+                ),
+            )
+            assert cur.fetchone() == {
+                "config_revision": 5,
+                "config_fingerprint_sha256": legacy_update_fence["config_fingerprint_sha256"],
+            }
+
 
 def test_lifecycle_upgrade_promotes_and_reads_legacy_nested_multi_project_scope(database_urls):
     config = make_alembic_config(database_urls["admin"])
@@ -1646,9 +1938,7 @@ def test_migrations_upgrade_and_downgrade(database_urls):
                 """
             )
             assert cur.fetchall() == []
-            cur.execute(
-                "SELECT has_table_privilege('alicebot_app', 'execution_budgets', 'UPDATE')"
-            )
+            cur.execute("SELECT has_table_privilege('alicebot_app', 'execution_budgets', 'UPDATE')")
             assert cur.fetchone()[0] is False
 
     command.downgrade(config, "20260313_0013")

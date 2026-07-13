@@ -15,7 +15,10 @@ from alicebot_api.sqlite_store import (
     sqlite_user_connection,
 )
 from alicebot_api.store import ContinuityStoreInvariantError
-from alicebot_api.vnext_embeddings import memory_embedding_content_sha256
+from alicebot_api.vnext_embeddings import (
+    EMBEDDING_SIGNATURE_METADATA_KEY,
+    memory_embedding_content_sha256,
+)
 
 
 def _open_connection() -> sqlite3.Connection:
@@ -219,6 +222,118 @@ def test_every_read_method_is_scoped_to_the_bound_user() -> None:
     assert alice.get_memory(memory["id"])["title"] == memory["title"]
     assert alice.count_active_agent_api_keys() == 1
     assert [row["id"] for row in alice.list_revisions(memory["id"])] == [revision["id"]]
+    conn.close()
+
+
+def test_open_loop_digest_lookup_applies_project_and_person_scope_before_result() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    expected = store.create_open_loop(
+        {
+            "title": "Scoped loop",
+            "project_id": "project-a",
+            "person_id": "person-a",
+            "metadata_json": {"automation_digest": "same-digest"},
+        }
+    )
+    store.create_open_loop(
+        {
+            "title": "Other loop",
+            "project_id": "project-b",
+            "person_id": "person-b",
+            "metadata_json": {"automation_digest": "same-digest"},
+        }
+    )
+
+    matched = store.find_open_loop_by_automation_digest(
+        digest="same-digest",
+        project_id="project-a",
+        person_id="person-a",
+    )
+    assert matched is not None
+    assert matched["id"] == expected["id"]
+    assert store.find_open_loop_by_automation_digest(
+        digest="same-digest",
+        project_id="project-a",
+        person_id="person-b",
+    ) is None
+    conn.close()
+
+
+def test_project_scoped_memory_and_rollup_queries_filter_before_limit() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    project_a = _create_memory(
+        store,
+        canonical_text="Project A stale input",
+        memory_type="project_state",
+        last_confirmed_at="2020-01-01T00:00:00Z",
+        metadata_json={"project_scope": ["project-a"]},
+    )
+    _create_memory(
+        store,
+        canonical_text="Project B newer input",
+        memory_type="project_state",
+        last_confirmed_at="2020-01-01T00:00:00Z",
+        metadata_json={"project_scope": ["project-b"]},
+    )
+    pending_a = _create_memory(
+        store,
+        status="candidate",
+        metadata_json={
+            "project_scope": ["project-a"],
+            "candidate_kind": "memory_rollup",
+            "rollup_digest": "digest-a",
+        },
+    )
+    _create_memory(
+        store,
+        status="candidate",
+        metadata_json={
+            "project_scope": ["project-b"],
+            "candidate_kind": "memory_rollup",
+            "rollup_digest": "digest-b",
+        },
+    )
+    accepted_a = _create_memory(
+        store,
+        metadata_json={
+            "project_scope": ["project-a"],
+            "candidate_kind": "memory_rollup",
+            "rollup_key": "topic:a",
+        },
+    )
+
+    assert [row["id"] for row in store.list_memories(projects=("project-a",), limit=1)] == [
+        accepted_a["id"]
+    ]
+    assert store.count_memories(status="active", projects=("project-a",)) == 2
+    stale = store.list_memories_for_staleness_sweep(
+        reference_time=datetime(2026, 1, 1, tzinfo=UTC),
+        confirmation_before=datetime(2025, 1, 1, tzinfo=UTC),
+        review_memory_types=("project_state",),
+        projects=("project-a",),
+        limit=1,
+    )
+    assert [row["id"] for row in stale] == [project_a["id"]]
+    pending = store.list_pending_rollup_candidates(
+        rollup_digests=("digest-a", "digest-b"),
+        domains=None,
+        sensitivity_allowed=["private"],
+        candidate_kind="memory_rollup",
+        projects=("project-a",),
+        limit=2,
+    )
+    assert [row["id"] for row in pending] == [pending_a["id"]]
+    accepted = store.list_accepted_rollup_cards(
+        rollup_keys=("topic:a",),
+        domains=None,
+        sensitivity_allowed=["private"],
+        candidate_kind="memory_rollup",
+        projects=("project-a",),
+        limit=1,
+    )
+    assert [row["id"] for row in accepted] == [accepted_a["id"]]
     conn.close()
 
 
@@ -1208,7 +1323,13 @@ def test_bootstrap_upgrades_a_pre_existing_db_file_with_scope_columns(tmp_path: 
     bootstrap_sqlite_schema(conn)
     # Rewind the file to the pre-scope-column schema: drop the new index and
     # columns so the file looks like it was created by the old bootstrap.
-    conn.execute("DROP INDEX IF EXISTS memories_user_project_idx")
+    for index_name in (
+        "memories_user_project_idx",
+        "memories_user_project_staleness_idx",
+        "memories_user_project_rollup_digest_idx",
+        "memories_user_project_rollup_key_idx",
+    ):
+        conn.execute(f"DROP INDEX IF EXISTS {index_name}")
     for table, column in (
         ("memories", "project_id"),
         ("memories", "created_by_agent_id"),
@@ -1246,6 +1367,72 @@ def test_bootstrap_upgrades_a_pre_existing_db_file_with_scope_columns(tmp_path: 
     assert [row["id"] for row in rows] == [scoped["id"]]
     rows = store.search_memories(query="upgraded db keyword", created_by_agent_ids=("openclaw",))
     assert [row["id"] for row in rows] == [scoped["id"]]
+    conn.close()
+
+
+def test_pending_confirmation_query_cannot_be_crowded_by_resolved_or_active_rows() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    pending_metadata = {
+        "agentic_memory": {
+            "kind": "agentic_memory_commit",
+            "confirmation": {"status": "pending"},
+        }
+    }
+    for _index in range(5):
+        _create_memory(
+            store,
+            status="active",
+            confirmation_status="confirmed",
+            metadata_json=pending_metadata,
+        )
+    actionable = _create_memory(
+        store,
+        status="needs_review",
+        confirmation_status="unconfirmed",
+        metadata_json=pending_metadata,
+    )
+    _create_memory(
+        store,
+        status="needs_review",
+        confirmation_status="confirmed",
+        metadata_json={
+            "agentic_memory": {
+                "kind": "agentic_memory_commit",
+                "confirmation": {"status": "confirmed"},
+            }
+        },
+    )
+
+    rows = store.list_pending_inline_confirmations(limit=1)
+
+    assert [row["id"] for row in rows] == [actionable["id"]]
+    conn.close()
+
+
+def test_find_live_memory_by_canonical_text_requires_exact_project_scope() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    expected = _create_memory(
+        store,
+        canonical_text="Repeated scoped fact",
+        metadata_json={"project_scope": ["alpha"]},
+    )
+    _create_memory(
+        store,
+        canonical_text="Repeated scoped fact",
+        metadata_json={"project_scope": ["beta"]},
+    )
+
+    found = store.find_live_memory_by_canonical_text(
+        "repeated scoped fact",
+        domain="project",
+        sensitivity="private",
+        project_scope=("alpha",),
+    )
+
+    assert found is not None
+    assert found["id"] == expected["id"]
     conn.close()
 
 
@@ -1480,6 +1667,35 @@ def test_vector_store_and_search_roundtrip_with_dimension_padding() -> None:
     with pytest.raises(ContinuityStoreInvariantError):
         store.update_memory_embedding(memory_id=close["id"], vector=[])
     assert store.update_memory_embedding(memory_id=str(uuid4()), vector=[1.0]) is None
+    conn.close()
+
+
+def test_signed_embedding_compare_and_set_rejects_vector_prepared_before_text_edit() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _create_memory(store, title="Old title", canonical_text="Old fact", summary="Old")
+    old_digest = memory_embedding_content_sha256(memory)
+
+    store.update_memory(
+        memory_id=str(memory["id"]),
+        patch={"canonical_text": "New fact", "summary": "New"},
+    )
+    assert store.update_memory_embedding(
+        memory_id=str(memory["id"]),
+        vector=[1.0, 0.0],
+        provider="stub",
+        model="embed-v1",
+        endpoint="stub-endpoint",
+        content_sha256=old_digest,
+        signature_version=2,
+    ) is None
+
+    row = conn.execute(
+        "SELECT embedding, metadata_json FROM memories WHERE id = ?",
+        (str(memory["id"]),),
+    ).fetchone()
+    assert row[0] is None
+    assert EMBEDDING_SIGNATURE_METADATA_KEY not in json.loads(row[1])
     conn.close()
 
 

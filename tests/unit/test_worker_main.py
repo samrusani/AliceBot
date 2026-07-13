@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from uuid import uuid4
 
 import workers.alicebot_worker.main as main_module
-from apps.api.src.alicebot_api.config import Settings
+from alicebot_api.config import Settings
 from workers.alicebot_worker.task_runs import WorkerTickOutcome
 
 

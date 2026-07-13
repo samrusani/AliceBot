@@ -779,7 +779,7 @@ def test_undo_without_replacement_and_forget_do_not_stamp_valid_to() -> None:
     assert store.get_memory(str(forgotten["id"]))["valid_to"] is None
 
 
-def test_existing_valid_to_is_never_overwritten_by_the_stamp() -> None:
+def test_existing_earlier_valid_to_is_preserved_by_the_stamp() -> None:
     store = _sqlite_store()
     retired = _seed_memory(
         store,
@@ -805,6 +805,42 @@ def test_existing_valid_to_is_never_overwritten_by_the_stamp() -> None:
     )
 
     assert str(store.get_memory(str(retired["id"]))["valid_to"]).startswith("2022-12-31")
+
+
+def test_later_or_unbounded_valid_to_is_closed_at_supersession_event_time() -> None:
+    store = _sqlite_store()
+    _seed_source(store, "session-replacement", "2026/03/01 (Sun) 12:00")
+    replacement = _seed_memory(
+        store,
+        memory_id="13131313-1313-4131-8131-131313131313",
+        text="[USER]: My rent is $2,100 a month.",
+        source_id="session-replacement",
+    )
+    service = VNextMemoryCommitService(store)
+
+    for memory_id, valid_to in (
+        ("14141414-1414-4141-8141-141414141414", "2030-01-01T00:00:00Z"),
+        ("15151515-1515-4151-8151-151515151515", "9999-12-31T23:59:59Z"),
+    ):
+        retired = _seed_memory(
+            store,
+            memory_id=memory_id,
+            text="[USER]: My rent is $1,800 a month.",
+        )
+        store.update_memory(
+            memory_id=str(retired["id"]),
+            patch={"valid_to": valid_to},
+            actor_type="system",
+        )
+
+        service.undo(
+            identity=None,
+            memory_id=str(retired["id"]),
+            superseded_by_memory_id=str(replacement["id"]),
+            reason="corrected by replacement",
+        )
+
+        assert str(store.get_memory(str(retired["id"]))["valid_to"]).startswith("2026-03-01T12:00")
 
 
 def test_supersession_event_time_falls_back_to_created_at() -> None:

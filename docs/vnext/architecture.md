@@ -65,7 +65,7 @@ Agent-originated HTTP calls authenticate with per-agent API keys. Create one wit
 
 ## Memory Consolidation
 
-The `memory_consolidation` scheduler workflow scans accepted memories, reviewed sources, generated artifacts, recent events, corrections/contradictions reflected in memory state, and artifact quality ratings. It produces a reviewable `memory_consolidation` artifact and may create candidate memories with source references. Consolidation does not yet deduplicate or merge overlapping memories: it only avoids re-creating its own prior candidate for the same inputs, and merge/dedup proposals remain planned work.
+The `memory_consolidation` scheduler workflow scans accepted memories, reviewed sources, generated artifacts, recent events, corrections/contradictions reflected in memory state, and artifact quality ratings. It produces a reviewable `memory_consolidation` artifact and may create candidate memories with source references. Consolidation can now emit review-governed deduplication proposals for overlapping memories, preserves every original until review, and uses a stable workflow digest so identical scoped inputs cannot create duplicate artifacts or candidates. Automatic merging remains out of scope.
 
 Consolidation never updates or promotes trusted memory automatically. Candidate memories must pass the normal `/vnext` review, correction, supersession, and audit paths before they affect recall.
 

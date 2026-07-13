@@ -247,10 +247,27 @@ def test_parse_rerank_scores_rejects_bad_shapes() -> None:
         parse_rerank_scores("no scores here", expected_count=2)
     with pytest.raises(VNextRerankerProviderError, match="2 scores for 3 documents"):
         parse_rerank_scores("[1, 2]", expected_count=3)
-    with pytest.raises(VNextRerankerProviderError, match="must be numbers"):
+    with pytest.raises(VNextRerankerProviderError, match="must be integers between 0 and 100"):
         parse_rerank_scores('[1, "high"]', expected_count=2)
-    with pytest.raises(VNextRerankerProviderError, match="must be numbers"):
+    with pytest.raises(VNextRerankerProviderError, match="must be integers between 0 and 100"):
         parse_rerank_scores("[true, false]", expected_count=2)
+    for malformed in ("[50.0, 10]", "[NaN, 10]", "[Infinity, 10]", "[-1, 10]", "[101, 10]"):
+        with pytest.raises(
+            VNextRerankerProviderError,
+            match="must be integers between 0 and 100",
+        ):
+            parse_rerank_scores(malformed, expected_count=2)
+
+
+def test_rerank_fails_open_when_provider_scores_break_integer_range_contract() -> None:
+    provider = ScriptedRerankProvider(contents=["[50, NaN, 100]"])
+    candidates = [_item("a", "alpha"), _item("b", "bravo"), _item("c", "charlie")]
+
+    outcome = rerank("query", candidates, provider=provider, max_candidates=48)
+
+    assert outcome.status.startswith(RERANK_FAIL_OPEN_PREFIX)
+    assert outcome.order == (0, 1, 2)
+    assert outcome.scores is None
 
 
 # -- rerank() core semantics -----------------------------------------------------

@@ -12,7 +12,7 @@
 
 Alice is a local-first memory service that lets AI agents resume interrupted work, track open loops, recall decisions with provenance, and improve when corrected — instead of re-reading transcripts or trusting opaque summaries.
 
-It scores **79.4%** on [LongMemEval](https://github.com/samrusani/AliceBot/blob/main/docs/benchmarks/longmemeval/README.md), a long-term-memory benchmark — a single run, with one disclosed trade-off on the abstention subset (25/30 → 22/30) — and the full per-question evidence, methodology, and reproduction script are committed to this repo so anyone can verify it. Open source, local-first, MIT-licensed.
+In one historical run dated 2026-07-07, it scored **79.4%** on [LongMemEval](https://github.com/samrusani/AliceBot/blob/main/docs/benchmarks/longmemeval/README.md), a long-term-memory benchmark. That is a single-run receipt, not a repeated-run estimate or a fresh v0.10.2 measurement; it includes one disclosed trade-off on the abstention subset (25/30 → 22/30). The full per-question evidence, methodology, and reproduction script are committed to this repo. Open source, local-first, MIT-licensed.
 
 Agents connect over MCP, HTTP API, or CLI. Humans stay in control: agent writes land as policy-checked commits or reviewable proposals, and a local review console is where memory gets approved, corrected, or forgotten. That review boundary is a feature, not a limitation — it is what makes the memory trustworthy enough to act on.
 
@@ -136,12 +136,16 @@ search degrades to full-text only and says so explicitly in the retrieval trace.
 
 ## Status
 
-Alice is pre-1.0. What that means in practice:
+`v0.10.2` is the latest published release; the `v0.10.3` candidate is in
+release gating. Alice is a public-alpha, pre-1.0 project.
+What that means in practice:
 
 - **Local-first, single-user.** One operator, one machine (or one headless server reached over SSH).
 - **Review-governed writes.** Agents propose or commit through policy; outcomes are commit, confirm, review, or reject. The review console is the trust boundary for durable memory.
 - **No hosted service.** There is no cloud offering yet; you run Alice yourself.
-- **No OAuth connectors.** Capture paths are local files, explicit API/CLI/MCP calls, and agent output ingestion — not automatic syncing of external accounts.
+- **No managed OAuth or automatic polling.** Manual operator-token Gmail and
+  Calendar backends exist, but Alice does not provide a managed consent/account-
+  linking flow or automatic email/calendar syncing.
 - **No automatic capture from arbitrary conversation.** Durable memory comes from explicit commits, reviewable proposals, or captured sources, never from silent transcript mining.
 
 ## Docs
@@ -153,7 +157,7 @@ Alice is pre-1.0. What that means in practice:
 - [Known limitations](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/known-limitations.md)
 - [Backup and restore](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/backup-and-restore.md)
 - [Security and privacy](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/security-and-privacy.md)
-- [v0.9.4 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.9.4-release-notes.md)
+- [v0.10.2 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.10.2-release-notes.md)
 - [Release procedure](https://github.com/samrusani/AliceBot/blob/main/RELEASING.md)
 - [Architecture](https://github.com/samrusani/AliceBot/blob/main/ARCHITECTURE.md)
 - [Roadmap](https://github.com/samrusani/AliceBot/blob/main/ROADMAP.md)

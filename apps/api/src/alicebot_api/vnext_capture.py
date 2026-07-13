@@ -4,6 +4,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from hashlib import md5, sha256
 import json
+import math
 from pathlib import Path
 import re
 from typing import Protocol, Sequence
@@ -16,7 +17,7 @@ from alicebot_api.memory_provenance import (
     order_by_provenance,
     provenance_promotion_rank,
 )
-from alicebot_api.vnext_embeddings import attach_memory_embedding
+from alicebot_api.vnext_embeddings import DeferredMemoryEmbedding, attach_memory_embeddings
 from alicebot_api.vnext_entities import (
     ENTITY_EXTRACTION_SKIP_SENSITIVITIES,
     EntityLinkingService,
@@ -74,6 +75,9 @@ class CaptureResult:
     candidate_memory_count: int = 0
     duplicate: bool = False
     errors: tuple[str, ...] = ()
+    # Internal two-phase handoff. Deliberately omitted from ``to_record`` so
+    # enabling deferred persistence does not change the public capture API.
+    deferred_embedding_inputs: tuple[DeferredMemoryEmbedding, ...] = ()
 
     def to_record(self) -> JsonObject:
         return {
@@ -95,6 +99,7 @@ class BatchImportResult:
     failed_count: int
     source_ids: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
+    deferred_embedding_inputs: tuple[DeferredMemoryEmbedding, ...] = ()
 
     def to_record(self) -> JsonObject:
         return {
@@ -447,6 +452,7 @@ def _memory_key(
 
 
 def _extract_text_from_json_value(value: object) -> list[str]:
+    """Fallback text extraction that preserves encounter order and repeats."""
     if isinstance(value, str):
         normalized = " ".join(value.split()).strip()
         return [normalized] if normalized else []
@@ -475,21 +481,239 @@ def _extract_text_from_json_value(value: object) -> list[str]:
 
     mapping = value.get("mapping")
     if isinstance(mapping, dict):
-        for node_key in sorted(mapping):
-            texts.extend(_extract_text_from_json_value(mapping[node_key]))
+        for node in mapping.values():
+            texts.extend(_extract_text_from_json_value(node))
 
     for key in ("messages", "conversations", "items", "records"):
         if key in value:
             texts.extend(_extract_text_from_json_value(value[key]))
 
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for text in texts:
-        if text in seen:
+    return texts
+
+
+def _chatgpt_conversations(payload: object) -> list[dict[str, object]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    conversations = payload.get("conversations")
+    if isinstance(conversations, list):
+        return [item for item in conversations if isinstance(item, dict)]
+    if isinstance(payload.get("mapping"), dict) or isinstance(payload.get("messages"), list):
+        return [payload]
+    return []
+
+
+def _ordered_chatgpt_nodes(conversation: dict[str, object]) -> list[dict[str, object]]:
+    """Return every mapping node in parent-before-child graph order.
+
+    ChatGPT export mappings are keyed by opaque IDs whose lexical order has no
+    conversational meaning. The current branch is visited first, while any
+    alternate branches are retained afterward instead of silently discarded.
+    """
+    messages = conversation.get("messages")
+    if isinstance(messages, list):
+        return [item for item in messages if isinstance(item, dict)]
+
+    raw_mapping = conversation.get("mapping")
+    if not isinstance(raw_mapping, dict):
+        return []
+    mapping = {
+        str(node_id): node
+        for node_id, node in raw_mapping.items()
+        if isinstance(node, dict)
+    }
+    if not mapping:
+        return []
+
+    children_by_parent: dict[str, list[str]] = {node_id: [] for node_id in mapping}
+    for node_id, node in mapping.items():
+        parent = node.get("parent")
+        if isinstance(parent, str) and parent in mapping:
+            children_by_parent[parent].append(node_id)
+    # Prefer the export's explicit child order where present, then append any
+    # derived links that an incomplete export omitted from ``children``.
+    for node_id, node in mapping.items():
+        explicit = node.get("children")
+        if not isinstance(explicit, list):
             continue
-        deduped.append(text)
-        seen.add(text)
-    return deduped
+        ordered = [child for child in explicit if isinstance(child, str) and child in mapping]
+        children_by_parent[node_id] = list(
+            dict.fromkeys([*ordered, *children_by_parent[node_id]])
+        )
+
+    active_successor: dict[str, str] = {}
+    current = conversation.get("current_node")
+    if isinstance(current, str) and current in mapping:
+        active_chain: list[str] = []
+        seen: set[str] = set()
+        while current in mapping and current not in seen:
+            seen.add(current)
+            active_chain.append(current)
+            parent = mapping[current].get("parent")
+            if not isinstance(parent, str):
+                break
+            current = parent
+        active_chain.reverse()
+        active_successor.update(zip(active_chain, active_chain[1:]))
+
+    roots = [
+        node_id
+        for node_id, node in mapping.items()
+        if not isinstance(node.get("parent"), str) or node.get("parent") not in mapping
+    ]
+    visited: set[str] = set()
+    ordered_nodes: list[dict[str, object]] = []
+
+    def visit(node_id: str) -> None:
+        if node_id in visited:
+            return
+        visited.add(node_id)
+        ordered_nodes.append(mapping[node_id])
+        preferred = active_successor.get(node_id)
+        children = children_by_parent[node_id]
+        if preferred in children:
+            children = [preferred, *(child for child in children if child != preferred)]
+        for child in children:
+            visit(child)
+
+    for root in roots:
+        visit(root)
+    # Malformed/cyclic exports still retain every node once in source order.
+    for node_id in mapping:
+        visit(node_id)
+    return ordered_nodes
+
+
+def _chatgpt_timestamp(value: object) -> str | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return None
+        try:
+            return datetime.fromtimestamp(numeric, tz=UTC).isoformat().replace("+00:00", "Z")
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str) and value.strip():
+        stripped = value.strip()
+        try:
+            return _chatgpt_timestamp(float(stripped))
+        except ValueError:
+            pass
+        try:
+            parsed = datetime.fromisoformat(stripped.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    return None
+
+
+def _chatgpt_message_parts(message: dict[str, object]) -> list[str]:
+    content = message.get("content")
+    values: list[object]
+    if isinstance(content, dict):
+        parts = content.get("parts")
+        if isinstance(parts, list):
+            values = list(parts)
+        else:
+            values = [content.get("text") or content.get("content") or content.get("message")]
+    elif content is not None:
+        values = [content]
+    else:
+        values = [message.get("text") or message.get("message")]
+
+    normalized: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        for line in value.replace("\r\n", "\n").replace("\r", "\n").splitlines() or [value]:
+            text = " ".join(line.split()).strip()
+            if text:
+                normalized.append(text)
+    return normalized
+
+
+@dataclass(frozen=True, slots=True)
+class _ChatGPTConversationTranscript:
+    index: int
+    external_id: str
+    title: str
+    raw_text: str
+    message_count: int
+    created_at: str | None
+    modified_at: str | None
+
+
+def _chatgpt_conversation_id(conversation: dict[str, object], *, index: int) -> str:
+    for key in ("id", "conversation_id"):
+        value = conversation.get(key)
+        if value is not None and str(value).strip():
+            return " ".join(str(value).split())
+    return f"conversation-{index}"
+
+
+def _chatgpt_conversation_transcript(
+    conversation: dict[str, object],
+    *,
+    index: int,
+) -> _ChatGPTConversationTranscript:
+    title = " ".join(str(conversation.get("title") or f"Conversation {index}").split())
+    if not title:
+        title = f"Conversation {index}"
+    external_id = _chatgpt_conversation_id(conversation, index=index)
+    message_lines: list[str] = []
+    message_timestamps: list[str] = []
+    message_count = 0
+    for node in _ordered_chatgpt_nodes(conversation):
+        message_value = node.get("message") if isinstance(node.get("message"), dict) else node
+        if not isinstance(message_value, dict):
+            continue
+        parts = _chatgpt_message_parts(message_value)
+        if not parts:
+            continue
+        author = message_value.get("author")
+        role_value = author.get("role") if isinstance(author, dict) else message_value.get("role")
+        role = str(role_value or "unknown").strip().upper()
+        role = re.sub(r"[^A-Z0-9_-]", "_", role) or "UNKNOWN"
+        timestamp_value = message_value.get("create_time")
+        if timestamp_value is None:
+            timestamp_value = node.get("create_time")
+        timestamp = _chatgpt_timestamp(timestamp_value)
+        if timestamp is not None:
+            message_timestamps.append(timestamp)
+            message_lines.append(f"[AT]: {timestamp}")
+        message_lines.extend(f"[{role}]: {part}" for part in parts)
+        message_count += 1
+
+    created_at = _chatgpt_timestamp(conversation.get("create_time"))
+    modified_at = _chatgpt_timestamp(conversation.get("update_time"))
+    if created_at is None and message_timestamps:
+        created_at = min(message_timestamps)
+    if modified_at is None and message_timestamps:
+        modified_at = max(message_timestamps)
+
+    lines = [
+        f"[CONVERSATION]: {external_id}",
+        f"[TITLE]: {title}",
+    ]
+    if created_at is not None:
+        lines.append(f"[CREATED_AT]: {created_at}")
+    if modified_at is not None:
+        lines.append(f"[UPDATED_AT]: {modified_at}")
+    lines.extend(message_lines)
+    return _ChatGPTConversationTranscript(
+        index=index,
+        external_id=external_id,
+        title=title,
+        raw_text="\n".join(lines),
+        message_count=message_count,
+        created_at=created_at,
+        modified_at=modified_at,
+    )
 
 
 class VNextCaptureService:
@@ -504,6 +728,7 @@ class VNextCaptureService:
         run_id: str | None = None,
         agent_identity: JsonObject | None = None,
         policy_decision: JsonObject | None = None,
+        defer_embeddings: bool = False,
     ) -> None:
         self.store = store
         self.chunk_max_chars = chunk_max_chars
@@ -513,6 +738,7 @@ class VNextCaptureService:
         self.run_id = run_id
         self.agent_identity = agent_identity
         self.policy_decision = policy_decision
+        self.defer_embeddings = defer_embeddings
 
     def _log_event(
         self,
@@ -810,13 +1036,6 @@ class VNextCaptureService:
                     actor_type=self.actor_type,
                 )
                 memory_rows.append(memory)
-                attach_memory_embedding(
-                    self.store,
-                    memory,
-                    actor_type=self.actor_type,
-                    actor_id=self.actor_id,
-                    trace_id=self.trace_id,
-                )
                 self.store.create_provenance_link(
                     {
                         "target_type": "memory",
@@ -841,6 +1060,18 @@ class VNextCaptureService:
                     },
                 )
 
+            deferred_embedding_inputs = tuple(
+                DeferredMemoryEmbedding.from_memory(memory) for memory in memory_rows
+            )
+            if not self.defer_embeddings:
+                attach_memory_embeddings(
+                    self.store,
+                    memory_rows,
+                    actor_type=self.actor_type,
+                    actor_id=self.actor_id,
+                    trace_id=self.trace_id,
+                )
+
             self._link_captured_entities(
                 source=source,
                 source_id=source_id,
@@ -855,6 +1086,9 @@ class VNextCaptureService:
                 content_hash=content_hash,
                 chunk_count=len(chunk_rows),
                 candidate_memory_count=len(candidates),
+                deferred_embedding_inputs=(
+                    deferred_embedding_inputs if self.defer_embeddings else ()
+                ),
             )
         except Exception as exc:
             self._log_failure(
@@ -919,11 +1153,26 @@ class VNextCaptureService:
         used to mint a second memory with identical canonical text (proven
         cross-batch duplicate: one Omega-watch assertion captured twice
         from two sessions). Scoped to the ``user_asserted_value`` rule so
-        every legacy rule keeps its batch-local behavior byte-identical;
-        stores without ``list_memories`` skip the check.
+        every legacy rule keeps its batch-local behavior byte-identical.
+        Current stores use an exact indexed lookup; legacy adapters retain the
+        list fallback for compatibility.
         """
         if not any(candidate.extraction_rule == USER_ASSERTED_VALUE_RULE for candidate in candidates):
             return candidates
+        find_live_memory = getattr(self.store, "find_live_memory_by_canonical_text", None)
+        if callable(find_live_memory):
+            return [
+                candidate
+                for candidate in candidates
+                if candidate.extraction_rule != USER_ASSERTED_VALUE_RULE
+                or find_live_memory(
+                    candidate.text,
+                    domain=domain,
+                    sensitivity=sensitivity,
+                    project_scope=project_scope,
+                )
+                is None
+            ]
         list_memories = getattr(self.store, "list_memories", None)
         if not callable(list_memories):
             return candidates
@@ -1030,6 +1279,7 @@ class VNextCaptureService:
         duplicate_count = 0
         failed_count = 0
         run_hashes: set[str] = set()
+        deferred_embedding_inputs: list[DeferredMemoryEmbedding] = []
 
         for file_path in sorted(folder_path.rglob("*.md")):
             try:
@@ -1066,6 +1316,7 @@ class VNextCaptureService:
                         },
                     )
                 )
+                deferred_embedding_inputs.extend(result.deferred_embedding_inputs)
                 if result.duplicate:
                     duplicate_count += 1
                     continue
@@ -1106,6 +1357,7 @@ class VNextCaptureService:
             failed_count=failed_count,
             source_ids=tuple(source_ids),
             errors=tuple(errors),
+            deferred_embedding_inputs=tuple(deferred_embedding_inputs),
         )
 
     def import_chatgpt_export_file(
@@ -1114,23 +1366,115 @@ class VNextCaptureService:
         *,
         domain: str = "personal",
         sensitivity: str = "private",
-    ) -> CaptureResult:
+    ) -> BatchImportResult:
         export_path = Path(path).expanduser().resolve()
-        payload = json.loads(export_path.read_text(encoding="utf-8"))
-        extracted_texts = _extract_text_from_json_value(payload)
-        source_text = "\n".join(extracted_texts) if extracted_texts else json.dumps(payload, sort_keys=True, ensure_ascii=True)
-        return self.capture_source(
-            SourceCaptureInput(
-                source_type="chatgpt_export",
-                title=export_path.name,
-                raw_text=source_text,
-                raw_path=str(export_path),
-                connector_name="chatgpt_export",
-                external_id=str(export_path),
-                domain=domain,
-                sensitivity=sensitivity,
-                metadata_json={"filename": export_path.name, "raw_json": payload},
+        raw_export = export_path.read_text(encoding="utf-8")
+        payload = json.loads(raw_export)
+        conversations = _chatgpt_conversations(payload)
+        transcripts = [
+            _chatgpt_conversation_transcript(conversation, index=index)
+            for index, conversation in enumerate(conversations, start=1)
+        ]
+        transcript_format = "chatgpt_conversation_v1"
+        if not transcripts:
+            extracted_texts = _extract_text_from_json_value(payload)
+            fallback_text = "\n".join(extracted_texts) if extracted_texts else json.dumps(
+                payload,
+                sort_keys=True,
+                ensure_ascii=False,
             )
+            fallback_title = export_path.name
+            transcripts = [
+                _ChatGPTConversationTranscript(
+                    index=1,
+                    external_id=f"{export_path.name}#conversation-1",
+                    title=fallback_title,
+                    raw_text=(
+                        f"[CONVERSATION]: {export_path.name}#conversation-1\n"
+                        f"[TITLE]: {fallback_title}\n"
+                        f"{fallback_text}"
+                    ),
+                    message_count=len(extracted_texts),
+                    created_at=None,
+                    modified_at=None,
+                )
+            ]
+            transcript_format = "json_fallback_v1"
+
+        export_sha256 = "sha256:" + sha256(raw_export.encode("utf-8")).hexdigest()
+        captured_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        source_ids: list[str] = []
+        errors: list[str] = []
+        duplicate_count = 0
+        failed_count = 0
+        deferred_embedding_inputs: list[DeferredMemoryEmbedding] = []
+        for transcript in transcripts:
+            try:
+                result = self.capture_source(
+                    SourceCaptureInput(
+                        source_type="chatgpt_export",
+                        title=transcript.title,
+                        raw_text=transcript.raw_text,
+                        raw_path=str(export_path),
+                        connector_name="chatgpt_export",
+                        external_id=transcript.external_id,
+                        domain=domain,
+                        sensitivity=sensitivity,
+                        captured_at=captured_at,
+                        source_created_at=transcript.created_at,
+                        source_modified_at=transcript.modified_at,
+                        metadata_json={
+                            "filename": export_path.name,
+                            "export_sha256": export_sha256,
+                            "transcript_format": transcript_format,
+                            "export_conversation_count": len(transcripts),
+                            "conversation_index": transcript.index,
+                            "conversation_id": transcript.external_id,
+                            "conversation_title": transcript.title,
+                            "message_count": transcript.message_count,
+                        },
+                    )
+                )
+            except Exception as exc:
+                failed_count += 1
+                errors.append(
+                    f"conversation {transcript.index} ({transcript.external_id}): {exc}"
+                )
+                continue
+            deferred_embedding_inputs.extend(result.deferred_embedding_inputs)
+            if result.duplicate:
+                duplicate_count += 1
+            elif result.source_id is not None:
+                source_ids.append(result.source_id)
+
+        imported_count = len(source_ids)
+        status = "ok" if failed_count == 0 else "partial"
+        if imported_count == 0 and duplicate_count > 0 and failed_count == 0:
+            status = "duplicate"
+        if imported_count == 0 and duplicate_count == 0 and failed_count > 0:
+            status = "failed"
+
+        self._log_event(
+            event_type="source.batch_import_completed",
+            target_type="source",
+            payload={
+                "source_type": "chatgpt_export",
+                "filename": export_path.name,
+                "export_sha256": export_sha256,
+                "conversation_count": len(transcripts),
+                "imported_count": imported_count,
+                "duplicate_count": duplicate_count,
+                "failed_count": failed_count,
+            },
+        )
+        return BatchImportResult(
+            status=status,
+            imported_count=imported_count,
+            duplicate_count=duplicate_count,
+            failed_count=failed_count,
+            source_ids=tuple(source_ids),
+            errors=tuple(errors),
+            deferred_embedding_inputs=tuple(deferred_embedding_inputs),
         )
 
 

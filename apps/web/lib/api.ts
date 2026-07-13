@@ -2811,6 +2811,31 @@ export type AssistantResponseSuccess = {
   trace: AssistantResponseTrace;
 };
 
+export type AssistantResponseJob = {
+  id: string;
+  state: "pending" | "running" | "succeeded" | "failed";
+  endpoint: string;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+};
+
+export type AssistantResponseAccepted = {
+  detail: {
+    code: "response_generation_in_progress";
+    message: string;
+  };
+  response_job: AssistantResponseJob;
+};
+
+export type AssistantResponseResult = AssistantResponseSuccess | AssistantResponseAccepted;
+
+export function isAssistantResponseAccepted(
+  result: AssistantResponseResult,
+): result is AssistantResponseAccepted {
+  return "response_job" in result;
+}
+
 export type RequestHistoryEntry = {
   id: string;
   submittedAt: string;
@@ -3323,9 +3348,11 @@ export function submitApprovalRequest(
 export function submitAssistantResponse(
   apiBaseUrl: string,
   payload: AssistantResponsePayload,
+  idempotencyKey: string,
 ) {
-  return requestJson<AssistantResponseSuccess>(apiBaseUrl, "/v0/responses", {
+  return requestJson<AssistantResponseResult>(apiBaseUrl, "/v0/responses", {
     method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
     body: JSON.stringify(payload),
     timeoutMs: LONG_RUNNING_MUTATION_TIMEOUT_MS,
   });

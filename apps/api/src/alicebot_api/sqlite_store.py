@@ -44,7 +44,11 @@ from alicebot_api.vnext_embeddings import (
 from alicebot_api.vnext_entity_names import ENTITY_IMMUTABLE_PATCH_FIELDS, normalize_entity_name
 from alicebot_api.vnext_event_log import build_event_log_record
 from alicebot_api.vnext_json import json_safe
-from alicebot_api.vnext_project_scope import canonical_memory_metadata, expose_memory_project_scope
+from alicebot_api.vnext_project_scope import (
+    canonical_memory_metadata,
+    expose_memory_project_scope,
+    normalize_project_scope,
+)
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_store import (
     FTS_QUERY_STOPWORDS as _FTS_QUERY_STOPWORDS,
@@ -334,8 +338,7 @@ def _embedding_content_sha256_sqlite(
 def _ensure_embedding_content_sha256_sqlite(conn: sqlite3.Connection) -> None:
     """Register the deterministic digest UDF once per SQLite connection."""
     cursor = conn.execute(
-        "SELECT 1 FROM pragma_function_list "
-        "WHERE name = 'alice_embedding_content_sha256' AND narg = 3 LIMIT 1"
+        "SELECT 1 FROM pragma_function_list WHERE name = 'alice_embedding_content_sha256' AND narg = 3 LIMIT 1"
     )
     try:
         registered = cursor.fetchone() is not None
@@ -598,10 +601,7 @@ class SQLiteVNextStore:
     def _domain_clause(self, domains: list[str] | None, *, prefix: str = "") -> tuple[str, list[object]]:
         if domains is None:
             return "", []
-        clause = (
-            f" AND ({prefix}domain IN ({self._placeholders(domains)})"
-            f" OR {prefix}domain = 'unknown')"
-        )
+        clause = f" AND ({prefix}domain IN ({self._placeholders(domains)}) OR {prefix}domain = 'unknown')"
         return clause, list(domains)
 
     def _sensitivity_clause(
@@ -697,14 +697,10 @@ class SQLiteVNextStore:
         clauses: list[str] = []
         params: list[object] = []
         if scope_thread_id is not None:
-            clauses.append(
-                f" AND LOWER(TRIM(CAST(json_extract({prefix}metadata_json, '$.thread_id') AS TEXT))) = ?"
-            )
+            clauses.append(f" AND LOWER(TRIM(CAST(json_extract({prefix}metadata_json, '$.thread_id') AS TEXT))) = ?")
             params.append(scope_thread_id.casefold())
         if scope_task_id is not None:
-            clauses.append(
-                f" AND LOWER(TRIM(CAST(json_extract({prefix}metadata_json, '$.task_id') AS TEXT))) = ?"
-            )
+            clauses.append(f" AND LOWER(TRIM(CAST(json_extract({prefix}metadata_json, '$.task_id') AS TEXT))) = ?")
             params.append(scope_task_id.casefold())
         if scope_people:
             people = list(scope_people)
@@ -758,9 +754,7 @@ class SQLiteVNextStore:
         params: list[object] = []
 
         def _metadata_values(keys: tuple[str, ...], values: tuple[str, ...]) -> str:
-            json_values = ", ".join(
-                f"json_extract({metadata_expression}, '$.{key}')" for key in keys
-            )
+            json_values = ", ".join(f"json_extract({metadata_expression}, '$.{key}')" for key in keys)
             params.extend(values)
             return (
                 "EXISTS (SELECT 1 FROM json_tree(json_array("
@@ -912,6 +906,145 @@ class SQLiteVNextStore:
                 """,
             tuple(params),
         )
+
+    def list_events_for_source_trace(
+        self,
+        *,
+        source_id: str,
+        memory_ids: Sequence[str] = (),
+        artifact_ids: Sequence[str] = (),
+        open_loop_ids: Sequence[str] = (),
+        limit: int = 500,
+    ) -> list[VNextRow]:
+        """Bound source-trace events with predicates before LIMIT."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        alternatives = ["(target_type = 'source' AND target_id = ?)"]
+        params: list[object] = [self.user_id, source_id]
+        for target_type, values in (
+            ("memory", memory_ids),
+            ("artifact", artifact_ids),
+            ("open_loop", open_loop_ids),
+        ):
+            ids = list(dict.fromkeys(str(value) for value in values if value))
+            if not ids:
+                continue
+            alternatives.append(f"(target_type = '{target_type}' AND target_id IN ({self._placeholders(ids)}))")
+            params.extend(ids)
+        alternatives.append(
+            "EXISTS ("
+            "SELECT 1 FROM json_tree(event_log.payload_json) AS ref "
+            "WHERE ref.key IN ('source_id', 'source_ids', 'source_ref', 'source_refs', "
+            "'source_references', 'selected_source_ids') "
+            "AND CAST(ref.value AS TEXT) IN (?, ?)"
+            ")"
+        )
+        params.extend((source_id, f"source:{source_id}", limit))
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(EVENT_LOG_COLUMNS)}
+                FROM event_log
+                WHERE user_id = ?
+                  AND ({" OR ".join(alternatives)})
+                ORDER BY occurred_at DESC, id DESC
+                LIMIT ?
+                """,
+            tuple(params),
+        )
+
+    def list_memory_events(
+        self,
+        *,
+        event_type_prefix: str | None = None,
+        scope_projects: tuple[str, ...] = (),
+        scope_people: tuple[str, ...] = (),
+        scope_person_memory_ids: tuple[str, ...] = (),
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
+        limit: int = 20,
+    ) -> list[VNextRow]:
+        """Memory events whose target row matches scope before LIMIT."""
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        project_sql, project_params = self._project_clause(scope_projects, prefix="m.")
+        people = [str(value).strip().casefold() for value in scope_people if str(value).strip()]
+        person_ids = [str(value) for value in scope_person_memory_ids if str(value)]
+        params: list[object] = [self.user_id]
+        prefix_sql = ""
+        if event_type_prefix is not None:
+            prefix_sql = " AND e.event_type LIKE ?"
+            params.append(f"{event_type_prefix}%")
+        params.extend(project_params)
+        people_sql = ""
+        if people or person_ids:
+            people_placeholders = self._placeholders(people)
+            ids_placeholders = self._placeholders(person_ids)
+            people_terms: list[str] = []
+            if person_ids:
+                people_terms.append(f"m.id IN ({ids_placeholders})")
+                params.extend(person_ids)
+            if people:
+                metadata_paths = ("person_id", "person_ids", "person", "people", "people_ids")
+                path_terms = " OR ".join(
+                    "EXISTS (SELECT 1 FROM json_each(json_extract(m.metadata_json, ?)) AS scoped_person "
+                    f"WHERE lower(trim(CAST(scoped_person.value AS TEXT))) IN ({people_placeholders}))"
+                    for _path in metadata_paths
+                )
+                people_terms.append(f"({path_terms})")
+                for path in metadata_paths:
+                    params.extend((f"$.{path}", *people))
+            people_sql = f" AND ({' OR '.join(people_terms)})"
+        window_sql = ""
+        if scope_window_start is not None:
+            window_sql += " AND julianday(e.occurred_at) >= julianday(?)"
+            params.append(scope_window_start.isoformat())
+        if scope_window_end is not None:
+            window_sql += " AND julianday(e.occurred_at) <= julianday(?)"
+            params.append(scope_window_end.isoformat())
+        params.append(limit)
+        qualified_columns = ", ".join(f"e.{column}" for column in EVENT_LOG_COLUMNS)
+        return self._fetch_all(
+            f"""
+                SELECT {qualified_columns}
+                FROM event_log e
+                JOIN memories m
+                  ON e.target_type = 'memory'
+                 AND e.target_id = m.id
+                 AND e.user_id = m.user_id
+                WHERE e.user_id = ?
+                  AND m.deleted_at IS NULL
+                  {prefix_sql}
+                  {project_sql}
+                  {people_sql}
+                  {window_sql}
+                ORDER BY e.occurred_at DESC, e.id DESC
+                LIMIT ?
+                """,
+            tuple(params),
+        )
+
+    def count_events(
+        self,
+        *,
+        target_type: str | None = None,
+        target_id: str | None = None,
+    ) -> int:
+        """Count matching event rows without materializing the event log."""
+        clauses = ["user_id = ?"]
+        params: list[object] = [self.user_id]
+        if target_type is not None:
+            clauses.append("target_type = ?")
+            params.append(target_type)
+        if target_id is not None:
+            clauses.append("target_id = ?")
+            params.append(target_id)
+        row = self._fetch_one(
+            "count events",
+            f"SELECT COUNT(*) AS count FROM event_log WHERE {' AND '.join(clauses)}",
+            tuple(params),
+        )
+        return int(cast(int, row["count"]))
 
     # -- sources -------------------------------------------------------------
 
@@ -1397,6 +1530,43 @@ class SQLiteVNextStore:
         )
         return row
 
+    def get_memory_by_key(
+        self,
+        *,
+        memory_key: str,
+        agent_profile_id: str = "assistant_default",
+    ) -> VNextRow | None:
+        return self._fetch_optional_one(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM memories
+                WHERE user_id = ?
+                  AND agent_profile_id = ?
+                  AND memory_key = ?
+                  AND deleted_at IS NULL
+                LIMIT 1
+                """,
+            (self.user_id, agent_profile_id, memory_key),
+        )
+
+    def upsert_memory_by_key(self, memory: JsonObject, *, actor_type: str = "system") -> VNextRow:
+        """Create a deterministic-key memory or replay its existing row."""
+
+        memory_key = str(memory.get("memory_key") or "").strip()
+        if memory_key == "":
+            raise ValueError("memory_key must not be empty")
+        agent_profile_id = str(memory.get("agent_profile_id") or "assistant_default")
+        try:
+            return self.create_memory(memory, actor_type=actor_type)
+        except sqlite3.IntegrityError:
+            existing = self.get_memory_by_key(
+                memory_key=memory_key,
+                agent_profile_id=agent_profile_id,
+            )
+            if existing is None:
+                raise
+            return existing
+
     def get_memory(self, memory_id: str) -> VNextRow | None:
         return self._fetch_optional_one(
             f"""
@@ -1423,6 +1593,46 @@ class SQLiteVNextStore:
                   AND id IN ({placeholders})
                 """,
             (self.user_id, *ids),
+        )
+
+    def list_memories_referencing_source(self, *, source_id: str, limit: int = 500) -> list[VNextRow]:
+        """Bound memories related to one source, including provenance links."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        qualified_columns = ", ".join(f"m.{column}" for column in MEMORY_COLUMNS)
+        return self._fetch_all(
+            f"""
+                SELECT {qualified_columns}
+                FROM memories AS m
+                WHERE m.user_id = ?
+                  AND m.deleted_at IS NULL
+                  AND (
+                    EXISTS (
+                      SELECT 1 FROM json_each(m.source_event_ids) AS source_event
+                      WHERE CAST(source_event.value AS TEXT) = ?
+                    )
+                    OR EXISTS (
+                      SELECT 1
+                      FROM provenance_links AS p
+                      WHERE p.user_id = m.user_id
+                        AND p.target_type = 'memory'
+                        AND p.target_id = m.id
+                        AND p.source_id = ?
+                    )
+                    OR EXISTS (
+                      SELECT 1 FROM json_tree(m.metadata_json) AS ref
+                      WHERE ref.key IN (
+                        'source_id', 'source_ids', 'source_ref', 'source_refs',
+                        'source_references', 'selected_source_ids'
+                      )
+                        AND CAST(ref.value AS TEXT) IN (?, ?)
+                    )
+                  )
+                ORDER BY m.updated_at DESC, m.created_at DESC, m.id DESC
+                LIMIT ?
+                """,
+            (self.user_id, source_id, source_id, source_id, f"source:{source_id}", limit),
         )
 
     def get_memory_for_update(self, memory_id: str) -> VNextRow | None:
@@ -1531,6 +1741,7 @@ class SQLiteVNextStore:
         status: str | None = None,
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
+        projects: Sequence[str] | None = None,
         limit: int | None = None,
     ) -> list[VNextRow]:
         if limit is not None and limit < 1:
@@ -1552,6 +1763,8 @@ class SQLiteVNextStore:
             sensitivity_placeholders = ", ".join("?" for _sensitivity in sensitivity_allowed)
             sensitivity_sql = f" AND COALESCE(sensitivity, 'unknown') IN ({sensitivity_placeholders})"
             params.extend(sensitivity_allowed)
+        project_sql, project_params = self._project_clause(tuple(normalize_project_scope(projects or ())))
+        params.extend(project_params)
         limit_sql = ""
         if limit is not None:
             limit_sql = " LIMIT ?"
@@ -1564,10 +1777,218 @@ class SQLiteVNextStore:
                   AND deleted_at IS NULL
                   {domains_sql}
                   {sensitivity_sql}
+                  {project_sql}
                 ORDER BY updated_at DESC, created_at DESC, id DESC
                 {limit_sql}
                 """,
             tuple(params),
+        )
+
+    def list_memories_by_statuses(
+        self,
+        *,
+        statuses: Sequence[str],
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int = 30,
+    ) -> list[VNextRow]:
+        """Bounded multi-status memory query for workspace/review surfaces."""
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        normalized_statuses = list(dict.fromkeys(str(value) for value in statuses if str(value)))
+        if not normalized_statuses:
+            return []
+        if sensitivity_allowed is not None and not sensitivity_allowed:
+            return []
+        status_placeholders = self._placeholders(normalized_statuses)
+        params: list[object] = [self.user_id, *normalized_statuses]
+        domains_sql = ""
+        if domains:
+            domain_placeholders = self._placeholders(domains)
+            domains_sql = f" AND (domain IN ({domain_placeholders}) OR domain = 'unknown')"
+            params.extend(domains)
+        sensitivity_sql = ""
+        if sensitivity_allowed is not None:
+            sensitivity_placeholders = self._placeholders(sensitivity_allowed)
+            sensitivity_sql = f" AND COALESCE(sensitivity, 'unknown') IN ({sensitivity_placeholders})"
+            params.extend(sensitivity_allowed)
+        params.append(limit)
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM memories
+                WHERE user_id = ?
+                  AND deleted_at IS NULL
+                  AND status IN ({status_placeholders})
+                  {domains_sql}
+                  {sensitivity_sql}
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT ?
+                """,
+            tuple(params),
+        )
+
+    def count_memories_by_status(
+        self,
+        *,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+    ) -> dict[str, int]:
+        """Return exact status counts without loading memory rows."""
+        if sensitivity_allowed is not None and not sensitivity_allowed:
+            return {}
+        params: list[object] = [self.user_id]
+        domains_sql = ""
+        if domains:
+            placeholders = self._placeholders(domains)
+            domains_sql = f" AND (domain IN ({placeholders}) OR domain = 'unknown')"
+            params.extend(domains)
+        sensitivity_sql = ""
+        if sensitivity_allowed is not None:
+            placeholders = self._placeholders(sensitivity_allowed)
+            sensitivity_sql = f" AND COALESCE(sensitivity, 'unknown') IN ({placeholders})"
+            params.extend(sensitivity_allowed)
+        rows = self._fetch_all(
+            f"""
+                SELECT status, COUNT(*) AS count
+                FROM memories
+                WHERE user_id = ?
+                  AND deleted_at IS NULL
+                  {domains_sql}
+                  {sensitivity_sql}
+                GROUP BY status
+                ORDER BY status
+                """,
+            tuple(params),
+        )
+        return {str(row["status"]): int(cast(int, row["count"])) for row in rows}
+
+    def list_recent_agentic_commits(self, *, limit: int = 20) -> list[VNextRow]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM memories
+                WHERE user_id = ?
+                  AND deleted_at IS NULL
+                  AND json_extract(metadata_json, '$.agentic_memory.kind') = 'agentic_memory_commit'
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT ?
+                """,
+            (self.user_id, limit),
+        )
+
+    def list_pending_inline_confirmations(self, *, limit: int = 20) -> list[VNextRow]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM memories
+                WHERE user_id = ?
+                  AND deleted_at IS NULL
+                  AND status = 'needs_review'
+                  AND confirmation_status = 'unconfirmed'
+                  AND json_extract(metadata_json, '$.agentic_memory.kind') = 'agentic_memory_commit'
+                  AND json_extract(metadata_json, '$.agentic_memory.confirmation.status') = 'pending'
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT ?
+                """,
+            (self.user_id, limit),
+        )
+
+    def find_live_memory_by_canonical_text(
+        self,
+        canonical_text: str,
+        *,
+        domain: str,
+        sensitivity: str,
+        project_scope: Sequence[str] = (),
+    ) -> VNextRow | None:
+        """Find one live, exactly-scoped duplicate without an O(N) scan."""
+        normalized_text = str(canonical_text).strip()
+        if not normalized_text:
+            return None
+        normalized_scope = list(normalize_project_scope(project_scope))
+        return self._fetch_optional_one(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM memories
+                WHERE user_id = ?
+                  AND deleted_at IS NULL
+                  AND status IN ('candidate', 'active', 'accepted', 'needs_review', 'private_only')
+                  AND lower(canonical_text) = lower(?)
+                  AND domain = ?
+                  AND sensitivity = ?
+                  AND CASE
+                    WHEN json_type(metadata_json, '$.project_scope') = 'array'
+                         AND json_array_length(metadata_json, '$.project_scope') > 0
+                      THEN json_extract(metadata_json, '$.project_scope')
+                    WHEN json_type(metadata_json, '$.agentic_memory.project_scope') = 'array'
+                         AND json_array_length(metadata_json, '$.agentic_memory.project_scope') > 0
+                      THEN json_extract(metadata_json, '$.agentic_memory.project_scope')
+                    WHEN project_id IS NOT NULL THEN json_array(project_id)
+                    WHEN json_extract(metadata_json, '$.project_id') IS NOT NULL
+                      THEN json_array(json_extract(metadata_json, '$.project_id'))
+                    ELSE json('[]')
+                  END = json(?)
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT 1
+                """,
+            (
+                self.user_id,
+                normalized_text,
+                str(domain),
+                str(sensitivity),
+                json.dumps(normalized_scope, separators=(",", ":")),
+            ),
+        )
+
+    def list_memories_for_staleness_sweep(
+        self,
+        *,
+        reference_time: datetime,
+        confirmation_before: datetime,
+        review_memory_types: Sequence[str],
+        limit: int,
+        projects: Sequence[str] | None = None,
+    ) -> list[VNextRow]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        memory_types = list(dict.fromkeys(str(value) for value in review_memory_types if str(value)))
+        placeholders = self._placeholders(memory_types)
+        project_sql, project_params = self._project_clause(tuple(normalize_project_scope(projects or ())))
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM memories
+                WHERE user_id = ?
+                  AND deleted_at IS NULL
+                  AND status = 'active'
+                  {project_sql}
+                  AND (
+                    (valid_to IS NOT NULL AND julianday(valid_to) < julianday(?))
+                    OR (
+                      memory_type IN ({placeholders})
+                      AND julianday(COALESCE(last_confirmed_at, last_seen_at, created_at)) < julianday(?)
+                    )
+                  )
+                ORDER BY
+                  CASE WHEN valid_to IS NOT NULL AND julianday(valid_to) < julianday(?) THEN 0 ELSE 1 END,
+                  julianday(COALESCE(valid_to, last_confirmed_at, last_seen_at, created_at)) ASC,
+                  id ASC
+                LIMIT ?
+                """,
+            (
+                self.user_id,
+                *project_params,
+                reference_time.isoformat(),
+                *memory_types,
+                confirmation_before.isoformat(),
+                reference_time.isoformat(),
+                limit,
+            ),
         )
 
     def count_memories(
@@ -1576,6 +1997,7 @@ class SQLiteVNextStore:
         status: str | None = None,
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
+        projects: Sequence[str] | None = None,
     ) -> int:
         """Count the exact in-scope memory corpus without materializing it."""
         params: list[object] = [self.user_id]
@@ -1595,6 +2017,8 @@ class SQLiteVNextStore:
             placeholders = ", ".join("?" for _value in sensitivity_allowed)
             sensitivity_sql = f" AND COALESCE(sensitivity, 'unknown') IN ({placeholders})"
             params.extend(sensitivity_allowed)
+        project_sql, project_params = self._project_clause(tuple(normalize_project_scope(projects or ())))
+        params.extend(project_params)
         row = self._fetch_one(
             "count memories",
             f"""
@@ -1605,6 +2029,7 @@ class SQLiteVNextStore:
                   {status_sql}
                   {domains_sql}
                   {sensitivity_sql}
+                  {project_sql}
                 """,
             tuple(params),
         )
@@ -1617,6 +2042,7 @@ class SQLiteVNextStore:
         sensitivity_allowed: list[str],
         excluded_candidate_kind: str,
         limit: int,
+        projects: Sequence[str] | None = None,
     ) -> list[VNextRow]:
         """Return the newest bounded roll-up inputs, excluding cards in SQL."""
         if limit < 1:
@@ -1631,6 +2057,8 @@ class SQLiteVNextStore:
             params.extend(domains)
         sensitivity_placeholders = ", ".join("?" for _value in sensitivity_allowed)
         params.extend(sensitivity_allowed)
+        project_sql, project_params = self._project_clause(tuple(normalize_project_scope(projects or ())))
+        params.extend(project_params)
         params.append(limit)
         return self._fetch_all(
             f"""
@@ -1642,6 +2070,7 @@ class SQLiteVNextStore:
                   AND COALESCE(json_extract(metadata_json, '$.candidate_kind'), '') <> ?
                   {domains_sql}
                   AND COALESCE(sensitivity, 'unknown') IN ({sensitivity_placeholders})
+                  {project_sql}
                 ORDER BY created_at DESC, id DESC
                 LIMIT ?
                 """,
@@ -1654,6 +2083,7 @@ class SQLiteVNextStore:
         domains: list[str] | None,
         sensitivity_allowed: list[str],
         excluded_candidate_kind: str,
+        projects: Sequence[str] | None = None,
     ) -> int:
         """Return the authoritative total behind the bounded roll-up read."""
         if not sensitivity_allowed:
@@ -1666,6 +2096,8 @@ class SQLiteVNextStore:
             params.extend(domains)
         sensitivity_placeholders = ", ".join("?" for _value in sensitivity_allowed)
         params.extend(sensitivity_allowed)
+        project_sql, project_params = self._project_clause(tuple(normalize_project_scope(projects or ())))
+        params.extend(project_params)
         row = self._fetch_one(
             "count rollup input memories",
             f"""
@@ -1677,6 +2109,7 @@ class SQLiteVNextStore:
                   AND COALESCE(json_extract(metadata_json, '$.candidate_kind'), '') <> ?
                   {domains_sql}
                   AND COALESCE(sensitivity, 'unknown') IN ({sensitivity_placeholders})
+                  {project_sql}
                 """,
             tuple(params),
         )
@@ -1690,6 +2123,7 @@ class SQLiteVNextStore:
         sensitivity_allowed: list[str],
         candidate_kind: str,
         limit: int,
+        projects: Sequence[str] | None = None,
     ) -> list[VNextRow]:
         """Return at most one newest pending candidate per requested digest."""
         unique_digests = tuple(sorted(set(rollup_digests)))
@@ -1707,6 +2141,8 @@ class SQLiteVNextStore:
             params.extend(domains)
         sensitivity_placeholders = ", ".join("?" for _value in sensitivity_allowed)
         params.extend(sensitivity_allowed)
+        project_sql, project_params = self._project_clause(tuple(normalize_project_scope(projects or ())))
+        params.extend(project_params)
         params.append(bounded_limit)
         return self._fetch_all(
             f"""
@@ -1724,6 +2160,7 @@ class SQLiteVNextStore:
                     AND json_extract(metadata_json, '$.rollup_digest') IN ({digest_placeholders})
                     {domains_sql}
                     AND COALESCE(sensitivity, 'unknown') IN ({sensitivity_placeholders})
+                    {project_sql}
                 )
                 SELECT {", ".join(MEMORY_COLUMNS)}
                 FROM ranked_rollups
@@ -1742,6 +2179,7 @@ class SQLiteVNextStore:
         sensitivity_allowed: list[str],
         candidate_kind: str,
         limit: int,
+        projects: Sequence[str] | None = None,
     ) -> list[VNextRow]:
         """Return at most one active/accepted card per requested roll-up key."""
         unique_keys = tuple(sorted(set(rollup_keys)))
@@ -1759,6 +2197,8 @@ class SQLiteVNextStore:
             params.extend(domains)
         sensitivity_placeholders = ", ".join("?" for _value in sensitivity_allowed)
         params.extend(sensitivity_allowed)
+        project_sql, project_params = self._project_clause(tuple(normalize_project_scope(projects or ())))
+        params.extend(project_params)
         params.append(bounded_limit)
         return self._fetch_all(
             f"""
@@ -1780,6 +2220,7 @@ class SQLiteVNextStore:
                     AND json_extract(metadata_json, '$.rollup_key') IN ({key_placeholders})
                     {domains_sql}
                     AND COALESCE(sensitivity, 'unknown') IN ({sensitivity_placeholders})
+                    {project_sql}
                 )
                 SELECT {", ".join(MEMORY_COLUMNS)}
                 FROM ranked_rollups
@@ -2071,13 +2512,8 @@ class SQLiteVNextStore:
         signature_params: list[object] = []
         if embedding_provider is not None or embedding_model is not None:
             if not embedding_provider or not embedding_model:
-                raise ContinuityStoreInvariantError(
-                    "embedding_provider and embedding_model must be supplied together"
-                )
-            signature_sql = (
-                " AND json_extract(metadata_json, ?) = ?"
-                " AND json_extract(metadata_json, ?) = ?"
-            )
+                raise ContinuityStoreInvariantError("embedding_provider and embedding_model must be supplied together")
+            signature_sql = " AND json_extract(metadata_json, ?) = ? AND json_extract(metadata_json, ?) = ?"
             signature_params.extend(
                 (
                     f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.provider",
@@ -2275,6 +2711,7 @@ class SQLiteVNextStore:
                     WHERE id = ?
                       AND user_id = ?
                       AND deleted_at IS NULL
+                      AND alice_embedding_content_sha256(title, canonical_text, summary) = ?
                     """,
                 (
                     blob,
@@ -2282,6 +2719,7 @@ class SQLiteVNextStore:
                     json.dumps(signature_metadata, sort_keys=True, separators=(",", ":")),
                     str(memory_id),
                     self.user_id,
+                    content_sha256,
                 ),
             )
         else:
@@ -2352,9 +2790,7 @@ class SQLiteVNextStore:
         signature_params: list[object] = []
         if embedding_provider is not None or embedding_model is not None:
             if not embedding_provider or not embedding_model:
-                raise ContinuityStoreInvariantError(
-                    "embedding_provider and embedding_model must be supplied together"
-                )
+                raise ContinuityStoreInvariantError("embedding_provider and embedding_model must be supplied together")
             signature_sql = (
                 " OR json_extract(metadata_json, ?) IS NOT ?"
                 " OR json_extract(metadata_json, ?) IS NOT ?"
@@ -3126,9 +3562,7 @@ class SQLiteVNextStore:
     def update_entity(self, *, entity_id: str, patch: JsonObject, actor_type: str = "system") -> VNextRow:
         immutable = sorted(set(patch) & ENTITY_IMMUTABLE_PATCH_FIELDS)
         if immutable:
-            raise ContinuityStoreInvariantError(
-                f"update_entity cannot modify immutable fields: {', '.join(immutable)}"
-            )
+            raise ContinuityStoreInvariantError(f"update_entity cannot modify immutable fields: {', '.join(immutable)}")
         cursor = self._execute(
             """
                 UPDATE vnext_entities
@@ -3246,9 +3680,7 @@ class SQLiteVNextStore:
         """
         entity = self.get_entity(entity_id)
         if entity is None:
-            raise ContinuityStoreInvariantError(
-                "record_relationship_change requires an existing entity"
-            )
+            raise ContinuityStoreInvariantError("record_relationship_change requires an existing entity")
         current_metadata = cast(dict[str, object], entity.get("metadata_json") or {})
         before_value = current_metadata.get("relationship_type")
         before = None if before_value is None else str(before_value)
@@ -3388,6 +3820,44 @@ class SQLiteVNextStore:
         )
         return row
 
+    def upsert_open_loop_by_automation_digest(
+        self,
+        loop: JsonObject,
+        *,
+        digest: str,
+        actor_type: str = "system",
+    ) -> VNextRow:
+        normalized_digest = str(digest).strip()
+        if normalized_digest == "":
+            raise ValueError("digest must not be empty")
+        existing = self.find_open_loop_by_automation_digest(
+            digest=normalized_digest,
+            project_id=str(loop["project_id"]) if loop.get("project_id") is not None else None,
+            person_id=str(loop["person_id"]) if loop.get("person_id") is not None else None,
+        )
+        if existing is not None:
+            return existing
+        metadata_value = loop.get("metadata_json")
+        metadata: JsonObject = dict(metadata_value) if isinstance(metadata_value, dict) else {}
+        metadata.update(
+            {
+                "automation_digest": normalized_digest,
+                "idempotency_digest": normalized_digest,
+            }
+        )
+        record: JsonObject = {**loop, "metadata_json": metadata}
+        try:
+            return self.create_open_loop(record, actor_type=actor_type)
+        except sqlite3.IntegrityError:
+            existing = self.find_open_loop_by_automation_digest(
+                digest=normalized_digest,
+                project_id=str(loop["project_id"]) if loop.get("project_id") is not None else None,
+                person_id=str(loop["person_id"]) if loop.get("person_id") is not None else None,
+            )
+            if existing is None:
+                raise
+            return existing
+
     def get_open_loop(self, loop_id: str) -> VNextRow | None:
         return self._fetch_optional_one(
             f"""
@@ -3399,6 +3869,67 @@ class SQLiteVNextStore:
             (str(loop_id), self.user_id),
         )
 
+    def find_open_loop_by_automation_digest(
+        self,
+        *,
+        digest: str,
+        project_id: str | None = None,
+        person_id: str | None = None,
+    ) -> VNextRow | None:
+        normalized_digest = str(digest).strip()
+        if not normalized_digest:
+            return None
+        return self._fetch_optional_one(
+            f"""
+                SELECT {", ".join(OPEN_LOOP_COLUMNS)}
+                FROM open_loops
+                WHERE user_id = ?
+                  AND COALESCE(
+                    json_extract(metadata_json, '$.idempotency_digest'),
+                    json_extract(metadata_json, '$.automation_digest')
+                  ) = ?
+                  AND (? IS NULL OR project_id = ?)
+                  AND (? IS NULL OR person_id = ?)
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+            (
+                self.user_id,
+                normalized_digest,
+                project_id,
+                project_id,
+                person_id,
+                person_id,
+            ),
+        )
+
+    def list_open_loops_referencing_source(self, *, source_id: str, limit: int = 500) -> list[VNextRow]:
+        """Bound open loops related to one source before LIMIT."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(OPEN_LOOP_COLUMNS)}
+                FROM open_loops
+                WHERE user_id = ?
+                  AND (
+                    source_id = ?
+                    OR EXISTS (
+                      SELECT 1 FROM json_tree(open_loops.metadata_json) AS ref
+                      WHERE ref.key IN (
+                        'source_id', 'source_ids', 'source_ref', 'source_refs',
+                        'source_references', 'selected_source_ids'
+                      )
+                        AND CAST(ref.value AS TEXT) IN (?, ?)
+                    )
+                  )
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT ?
+                """,
+            (self.user_id, source_id, source_id, f"source:{source_id}", limit),
+        )
+
     def list_open_loops(
         self,
         *,
@@ -3408,7 +3939,7 @@ class SQLiteVNextStore:
         project_id: str | None = None,
         person_id: str | None = None,
         limit: int = 8,
-        scope_projects: tuple[str, ...] = (),
+        scope_projects: Sequence[str] | None = None,
         scope_people: tuple[str, ...] = (),
         scope_window_start: datetime | None = None,
         scope_window_end: datetime | None = None,
@@ -3417,7 +3948,7 @@ class SQLiteVNextStore:
         sensitivity_sql, sensitivity_params = self._sensitivity_clause(sensitivity_allowed)
         scope_sql, scope_params = self._metadata_scope_clause(
             metadata_expression="metadata_json",
-            scope_projects=scope_projects,
+            scope_projects=tuple(normalize_project_scope(scope_projects or ())),
             scope_people=scope_people,
             direct_project_expression="project_id",
             direct_person_expression="person_id",
@@ -3671,6 +4202,40 @@ class SQLiteVNextStore:
                 LIMIT ?
                 """,
             tuple(params),
+        )
+
+    def list_agent_policy_artifacts(
+        self,
+        *,
+        agent_id: str | None = None,
+        limit: int = 200,
+    ) -> list[VNextRow]:
+        """SQLite has no generated-artifact table in the local core."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        return []
+
+    def list_agent_policy_memories(
+        self,
+        *,
+        agent_id: str | None = None,
+        limit: int = 200,
+    ) -> list[VNextRow]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM memories
+                WHERE user_id = ?
+                  AND deleted_at IS NULL
+                  AND json_extract(metadata_json, '$.agent_id') IS NOT NULL
+                  AND (? IS NULL OR json_extract(metadata_json, '$.agent_id') = ?)
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT ?
+                """,
+            (self.user_id, agent_id, agent_id, limit),
         )
 
     def create_agent_api_key(self, key: JsonObject, *, actor_type: str = "user") -> VNextRow:

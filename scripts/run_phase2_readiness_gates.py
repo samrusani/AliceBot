@@ -49,9 +49,9 @@ if str(ROOT_DIR) not in sys.path:
 if str(API_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(API_SRC_DIR))
 
-import apps.api.src.alicebot_api.main as main_module
+import alicebot_api.main as main_module
 import alicebot_api.response_generation as response_generation_module
-from apps.api.src.alicebot_api.config import Settings
+from alicebot_api.config import Settings
 from alicebot_api.contracts import ModelInvocationResponse, ModelUsagePayload
 from alicebot_api.db import user_connection
 from alicebot_api.migrations import make_alembic_config
@@ -382,6 +382,7 @@ def _invoke_request(
     *,
     query_params: dict[str, str] | None = None,
     payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     messages: list[dict[str, object]] = []
     encoded_body = b"" if payload is None else json.dumps(payload).encode()
@@ -408,7 +409,10 @@ def _invoke_request(
         "path": path,
         "raw_path": path.encode(),
         "query_string": query_string,
-        "headers": [(b"content-type", b"application/json")],
+        "headers": [
+            (key.encode("ascii"), value.encode("ascii"))
+            for key, value in {"content-type": "application/json", **(headers or {})}.items()
+        ],
         "client": ("testclient", 50000),
         "server": ("testserver", 80),
         "root_path": "",
@@ -614,6 +618,7 @@ def _run_response_probes(
                     "thread_id": str(thread_id),
                     "message": f"Readiness probe call {index + 1}",
                 },
+                headers={"idempotency-key": f"readiness-{user_id}-{thread_id}-{index}"},
             )
             elapsed = time.perf_counter() - started
             duration = elapsed if forced_duration_seconds is None else forced_duration_seconds

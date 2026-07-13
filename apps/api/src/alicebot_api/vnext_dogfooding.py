@@ -13,7 +13,13 @@ from alicebot_api.vnext_repositories import JsonObject
 class VNextDogfoodingStore(VNextConnectorStore, Protocol):
     def append_event(self, event: JsonObject) -> JsonObject: ...
 
-    def list_events(self, *, target_type: str | None = None, target_id: str | None = None) -> list[JsonObject]: ...
+    def list_events(
+        self,
+        *,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[JsonObject]: ...
 
     def list_sources(
         self,
@@ -23,7 +29,19 @@ class VNextDogfoodingStore(VNextConnectorStore, Protocol):
         limit: int = 20,
     ) -> list[JsonObject]: ...
 
-    def list_memories(self, *, status: str | None = None) -> list[JsonObject]: ...
+    def list_memories(
+        self,
+        *,
+        status: str | None = None,
+        limit: int | None = None,
+    ) -> list[JsonObject]: ...
+
+    def count_memories_by_status(
+        self,
+        *,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+    ) -> dict[str, int]: ...
 
     def list_artifacts(
         self,
@@ -149,12 +167,23 @@ class VNextDogfoodingService:
 
     def dashboard(self) -> JsonObject:
         sources = self.store.list_sources(limit=500)
-        memories = self.store.list_memories(status=None)
-        candidate_memories = [memory for memory in memories if memory.get("status") == "candidate"]
+        try:
+            memories = self.store.list_memories(status=None, limit=500)
+        except TypeError:  # Compatibility for external/test stores on the old protocol.
+            memories = self.store.list_memories(status=None)[:500]
+        count_memories_by_status = getattr(self.store, "count_memories_by_status", None)
+        memory_status_counts = (
+            count_memories_by_status()
+            if callable(count_memories_by_status)
+            else _status_counts(memories)
+        )
         artifacts = self.store.list_artifacts(limit=500)
         ratings = self.store.list_artifact_quality_ratings(limit=500)
         open_loops = self.store.list_open_loops(status=None, limit=500)
-        events = self.store.list_events()
+        try:
+            events = self.store.list_events(limit=5_000)
+        except TypeError:  # Compatibility for external/test stores on the old protocol.
+            events = self.store.list_events()[:5_000]
         scheduler_runs = self.store.list_scheduler_runs(limit=20)
         now = datetime.now(UTC)
         today_cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -187,6 +216,17 @@ class VNextDogfoodingService:
         captures_this_week = _count_since(sources, week_cutoff)
 
         return {
+            "sample_scope": {
+                "sources": {"limit": 500, "returned_count": len(sources)},
+                "memories": {
+                    "limit": 500,
+                    "returned_count": len(memories),
+                    "total_count": sum(memory_status_counts.values()),
+                },
+                "artifacts": {"limit": 500, "returned_count": len(artifacts)},
+                "open_loops": {"limit": 500, "returned_count": len(open_loops)},
+                "events": {"limit": 5_000, "returned_count": len(events)},
+            },
             "captures_by_connector": [
                 {"connector_name": name, "count": count}
                 for name, count in sorted(connector_counts.items())
@@ -195,11 +235,11 @@ class VNextDogfoodingService:
             "captures_this_week": captures_this_week,
             "capture_trend_by_day": _trend_by_day(sources),
             "capture_trend_by_week": [{"period": "last_7_days", "count": captures_this_week}],
-            "candidate_memories_created": len(candidate_memories),
-            "memory_status_counts": _status_counts(memories),
+            "candidate_memories_created": memory_status_counts.get("candidate", 0),
+            "memory_status_counts": memory_status_counts,
             "candidate_memory_review_rate": round(
-                len([memory for memory in memories if memory.get("status") in {"accepted", "rejected", "active"}])
-                / max(1, len(memories)),
+                sum(memory_status_counts.get(status, 0) for status in {"accepted", "rejected", "active"})
+                / max(1, sum(memory_status_counts.values())),
                 3,
             ),
             "generated_artifacts_created": len(artifacts),

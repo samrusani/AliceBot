@@ -36,6 +36,7 @@ from alicebot_api.contracts import (
 )
 from alicebot_api.execution_budgets import evaluate_execution_budget
 from alicebot_api.store import ContinuityStore, JsonObject, JsonValue, TaskRunRow, ToolExecutionRow
+from alicebot_api.trace_events import append_trace_events as _append_trace_events
 from alicebot_api.tasks import (
     validate_linked_task_step_for_approval,
     sync_task_step_with_execution,
@@ -68,21 +69,6 @@ class ProxyHandlerSpec:
     handler: ProxyHandler
     side_effect_capable: bool
     rollout_mode: str
-
-
-def _append_trace_events(
-    store: ContinuityStore,
-    *,
-    trace_id: UUID,
-    trace_events: list[tuple[str, dict[str, object]]],
-) -> None:
-    for sequence_no, (kind, payload) in enumerate(trace_events, start=1):
-        store.append_trace_event(
-            trace_id=trace_id,
-            sequence_no=sequence_no,
-            kind=kind,
-            payload=cast(JsonObject, payload),
-        )
 
 
 def _proxy_echo_handler(

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+import inspect
 import re
-from typing import Protocol
+from typing import Callable, Protocol, Sequence, cast
 
+from alicebot_api.vnext_agent_control import resource_project_scope
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_model_intelligence import (
     ModelBackedRequest,
@@ -13,9 +15,11 @@ from alicebot_api.vnext_model_intelligence import (
     resolve_model_route,
 )
 from alicebot_api.vnext_repositories import JsonObject
+from alicebot_api.vnext_workflow_idempotency import logical_workflow_digest
 
 
 DEFAULT_CONNECTION_LIMIT = 8
+MAX_LEGACY_PROJECT_SCOPE_ROWS = 16_384
 DEFAULT_SENSITIVITY_ALLOWED = ("public", "internal", "private", "unknown")
 CONNECTION_TO_EDGE_TYPE = {
     "same_problem": "same_problem",
@@ -69,6 +73,32 @@ class VNextConnectionStore(Protocol):
 
     def create_edge(self, edge: JsonObject) -> JsonObject: ...
 
+    def find_artifact_by_workflow_digest(
+        self,
+        *,
+        artifact_type: str,
+        workflow: str,
+        digest: str,
+        scope_projects: Sequence[str] | None = None,
+    ) -> JsonObject | None: ...
+
+    def upsert_artifact_by_workflow_digest(
+        self,
+        artifact: JsonObject,
+        *,
+        workflow: str,
+        digest: str,
+        actor_type: str = "system",
+    ) -> JsonObject: ...
+
+    def upsert_edge_by_idempotency_digest(
+        self,
+        edge: JsonObject,
+        *,
+        digest: str,
+        actor_type: str = "system",
+    ) -> JsonObject: ...
+
     def update_edge_status(self, *, edge_id: str, status: str) -> JsonObject: ...
 
     def list_edges(self, *, from_id: str | None = None, to_id: str | None = None) -> list[JsonObject]: ...
@@ -96,6 +126,7 @@ class VNextConnectionStore(Protocol):
 class ConnectionFinderRequest:
     query: str = ""
     domains: tuple[str, ...] = ()
+    projects: tuple[str, ...] = ()
     sensitivity_allowed: tuple[str, ...] = DEFAULT_SENSITIVITY_ALLOWED
     max_connections: int = DEFAULT_CONNECTION_LIMIT
     auto_accept_threshold: float | None = None
@@ -151,6 +182,41 @@ def _validate_request(request: ConnectionFinderRequest) -> None:
         request.auto_accept_threshold < 0.0 or request.auto_accept_threshold > 1.0
     ):
         raise VNextConnectionValidationError("auto_accept_threshold must be between 0.0 and 1.0")
+
+
+def _supports_parameter(method: object, name: str) -> bool:
+    if not callable(method):
+        return False
+    try:
+        return name in inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _matches_projects(row: JsonObject, projects: tuple[str, ...]) -> bool:
+    requested = {project.strip().casefold() for project in projects if project.strip()}
+    if not requested:
+        return True
+    return bool(requested & {project.strip().casefold() for project in resource_project_scope(row) if project.strip()})
+
+
+def _project_scoped_search(
+    method: Callable[..., list[JsonObject]],
+    *,
+    kwargs: dict[str, object],
+    projects: tuple[str, ...],
+    project_parameter: str,
+    limit: int,
+) -> list[JsonObject]:
+    if not projects:
+        return list(method(limit=limit, **kwargs))
+    if _supports_parameter(method, project_parameter):
+        rows = method(limit=limit, **kwargs, **{project_parameter: projects})
+        return [row for row in rows if _matches_projects(row, projects)]
+    rows = list(method(limit=MAX_LEGACY_PROJECT_SCOPE_ROWS + 1, **kwargs))
+    if len(rows) > MAX_LEGACY_PROJECT_SCOPE_ROWS:
+        raise VNextConnectionValidationError("legacy connection store could not prove complete project scope")
+    return [row for row in rows if _matches_projects(row, projects)][:limit]
 
 
 def _record_text(row: JsonObject) -> str:
@@ -279,10 +345,7 @@ def _find_candidates(
                     source=source,
                     memory=memory,
                     connection_type=connection_type,
-                    explanation=(
-                        f"{_title(source)} and {_title(memory)} share "
-                        f"{', '.join(sorted(shared_terms)[:4])}."
-                    ),
+                    explanation=(f"{_title(source)} and {_title(memory)} share {', '.join(sorted(shared_terms)[:4])}."),
                     why_it_matters=(
                         "This may help Alice connect new evidence to older context without flattening them into one memory."
                     ),
@@ -291,7 +354,13 @@ def _find_candidates(
                     provenance=_provenance(source, memory),
                 )
             )
-    candidates.sort(key=lambda candidate: (-candidate.confidence, candidate.to_record()["source_item"], candidate.to_record()["connected_item"]))
+    candidates.sort(
+        key=lambda candidate: (
+            -candidate.confidence,
+            candidate.to_record()["source_item"],
+            candidate.to_record()["connected_item"],
+        )
+    )
     return candidates[:limit]
 
 
@@ -335,60 +404,135 @@ class VNextConnectionService:
         _validate_request(request)
         domains = list(request.domains) if request.domains else None
         sensitivity_allowed = list(request.sensitivity_allowed)
-        sources = self.store.search_sources(
-            query=request.query,
-            domains=domains,
-            sensitivity_allowed=sensitivity_allowed,
-            limit=max(request.max_connections * 2, request.max_connections),
+        input_limit = max(request.max_connections * 2, request.max_connections)
+        sources = _project_scoped_search(
+            self.store.search_sources,
+            kwargs={
+                "query": request.query,
+                "domains": domains,
+                "sensitivity_allowed": sensitivity_allowed,
+            },
+            projects=request.projects,
+            project_parameter="scope_projects",
+            limit=input_limit,
         )
-        memories = self.store.search_memories(
-            query=request.query,
-            domains=domains,
-            sensitivity_allowed=sensitivity_allowed,
-            limit=max(request.max_connections * 2, request.max_connections),
+        memories = _project_scoped_search(
+            self.store.search_memories,
+            kwargs={
+                "query": request.query,
+                "domains": domains,
+                "sensitivity_allowed": sensitivity_allowed,
+            },
+            projects=request.projects,
+            project_parameter="projects",
+            limit=input_limit,
         )
         candidates = _find_candidates(
             sources=sources,
             memories=memories,
             limit=request.max_connections,
         )
+        workflow_digest = logical_workflow_digest(
+            {
+                "workflow": "connection_report",
+                "scope": {
+                    "domains": sorted(request.domains),
+                    "projects": sorted(request.projects),
+                    "sensitivity_allowed": sorted(request.sensitivity_allowed),
+                },
+                "request": {
+                    "query": request.query,
+                    "max_connections": request.max_connections,
+                    "auto_accept_threshold": request.auto_accept_threshold,
+                    "generated_by": request.generated_by,
+                    "actor_id": request.actor_id,
+                    "agent_identity": request.agent_identity,
+                    "policy_decision": request.policy_decision,
+                    "metadata_json": request.metadata_json,
+                    "generation_mode": request.generation_mode,
+                    "model_route_mode": request.model_route_mode,
+                    "model_provider": request.model_provider,
+                    "model": request.model,
+                    "model_temperature": request.model_temperature,
+                    "allow_cloud_private": request.allow_cloud_private,
+                    "brain_charter": _brain_charter(self.store),
+                },
+                "inputs": {"sources": sources, "memories": memories},
+                "candidates": [candidate.to_record() for candidate in candidates],
+            }
+        )
+        find_existing = getattr(self.store, "find_artifact_by_workflow_digest", None)
+        if callable(find_existing):
+            existing = cast(Callable[..., JsonObject | None], find_existing)(
+                artifact_type="connection_report",
+                workflow="connection_finder",
+                digest=workflow_digest,
+                scope_projects=request.projects or None,
+            )
+            if existing is not None:
+                return existing
         edge_ids: list[str] = []
         connection_records: list[JsonObject] = []
         for candidate in candidates:
-            status = "accepted" if (
-                request.auto_accept_threshold is not None and candidate.confidence >= request.auto_accept_threshold
-            ) else "candidate"
+            status = (
+                "accepted"
+                if (request.auto_accept_threshold is not None and candidate.confidence >= request.auto_accept_threshold)
+                else "candidate"
+            )
             # Event time: when the connected observation happened (the
             # source's own timestamp), not when this edge was written.
             # valid_from starts the validity interval at the same instant.
             observed_at, observed_at_source = _observed_at(candidate.source)
-            edge = self.store.create_edge(
+            connection_record = candidate.to_record()
+            edge_digest = logical_workflow_digest(
                 {
+                    "workflow_digest": workflow_digest,
+                    "edge_type": CONNECTION_TO_EDGE_TYPE[candidate.connection_type],
                     "from_type": "source",
                     "from_id": str(candidate.source.get("id")),
                     "to_type": "memory",
                     "to_id": str(candidate.memory.get("id")),
-                    "edge_type": CONNECTION_TO_EDGE_TYPE[candidate.connection_type],
-                    "confidence": candidate.confidence,
-                    "explanation": candidate.explanation,
-                    "created_by": "vnext_connection_finder",
-                    "observed_at": observed_at,
-                    "valid_from": observed_at,
-                    "metadata_json": {
-                        "status": status,
-                        "connection": candidate.to_record(),
-                        "candidate": status == "candidate",
-                        "observed_at_source": observed_at_source,
-                        "generated_by": request.generated_by,
-                        "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
-                        "trace_id": request.trace_id,
-                        "policy_decision": request.policy_decision,
-                    },
+                    "connection": connection_record,
                 }
             )
+            edge_payload: JsonObject = {
+                "from_type": "source",
+                "from_id": str(candidate.source.get("id")),
+                "to_type": "memory",
+                "to_id": str(candidate.memory.get("id")),
+                "edge_type": CONNECTION_TO_EDGE_TYPE[candidate.connection_type],
+                "confidence": candidate.confidence,
+                "explanation": candidate.explanation,
+                "created_by": "vnext_connection_finder",
+                "observed_at": observed_at,
+                "valid_from": observed_at,
+                "metadata_json": {
+                    "status": status,
+                    "connection": connection_record,
+                    "candidate": status == "candidate",
+                    "observed_at_source": observed_at_source,
+                    "workflow": "connection_finder",
+                    "workflow_digest": workflow_digest,
+                    "edge_digest": edge_digest,
+                    "generated_by": request.generated_by,
+                    "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
+                    "trace_id": request.trace_id,
+                    "policy_decision": request.policy_decision,
+                    "project_scope": list(request.projects),
+                },
+            }
+            upsert_edge = getattr(self.store, "upsert_edge_by_idempotency_digest", None)
+            if callable(upsert_edge):
+                edge = cast(Callable[..., JsonObject], upsert_edge)(
+                    edge_payload,
+                    digest=edge_digest,
+                    actor_type=request.generated_by,
+                )
+            else:
+                edge = self.store.create_edge(edge_payload)
             edge_id = str(edge["id"])
             edge_ids.append(edge_id)
-            connection_records.append(candidate.to_record())
+            connection_records.append(connection_record)
             append_event(
                 self.store,
                 event_type="connection.candidate_edge_logged",
@@ -428,8 +572,10 @@ class VNextConnectionService:
             "trace_id": request.trace_id,
             "policy_decision": request.policy_decision,
             "review_status": "needs_review",
+            "project_scope": list(request.projects),
             "generation_mode": request.generation_mode,
             **request.metadata_json,
+            "workflow_digest": workflow_digest,
         }
         prompt_hash: str | None = None
         model_info_json: JsonObject | None = None
@@ -466,20 +612,28 @@ class VNextConnectionService:
             prompt_hash = model_artifact.prompt_hash
             model_info_json = model_artifact.model_info
             metadata = {**metadata, **model_artifact.metadata}
-        artifact = self.store.create_artifact(
-            {
-                "artifact_type": "connection_report",
-                "title": "Connection Report",
-                "content_markdown": content,
-                "status": "needs_review",
-                "domain": request.domains[0] if len(request.domains) == 1 else "unknown",
-                "sensitivity": self._highest_sensitivity([*sources, *memories]),
-                "generated_by": request.generated_by if request.generated_by != "system" else "vnext_connection_finder",
-                "prompt_hash": prompt_hash,
-                "model_info_json": model_info_json,
-                "metadata_json": metadata,
-            }
-        )
+        artifact_payload: JsonObject = {
+            "artifact_type": "connection_report",
+            "title": "Connection Report",
+            "content_markdown": content,
+            "status": "needs_review",
+            "domain": request.domains[0] if len(request.domains) == 1 else "unknown",
+            "sensitivity": self._highest_sensitivity([*sources, *memories]),
+            "generated_by": request.generated_by if request.generated_by != "system" else "vnext_connection_finder",
+            "prompt_hash": prompt_hash,
+            "model_info_json": model_info_json,
+            "metadata_json": metadata,
+        }
+        upsert_artifact = getattr(self.store, "upsert_artifact_by_workflow_digest", None)
+        if callable(upsert_artifact):
+            artifact = cast(Callable[..., JsonObject], upsert_artifact)(
+                artifact_payload,
+                workflow="connection_finder",
+                digest=workflow_digest,
+                actor_type=request.generated_by,
+            )
+        else:
+            artifact = self.store.create_artifact(artifact_payload)
         append_event(
             self.store,
             event_type="artifact.generated",

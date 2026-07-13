@@ -130,7 +130,7 @@ def test_bypass_context_setters_write_expected_flags(
     ]
 
 
-def test_user_connection_sets_current_user_inside_transaction(monkeypatch) -> None:
+def test_direct_user_connection_sets_current_user_inside_transaction(monkeypatch) -> None:
     connection = RecordingConnection()
     user_id = uuid4()
     captured: dict[str, object] = {}
@@ -147,7 +147,7 @@ def test_user_connection_sets_current_user_inside_transaction(monkeypatch) -> No
     monkeypatch.setattr(db.psycopg, "connect", fake_connect)
     monkeypatch.setattr(db, "set_current_user", fake_set_current_user)
 
-    with db.user_connection("postgresql://example", user_id) as conn:
+    with db.direct_user_connection("postgresql://example", user_id) as conn:
         assert conn is connection
         assert connection.transaction_context.entered is True
         assert connection.transaction_context.exited is False
@@ -156,3 +156,44 @@ def test_user_connection_sets_current_user_inside_transaction(monkeypatch) -> No
     assert captured["kwargs"] == {"row_factory": db.dict_row}
     assert set_current_user_calls == [(connection, user_id)]
     assert connection.transaction_context.exited is True
+
+
+def test_pooled_user_connection_resets_tenant_context_inside_borrow_transaction(monkeypatch) -> None:
+    connection = RecordingConnection()
+    user_id = uuid4()
+    set_current_user_calls: list[tuple[RecordingConnection, object]] = []
+
+    class FakePool:
+        def connection(self) -> RecordingConnection:
+            return connection
+
+    def fake_set_current_user(conn: RecordingConnection, current_user_id: object) -> None:
+        set_current_user_calls.append((conn, current_user_id))
+
+    monkeypatch.setattr(db, "set_current_user", fake_set_current_user)
+
+    with db.pooled_user_connection(FakePool(), user_id) as conn:
+        assert conn is connection
+        assert connection.transaction_context.entered is True
+        assert connection.transaction_context.exited is False
+
+    assert set_current_user_calls == [(connection, user_id)]
+    assert connection.transaction_context.exited is True
+
+
+def test_user_connection_uses_configured_lazy_pool(monkeypatch) -> None:
+    connection = RecordingConnection()
+    user_id = uuid4()
+
+    class FakePool:
+        def connection(self) -> RecordingConnection:
+            return connection
+
+    monkeypatch.setattr(db, "_get_connection_pool", lambda _url: FakePool())
+
+    with db.user_connection("postgresql://pooled", user_id) as conn:
+        assert conn is connection
+
+    assert connection.cursor_instance.executed == [
+        ("SELECT set_config('app.current_user_id', %s, true)", (str(user_id),)),
+    ]

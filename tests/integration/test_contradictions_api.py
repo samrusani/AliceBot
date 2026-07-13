@@ -7,10 +7,10 @@ from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 import anyio
-import apps.api.src.alicebot_api.main as main_module
+import alicebot_api.main as main_module
 import psycopg
 
-from apps.api.src.alicebot_api.config import Settings
+from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
 

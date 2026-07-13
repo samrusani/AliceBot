@@ -10,7 +10,7 @@ import psycopg
 from psycopg import sql
 import pytest
 
-import apps.api.src.alicebot_api.main as main_module
+import alicebot_api.main as main_module
 from alicebot_api.migrations import make_alembic_config
 
 

@@ -170,7 +170,7 @@ alicebot vnext demo reset
 
 ## Optional: Local Capture Connectors
 
-Local, review-only capture paths (no OAuth, no account syncing):
+Local, review-only capture paths that need no managed OAuth or account syncing:
 
 ```bash
 # scan a local Markdown/text folder

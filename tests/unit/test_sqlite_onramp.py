@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import tracemalloc
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -152,9 +153,7 @@ def test_write_tools_work_on_fresh_sqlite_db_without_onramp_bootstrap(tmp_path, 
     monkeypatch.delenv(mcp_tools_module.MCP_LEGACY_TOOLS_ENV, raising=False)
     monkeypatch.delenv(mcp_tools_module.AGENT_API_KEY_ENV, raising=False)
 
-    context = MCPRuntimeContext(
-        database_url=sqlite_url_for_path(tmp_path / "fresh.db"), user_id=USER_ID
-    )
+    context = MCPRuntimeContext(database_url=sqlite_url_for_path(tmp_path / "fresh.db"), user_id=USER_ID)
 
     captured = call_mcp_tool(
         context,
@@ -167,9 +166,7 @@ def test_write_tools_work_on_fresh_sqlite_db_without_onramp_bootstrap(tmp_path, 
     # The retrieval trace labels the full-text stage honestly for SQLite
     # (with or without the OR-fallback suffix; the captured text is still a
     # candidate, so the strict pass can legitimately come up empty).
-    recall = call_mcp_tool(
-        context, name="alice_recall", arguments={"query": "bootstrap-free launch", "debug": True}
-    )
+    recall = call_mcp_tool(context, name="alice_recall", arguments={"query": "bootstrap-free launch", "debug": True})
     assert recall["retrieval"]["stages"]["fts"]["source"].startswith("sqlite_fts")
 
 
@@ -186,9 +183,7 @@ def test_capture_review_approve_recall_explain_flow(sqlite_context) -> None:
     assert item["provenance_count"] == 1
 
     # Candidates are not searchable until promoted.
-    recall_before = call_mcp_tool(
-        sqlite_context, name="alice_recall", arguments={"query": "SQLite on-ramp"}
-    )
+    recall_before = call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "SQLite on-ramp"})
     assert recall_before["count"] == 0
 
     corrected = call_mcp_tool(
@@ -376,9 +371,7 @@ def test_memory_commit_recall_undo_and_forget_flow(sqlite_context) -> None:
     assert committed["memory"]["status"] == "active"
     assert committed["memory"]["memory_type"] == "preference"
 
-    recall = call_mcp_tool(
-        sqlite_context, name="alice_recall", arguments={"query": "espresso before standup"}
-    )
+    recall = call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "espresso before standup"})
     assert [row["id"] for row in recall["results"]] == [memory_id]
 
     typed = call_mcp_tool(
@@ -407,9 +400,7 @@ def test_memory_commit_recall_undo_and_forget_flow(sqlite_context) -> None:
     assert undone["status"] == "undone"
     assert undone["memory"]["status"] == "superseded"
 
-    gone = call_mcp_tool(
-        sqlite_context, name="alice_recall", arguments={"query": "espresso before standup"}
-    )
+    gone = call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "espresso before standup"})
     assert gone["count"] == 0
 
     second = call_mcp_tool(
@@ -436,15 +427,8 @@ def test_memory_commit_recall_undo_and_forget_flow(sqlite_context) -> None:
 
     # Forget is soft: the memory leaves recall, but revisions and the event
     # log keep the full history, including the original text.
-    assert (
-        call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "forgettable retro"})[
-            "count"
-        ]
-        == 0
-    )
-    forget_audit = call_mcp_tool(
-        sqlite_context, name="alice_explain", arguments={"memory_id": second_id}
-    )
+    assert call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "forgettable retro"})["count"] == 0
+    forget_audit = call_mcp_tool(sqlite_context, name="alice_explain", arguments={"memory_id": second_id})
     assert [revision["revision_type"] for revision in forget_audit["revisions"]] == [
         "created",
         "archived",
@@ -536,9 +520,7 @@ def test_memory_manage_expire_hides_from_recall_and_unexpire_restores(sqlite_con
         title="Visa window",
         text="The visa filing window closes at the end of June.",
     )
-    assert (
-        call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "visa filing window"})["count"] == 1
-    )
+    assert call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "visa filing window"})["count"] == 1
 
     # Expiry needs a reason: it is an audited validity decision.
     with pytest.raises(MCPToolError, match="reason"):
@@ -558,9 +540,7 @@ def test_memory_manage_expire_hides_from_recall_and_unexpire_restores(sqlite_con
     assert expired["memory"]["status"] == "active"
     assert expired["valid_to"]
 
-    assert (
-        call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "visa filing window"})["count"] == 0
-    )
+    assert call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "visa filing window"})["count"] == 0
     audit = call_mcp_tool(sqlite_context, name="alice_explain", arguments={"memory_id": memory_id})
     assert any(event["event_type"] == "agent.memory_expired" for event in audit["events"])
 
@@ -629,7 +609,10 @@ def test_memory_manage_redact_expunges_content_and_keeps_audit_skeleton(sqlite_c
         assert (title, canonical_text, summary, status) == ("[REDACTED]", "[REDACTED]", "[REDACTED]", "archived")
         for table, columns in (
             ("memories", ("title", "canonical_text", "summary", "value", "metadata_json")),
-            ("memory_revisions", ("previous_value", "new_value", "text_before", "text_after", "reason", "metadata_json")),
+            (
+                "memory_revisions",
+                ("previous_value", "new_value", "text_before", "text_after", "reason", "metadata_json"),
+            ),
             ("event_log", ("payload_json",)),
         ):
             where = " OR ".join(f"{column} LIKE ?" for column in columns)
@@ -676,9 +659,7 @@ def test_memory_manage_accept_consolidation_supersedes_members(sqlite_context) -
     first_id = _commit_active_memory(
         sqlite_context, title="Standup window", text="Team standup happens in the morning."
     )
-    second_id = _commit_active_memory(
-        sqlite_context, title="Standup time", text="Team standup happens at 9:30am."
-    )
+    second_id = _commit_active_memory(sqlite_context, title="Standup time", text="Team standup happens at 9:30am.")
 
     # Seed the candidate shape the consolidation pipeline proposes.
     with sqlite_user_connection(_db_path(sqlite_context), USER_ID) as conn:
@@ -920,10 +901,7 @@ def test_memory_commit_confirmation_flow(sqlite_context) -> None:
     assert pending["memory"]["status"] == "needs_review"
 
     # Unconfirmed memories are not searchable.
-    assert (
-        call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "penicillin"})["count"]
-        == 0
-    )
+    assert call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "penicillin"})["count"] == 0
 
     confirmed = call_mcp_tool(
         sqlite_context,
@@ -935,9 +913,7 @@ def test_memory_commit_confirmation_flow(sqlite_context) -> None:
 
     # Confidential content stays outside the default sensitivity gate and
     # must be requested explicitly.
-    default_gate = call_mcp_tool(
-        sqlite_context, name="alice_recall", arguments={"query": "penicillin"}
-    )
+    default_gate = call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "penicillin"})
     assert default_gate["count"] == 0
     recall = call_mcp_tool(
         sqlite_context,
@@ -1198,10 +1174,7 @@ def test_project_scope_bound_key_is_enforced_in_sqlite_mode(sqlite_context, monk
 
     resumed = call_mcp_tool(sqlite_context, name="alice_resume", arguments={})
     assert resumed["brief"]["last_decision"]["id"] == str(row["id"])
-    assert outside_id not in {
-        str(change.get("target_id") or "")
-        for change in resumed["brief"]["recent_changes"]
-    }
+    assert outside_id not in {str(change.get("target_id") or "") for change in resumed["brief"]["recent_changes"]}
 
     with pytest.raises(MCPToolError, match="project_scope_binding_violation"):
         call_mcp_tool(
@@ -1387,14 +1360,10 @@ def test_recent_decisions_filters_query_project_and_window(sqlite_context) -> No
         "provenance_count",
     }
 
-    filtered = call_mcp_tool(
-        sqlite_context, name="alice_recent_decisions", arguments={"query": "hosted tier"}
-    )
+    filtered = call_mcp_tool(sqlite_context, name="alice_recent_decisions", arguments={"query": "hosted tier"})
     assert [item["id"] for item in filtered["decisions"]] == [second_id]
 
-    by_project = call_mcp_tool(
-        sqlite_context, name="alice_recent_decisions", arguments={"project": "project"}
-    )
+    by_project = call_mcp_tool(sqlite_context, name="alice_recent_decisions", arguments={"project": "project"})
     assert by_project["count"] == 2  # matches the memories' domain
 
     windowed = call_mcp_tool(
@@ -1442,6 +1411,67 @@ def test_open_loops_list_and_close_actions(sqlite_context) -> None:
     assert relisted["count"] == 0
 
 
+def test_sqlite_workflow_idempotency_replays_memory_and_concurrent_open_loop(
+    sqlite_context,
+) -> None:
+    database_path = _db_path(sqlite_context)
+    with sqlite_user_connection(database_path, USER_ID) as conn:
+        store = SQLiteVNextStore(conn, USER_ID)
+        first_memory = store.upsert_memory_by_key(
+            {
+                "memory_key": "workflow.daily.2026-07-13",
+                "canonical_text": "Daily result",
+                "status": "candidate",
+            }
+        )
+        replayed_memory = store.upsert_memory_by_key(
+            {
+                "memory_key": "workflow.daily.2026-07-13",
+                "canonical_text": "Daily result",
+                "status": "candidate",
+            }
+        )
+    assert replayed_memory["id"] == first_memory["id"]
+
+    barrier = threading.Barrier(2)
+    created_ids: list[str] = []
+    errors: list[BaseException] = []
+
+    def _upsert_loop() -> None:
+        try:
+            with sqlite_user_connection(database_path, USER_ID) as conn:
+                store = SQLiteVNextStore(conn, USER_ID)
+                barrier.wait(timeout=5)
+                row = store.upsert_open_loop_by_automation_digest(
+                    {
+                        "title": "Publish the release notes",
+                        "domain": "project",
+                        "sensitivity": "internal",
+                    },
+                    digest="sha256:daily-open-loop",
+                )
+                created_ids.append(str(row["id"]))
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_upsert_loop) for _index in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert errors == []
+    assert len(created_ids) == 2
+    assert len(set(created_ids)) == 1
+    with sqlite_user_connection(database_path, USER_ID) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) AS count FROM open_loops "
+            "WHERE user_id = ? AND json_extract(metadata_json, '$.idempotency_digest') = ?",
+            (str(USER_ID), "sha256:daily-open-loop"),
+        ).fetchone()["count"]
+    assert count == 1
+
+
 def test_resume_brief_shape_and_content(sqlite_context) -> None:
     decision_id = _capture_decision(sqlite_context, "Resume briefs come from the vNext store")
     with sqlite_user_connection(_db_path(sqlite_context), USER_ID) as conn:
@@ -1482,17 +1512,13 @@ def test_resume_brief_shape_and_content(sqlite_context) -> None:
 def test_memory_review_detail_and_status_mapping(sqlite_context) -> None:
     memory_id = _capture_decision(sqlite_context, "Review detail should include revisions")
 
-    detail = call_mcp_tool(
-        sqlite_context, name="alice_memory_review", arguments={"review_item_id": memory_id}
-    )
+    detail = call_mcp_tool(sqlite_context, name="alice_memory_review", arguments={"review_item_id": memory_id})
     assert detail["mode"] == "vnext_detail"
     assert detail["review"]["memory"]["id"] == memory_id
     assert detail["review"]["revisions"] == []
     assert len(detail["review"]["provenance_links"]) == 1
 
-    pending = call_mcp_tool(
-        sqlite_context, name="alice_memory_review", arguments={"status": "pending_review"}
-    )
+    pending = call_mcp_tool(sqlite_context, name="alice_memory_review", arguments={"status": "pending_review"})
     assert pending["count"] == 1
 
     active = call_mcp_tool(sqlite_context, name="alice_memory_review", arguments={"status": "active"})
@@ -1507,8 +1533,7 @@ def test_memory_review_detail_and_status_mapping(sqlite_context) -> None:
         "count": 0,
         "mode": "vnext_candidates",
         "note": (
-            "status 'stale' has no canonical vNext equivalent; "
-            "use pending_review, correction_ready, active, or all"
+            "status 'stale' has no canonical vNext equivalent; use pending_review, correction_ready, active, or all"
         ),
     }
 
@@ -1594,9 +1619,7 @@ def test_memory_correct_reject_edit_and_supersede(sqlite_context) -> None:
         "superseded",
         "active",
     ]
-    new_audit = call_mcp_tool(
-        sqlite_context, name="alice_explain", arguments={"memory_id": str(replacement["id"])}
-    )
+    new_audit = call_mcp_tool(sqlite_context, name="alice_explain", arguments={"memory_id": str(replacement["id"])})
     assert [revision["revision_type"] for revision in new_audit["revisions"]] == ["created"]
     assert [(entry["id"], entry["relation"]) for entry in new_audit["supersession_chain"]] == [
         (edit_id, "predecessor"),
@@ -1607,9 +1630,7 @@ def test_memory_correct_reject_edit_and_supersede(sqlite_context) -> None:
 @pytest.mark.parametrize(
     "action,field,invalid_confidence,error_detail",
     [
-        pytest.param(
-            "edit-and-approve", "confidence", True, "type number", id="edit-boolean"
-        ),
+        pytest.param("edit-and-approve", "confidence", True, "type number", id="edit-boolean"),
         pytest.param(
             "edit-and-approve",
             "confidence",
@@ -1668,17 +1689,13 @@ def test_memory_correct_invalid_confidence_is_durable_sqlite_rollback(
     invalid_confidence: object,
     error_detail: str,
 ) -> None:
-    memory_id = _capture_decision(
-        sqlite_context, f"Preserve SQLite rollback for {action} {field}"
-    )
+    memory_id = _capture_decision(sqlite_context, f"Preserve SQLite rollback for {action} {field}")
     before_detail = call_mcp_tool(
         sqlite_context,
         name="alice_memory_review",
         arguments={"review_item_id": memory_id},
     )["review"]
-    before_queue = call_mcp_tool(
-        sqlite_context, name="alice_memory_review", arguments={"status": "all"}
-    )
+    before_queue = call_mcp_tool(sqlite_context, name="alice_memory_review", arguments={"status": "all"})
     arguments: dict[str, object] = {
         "review_item_id": memory_id,
         "action": action,
@@ -1699,9 +1716,7 @@ def test_memory_correct_invalid_confidence_is_durable_sqlite_rollback(
         name="alice_memory_review",
         arguments={"review_item_id": memory_id},
     )["review"]
-    after_queue = call_mcp_tool(
-        sqlite_context, name="alice_memory_review", arguments={"status": "all"}
-    )
+    after_queue = call_mcp_tool(sqlite_context, name="alice_memory_review", arguments={"status": "all"})
     assert after_detail["memory"] == before_detail["memory"]
     assert after_detail["revisions"] == before_detail["revisions"]
     assert after_detail["provenance_links"] == before_detail["provenance_links"]
@@ -1819,29 +1834,89 @@ def test_reindex_embeddings_rebuilds_unsigned_sqlite_vectors(tmp_path, monkeypat
             return [[0.5, 0.25] for _text in texts]
 
     monkeypatch.setattr(onramp_module, "get_embedding_provider", lambda: StubProvider())
-    assert onramp_main(
-        ["reindex-embeddings", "--db", str(db_path), "--user-id", str(USER_ID)]
-    ) == 0
+    assert onramp_main(["reindex-embeddings", "--db", str(db_path), "--user-id", str(USER_ID)]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["embedded"] == 1
     assert payload["reindexed_incompatible"] == 1
     with sqlite_user_connection(db_path, USER_ID) as conn:
-        row = conn.execute(
-            "SELECT metadata_json FROM memories WHERE id = ?", (str(memory["id"]),)
-        ).fetchone()
+        row = conn.execute("SELECT metadata_json FROM memories WHERE id = ?", (str(memory["id"]),)).fetchone()
         signature = json.loads(row["metadata_json"])["_alice_embedding"]
         assert signature["model"] == "embed-v2"
         assert signature["version"] == 2
         assert signature["endpoint"]
 
 
+def test_reindex_embeddings_calls_provider_outside_sqlite_transactions(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    db_path = tmp_path / "memory.db"
+    bootstrap_database(db_path, user_id=USER_ID, user_email="local@alice")
+    with sqlite_user_connection(db_path, USER_ID) as conn:
+        store = SQLiteVNextStore(conn, USER_ID)
+        for index in range(2):
+            store.create_memory(
+                {
+                    "memory_key": f"reindex-transaction-boundary-{index}",
+                    "value": {"text": f"Reindex transaction boundary {index}."},
+                    "memory_type": "semantic",
+                    "title": f"Transaction boundary {index}",
+                    "canonical_text": f"Reindex transaction boundary {index}.",
+                    "status": "active",
+                    "domain": "project",
+                    "sensitivity": "private",
+                }
+            )
+
+    real_sqlite_user_connection = onramp_module.sqlite_user_connection
+    connection_depth = 0
+
+    @contextmanager
+    def tracked_sqlite_user_connection(*args, **kwargs):
+        nonlocal connection_depth
+        with real_sqlite_user_connection(*args, **kwargs) as conn:
+            connection_depth += 1
+            try:
+                yield conn
+            finally:
+                connection_depth -= 1
+
+    provider_in_transaction: list[bool] = []
+
+    class StubProvider:
+        provider = "stub"
+        model = "embed-v2"
+        base_url = "https://embed.example/v1"
+
+        def embed_batch(self, texts):
+            provider_in_transaction.append(connection_depth > 0)
+            return [[0.5, 0.25] for _text in texts]
+
+    monkeypatch.setattr(onramp_module, "sqlite_user_connection", tracked_sqlite_user_connection)
+    monkeypatch.setattr(onramp_module, "get_embedding_provider", lambda: StubProvider())
+
+    assert (
+        onramp_main(
+            [
+                "reindex-embeddings",
+                "--db",
+                str(db_path),
+                "--user-id",
+                str(USER_ID),
+                "--batch-size",
+                "1",
+            ]
+        )
+        == 0
+    )
+    assert provider_in_transaction == [False, False]
+    assert json.loads(capsys.readouterr().out)["embedded"] == 2
+
+
 def test_export_writes_jsonl_records(sqlite_context, tmp_path) -> None:
     memory_id = _capture_decision(sqlite_context, "Export this decision as JSONL")
     with sqlite_user_connection(_db_path(sqlite_context), USER_ID) as conn:
-        SQLiteVNextStore(conn, USER_ID).create_open_loop(
-            {"title": "Exportable loop", "domain": "project"}
-        )
+        SQLiteVNextStore(conn, USER_ID).create_open_loop({"title": "Exportable loop", "domain": "project"})
 
     out_path = tmp_path / "export" / "dump.jsonl"
     exit_code = onramp_main(
@@ -1891,9 +1966,7 @@ def _active_wal_database_family(tmp_path: Path) -> tuple[Path, sqlite3.Connectio
 
 
 @pytest.mark.parametrize("suffix", ["", "-wal", "-shm", "-journal"])
-def test_export_rejects_every_database_family_path_with_active_wal(
-    tmp_path, capsys, suffix
-) -> None:
+def test_export_rejects_every_database_family_path_with_active_wal(tmp_path, capsys, suffix) -> None:
     db_path, connection = _active_wal_database_family(tmp_path)
     family_path = Path(f"{db_path}{suffix}")
     if suffix == "-journal":
@@ -1927,9 +2000,7 @@ def test_export_rejects_every_database_family_path_with_active_wal(
 
 @pytest.mark.parametrize("suffix", ["", "-wal", "-shm", "-journal"])
 @pytest.mark.parametrize("alias_kind", ["hard_link", "symlink"])
-def test_export_rejects_inode_and_symlink_aliases_to_database_family(
-    tmp_path, capsys, suffix, alias_kind
-) -> None:
+def test_export_rejects_inode_and_symlink_aliases_to_database_family(tmp_path, capsys, suffix, alias_kind) -> None:
     db_path, connection = _active_wal_database_family(tmp_path)
     family_path = Path(f"{db_path}{suffix}")
     alias_path = tmp_path / f"{alias_kind}-{suffix.removeprefix('-') or 'main'}.jsonl"
@@ -1958,9 +2029,7 @@ def test_export_rejects_inode_and_symlink_aliases_to_database_family(
 
 
 @pytest.mark.parametrize("suffix", ["", "-wal", "-shm", "-journal"])
-def test_import_rejects_database_family_input_before_decoding(
-    tmp_path, capsys, suffix
-) -> None:
+def test_import_rejects_database_family_input_before_decoding(tmp_path, capsys, suffix) -> None:
     db_path, connection = _active_wal_database_family(tmp_path)
     try:
         assert (
@@ -1984,9 +2053,7 @@ def test_import_rejects_database_family_input_before_decoding(
 
 @pytest.mark.parametrize("suffix", ["", "-wal", "-shm", "-journal"])
 @pytest.mark.parametrize("alias_kind", ["hard_link", "symlink"])
-def test_import_rejects_inode_and_symlink_aliases_to_database_family(
-    tmp_path, capsys, suffix, alias_kind
-) -> None:
+def test_import_rejects_inode_and_symlink_aliases_to_database_family(tmp_path, capsys, suffix, alias_kind) -> None:
     db_path, connection = _active_wal_database_family(tmp_path)
     family_path = Path(f"{db_path}{suffix}")
     alias_path = tmp_path / f"import-{alias_kind}-{suffix.removeprefix('-') or 'main'}"
@@ -2014,9 +2081,7 @@ def test_import_rejects_inode_and_symlink_aliases_to_database_family(
         connection.close()
 
 
-def test_lexical_sidecar_names_are_rejected_even_when_symlink_points_elsewhere(
-    tmp_path, capsys
-) -> None:
+def test_lexical_sidecar_names_are_rejected_even_when_symlink_points_elsewhere(tmp_path, capsys) -> None:
     db_path = tmp_path / "memory.db"
     bootstrap_database(db_path, user_id=USER_ID, user_email="local@alice")
     _seed_full_graph(db_path)
@@ -2083,9 +2148,7 @@ def test_case_variant_of_absent_sidecar_name_is_reserved(tmp_path, capsys) -> No
     assert not reserved.exists()
 
 
-def test_unicode_normalization_variant_of_absent_sidecar_is_reserved(
-    tmp_path, capsys
-) -> None:
+def test_unicode_normalization_variant_of_absent_sidecar_is_reserved(tmp_path, capsys) -> None:
     db_path = tmp_path / "mémoire.db"
     bootstrap_database(db_path, user_id=USER_ID, user_email="local@alice")
     _seed_full_graph(db_path)
@@ -2109,9 +2172,7 @@ def test_unicode_normalization_variant_of_absent_sidecar_is_reserved(
 
 
 @pytest.mark.parametrize("alias_kind", ["same_path", "hard_link"])
-def test_export_rejects_output_aliasing_the_database_without_data_loss(
-    tmp_path, capsys, alias_kind
-) -> None:
+def test_export_rejects_output_aliasing_the_database_without_data_loss(tmp_path, capsys, alias_kind) -> None:
     db_path = tmp_path / "memory.db"
     bootstrap_database(db_path, user_id=USER_ID, user_email="local@alice")
     seeded = _seed_full_graph(db_path)
@@ -2140,9 +2201,7 @@ def test_export_rejects_output_aliasing_the_database_without_data_loss(
         assert SQLiteVNextStore(conn, USER_ID).get_memory(str(seeded["memory"]["id"])) is not None
 
 
-def test_export_replaces_destination_atomically_and_keeps_it_on_failure(
-    tmp_path, capsys, monkeypatch
-) -> None:
+def test_export_replaces_destination_atomically_and_keeps_it_on_failure(tmp_path, capsys, monkeypatch) -> None:
     db_path = tmp_path / "memory.db"
     bootstrap_database(db_path, user_id=USER_ID, user_email="local@alice")
     _seed_full_graph(db_path)
@@ -2171,9 +2230,7 @@ def test_export_replaces_destination_atomically_and_keeps_it_on_failure(
     assert out_path.read_text(encoding="utf-8") == "known-good-backup\n"
 
 
-def test_export_does_not_report_failure_after_atomic_replacement(
-    tmp_path, capsys, monkeypatch
-) -> None:
+def test_export_does_not_report_failure_after_atomic_replacement(tmp_path, capsys, monkeypatch) -> None:
     db_path = tmp_path / "memory.db"
     bootstrap_database(db_path, user_id=USER_ID, user_email="local@alice")
     _seed_full_graph(db_path)
@@ -2202,9 +2259,7 @@ def test_export_does_not_report_failure_after_atomic_replacement(
         == 0
     )
     assert "export failed" not in capsys.readouterr().err
-    assert json.loads(out_path.read_text(encoding="utf-8").splitlines()[0])[
-        "record_type"
-    ] == "export_header"
+    assert json.loads(out_path.read_text(encoding="utf-8").splitlines()[0])["record_type"] == "export_header"
 
 
 def test_export_upgrades_only_a_private_snapshot_and_never_source_schema_or_state(
@@ -2222,9 +2277,7 @@ def test_export_upgrades_only_a_private_snapshot_and_never_source_schema_or_stat
     before_stat = db_path.stat()
     family = tuple(Path(f"{db_path}{suffix}") for suffix in ("", "-wal", "-shm", "-journal"))
     before_family = {
-        path.name: (path.stat().st_size, path.stat().st_mtime_ns, path.read_bytes())
-        for path in family
-        if path.exists()
+        path.name: (path.stat().st_size, path.stat().st_mtime_ns, path.read_bytes()) for path in family if path.exists()
     }
 
     dump = tmp_path / "dump.jsonl"
@@ -2244,9 +2297,12 @@ def test_export_upgrades_only_a_private_snapshot_and_never_source_schema_or_stat
     )
 
     with sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True) as conn:
-        assert conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entity_relationship_events'"
-        ).fetchone() is None
+        assert (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entity_relationship_events'"
+            ).fetchone()
+            is None
+        )
         assert conn.execute("SELECT enabled FROM redaction_mode WHERE id = 1").fetchone()[0] == 1
         assert conn.execute("PRAGMA schema_version").fetchone()[0] == before_schema_version
     after_stat = db_path.stat()
@@ -2256,13 +2312,12 @@ def test_export_upgrades_only_a_private_snapshot_and_never_source_schema_or_stat
         before_stat.st_mtime_ns,
     )
     assert {
-        path.name: (path.stat().st_size, path.stat().st_mtime_ns, path.read_bytes())
-        for path in family
-        if path.exists()
+        path.name: (path.stat().st_size, path.stat().st_mtime_ns, path.read_bytes()) for path in family if path.exists()
     } == before_family
-    assert "entity_relationship_event" in json.loads(
-        dump.read_text(encoding="utf-8").splitlines()[0]
-    )["record"]["schema"]["record_types"]
+    assert (
+        "entity_relationship_event"
+        in json.loads(dump.read_text(encoding="utf-8").splitlines()[0])["record"]["schema"]["record_types"]
+    )
 
 
 def test_export_rejects_unknown_user_instead_of_writing_an_empty_backup(tmp_path, capsys) -> None:
@@ -2316,9 +2371,7 @@ def test_export_rejects_non_alice_sqlite_schema_without_mutating_it(tmp_path, ca
     assert not out_path.exists()
 
 
-def test_export_rejects_unknown_newer_portable_columns_without_data_loss(
-    tmp_path, capsys
-) -> None:
+def test_export_rejects_unknown_newer_portable_columns_without_data_loss(tmp_path, capsys) -> None:
     db_path = tmp_path / "future.db"
     bootstrap_database(db_path, user_id=USER_ID, user_email="local@alice")
     seeded = _seed_full_graph(db_path)
@@ -2360,9 +2413,7 @@ def test_export_rejects_unknown_future_application_table(tmp_path, capsys) -> No
     db_path = tmp_path / "future-table.db"
     bootstrap_database(db_path, user_id=USER_ID, user_email="local@alice")
     with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "CREATE TABLE future_user_records (id TEXT PRIMARY KEY, payload TEXT NOT NULL)"
-        )
+        conn.execute("CREATE TABLE future_user_records (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
         conn.execute(
             "INSERT INTO future_user_records (id, payload) VALUES (?, ?)",
             ("future-1", "must not disappear"),
@@ -2521,13 +2572,8 @@ def test_new_local_database_and_export_use_private_permissions(tmp_path) -> None
         sidecars = (Path(f"{db_path}-wal"), Path(f"{db_path}-shm"))
         assert all(path.exists() for path in sidecars)
 
-        before_modes = {
-            path: stat.S_IMODE(path.stat().st_mode)
-            for path in (data_dir, db_path, *sidecars)
-        }
-        before_family_bytes = {
-            path: path.read_bytes() for path in (db_path, *sidecars)
-        }
+        before_modes = {path: stat.S_IMODE(path.stat().st_mode) for path in (data_dir, db_path, *sidecars)}
+        before_family_bytes = {path: path.read_bytes() for path in (db_path, *sidecars)}
 
         dump = tmp_path / "backup" / "memory.jsonl"
         assert (
@@ -2548,18 +2594,11 @@ def test_new_local_database_and_export_use_private_permissions(tmp_path) -> None
         assert stat.S_IMODE(data_dir.stat().st_mode) == 0o700
         assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
         assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in sidecars)
-        assert {
-            path: stat.S_IMODE(path.stat().st_mode)
-            for path in (data_dir, db_path, *sidecars)
-        } == before_modes
-        assert {
-            path: path.read_bytes() for path in (db_path, *sidecars)
-        } == before_family_bytes
+        assert {path: stat.S_IMODE(path.stat().st_mode) for path in (data_dir, db_path, *sidecars)} == before_modes
+        assert {path: path.read_bytes() for path in (db_path, *sidecars)} == before_family_bytes
         assert stat.S_IMODE(dump.stat().st_mode) == 0o600
         assert stat.S_IMODE(dump.parent.stat().st_mode) == 0o700
-        assert any(
-            row["id"] == wal_event_id for row in _read_export_by_type(dump)["event"]
-        )
+        assert any(row["id"] == wal_event_id for row in _read_export_by_type(dump)["event"])
     finally:
         if live_connection is not None:
             live_connection.close()
@@ -2754,9 +2793,7 @@ def _seed_full_graph(db_path: Path) -> dict[str, dict[str, object]]:
 
 
 def _export_to(db_path: Path, out_path: Path) -> dict[str, list[dict[str, object]]]:
-    exit_code = onramp_main(
-        ["export", "--db", str(db_path), "--user-id", str(USER_ID), "--out", str(out_path)]
-    )
+    exit_code = onramp_main(["export", "--db", str(db_path), "--user-id", str(USER_ID), "--out", str(out_path)])
     assert exit_code == 0
     return _read_export_by_type(out_path)
 
@@ -2777,9 +2814,7 @@ def test_import_round_trip_reproduces_equivalent_export(tmp_path, capsys) -> Non
     # bootstraps the directory, schema, and user row on its own.
     fresh_db = tmp_path / "fresh" / "memory.db"
     assert not fresh_db.exists()
-    exit_code = onramp_main(
-        ["import", "--in", str(first_dump), "--db", str(fresh_db), "--user-id", str(USER_ID)]
-    )
+    exit_code = onramp_main(["import", "--in", str(first_dump), "--db", str(fresh_db), "--user-id", str(USER_ID)])
     assert exit_code == 0
     assert fresh_db.exists()
 
@@ -2800,9 +2835,7 @@ def test_import_decodes_each_jsonl_envelope_exactly_once(tmp_path, monkeypatch) 
     _seed_full_graph(origin_db)
     dump = tmp_path / "backup.jsonl"
     _export_to(origin_db, dump)
-    expected_decode_count = sum(
-        1 for line in dump.read_text(encoding="utf-8").splitlines() if line.strip()
-    )
+    expected_decode_count = sum(1 for line in dump.read_text(encoding="utf-8").splitlines() if line.strip())
     original_decode = onramp_module._decode_import_envelope
     decode_count = 0
 
@@ -2813,12 +2846,7 @@ def test_import_decodes_each_jsonl_envelope_exactly_once(tmp_path, monkeypatch) 
 
     monkeypatch.setattr(onramp_module, "_decode_import_envelope", counted_decode)
     restored_db = tmp_path / "restored.db"
-    assert (
-        onramp_main(
-            ["import", "--in", str(dump), "--db", str(restored_db), "--user-id", str(USER_ID)]
-        )
-        == 0
-    )
+    assert onramp_main(["import", "--in", str(dump), "--db", str(restored_db), "--user-id", str(USER_ID)]) == 0
     assert decode_count == expected_decode_count
 
 
@@ -2850,9 +2878,7 @@ def test_import_validation_spools_large_record_sets_with_bounded_memory(tmp_path
         onramp_module._remove_sqlite_files(validated.spool_path)
 
 
-def test_import_spool_commit_failure_is_normalized_and_cleaned(
-    tmp_path, monkeypatch
-) -> None:
+def test_import_spool_commit_failure_is_normalized_and_cleaned(tmp_path, monkeypatch) -> None:
     dump = tmp_path / "one-record.jsonl"
     dump.write_text(
         json.dumps({"record_type": "source", "record": {"id": "source-1"}}) + "\n",
@@ -2919,9 +2945,7 @@ def test_import_rejects_a_corrupted_validated_spool_record(tmp_path) -> None:
         onramp_module._remove_sqlite_files(validated.spool_path)
 
 
-def test_import_consumes_snapshot_when_selected_path_is_substituted(
-    tmp_path, monkeypatch
-) -> None:
+def test_import_consumes_snapshot_when_selected_path_is_substituted(tmp_path, monkeypatch) -> None:
     first_db = tmp_path / "first.db"
     second_db = tmp_path / "second.db"
     for db_path in (first_db, second_db):
@@ -3072,12 +3096,8 @@ def test_export_is_fk_closed_when_soft_deleted_parents_are_omitted(tmp_path) -> 
                 "canonical_text": "Active memory survives closure rewrite",
             }
         )
-        deleted_entity = store.create_entity(
-            {"entity_type": "person", "name": "Deleted Entity"}
-        )
-        active_entity = store.create_entity(
-            {"entity_type": "person", "name": "Active Entity"}
-        )
+        deleted_entity = store.create_entity({"entity_type": "person", "name": "Deleted Entity"})
+        active_entity = store.create_entity({"entity_type": "person", "name": "Active Entity"})
         relationship_event = store.record_relationship_change(
             entity_id=str(active_entity["id"]),
             relationship_type="advisor",
@@ -3139,14 +3159,10 @@ def test_export_is_fk_closed_when_soft_deleted_parents_are_omitted(tmp_path) -> 
     assert edge_from_deleted_memory["id"] not in exported_edge_ids
     assert edge_to_deleted_entity["id"] not in exported_edge_ids
     exported_relationship = next(
-        row
-        for row in exported["entity_relationship_event"]
-        if row["id"] == relationship_event["id"]
+        row for row in exported["entity_relationship_event"] if row["id"] == relationship_event["id"]
     )
     assert exported_relationship["source_id"] is None
-    exported_provenance = next(
-        row for row in exported["provenance_link"] if row["id"] == provenance["id"]
-    )
+    exported_provenance = next(row for row in exported["provenance_link"] if row["id"] == provenance["id"])
     assert exported_provenance["source_id"] is None
     assert exported_provenance["source_chunk_id"] is None
     exported_loop = next(row for row in exported["open_loop"] if row["id"] == loop["id"])
@@ -3154,12 +3170,7 @@ def test_export_is_fk_closed_when_soft_deleted_parents_are_omitted(tmp_path) -> 
     assert exported_loop["source_id"] is None
 
     restored_db = tmp_path / "restored.db"
-    assert (
-        onramp_main(
-            ["import", "--in", str(dump), "--db", str(restored_db), "--user-id", str(USER_ID)]
-        )
-        == 0
-    )
+    assert onramp_main(["import", "--in", str(dump), "--db", str(restored_db), "--user-id", str(USER_ID)]) == 0
     _assert_equivalent_exports(exported, _export_to(restored_db, tmp_path / "restored.jsonl"))
 
 
@@ -3188,9 +3199,7 @@ def test_export_has_versioned_schema_and_verified_integrity_metadata(tmp_path) -
     assert len(footer["record"]["sha256"]) == 64
 
 
-def test_export_uses_one_consistent_snapshot_during_concurrent_writes(
-    tmp_path, monkeypatch
-) -> None:
+def test_export_uses_one_consistent_snapshot_during_concurrent_writes(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "origin.db"
     bootstrap_database(db_path, user_id=USER_ID, user_email="local@alice")
     with sqlite_user_connection(db_path, USER_ID) as conn:
@@ -3267,18 +3276,12 @@ def test_export_uses_one_consistent_snapshot_during_concurrent_writes(
     assert results == [0]
 
     exported = _read_export_by_type(dump)
-    assert not any(
-        row["id"] == concurrent_source["id"] for row in exported.get("source", [])
-    )
-    assert not any(
-        row["id"] == concurrent_memory["id"] for row in exported.get("memory", [])
-    )
+    assert not any(row["id"] == concurrent_source["id"] for row in exported.get("source", []))
+    assert not any(row["id"] == concurrent_memory["id"] for row in exported.get("memory", []))
 
 
 @pytest.mark.parametrize("damage", ["missing_footer", "tampered_record"])
-def test_import_rejects_truncated_or_tampered_versioned_export(
-    tmp_path, capsys, damage
-) -> None:
+def test_import_rejects_truncated_or_tampered_versioned_export(tmp_path, capsys, damage) -> None:
     origin_db = tmp_path / "origin.db"
     bootstrap_database(origin_db, user_id=USER_ID, user_email="local@alice")
     _seed_full_graph(origin_db)
@@ -3299,20 +3302,13 @@ def test_import_rejects_truncated_or_tampered_versioned_export(
     damaged.write_text("\n".join(lines) + "\n", encoding="utf-8")
     target = tmp_path / "target.db"
 
-    assert (
-        onramp_main(
-            ["import", "--in", str(damaged), "--db", str(target), "--user-id", str(USER_ID)]
-        )
-        == 1
-    )
+    assert onramp_main(["import", "--in", str(damaged), "--db", str(target), "--user-id", str(USER_ID)]) == 1
     err = capsys.readouterr().err
     assert "integrity" in err or "footer" in err
     assert not target.exists()
 
 
-def test_legacy_import_rejects_unknown_fields_instead_of_dropping_them(
-    tmp_path, capsys
-) -> None:
+def test_legacy_import_rejects_unknown_fields_instead_of_dropping_them(tmp_path, capsys) -> None:
     origin_db = tmp_path / "origin.db"
     bootstrap_database(origin_db, user_id=USER_ID, user_email="local@alice")
     _seed_full_graph(origin_db)
@@ -3327,12 +3323,7 @@ def test_legacy_import_rejects_unknown_fields_instead_of_dropping_them(
     )
     target = tmp_path / "target.db"
 
-    assert (
-        onramp_main(
-            ["import", "--in", str(legacy), "--db", str(target), "--user-id", str(USER_ID)]
-        )
-        == 1
-    )
+    assert onramp_main(["import", "--in", str(legacy), "--db", str(target), "--user-id", str(USER_ID)]) == 1
     err = capsys.readouterr().err
     assert "legacy memory has unknown fields" in err
     assert "future_user_owned_state" in err
@@ -3354,17 +3345,13 @@ def test_import_rejects_integrity_consistent_mixed_user_export(tmp_path, capsys)
     digest = hashlib.sha256()
     for payload in envelopes[1:-1]:
         digest.update(
-            (
-                json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-                + "\n"
-            ).encode("utf-8")
+            (json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode("utf-8")
         )
     envelopes[-1]["record"]["sha256"] = digest.hexdigest()
     mixed = tmp_path / "mixed-user.jsonl"
     mixed.write_text(
         "".join(
-            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-            + "\n"
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
             for payload in envelopes
         ),
         encoding="utf-8",
@@ -3391,12 +3378,7 @@ def test_import_rejects_input_aliasing_target_database(tmp_path, capsys) -> None
     db_path = tmp_path / "memory.db"
     bootstrap_database(db_path, user_id=USER_ID, user_email="local@alice")
     before = db_path.read_bytes()
-    assert (
-        onramp_main(
-            ["import", "--in", str(db_path), "--db", str(db_path), "--user-id", str(USER_ID)]
-        )
-        == 1
-    )
+    assert onramp_main(["import", "--in", str(db_path), "--db", str(db_path), "--user-id", str(USER_ID)]) == 1
     assert "database or SQLite sidecar" in capsys.readouterr().err
     assert db_path.read_bytes() == before
 
@@ -3413,12 +3395,7 @@ def test_import_preserves_ids_timestamps_and_provenance_references(tmp_path) -> 
     assert all("embedding" not in row for row in first["memory"])
 
     fresh_db = tmp_path / "fresh.db"
-    assert (
-        onramp_main(
-            ["import", "--in", str(dump), "--db", str(fresh_db), "--user-id", str(USER_ID)]
-        )
-        == 0
-    )
+    assert onramp_main(["import", "--in", str(dump), "--db", str(fresh_db), "--user-id", str(USER_ID)]) == 0
 
     origin_memory = seeded["memory"]
     with sqlite_user_connection(fresh_db, USER_ID) as conn:
@@ -3434,15 +3411,11 @@ def test_import_preserves_ids_timestamps_and_provenance_references(tmp_path) -> 
         assert embedding_row["fact_keys"] == "roundtrip ownership backup restore"
 
         relationship_events = store.list_relationship_events(str(seeded["entity"]["id"]))
-        assert [row["id"] for row in relationship_events] == [
-            seeded["entity_relationship_event"]["id"]
-        ]
+        assert [row["id"] for row in relationship_events] == [seeded["entity_relationship_event"]["id"]]
         assert relationship_events[0]["relationship_type_after"] == "customer"
 
         # Provenance references stay intact because ids were preserved.
-        links = store.list_provenance_links(
-            target_type="memory", target_id=str(origin_memory["id"])
-        )
+        links = store.list_provenance_links(target_type="memory", target_id=str(origin_memory["id"]))
         assert [link["id"] for link in links] == [seeded["provenance_link"]["id"]]
         assert links[0]["source_id"] == seeded["source"]["id"]
         assert links[0]["source_chunk_id"] == seeded["source_chunk"]["id"]
@@ -3476,12 +3449,7 @@ def test_import_summary_notes_memories_lack_embeddings(tmp_path, capsys) -> None
     _export_to(origin_db, dump)
 
     fresh_db = tmp_path / "fresh.db"
-    assert (
-        onramp_main(
-            ["import", "--in", str(dump), "--db", str(fresh_db), "--user-id", str(USER_ID)]
-        )
-        == 0
-    )
+    assert onramp_main(["import", "--in", str(dump), "--db", str(fresh_db), "--user-id", str(USER_ID)]) == 0
     out = capsys.readouterr().out
     assert "without embeddings" in out
     assert "ALICE_EMBEDDINGS_" in out
@@ -3496,9 +3464,7 @@ def test_import_mode_skip_counts_existing_rows_and_never_overwrites(tmp_path, ca
 
     # Importing an export back into its own database: every id collides,
     # everything is skipped, nothing is overwritten, exit code stays 0.
-    exit_code = onramp_main(
-        ["import", "--in", str(dump), "--db", str(origin_db), "--user-id", str(USER_ID)]
-    )
+    exit_code = onramp_main(["import", "--in", str(dump), "--db", str(origin_db), "--user-id", str(USER_ID)])
     assert exit_code == 0
     out = capsys.readouterr().out
     total = sum(len(rows) for rows in first.values())
@@ -3541,9 +3507,7 @@ def test_import_mode_skip_rejects_a_same_id_with_different_content(tmp_path, cap
     )
     assert "same id but different content" in capsys.readouterr().err
     with sqlite_user_connection(origin_db, USER_ID) as conn:
-        row = conn.execute(
-            "SELECT canonical_text FROM memories WHERE id = ?", (str(conflicting["id"]),)
-        ).fetchone()
+        row = conn.execute("SELECT canonical_text FROM memories WHERE id = ?", (str(conflicting["id"]),)).fetchone()
     assert row["canonical_text"] != "conflicting backup content"
 
 
@@ -3565,8 +3529,10 @@ def test_import_mode_fail_aborts_on_collision_and_writes_nothing(tmp_path, capsy
     colliding_memory = first["memory"][0]
     partial = tmp_path / "partial.jsonl"
     partial.write_text(
-        json.dumps({"record_type": "source", "record": novel_source}) + "\n"
-        + json.dumps({"record_type": "memory", "record": colliding_memory}) + "\n",
+        json.dumps({"record_type": "source", "record": novel_source})
+        + "\n"
+        + json.dumps({"record_type": "memory", "record": colliding_memory})
+        + "\n",
         encoding="utf-8",
     )
 
@@ -3592,9 +3558,7 @@ def test_import_mode_fail_aborts_on_collision_and_writes_nothing(tmp_path, capsy
 
     # Rollback: the novel source from line 1 must not have been kept.
     with sqlite_user_connection(origin_db, USER_ID) as conn:
-        row = conn.execute(
-            "SELECT 1 FROM sources WHERE id = ?", (novel_source["id"],)
-        ).fetchone()
+        row = conn.execute("SELECT 1 FROM sources WHERE id = ?", (novel_source["id"],)).fetchone()
     assert row is None
 
 
@@ -3617,20 +3581,13 @@ def test_failed_import_into_new_database_leaves_no_partial_restore(tmp_path, cap
     )
     target = tmp_path / "restored" / "memory.db"
 
-    assert (
-        onramp_main(
-            ["import", "--in", str(invalid), "--db", str(target), "--user-id", str(USER_ID)]
-        )
-        == 1
-    )
+    assert onramp_main(["import", "--in", str(invalid), "--db", str(target), "--user-id", str(USER_ID)]) == 1
     assert "no records were written" in capsys.readouterr().err
     assert not target.exists()
     assert list(target.parent.glob(f".{target.name}.restore.*")) == []
 
 
-def test_failed_existing_target_import_rolls_back_staged_schema_upgrade(
-    tmp_path, capsys
-) -> None:
+def test_failed_existing_target_import_rolls_back_staged_schema_upgrade(tmp_path, capsys) -> None:
     target = tmp_path / "older-target.db"
     bootstrap_database(target, user_id=USER_ID, user_email="local@alice")
     with sqlite3.connect(target) as conn:
@@ -3656,17 +3613,15 @@ def test_failed_existing_target_import_rolls_back_staged_schema_upgrade(
         encoding="utf-8",
     )
 
-    assert (
-        onramp_main(
-            ["import", "--in", str(invalid), "--db", str(target), "--user-id", str(USER_ID)]
-        )
-        == 1
-    )
+    assert onramp_main(["import", "--in", str(invalid), "--db", str(target), "--user-id", str(USER_ID)]) == 1
     assert "no records were written" in capsys.readouterr().err
     with sqlite3.connect(target) as conn:
-        assert conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entity_relationship_events'"
-        ).fetchone() is None
+        assert (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entity_relationship_events'"
+            ).fetchone()
+            is None
+        )
         assert conn.execute("PRAGMA schema_version").fetchone()[0] == before_schema_version
     assert target.read_bytes() == before_bytes
 
@@ -3716,9 +3671,12 @@ def test_sqlite_backup_publication_rolls_back_data_and_schema_when_interrupted(
         assert conn.execute("PRAGMA quick_check").fetchone() == ("ok",)
         assert conn.execute("SELECT 1 FROM memories WHERE id = ?", (old_memory["id"],)).fetchone()
         assert conn.execute("SELECT 1 FROM memories WHERE id = ?", (new_memory["id"],)).fetchone() is None
-        assert conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entity_relationship_events'"
-        ).fetchone() is None
+        assert (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entity_relationship_events'"
+            ).fetchone()
+            is None
+        )
 
 
 def test_successful_existing_target_import_publishes_staged_schema_and_data(tmp_path) -> None:
@@ -3734,26 +3692,17 @@ def test_successful_existing_target_import_publishes_staged_schema_and_data(tmp_
         conn.execute("DROP TABLE entity_relationship_events")
         conn.commit()
 
-    assert (
-        onramp_main(
-            ["import", "--in", str(dump), "--db", str(target), "--user-id", str(USER_ID)]
-        )
-        == 0
-    )
+    assert onramp_main(["import", "--in", str(dump), "--db", str(target), "--user-id", str(USER_ID)]) == 0
     with sqlite3.connect(target) as conn:
         assert conn.execute("PRAGMA quick_check").fetchone() == ("ok",)
-        assert conn.execute(
-            "SELECT 1 FROM memories WHERE id = ?", (seeded["memory"]["id"],)
-        ).fetchone()
+        assert conn.execute("SELECT 1 FROM memories WHERE id = ?", (seeded["memory"]["id"],)).fetchone()
         assert conn.execute(
             "SELECT 1 FROM entity_relationship_events WHERE id = ?",
             (seeded["entity_relationship_event"]["id"],),
         ).fetchone()
 
 
-def test_post_publication_permission_error_reports_committed_restore_truthfully(
-    tmp_path, capsys, monkeypatch
-) -> None:
+def test_post_publication_permission_error_reports_committed_restore_truthfully(tmp_path, capsys, monkeypatch) -> None:
     origin = tmp_path / "origin.db"
     target = tmp_path / "target.db"
     bootstrap_database(origin, user_id=USER_ID, user_email="local@alice")
@@ -3774,44 +3723,27 @@ def test_post_publication_permission_error_reports_committed_restore_truthfully(
         return real_secure(path)
 
     monkeypatch.setattr(onramp_module, "_secure_sqlite_files", fail_only_after_publication)
-    assert (
-        onramp_main(
-            ["import", "--in", str(dump), "--db", str(target), "--user-id", str(USER_ID)]
-        )
-        == 2
-    )
+    assert onramp_main(["import", "--in", str(dump), "--db", str(target), "--user-id", str(USER_ID)]) == 2
     captured = capsys.readouterr()
     assert "restore committed; permissions were not hardened" in captured.err
     assert "DO NOT blindly retry" in captured.err
     assert f"inspect {target}" in captured.err
     assert "import aborted" not in captured.err
     with sqlite3.connect(target) as conn:
+        assert conn.execute("SELECT 1 FROM memories WHERE id = ?", (seeded["memory"]["id"],)).fetchone()
         assert conn.execute(
-            "SELECT 1 FROM memories WHERE id = ?", (seeded["memory"]["id"],)
-        ).fetchone()
-        assert conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
-            "AND name = 'entity_relationship_events'"
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entity_relationship_events'"
         ).fetchone()
 
     # A caller that inspected/fixed permissions can safely retry in the
     # default identical-only skip mode; no duplicate historical rows appear.
     monkeypatch.setattr(onramp_module, "_secure_sqlite_files", real_secure)
-    assert (
-        onramp_main(
-            ["import", "--in", str(dump), "--db", str(target), "--user-id", str(USER_ID)]
-        )
-        == 0
-    )
+    assert onramp_main(["import", "--in", str(dump), "--db", str(target), "--user-id", str(USER_ID)]) == 0
     with sqlite3.connect(target) as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM memories WHERE id = ?", (seeded["memory"]["id"],)
-        ).fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = ?", (seeded["memory"]["id"],)).fetchone() == (1,)
 
 
-def test_new_target_needs_no_fallible_post_publication_chmod(
-    tmp_path, capsys, monkeypatch
-) -> None:
+def test_new_target_needs_no_fallible_post_publication_chmod(tmp_path, capsys, monkeypatch) -> None:
     origin = tmp_path / "origin.db"
     target = tmp_path / "target.db"
     bootstrap_database(origin, user_id=USER_ID, user_email="local@alice")
@@ -3826,19 +3758,12 @@ def test_new_target_needs_no_fallible_post_publication_chmod(
         return real_secure(path)
 
     monkeypatch.setattr(onramp_module, "_secure_sqlite_files", reject_target_chmod)
-    assert (
-        onramp_main(
-            ["import", "--in", str(dump), "--db", str(target), "--user-id", str(USER_ID)]
-        )
-        == 0
-    )
+    assert onramp_main(["import", "--in", str(dump), "--db", str(target), "--user-id", str(USER_ID)]) == 0
     assert "permission hardening failed" not in capsys.readouterr().err
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
 
-def test_closed_summary_output_reports_committed_restore_without_rollback_claim(
-    tmp_path, capsys, monkeypatch
-) -> None:
+def test_closed_summary_output_reports_committed_restore_without_rollback_claim(tmp_path, capsys, monkeypatch) -> None:
     origin = tmp_path / "origin.db"
     target = tmp_path / "target.db"
     bootstrap_database(origin, user_id=USER_ID, user_email="local@alice")
@@ -3853,9 +3778,7 @@ def test_closed_summary_output_reports_committed_restore_without_rollback_claim(
     original_stdout = onramp_module.sys.stdout
     monkeypatch.setattr(onramp_module.sys, "stdout", ClosedPipe())
     try:
-        exit_code = onramp_main(
-            ["import", "--in", str(dump), "--db", str(target), "--user-id", str(USER_ID)]
-        )
+        exit_code = onramp_main(["import", "--in", str(dump), "--db", str(target), "--user-id", str(USER_ID)])
     finally:
         monkeypatch.setattr(onramp_module.sys, "stdout", original_stdout)
 
@@ -3867,9 +3790,7 @@ def test_closed_summary_output_reports_committed_restore_without_rollback_claim(
     assert "no records were written" not in err
     with sqlite3.connect(target) as conn:
         assert conn.execute("PRAGMA quick_check").fetchone() == ("ok",)
-        assert conn.execute(
-            "SELECT 1 FROM memories WHERE id = ?", (seeded["memory"]["id"],)
-        ).fetchone()
+        assert conn.execute("SELECT 1 FROM memories WHERE id = ?", (seeded["memory"]["id"],)).fetchone()
 
 
 def test_import_malformed_line_reports_line_number_and_creates_nothing(tmp_path, capsys) -> None:
@@ -3885,9 +3806,7 @@ def test_import_malformed_line_reports_line_number_and_creates_nothing(tmp_path,
         encoding="utf-8",
     )
     target_db = tmp_path / "target.db"
-    exit_code = onramp_main(
-        ["import", "--in", str(bad), "--db", str(target_db), "--user-id", str(USER_ID)]
-    )
+    exit_code = onramp_main(["import", "--in", str(bad), "--db", str(target_db), "--user-id", str(USER_ID)])
     assert exit_code == 1
     err = capsys.readouterr().err
     assert "line 2" in err
@@ -3902,9 +3821,7 @@ def test_import_unknown_record_type_reports_line_number(tmp_path, capsys) -> Non
         json.dumps({"record_type": "wombat", "record": {"id": str(uuid4())}}) + "\n",
         encoding="utf-8",
     )
-    exit_code = onramp_main(
-        ["import", "--in", str(bad), "--db", str(tmp_path / "t.db"), "--user-id", str(USER_ID)]
-    )
+    exit_code = onramp_main(["import", "--in", str(bad), "--db", str(tmp_path / "t.db"), "--user-id", str(USER_ID)])
     assert exit_code == 1
     err = capsys.readouterr().err
     assert "line 1" in err
@@ -3912,9 +3829,7 @@ def test_import_unknown_record_type_reports_line_number(tmp_path, capsys) -> Non
 
 
 def test_import_missing_file_fails_cleanly(tmp_path, capsys) -> None:
-    exit_code = onramp_main(
-        ["import", "--in", str(tmp_path / "nope.jsonl"), "--db", str(tmp_path / "t.db")]
-    )
+    exit_code = onramp_main(["import", "--in", str(tmp_path / "nope.jsonl"), "--db", str(tmp_path / "t.db")])
     assert exit_code == 1
     assert "does not exist" in capsys.readouterr().err
 
@@ -3935,15 +3850,11 @@ def test_import_reads_old_exports_lacking_newer_record_types(tmp_path) -> None:
                 stream.write(json.dumps({"record_type": record_type, "record": record}) + "\n")
 
     fresh_db = tmp_path / "fresh.db"
-    exit_code = onramp_main(
-        ["import", "--in", str(old_dump), "--db", str(fresh_db), "--user-id", str(USER_ID)]
-    )
+    exit_code = onramp_main(["import", "--in", str(old_dump), "--db", str(fresh_db), "--user-id", str(USER_ID)])
     assert exit_code == 0
     with sqlite_user_connection(fresh_db, USER_ID) as conn:
         store = SQLiteVNextStore(conn, USER_ID)
-        assert [row["id"] for row in store.list_memories()] == [
-            row["id"] for row in full["memory"]
-        ]
+        assert [row["id"] for row in store.list_memories()] == [row["id"] for row in full["memory"]]
         assert len(store.list_events()) == len(full["event"])
 
 
@@ -3959,17 +3870,13 @@ def test_import_accepts_earlier_v2_header_inclusive_integrity_scope(tmp_path) ->
     digest = hashlib.sha256()
     for payload in envelopes[:-1]:
         digest.update(
-            (
-                json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-                + "\n"
-            ).encode("utf-8")
+            (json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode("utf-8")
         )
     envelopes[-1]["record"]["sha256"] = digest.hexdigest()
     earlier_v2 = tmp_path / "earlier-v2.jsonl"
     earlier_v2.write_text(
         "".join(
-            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-            + "\n"
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
             for payload in envelopes
         ),
         encoding="utf-8",
@@ -4059,10 +3966,19 @@ def test_alice_memory_mcp_subprocess_smoke(tmp_path, monkeypatch) -> None:
         mcp_tools_module.AGENT_API_KEY_ENV,
     ):
         env.pop(env_name, None)
-    pythonpath_entries = [str(REPO_ROOT / "apps" / "api" / "src"), str(REPO_ROOT / "workers")]
-    if env.get("PYTHONPATH"):
-        pythonpath_entries.append(env["PYTHONPATH"])
-    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+    if env.get("ALICE_TEST_INSTALLED_WHEEL") == "1":
+        # The compatibility workflow deliberately exercises the installed
+        # distribution. Reintroducing checkout source here would invalidate
+        # that proof even though the parent process is running repository tests.
+        env.pop("PYTHONPATH", None)
+    else:
+        pythonpath_entries = [
+            str(REPO_ROOT / "apps" / "api" / "src"),
+            str(REPO_ROOT / "workers"),
+        ]
+        if env.get("PYTHONPATH"):
+            pythonpath_entries.append(env["PYTHONPATH"])
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
 
     process = subprocess.Popen(
         [sys.executable, "-m", "alicebot_api.onramp", "mcp", "--data-dir", str(tmp_path)],
@@ -4101,9 +4017,7 @@ def test_alice_memory_mcp_subprocess_smoke(tmp_path, monkeypatch) -> None:
         assert review["count"] == 1
         memory_id = review["items"][0]["id"]
 
-        approved = client.call_tool(
-            "alice_memory_correct", {"review_item_id": memory_id, "action": "approve"}
-        )
+        approved = client.call_tool("alice_memory_correct", {"review_item_id": memory_id, "action": "approve"})
         assert approved["memory"]["status"] == "active"
 
         recall = client.call_tool("alice_recall", {"query": "smoke the on-ramp", "debug": True})

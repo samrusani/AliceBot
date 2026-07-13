@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from apps.api.src.alicebot_api.config import Settings
+from alicebot_api.config import Settings
 from alicebot_api.provider_runtime import (
     AZURE_ADAPTER_KEY,
     LLAMACPP_ADAPTER_KEY,
@@ -26,6 +26,10 @@ from alicebot_api.provider_secrets import (
     encode_provider_secret_ref,
     write_provider_api_key,
 )
+from alicebot_api.response_generation import (
+    ModelInvocationError,
+    ModelProviderUnavailableError,
+)
 
 
 class FakeHTTPResponse:
@@ -40,6 +44,63 @@ class FakeHTTPResponse:
 
     def read(self) -> bytes:
         return self.body
+
+
+def test_local_and_azure_provider_timeouts_are_typed(monkeypatch) -> None:
+    from alicebot_api.azure_provider_helpers import request_azure_json
+    from alicebot_api.local_provider_helpers import request_json
+
+    def timeout_urlopen(*_args, **_kwargs):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("alicebot_api.local_provider_helpers.urlopen", timeout_urlopen)
+    monkeypatch.setattr("alicebot_api.azure_provider_helpers.urlopen", timeout_urlopen)
+
+    with pytest.raises(ModelProviderUnavailableError, match="timed out"):
+        request_json(
+            method="GET",
+            base_url="https://provider.example",
+            path="/models",
+            timeout_seconds=1,
+        )
+    with pytest.raises(ModelProviderUnavailableError, match="timed out"):
+        request_azure_json(
+            method="GET",
+            base_url="https://azure.example",
+            path="/openai/models",
+            api_version="2024-10-21",
+            timeout_seconds=1,
+        )
+
+
+def test_local_and_azure_non_utf8_responses_are_typed(monkeypatch) -> None:
+    from alicebot_api.azure_provider_helpers import request_azure_json
+    from alicebot_api.local_provider_helpers import request_json
+
+    monkeypatch.setattr(
+        "alicebot_api.local_provider_helpers.urlopen",
+        lambda *_args, **_kwargs: FakeHTTPResponse(b"\xff\xfe\xfa"),
+    )
+    monkeypatch.setattr(
+        "alicebot_api.azure_provider_helpers.urlopen",
+        lambda *_args, **_kwargs: FakeHTTPResponse(b"\xff\xfe\xfa"),
+    )
+
+    with pytest.raises(ModelInvocationError, match="invalid JSON"):
+        request_json(
+            method="GET",
+            base_url="https://provider.example",
+            path="/models",
+            timeout_seconds=1,
+        )
+    with pytest.raises(ModelInvocationError, match="invalid JSON"):
+        request_azure_json(
+            method="GET",
+            base_url="https://azure.example",
+            path="/openai/models",
+            api_version="2024-10-21",
+            timeout_seconds=1,
+        )
 
 
 @pytest.fixture(autouse=True)

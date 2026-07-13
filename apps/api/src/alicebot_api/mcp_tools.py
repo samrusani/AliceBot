@@ -5,7 +5,7 @@ import math
 import os
 import re
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
@@ -148,6 +148,10 @@ from alicebot_api.vnext_agent_keys import (
 )
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService
 from alicebot_api.vnext_capture import VNextCaptureService
+from alicebot_api.vnext_embeddings import (
+    DeferredMemoryEmbedding,
+    persist_deferred_memory_embeddings_best_effort,
+)
 from alicebot_api.vnext_connections import ConnectionFinderRequest, VNextConnectionService
 from alicebot_api.vnext_context_tree import ContextTreeRequest, VNextContextTreeService
 from alicebot_api.vnext_connectors import VNextConnectorService
@@ -195,6 +199,7 @@ from alicebot_api.vnext_retrieval import (
     reciprocal_rank_fusion,
 )
 from alicebot_api.vnext_scheduler import SchedulerRunRequest, VNextSchedulerService
+from alicebot_api.vnext_scheduler_runtime import run_due_workflows_durable, run_now_durable
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_store import REDACTION_MARKER, PostgresVNextStore
 
@@ -301,16 +306,12 @@ class MCPRuntimeContext:
     agent_identity_resolved: bool = False
 
 
-_SQLITE_POSTGRES_ONLY_MESSAGE = (
-    "this tool requires the Postgres backend; the SQLite on-ramp serves the core tools only"
-)
+_SQLITE_POSTGRES_ONLY_MESSAGE = "this tool requires the Postgres backend; the SQLite on-ramp serves the core tools only"
 
 # Mirrors the alice-memory on-ramp defaults (``onramp.DEFAULT_USER_EMAIL``);
 # the on-ramp imports this module, so importing it back would be a cycle.
 _SQLITE_DEFAULT_USER_EMAIL = "local@alice"
-_SQLITE_DEFAULT_USER_DISPLAY_NAME = (
-    _SQLITE_DEFAULT_USER_EMAIL.split("@", 1)[0].replace(".", " ").title() or None
-)
+_SQLITE_DEFAULT_USER_DISPLAY_NAME = _SQLITE_DEFAULT_USER_EMAIL.split("@", 1)[0].replace(".", " ").title() or None
 
 
 def _is_sqlite_backend(context: MCPRuntimeContext) -> bool:
@@ -363,6 +364,25 @@ def _vnext_store_context(context: MCPRuntimeContext):
         return
     with user_connection(context.database_url, context.user_id) as conn:
         yield PostgresVNextStore(conn)
+
+
+def _persist_vnext_deferred_embedding_inputs(
+    context: MCPRuntimeContext,
+    deferred_inputs: Sequence[DeferredMemoryEmbedding],
+    *,
+    actor_type: str = "system",
+    actor_id: str | None = None,
+    trace_id: str | None = None,
+) -> None:
+    """Persist optional embeddings after the authoritative tool transaction."""
+
+    persist_deferred_memory_embeddings_best_effort(
+        deferred_inputs,
+        store_context=lambda: _vnext_store_context(context),
+        actor_type=actor_type,
+        actor_id=actor_id,
+        trace_id=trace_id,
+    )
 
 
 def _normalize_arguments(arguments: object) -> Mapping[str, object]:
@@ -543,9 +563,7 @@ def _retrieval_filter_kwargs(arguments: Mapping[str, object]) -> _RetrievalFilte
     if singular_person is not None:
         people.append(singular_person)
     if people:
-        kwargs["scope_people"] = tuple(
-            dict.fromkeys(person.casefold() for person in people)
-        )
+        kwargs["scope_people"] = tuple(dict.fromkeys(person.casefold() for person in people))
     since = _parse_optional_datetime(arguments, "since")
     until = _parse_optional_datetime(arguments, "until")
     if since is not None and since.tzinfo is None:
@@ -564,9 +582,7 @@ def _retrieval_filter_kwargs(arguments: Mapping[str, object]) -> _RetrievalFilte
 AGENT_API_KEY_ENV = "ALICE_AGENT_API_KEY"
 
 
-def _agent_identity_from_arguments(
-    context: MCPRuntimeContext, arguments: Mapping[str, object]
-) -> AgentIdentity | None:
+def _agent_identity_from_arguments(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> AgentIdentity | None:
     """Resolve the calling agent's identity for one MCP tool call.
 
     Without ``ALICE_AGENT_API_KEY`` the MCP server is local operator tooling
@@ -637,11 +653,7 @@ def _policy_checked(
         decision = replace(
             decision,
             decision="blocked",
-            reasons=tuple(
-                dict.fromkeys(
-                    (*decision.reasons, "artifact_target_filtering_not_permitted")
-                )
-            ),
+            reasons=tuple(dict.fromkeys((*decision.reasons, "artifact_target_filtering_not_permitted"))),
         )
     append_policy_events(
         store,
@@ -691,7 +703,9 @@ def _mcp_agent_policy_preflight(
     return decision
 
 
-def _parse_task_brief_request(arguments: Mapping[str, object], *, mode_key: str = "mode") -> TaskBriefCompileRequestInput:
+def _parse_task_brief_request(
+    arguments: Mapping[str, object], *, mode_key: str = "mode"
+) -> TaskBriefCompileRequestInput:
     mode_value = arguments.get(mode_key)
     if not isinstance(mode_value, str):
         raise MCPToolError(f"{mode_key} is required and must be a string")
@@ -937,10 +951,7 @@ def _build_recall_query(arguments: Mapping[str, object], *, limit: int) -> Conti
 def _canonicalize_json(value: object) -> object:
     value = json_safe(value)
     if isinstance(value, dict):
-        return {
-            key: _canonicalize_json(value[key])
-            for key in sorted(value)
-        }
+        return {key: _canonicalize_json(value[key]) for key in sorted(value)}
     if isinstance(value, list):
         return [_canonicalize_json(item) for item in value]
     return value
@@ -1095,9 +1106,7 @@ def _handle_alice_memory_mutations_generate(
                     task_id=_parse_optional_uuid(arguments, "task_id"),
                     project=_parse_optional_text(arguments, "project"),
                     person=_parse_optional_text(arguments, "person"),
-                    target_continuity_object_id=_parse_optional_uuid(
-                        arguments, "target_continuity_object_id"
-                    ),
+                    target_continuity_object_id=_parse_optional_uuid(arguments, "target_continuity_object_id"),
                 ),
             ),
         )
@@ -1147,9 +1156,7 @@ def _handle_alice_memory_mutations_commit(
                 request=MemoryOperationCommitInput(
                     candidate_ids=candidate_ids,
                     sync_fingerprint=_parse_optional_text(arguments, "sync_fingerprint"),
-                    include_review_required=_parse_bool(
-                        arguments, key="include_review_required", default=False
-                    ),
+                    include_review_required=_parse_bool(arguments, key="include_review_required", default=False),
                 ),
             ),
         )
@@ -1204,15 +1211,11 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
         # useful call caps the result count and runs full-text search only.
         limit = min(limit, CONTEXT_DEPTH_MINIMAL_MAX_ITEMS)
     domains = list(_parse_string_list(arguments, "domains"))
-    sensitivity_allowed = list(
-        _parse_string_list(arguments, "sensitivity_allowed") or _DEFAULT_SENSITIVITY_ALLOWED
-    )
+    sensitivity_allowed = list(_parse_string_list(arguments, "sensitivity_allowed") or _DEFAULT_SENSITIVITY_ALLOWED)
     # Validate typed retrieval inputs before opening an auth/policy store
     # transaction, preserving the public fail-fast contract.
     retrieval_filters = _retrieval_filter_kwargs(arguments)
-    requested_projects = retrieval_filters.get("projects", ()) or _parse_string_list(
-        arguments, "project_scope"
-    )
+    requested_projects = retrieval_filters.get("projects", ()) or _parse_string_list(arguments, "project_scope")
     decision = _mcp_agent_policy_preflight(
         context,
         arguments,
@@ -1278,13 +1281,9 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
         ordered_rows = _order_memories_for_strategy([item for item, _score in fused], budget_strategy)
         results: list[JsonObject] = []
         for item in ordered_rows:
-            provenance_count = len(
-                store.list_provenance_links(target_type="memory", target_id=str(item.get("id")))
-            )
+            provenance_count = len(store.list_provenance_links(target_type="memory", target_id=str(item.get("id"))))
             results.append(
-                _compact_recall_result(
-                    item, score=scores[str(item.get("id"))], provenance_count=provenance_count
-                )
+                _compact_recall_result(item, score=scores[str(item.get("id"))], provenance_count=provenance_count)
             )
 
     payload: dict[str, object] = {
@@ -1325,9 +1324,7 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
             if "projects" in retrieval_filters:
                 filter_payload["projects"] = list(retrieval_filters["projects"])
             if "created_by_agent_ids" in retrieval_filters:
-                filter_payload["created_by_agent_ids"] = list(
-                    retrieval_filters["created_by_agent_ids"]
-                )
+                filter_payload["created_by_agent_ids"] = list(retrieval_filters["created_by_agent_ids"])
             retrieval_payload["filters"] = filter_payload
         payload["retrieval"] = retrieval_payload
     return _json_object(payload)
@@ -1392,9 +1389,7 @@ def _handle_alice_resume(context: MCPRuntimeContext, arguments: Mapping[str, obj
         context,
         arguments,
         effective_project_scope=(
-            decision.effective_project_scope
-            if identity is not None and identity.project_scope
-            else ()
+            decision.effective_project_scope if identity is not None and identity.project_scope else ()
         ),
     )
 
@@ -1559,22 +1554,24 @@ def _handle_alice_prefetch_context(context: MCPRuntimeContext, arguments: Mappin
         )
 
     brief = resumption_payload["brief"]
-    return _json_object({
-        "prefetch_context": {
-            "assembly_version": _PREFETCH_CONTEXT_ASSEMBLY_VERSION_V0,
-            "text": _render_prefetch_context_text(
-                brief=brief,
-                open_loops_limit=max_open_loops,
-                recent_changes_limit=max_recent_changes,
-            ),
-            "scope": brief["scope"],
-            "last_decision": brief["last_decision"],
-            "next_action": brief["next_action"],
-            "open_loops": brief["open_loops"],
-            "recent_changes": brief["recent_changes"],
-            "sources": brief["sources"],
+    return _json_object(
+        {
+            "prefetch_context": {
+                "assembly_version": _PREFETCH_CONTEXT_ASSEMBLY_VERSION_V0,
+                "text": _render_prefetch_context_text(
+                    brief=brief,
+                    open_loops_limit=max_open_loops,
+                    recent_changes_limit=max_recent_changes,
+                ),
+                "scope": brief["scope"],
+                "last_decision": brief["last_decision"],
+                "next_action": brief["next_action"],
+                "open_loops": brief["open_loops"],
+                "recent_changes": brief["recent_changes"],
+                "sources": brief["sources"],
+            }
         }
-    })
+    )
 
 
 def _handle_alice_open_loops(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -1702,42 +1699,48 @@ def _created_at_sort_key(row: Mapping[str, object]) -> tuple[str, str]:
 
 
 def _compact_vnext_memory(row: Mapping[str, object], *, provenance_count: int) -> JsonObject:
-    return _json_object({
-        "id": str(row.get("id")),
-        "title": row.get("title"),
-        "canonical_text": row.get("canonical_text"),
-        "created_at": row.get("created_at"),
-        "domain": row.get("domain"),
-        "status": row.get("status"),
-        "memory_type": row.get("memory_type"),
-        "confidence": row.get("confidence"),
-        "provenance_count": provenance_count,
-    })
+    return _json_object(
+        {
+            "id": str(row.get("id")),
+            "title": row.get("title"),
+            "canonical_text": row.get("canonical_text"),
+            "created_at": row.get("created_at"),
+            "domain": row.get("domain"),
+            "status": row.get("status"),
+            "memory_type": row.get("memory_type"),
+            "confidence": row.get("confidence"),
+            "provenance_count": provenance_count,
+        }
+    )
 
 
 def _compact_vnext_open_loop(row: Mapping[str, object]) -> JsonObject:
-    return _json_object({
-        "kind": "open_loop",
-        "id": str(row.get("id")),
-        "title": row.get("title"),
-        "status": row.get("status"),
-        "priority": row.get("priority"),
-        "due_at": row.get("due_at"),
-        "opened_at": row.get("opened_at"),
-        "domain": row.get("domain"),
-        "project_id": row.get("project_id"),
-    })
+    return _json_object(
+        {
+            "kind": "open_loop",
+            "id": str(row.get("id")),
+            "title": row.get("title"),
+            "status": row.get("status"),
+            "priority": row.get("priority"),
+            "due_at": row.get("due_at"),
+            "opened_at": row.get("opened_at"),
+            "domain": row.get("domain"),
+            "project_id": row.get("project_id"),
+        }
+    )
 
 
 def _compact_vnext_event(row: Mapping[str, object]) -> JsonObject:
-    return _json_object({
-        "id": str(row.get("id")),
-        "event_type": row.get("event_type"),
-        "actor_type": row.get("actor_type"),
-        "target_type": row.get("target_type"),
-        "target_id": row.get("target_id"),
-        "occurred_at": row.get("occurred_at"),
-    })
+    return _json_object(
+        {
+            "id": str(row.get("id")),
+            "event_type": row.get("event_type"),
+            "actor_type": row.get("actor_type"),
+            "target_type": row.get("target_type"),
+            "target_id": row.get("target_id"),
+            "occurred_at": row.get("occurred_at"),
+        }
+    )
 
 
 def _provenance_count(store: SQLiteVNextStore, memory_id: object) -> int:
@@ -1755,9 +1758,7 @@ def _vnext_recent_decisions(
     project = _parse_optional_text(arguments, "project")
     since = _parse_optional_datetime(arguments, "since")
     until = _parse_optional_datetime(arguments, "until")
-    filters_ignored = [
-        key for key in ("thread_id", "task_id", "person") if arguments.get(key) not in (None, "")
-    ]
+    filters_ignored = [key for key in ("thread_id", "task_id", "person") if arguments.get(key) not in (None, "")]
 
     with _vnext_store_context(context) as store:
         matched = [
@@ -1855,11 +1856,7 @@ def _vnext_resume(
         next_action: JsonObject | None = open_loops[0] if open_loops else None
         if next_action is None:
             todo_memories = sorted(
-                (
-                    row
-                    for row in memories
-                    if row.get("memory_type") in _SQLITE_NEXT_ACTION_MEMORY_TYPES
-                ),
+                (row for row in memories if row.get("memory_type") in _SQLITE_NEXT_ACTION_MEMORY_TYPES),
                 key=_created_at_sort_key,
                 reverse=True,
             )
@@ -1874,11 +1871,7 @@ def _vnext_resume(
 
         recent_changes: list[JsonObject] = []
         if max_recent_changes > 0:
-            allowed_target_ids = {
-                str(row.get("id"))
-                for row in [*memories, *loop_rows]
-                if row.get("id") is not None
-            }
+            allowed_target_ids = {str(row.get("id")) for row in [*memories, *loop_rows] if row.get("id") is not None}
             event_limit = max_recent_changes if not effective_project_scope else max(max_recent_changes * 5, 50)
             recent_changes = [
                 _compact_vnext_event(row)
@@ -1888,22 +1881,22 @@ def _vnext_resume(
                 or _resource_matches_project_scope(row, effective_project_scope)
             ][:max_recent_changes]
 
-    return _json_object({
-        "brief": {
-            "last_decision": last_decision,
-            "next_action": next_action,
-            "open_loops": open_loops,
-            "recent_changes": recent_changes,
-            "generated_at": _utc_now_iso_text(),
-            "mode": "vnext",
-            "filters_ignored": filters_ignored,
+    return _json_object(
+        {
+            "brief": {
+                "last_decision": last_decision,
+                "next_action": next_action,
+                "open_loops": open_loops,
+                "recent_changes": recent_changes,
+                "generated_at": _utc_now_iso_text(),
+                "mode": "vnext",
+                "filters_ignored": filters_ignored,
+            }
         }
-    })
+    )
 
 
-def _resource_matches_project_scope(
-    resource: Mapping[str, object], project_scope: tuple[str, ...]
-) -> bool:
+def _resource_matches_project_scope(resource: Mapping[str, object], project_scope: tuple[str, ...]) -> bool:
     if not project_scope:
         return True
     allowed = {value.casefold() for value in project_scope}
@@ -1952,9 +1945,7 @@ def _vnext_memory_review(context: MCPRuntimeContext, arguments: Mapping[str, obj
                     "review": {
                         "memory": memory,
                         "revisions": store.list_revisions(memory_id),
-                        "provenance_links": store.list_provenance_links(
-                            target_type="memory", target_id=memory_id
-                        ),
+                        "provenance_links": store.list_provenance_links(target_type="memory", target_id=memory_id),
                     },
                 }
         if blocked_decision is not None:
@@ -2001,8 +1992,7 @@ def _vnext_memory_review(context: MCPRuntimeContext, arguments: Mapping[str, obj
         arguments,
         action="review_items.lookup",
         domains=requested_domains or tuple(VNEXT_DOMAINS),
-        sensitivity_allowed=requested_sensitivity
-        or ("public", "internal", "private", "highly_sensitive", "unknown"),
+        sensitivity_allowed=requested_sensitivity or ("public", "internal", "private", "highly_sensitive", "unknown"),
         project_scope=requested_projects,
     )
     with _vnext_store_context(context) as store:
@@ -2011,13 +2001,9 @@ def _vnext_memory_review(context: MCPRuntimeContext, arguments: Mapping[str, obj
             for row in store.list_memories(status=vnext_status)
             if _resource_matches_project_scope(row, decision.effective_project_scope)
             and str(row.get("domain") or "unknown") in decision.effective_domains
-            and str(row.get("sensitivity") or "unknown")
-            in decision.effective_sensitivity_allowed
+            and str(row.get("sensitivity") or "unknown") in decision.effective_sensitivity_allowed
         ][:limit]
-        items = [
-            _compact_vnext_memory(row, provenance_count=_provenance_count(store, row.get("id")))
-            for row in rows
-        ]
+        items = [_compact_vnext_memory(row, provenance_count=_provenance_count(store, row.get("id"))) for row in rows]
     return _json_object({"items": items, "count": len(items), "mode": "vnext_candidates"})
 
 
@@ -2073,11 +2059,7 @@ def _validated_review_provenance(
         list_source_chunks = getattr(store, "list_source_chunks", None)
         if not callable(list_source_chunks):
             raise MCPToolError("the current store cannot validate provenance source chunks")
-        owned_chunk_ids = {
-            str(row.get("id"))
-            for row in list_source_chunks(source_id)
-            if isinstance(row, Mapping)
-        }
+        owned_chunk_ids = {str(row.get("id")) for row in list_source_chunks(source_id) if isinstance(row, Mapping)}
         if source_chunk_id not in owned_chunk_ids:
             raise MCPToolError(
                 f"provenance source chunk {source_chunk_id} does not belong to source "
@@ -2086,14 +2068,9 @@ def _validated_review_provenance(
 
     raw_role = provenance.get("evidence_role", "supports")
     if not isinstance(raw_role, str) or raw_role not in _PROVENANCE_EVIDENCE_ROLES:
-        raise MCPToolError(
-            "provenance.evidence_role must be one of: "
-            + ", ".join(_PROVENANCE_EVIDENCE_ROLES)
-        )
+        raise MCPToolError("provenance.evidence_role must be one of: " + ", ".join(_PROVENANCE_EVIDENCE_ROLES))
 
-    raw_confidence = provenance.get(
-        "confidence", fallback_confidence if fallback_confidence is not None else 0.5
-    )
+    raw_confidence = provenance.get("confidence", fallback_confidence if fallback_confidence is not None else 0.5)
     if isinstance(raw_confidence, bool) or not isinstance(raw_confidence, (int, float)):
         raise MCPToolError("provenance.confidence must be a number between 0 and 1")
     confidence = float(raw_confidence)
@@ -2236,6 +2213,7 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
 
     blocked_decision: PolicyDecision | None = None
     consolidation_acceptance: VNextJsonObject | None = None
+    consolidation_deferred_inputs: tuple[DeferredMemoryEmbedding, ...] = ()
     with _vnext_store_context(context) as store:
         # Preliminary policy/orientation read only. The mutation transaction
         # below re-authorizes after taking its locks; taking a row lock here
@@ -2262,43 +2240,47 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
                 )
             if resolved_action == "confirm":
                 try:
-                    consolidation_acceptance = VNextMemoryCommitService(
-                        store
-                    ).accept_consolidation_candidate(
+                    consolidation_service = VNextMemoryCommitService(store, defer_embeddings=True)
+                    consolidation_acceptance = consolidation_service.accept_consolidation_candidate(
                         memory_id,
                         reason=reason or "Approved through alice_memory_correct.",
                         identity=identity,
                     )
+                    consolidation_deferred_inputs = consolidation_service.deferred_embedding_inputs
                 except AgentPolicyBlockedError as exc:
                     blocked_decision = exc.decision
     if blocked_decision is not None:
         _raise_mcp_policy_blocked(blocked_decision)
     if consolidation_acceptance is not None:
-        return _json_object({
-            "review_action": {
-                "requested_action": requested_action,
-                "resolved_action": resolved_action,
-                "memory_id": memory_id,
-            },
-            "memory": consolidation_acceptance["memory"],
-            "replacement_object": None,
-            "consolidation_acceptance": consolidation_acceptance,
-            "mode": "vnext",
-        })
+        _persist_vnext_deferred_embedding_inputs(
+            context,
+            consolidation_deferred_inputs,
+            actor_type=actor_type,
+            actor_id=actor_id,
+        )
+        return _json_object(
+            {
+                "review_action": {
+                    "requested_action": requested_action,
+                    "resolved_action": resolved_action,
+                    "memory_id": memory_id,
+                },
+                "memory": consolidation_acceptance["memory"],
+                "replacement_object": None,
+                "consolidation_acceptance": consolidation_acceptance,
+                "mode": "vnext",
+            }
+        )
 
     replacement_object: VNextJsonObject | None = None
     with _vnext_store_context(context) as store:
-        memory_service = VNextMemoryCommitService(store)
+        memory_service = VNextMemoryCommitService(store, defer_embeddings=True)
         # Every review action shares one graph -> row lock order.  Provenance
         # approval activates a memory too, so it must not be a row-first
         # exception to the lifecycle mutation boundary.
         memory_service.lock_supersession_graph()
         get_memory_for_update = getattr(store, "get_memory_for_update", None)
-        memory = (
-            get_memory_for_update(memory_id)
-            if callable(get_memory_for_update)
-            else store.get_memory(memory_id)
-        )
+        memory = get_memory_for_update(memory_id) if callable(get_memory_for_update) else store.get_memory(memory_id)
         if memory is None:
             raise MCPToolError(f"memory {memory_id} was not found")
         # Re-authorize the row after acquiring its mutation lock. The earlier
@@ -2327,13 +2309,9 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
         try:
             resolve_transition(_review_operation, str(memory.get("status") or ""))
         except LifecycleTransitionError as exc:
-            raise MCPToolError(
-                f"memory {memory_id} cannot be reviewed from status '{memory.get('status')}'"
-            ) from exc
+            raise MCPToolError(f"memory {memory_id} cannot be reviewed from status '{memory.get('status')}'") from exc
         if is_pending_consolidation_candidate(memory):
-            raise MCPToolError(
-                "memory became a pending consolidation candidate during review; retry the approval"
-            )
+            raise MCPToolError("memory became a pending consolidation candidate during review; retry the approval")
         event_payload: VNextJsonObject = {
             "requested_action": requested_action,
             "resolved_action": resolved_action,
@@ -2362,9 +2340,7 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
                 actor_type=actor_type,
                 actor_id=actor_id,
             )
-            VNextMemoryCommitService(store).refresh_memory_derived_state(
-                updated, identity=identity, stage="mcp_review_approve"
-            )
+            memory_service.refresh_memory_derived_state(updated, identity=identity, stage="mcp_review_approve")
         elif resolved_action == "delete":
             updated = store.update_memory(
                 memory_id=memory_id,
@@ -2391,9 +2367,7 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
             provenance = _parse_optional_json_object(arguments, "provenance")
             confidence = _parse_optional_float(arguments, "confidence")
             if title is None and body is None and provenance is None and confidence is None:
-                raise MCPToolError(
-                    "edit-and-approve requires at least one of title, body, provenance, or confidence"
-                )
+                raise MCPToolError("edit-and-approve requires at least one of title, body, provenance, or confidence")
             validated_provenance = (
                 _validated_review_provenance(
                     store,
@@ -2411,9 +2385,7 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
                 "metadata_json": _accepted_review_metadata(
                     memory,
                     confirmed_at=now_iso,
-                    extra={"provenance": validated_provenance}
-                    if validated_provenance is not None
-                    else None,
+                    extra={"provenance": validated_provenance} if validated_provenance is not None else None,
                 ),
             }
             if title is not None:
@@ -2423,15 +2395,11 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
                 patch["value"] = body
                 patch["canonical_text"] = canonical_text
                 patch["summary"] = (
-                    canonical_text
-                    if len(canonical_text) <= 280
-                    else canonical_text[:277].rstrip() + "..."
+                    canonical_text if len(canonical_text) <= 280 else canonical_text[:277].rstrip() + "..."
                 )
                 if title is None:
                     patch["title"] = (
-                        canonical_text
-                        if len(canonical_text) <= 120
-                        else canonical_text[:117].rstrip() + "..."
+                        canonical_text if len(canonical_text) <= 120 else canonical_text[:117].rstrip() + "..."
                     )
             if confidence is not None:
                 patch["confidence"] = confidence
@@ -2443,8 +2411,7 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
                         "target_id": memory_id,
                         "source_id": validated_provenance["source_id"],
                         "source_chunk_id": validated_provenance["source_chunk_id"],
-                        "quote": validated_provenance["quote"]
-                        or str(updated.get("canonical_text") or ""),
+                        "quote": validated_provenance["quote"] or str(updated.get("canonical_text") or ""),
                         "evidence_role": validated_provenance["evidence_role"],
                         "confidence": validated_provenance["confidence"],
                     },
@@ -2460,18 +2427,14 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
                 actor_type=actor_type,
                 actor_id=actor_id,
             )
-            VNextMemoryCommitService(store).refresh_memory_derived_state(
-                updated, identity=identity, stage="mcp_review_edit_and_approve"
-            )
+            memory_service.refresh_memory_derived_state(updated, identity=identity, stage="mcp_review_edit_and_approve")
         else:  # supersede
             replacement_title = _parse_optional_text(arguments, "replacement_title")
             replacement_body = _parse_optional_json_object(arguments, "replacement_body")
             replacement_provenance = _parse_optional_json_object(arguments, "replacement_provenance")
             replacement_confidence = _parse_optional_float(arguments, "replacement_confidence")
             if replacement_title is None and replacement_body is None:
-                raise MCPToolError(
-                    "supersede-existing requires replacement_title or replacement_body"
-                )
+                raise MCPToolError("supersede-existing requires replacement_title or replacement_body")
             canonical_text = (
                 _canonical_text_from_body(replacement_body)
                 if replacement_body is not None
@@ -2500,9 +2463,7 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
             replacement_object = store.create_memory(
                 {
                     "memory_key": f"vnext.correction.supersede.{uuid4().hex[:16]}",
-                    "value": replacement_body
-                    if replacement_body is not None
-                    else {"text": canonical_text},
+                    "value": replacement_body if replacement_body is not None else {"text": canonical_text},
                     "status": "active",
                     "supersedes": memory_id,
                     "project_id": memory.get("project_id"),
@@ -2575,7 +2536,7 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
                 },
                 actor_type=actor_type,
             )
-            VNextMemoryCommitService(store).refresh_memory_derived_state(
+            memory_service.refresh_memory_derived_state(
                 replacement_object,
                 identity=identity,
                 stage="mcp_review_supersede_replacement",
@@ -2592,49 +2553,24 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
             payload=event_payload,
         )
 
-    return _json_object({
-        "review_action": {
-            "requested_action": requested_action,
-            "resolved_action": resolved_action,
-            "memory_id": memory_id,
-        },
-        "memory": updated,
-        "replacement_object": replacement_object,
-        "mode": "vnext",
-    })
-
-
-def _recent_decisions_payload(
-    context: MCPRuntimeContext,
-    *,
-    arguments: Mapping[str, object],
-    limit: int,
-) -> JsonObject:
-    with _store_context(context) as store:
-        recall_payload = query_continuity_recall(
-            store,
-            user_id=context.user_id,
-            request=_build_recall_query(arguments, limit=MAX_CONTINUITY_RECALL_LIMIT),
-            apply_limit=False,
-        )
-
-    all_decisions = [
-        item
-        for item in recall_payload["items"]
-        if item["object_type"] == "Decision"
-    ]
-    ordered = sorted(all_decisions, key=_recency_sort_key, reverse=True)
-    items = ordered[:limit]
-    return _json_object({
-        "items": items,
-        "summary": {
-            "scope": recall_payload["summary"]["filters"],
-            "limit": limit,
-            "returned_count": len(items),
-            "total_count": len(all_decisions),
-            "order": ["created_at_desc", "id_desc"],
-        },
-    })
+    _persist_vnext_deferred_embedding_inputs(
+        context,
+        memory_service.deferred_embedding_inputs,
+        actor_type=actor_type,
+        actor_id=actor_id,
+    )
+    return _json_object(
+        {
+            "review_action": {
+                "requested_action": requested_action,
+                "resolved_action": resolved_action,
+                "memory_id": memory_id,
+            },
+            "memory": updated,
+            "replacement_object": replacement_object,
+            "mode": "vnext",
+        }
+    )
 
 
 def _handle_alice_recent_decisions(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -2662,9 +2598,7 @@ def _handle_alice_recent_decisions(context: MCPRuntimeContext, arguments: Mappin
         arguments=arguments,
         limit=limit,
         effective_project_scope=(
-            decision.effective_project_scope
-            if identity is not None and identity.project_scope
-            else ()
+            decision.effective_project_scope if identity is not None and identity.project_scope else ()
         ),
     )
 
@@ -2705,12 +2639,14 @@ def _handle_alice_recent_changes(context: MCPRuntimeContext, arguments: Mapping[
         )
 
     brief = resumption_payload["brief"]
-    return _json_object({
-        "recent_changes": brief["recent_changes"],
-        "scope": brief["scope"],
-        "sources": brief["sources"],
-        "order": list(CONTINUITY_RESUMPTION_RECENT_CHANGE_ORDER),
-    })
+    return _json_object(
+        {
+            "recent_changes": brief["recent_changes"],
+            "scope": brief["scope"],
+            "sources": brief["sources"],
+            "order": list(CONTINUITY_RESUMPTION_RECENT_CHANGE_ORDER),
+        }
+    )
 
 
 def _handle_alice_timeline(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -2750,10 +2686,12 @@ def _review_queue_payload(
                 user_id=context.user_id,
                 continuity_object_id=continuity_object_id,
             )
-        return _json_object({
-            "mode": "detail",
-            "review": detail_payload["review"],
-        })
+        return _json_object(
+            {
+                "mode": "detail",
+                "review": detail_payload["review"],
+            }
+        )
 
     status = _parse_review_status(arguments, default=default_status)
     limit = _parse_int(
@@ -2775,11 +2713,13 @@ def _review_queue_payload(
         )
     summary_payload: dict[str, object] = dict(queue_payload["summary"])
     summary_payload["order"] = list(CONTINUITY_REVIEW_QUEUE_ORDER)
-    return _json_object({
-        "mode": "queue",
-        "items": queue_payload["items"],
-        "summary": summary_payload,
-    })
+    return _json_object(
+        {
+            "mode": "queue",
+            "items": queue_payload["items"],
+            "summary": summary_payload,
+        }
+    )
 
 
 def _handle_alice_review_queue(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -2829,13 +2769,15 @@ def _review_apply_payload(
 
     if not include_action_resolution:
         return _json_object(payload)
-    return _json_object({
-        "review_action": {
-            "requested_action": requested_action,
-            "resolved_action": resolved_action,
-        },
-        **payload,
-    })
+    return _json_object(
+        {
+            "review_action": {
+                "requested_action": requested_action,
+                "resolved_action": resolved_action,
+            },
+            **payload,
+        }
+    )
 
 
 def _handle_alice_review_apply(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -2954,9 +2896,7 @@ def _handle_alice_trust_signals(
                         "TrustSignalState",
                         _parse_optional_text(arguments, "signal_state") or "active",
                     ),
-                    signal_type=cast(
-                        "TrustSignalType | None", _parse_optional_text(arguments, "signal_type")
-                    ),
+                    signal_type=cast("TrustSignalType | None", _parse_optional_text(arguments, "signal_type")),
                 ),
             ),
         )
@@ -3225,7 +3165,7 @@ def _vnext_context_pack_payload(context: MCPRuntimeContext, arguments: Mapping[s
     identity = _agent_identity_from_arguments(context, arguments)
 
     blocked_decision: PolicyDecision | None = None
-    payload: VNextJsonObject | None = None
+    scheduler_request: SchedulerRunRequest | None = None
     with _vnext_store_context(context) as store:
         actor_type, actor_id, decision = _policy_checked(
             store,
@@ -3337,6 +3277,7 @@ def _brain_artifact_request_from_arguments(arguments: Mapping[str, object]) -> B
     )
     return BrainArtifactRequest(
         domains=_parse_string_list(arguments, "domains"),
+        projects=_parse_string_list(arguments, "project_scope") or _parse_string_list(arguments, "projects"),
         sensitivity_allowed=sensitivity_allowed,
         generated_for=_parse_optional_text(arguments, "generated_for"),
         source_limit=_parse_int(arguments, key="source_limit", default=8, minimum=1, maximum=50),
@@ -3352,18 +3293,14 @@ def _brain_artifact_request_from_arguments(arguments: Mapping[str, object]) -> B
 def _handle_alice_generate_daily_brief(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     with _vnext_store_context(context) as store:
         return _json_object(
-            VNextBrainService(store).generate_daily_brief(
-                _brain_artifact_request_from_arguments(arguments)
-            )
+            VNextBrainService(store).generate_daily_brief(_brain_artifact_request_from_arguments(arguments))
         )
 
 
 def _handle_alice_generate_weekly_synthesis(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     with _vnext_store_context(context) as store:
         return _json_object(
-            VNextBrainService(store).generate_weekly_synthesis(
-                _brain_artifact_request_from_arguments(arguments)
-            )
+            VNextBrainService(store).generate_weekly_synthesis(_brain_artifact_request_from_arguments(arguments))
         )
 
 
@@ -3378,6 +3315,7 @@ def _connection_request_from_arguments(arguments: Mapping[str, object]) -> Conne
     return ConnectionFinderRequest(
         query=_parse_optional_text(arguments, "query") or "",
         domains=_parse_string_list(arguments, "domains"),
+        projects=_parse_string_list(arguments, "project_scope") or _parse_string_list(arguments, "projects"),
         sensitivity_allowed=sensitivity_allowed,
         max_connections=_parse_int(arguments, key="max_connections", default=8, minimum=1, maximum=50),
         auto_accept_threshold=auto_accept_threshold,
@@ -3398,6 +3336,7 @@ def _handle_alice_generate_connections(context: MCPRuntimeContext, arguments: Ma
     request = ConnectionFinderRequest(
         query=request.query,
         domains=decision.effective_domains,
+        projects=decision.effective_project_scope,
         sensitivity_allowed=decision.effective_sensitivity_allowed,
         max_connections=request.max_connections,
         auto_accept_threshold=request.auto_accept_threshold,
@@ -3441,6 +3380,7 @@ def _contradiction_request_from_arguments(arguments: Mapping[str, object]) -> Co
     return ContradictionFinderRequest(
         query=_parse_optional_text(arguments, "query") or "",
         domains=_parse_string_list(arguments, "domains"),
+        projects=_parse_string_list(arguments, "project_scope") or _parse_string_list(arguments, "projects"),
         sensitivity_allowed=sensitivity_allowed,
         max_contradictions=_parse_int(arguments, key="max_contradictions", default=8, minimum=1, maximum=50),
         **_parse_model_generation_kwargs(arguments),
@@ -3460,6 +3400,7 @@ def _handle_alice_generate_contradictions(context: MCPRuntimeContext, arguments:
     request = ContradictionFinderRequest(
         query=request.query,
         domains=decision.effective_domains,
+        projects=decision.effective_project_scope,
         sensitivity_allowed=decision.effective_sensitivity_allowed,
         max_contradictions=request.max_contradictions,
         generation_mode=request.generation_mode,
@@ -3470,9 +3411,7 @@ def _handle_alice_generate_contradictions(context: MCPRuntimeContext, arguments:
         allow_cloud_private=request.allow_cloud_private,
     )
     with _vnext_store_context(context) as store:
-        return _json_object(
-            VNextContradictionService(store).generate_contradiction_report(request)
-        )
+        return _json_object(VNextContradictionService(store).generate_contradiction_report(request))
 
 
 def _handle_alice_belief_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -3562,13 +3501,14 @@ def _handle_alice_project_update_candidate(context: MCPRuntimeContext, arguments
 
 def _handle_alice_project_update_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     with _vnext_store_context(context) as store:
-        return _json_object(
-            VNextProjectService(store).review_project_update(
-                artifact_id=_parse_required_text(arguments, "artifact_id"),
-                action=_parse_required_text(arguments, "action"),
-                edited_current_state=_parse_optional_text(arguments, "edited_current_state"),
-            )
+        service = VNextProjectService(store, defer_embeddings=True)
+        payload = service.review_project_update(
+            artifact_id=_parse_required_text(arguments, "artifact_id"),
+            action=_parse_required_text(arguments, "action"),
+            edited_current_state=_parse_optional_text(arguments, "edited_current_state"),
         )
+    _persist_vnext_deferred_embedding_inputs(context, service.deferred_embedding_inputs)
+    return _json_object(payload)
 
 
 def _handle_alice_project_dashboard(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -3620,7 +3560,10 @@ def _handle_alice_vnext_capture(context: MCPRuntimeContext, arguments: Mapping[s
     domain = _parse_optional_text(arguments, "domain") or "unknown"
     sensitivity = _parse_optional_text(arguments, "sensitivity") or "unknown"
     blocked_decision: PolicyDecision | None = None
-    payload: VNextJsonObject | None = None
+    capture_result = None
+    capture_actor_type = "user"
+    capture_actor_id: str | None = None
+    capture_trace_id: str | None = None
     with _vnext_store_context(context) as store:
         actor_type, actor_id, decision = _policy_checked(
             store,
@@ -3633,14 +3576,18 @@ def _handle_alice_vnext_capture(context: MCPRuntimeContext, arguments: Mapping[s
         if decision.decision == "blocked":
             blocked_decision = decision
         else:
-            payload = VNextCaptureService(
+            capture_actor_type = actor_type
+            capture_actor_id = actor_id
+            capture_trace_id = _parse_optional_text(arguments, "trace_id") or decision.trace_id
+            capture_result = VNextCaptureService(
                 store,
                 actor_type=actor_type,
                 actor_id=actor_id,
-                trace_id=_parse_optional_text(arguments, "trace_id") or decision.trace_id,
+                trace_id=capture_trace_id,
                 run_id=identity.agent_run_id if identity is not None else None,
                 agent_identity=identity.to_record() if identity is not None else None,
                 policy_decision=decision.to_record(),
+                defer_embeddings=True,
             ).capture_text(
                 _parse_required_text(arguments, "raw_text"),
                 title=_parse_optional_text(arguments, "title"),
@@ -3650,12 +3597,19 @@ def _handle_alice_vnext_capture(context: MCPRuntimeContext, arguments: Mapping[s
                 # a project-scoped agent's memory is retrievable by that
                 # project's filtered recall (audit P1 #4).
                 project_scope=decision.effective_project_scope,
-            ).to_record()
+            )
     if blocked_decision is not None:
         _raise_mcp_policy_blocked(blocked_decision)
-    if payload is None:
+    if capture_result is None:
         raise MCPToolError("vNext source capture did not complete")
-    return _json_object(payload)
+    _persist_vnext_deferred_embedding_inputs(
+        context,
+        capture_result.deferred_embedding_inputs,
+        actor_type=capture_actor_type,
+        actor_id=capture_actor_id,
+        trace_id=capture_trace_id,
+    )
+    return _json_object(capture_result.to_record())
 
 
 def _handle_alice_vnext_ingest_agent_output(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -3665,7 +3619,8 @@ def _handle_alice_vnext_ingest_agent_output(context: MCPRuntimeContext, argument
     domain = _parse_optional_text(arguments, "domain") or "project"
     sensitivity = _parse_optional_text(arguments, "sensitivity") or "private"
     blocked_decision: PolicyDecision | None = None
-    payload: VNextJsonObject | None = None
+    ingest_result = None
+    decision: PolicyDecision | None = None
     with _vnext_store_context(context) as store:
         _actor_type, _actor_id, decision = _policy_checked(
             store,
@@ -3679,7 +3634,7 @@ def _handle_alice_vnext_ingest_agent_output(context: MCPRuntimeContext, argument
         if decision.decision == "blocked":
             blocked_decision = decision
         else:
-            payload = VNextConnectorService(store).ingest_agent_output(
+            ingest_result = VNextConnectorService(store, defer_embeddings=True).ingest_agent_output(
                 {
                     "agent_id": identity.agent_id,
                     "agent_type": identity.agent_type,
@@ -3696,13 +3651,22 @@ def _handle_alice_vnext_ingest_agent_output(context: MCPRuntimeContext, argument
                     "propose_memory": _parse_bool(arguments, key="propose_memory", default=False),
                 },
                 policy_decision=decision.to_record(),
-            ).to_record()
-            append_policy_events(store, identity=identity, decision=decision, target_type="connector", target_id="agent_output")
+            )
+            append_policy_events(
+                store, identity=identity, decision=decision, target_type="connector", target_id="agent_output"
+            )
     if blocked_decision is not None:
         _raise_mcp_policy_blocked(blocked_decision)
-    if payload is None:
+    if ingest_result is None or decision is None:
         raise MCPToolError("agent output ingestion did not complete")
-    return _json_object(payload)
+    _persist_vnext_deferred_embedding_inputs(
+        context,
+        ingest_result.deferred_embedding_inputs,
+        actor_type="agent",
+        actor_id=identity.agent_id,
+        trace_id=decision.trace_id,
+    )
+    return _json_object(ingest_result.to_record())
 
 
 def _handle_alice_vnext_queue_task(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -3789,6 +3753,7 @@ def _handle_alice_vnext_generate_artifact(context: MCPRuntimeContext, arguments:
         else:
             request = BrainArtifactRequest(
                 domains=decision.effective_domains,
+                projects=decision.effective_project_scope,
                 sensitivity_allowed=decision.effective_sensitivity_allowed,
                 generated_for=_parse_optional_text(arguments, "generated_for"),
                 source_limit=_parse_int(arguments, key="source_limit", default=8, minimum=1, maximum=50),
@@ -3845,11 +3810,7 @@ def _handle_alice_vnext_open_loops(context: MCPRuntimeContext, arguments: Mappin
             limit=candidate_limit,
         )
         if decision.effective_project_scope:
-            loops = [
-                loop
-                for loop in loops
-                if _resource_matches_project_scope(loop, decision.effective_project_scope)
-            ]
+            loops = [loop for loop in loops if _resource_matches_project_scope(loop, decision.effective_project_scope)]
         loops = loops[:limit]
     return _json_object({"items": loops, "count": len(loops)})
 
@@ -3920,9 +3881,7 @@ def _handle_alice_vnext_propose_memory(context: MCPRuntimeContext, arguments: Ma
         _raise_mcp_policy_blocked(blocked_decision)
     if memory is None or decision is None:
         raise MCPToolError("vNext memory proposal did not complete")
-    return _json_object(
-        {"proposal": memory, "policy_decision": decision.to_record(), "review_required": True}
-    )
+    return _json_object({"proposal": memory, "policy_decision": decision.to_record(), "review_required": True})
 
 
 def _handle_alice_vnext_commit_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -3950,7 +3909,16 @@ def _handle_alice_vnext_commit_memory(context: MCPRuntimeContext, arguments: Map
         user_id=context.user_id,
     )
     with _vnext_store_context(context) as store:
-        payload = VNextMemoryCommitService(store).commit(identity=identity, request=request)
+        service = VNextMemoryCommitService(store, defer_embeddings=True)
+        payload = service.commit(identity=identity, request=request)
+        deferred_embedding_inputs = service.deferred_embedding_inputs
+    _persist_vnext_deferred_embedding_inputs(
+        context,
+        deferred_embedding_inputs,
+        actor_type="agent" if identity is not None else "user",
+        actor_id=identity.agent_id if identity is not None else None,
+        trace_id=request.trace_id,
+    )
     return _json_object(payload)
 
 
@@ -3958,21 +3926,31 @@ def _handle_alice_vnext_confirm_memory(context: MCPRuntimeContext, arguments: Ma
     identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
     payload: VNextJsonObject | None = None
+    deferred_embedding_inputs: tuple[DeferredMemoryEmbedding, ...] = ()
     with _vnext_store_context(context) as store:
         try:
-            payload = VNextMemoryCommitService(store).confirm(
+            service = VNextMemoryCommitService(store, defer_embeddings=True)
+            payload = service.confirm(
                 identity=identity,
                 confirmation_id=_parse_required_text(arguments, "confirmation_id"),
                 action=_parse_optional_text(arguments, "action") or "confirm",
                 canonical_text=_parse_optional_text(arguments, "canonical_text"),
                 rationale=_parse_optional_text(arguments, "rationale"),
             )
+            deferred_embedding_inputs = service.deferred_embedding_inputs
         except AgentPolicyBlockedError as exc:
             blocked_decision = exc.decision
     if blocked_decision is not None:
         _raise_mcp_policy_blocked(blocked_decision)
     if payload is None:
         raise MCPToolError("vNext memory confirmation did not complete")
+    _persist_vnext_deferred_embedding_inputs(
+        context,
+        deferred_embedding_inputs,
+        actor_type="agent" if identity is not None else "user",
+        actor_id=identity.agent_id if identity is not None else None,
+        trace_id=_parse_optional_text(arguments, "trace_id"),
+    )
     return _json_object(payload)
 
 
@@ -4001,20 +3979,30 @@ def _handle_alice_vnext_correct_memory(context: MCPRuntimeContext, arguments: Ma
     identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
     payload: VNextJsonObject | None = None
+    deferred_embedding_inputs: tuple[DeferredMemoryEmbedding, ...] = ()
     with _vnext_store_context(context) as store:
         try:
-            payload = VNextMemoryCommitService(store).correct(
+            service = VNextMemoryCommitService(store, defer_embeddings=True)
+            payload = service.correct(
                 identity=identity,
                 memory_id=_parse_required_text(arguments, "memory_id"),
                 canonical_text=_parse_required_text(arguments, "canonical_text"),
                 reason=_parse_optional_text(arguments, "reason"),
             )
+            deferred_embedding_inputs = service.deferred_embedding_inputs
         except AgentPolicyBlockedError as exc:
             blocked_decision = exc.decision
     if blocked_decision is not None:
         _raise_mcp_policy_blocked(blocked_decision)
     if payload is None:
         raise MCPToolError("vNext memory correction did not complete")
+    _persist_vnext_deferred_embedding_inputs(
+        context,
+        deferred_embedding_inputs,
+        actor_type="agent" if identity is not None else "user",
+        actor_id=identity.agent_id if identity is not None else None,
+        trace_id=_parse_optional_text(arguments, "trace_id"),
+    )
     return _json_object(payload)
 
 
@@ -4068,11 +4056,7 @@ def redact_memory_flow(
     memory_service = VNextMemoryCommitService(store)
     memory_service.lock_supersession_graph()
     get_memory_for_update = getattr(store, "get_memory_for_update", None)
-    memory = (
-        get_memory_for_update(memory_id)
-        if callable(get_memory_for_update)
-        else store.get_memory(memory_id)
-    )
+    memory = get_memory_for_update(memory_id) if callable(get_memory_for_update) else store.get_memory(memory_id)
     if memory is None:
         raise VNextMemoryCommitValidationError("memory was not found")
     memory_service.authorize_memory_action(
@@ -4148,21 +4132,30 @@ def _handle_alice_vnext_accept_consolidation(context: MCPRuntimeContext, argumen
     identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
     payload: VNextJsonObject | None = None
+    deferred_embedding_inputs: tuple[DeferredMemoryEmbedding, ...] = ()
     with _vnext_store_context(context) as store:
         # Acceptance is a review decision: the commit service policy-checks
         # it internally (human or admin agent only).
         try:
-            payload = VNextMemoryCommitService(store).accept_consolidation_candidate(
+            service = VNextMemoryCommitService(store, defer_embeddings=True)
+            payload = service.accept_consolidation_candidate(
                 _parse_required_text(arguments, "memory_id"),
                 reason=_parse_required_text(arguments, "reason"),
                 identity=identity,
             )
+            deferred_embedding_inputs = service.deferred_embedding_inputs
         except AgentPolicyBlockedError as exc:
             blocked_decision = exc.decision
     if blocked_decision is not None:
         _raise_mcp_policy_blocked(blocked_decision)
     if payload is None:
         raise MCPToolError("vNext consolidation acceptance did not complete")
+    _persist_vnext_deferred_embedding_inputs(
+        context,
+        deferred_embedding_inputs,
+        actor_type="agent" if identity is not None else "user",
+        actor_id=identity.agent_id if identity is not None else None,
+    )
     return _json_object(payload)
 
 
@@ -4237,7 +4230,9 @@ def _handle_alice_memory_manage(context: MCPRuntimeContext, arguments: Mapping[s
     return _handle_alice_vnext_forget_memory(context, delegate_arguments)
 
 
-def _handle_alice_vnext_recent_memory_commits(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+def _handle_alice_vnext_recent_memory_commits(
+    context: MCPRuntimeContext, arguments: Mapping[str, object]
+) -> JsonObject:
     identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
     payload: VNextJsonObject | None = None
@@ -4377,10 +4372,10 @@ def _extend_memory_audit(store: object, payload: VNextJsonObject) -> VNextJsonOb
     chain_value = payload.get("supersession_chain")
     chain = [node for node in chain_value if isinstance(node, dict)] if isinstance(chain_value, list) else []
     revisions_value = payload.get("revisions")
-    revisions = [row for row in revisions_value if isinstance(row, Mapping)] if isinstance(revisions_value, list) else []
-    supports_entities = callable(getattr(store, "list_edges", None)) and callable(
-        getattr(store, "get_entity", None)
+    revisions = (
+        [row for row in revisions_value if isinstance(row, Mapping)] if isinstance(revisions_value, list) else []
     )
+    supports_entities = callable(getattr(store, "list_edges", None)) and callable(getattr(store, "get_entity", None))
     if supports_entities:
         for node in chain:
             node["entities"] = _memory_linked_entities(store, str(node.get("id")))
@@ -4424,7 +4419,7 @@ def _handle_alice_vnext_review_items(context: MCPRuntimeContext, arguments: Mapp
             row
             for row in store.list_memories(status=None)
             if str(row.get("status")) in {"candidate", "needs_review", "private_only"}
-        ][:_parse_int(arguments, key="limit", default=20, minimum=1, maximum=100)]
+        ][: _parse_int(arguments, key="limit", default=20, minimum=1, maximum=100)]
     return _json_object({"items": items, "count": len(items)})
 
 
@@ -4438,11 +4433,7 @@ def _authorize_vnext_artifact_target(
 ) -> tuple[VNextJsonObject, PolicyDecision]:
     """Authorize one persisted artifact before returning or mutating it."""
 
-    artifact = (
-        store.get_artifact_for_update(artifact_id)
-        if for_update
-        else store.get_artifact(artifact_id)
-    )
+    artifact = store.get_artifact_for_update(artifact_id) if for_update else store.get_artifact(artifact_id)
     if artifact is None:
         raise MCPToolError(f"artifact {artifact_id} was not found")
 
@@ -4490,8 +4481,9 @@ def _handle_alice_vnext_artifact_review(context: MCPRuntimeContext, arguments: M
     artifact_id = _parse_required_text(arguments, "artifact_id")
     blocked_decision: PolicyDecision | None = None
     payload: VNextJsonObject | None = None
+    project_review_service: VNextProjectService | None = None
     with _vnext_store_context(context) as store:
-        _target, decision = _authorize_vnext_artifact_target(
+        target, decision = _authorize_vnext_artifact_target(
             store,
             identity=identity,
             artifact_id=artifact_id,
@@ -4500,6 +4492,12 @@ def _handle_alice_vnext_artifact_review(context: MCPRuntimeContext, arguments: M
         )
         if decision.decision == "blocked":
             blocked_decision = decision
+        elif VNextProjectService.is_project_update_candidate(target):
+            project_review_service = VNextProjectService(store, defer_embeddings=True)
+            payload = project_review_service.review_project_update(
+                artifact_id=artifact_id,
+                action=_parse_required_text(arguments, "action"),
+            )
         else:
             payload = VNextQueueService(store).review_artifact(
                 artifact_id=artifact_id,
@@ -4509,15 +4507,21 @@ def _handle_alice_vnext_artifact_review(context: MCPRuntimeContext, arguments: M
         _raise_mcp_policy_blocked(blocked_decision)
     if payload is None:
         raise MCPToolError("vNext artifact review did not complete")
+    if project_review_service is not None:
+        _persist_vnext_deferred_embedding_inputs(context, project_review_service.deferred_embedding_inputs)
     return _json_object(payload)
 
 
 def _handle_alice_vnext_scheduler_status(context: MCPRuntimeContext, _arguments: Mapping[str, object]) -> JsonObject:
+    if _is_sqlite_backend(context):
+        raise MCPToolError("vNext scheduler tools require the Postgres backend")
     with _vnext_store_context(context) as store:
         return _json_object(VNextSchedulerService(store).status())
 
 
 def _handle_alice_vnext_scheduler_run_now(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    if _is_sqlite_backend(context):
+        raise MCPToolError("vNext scheduler tools require the Postgres backend")
     identity = _agent_identity_from_arguments(context, arguments)
     workflow_type = _parse_required_text(arguments, "workflow_type")
     sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
@@ -4536,7 +4540,7 @@ def _handle_alice_vnext_scheduler_run_now(context: MCPRuntimeContext, arguments:
         "create_candidate_memories": _parse_bool(arguments, key="create_candidate_memories", default=True),
     }
     blocked_decision: PolicyDecision | None = None
-    payload: VNextJsonObject | None = None
+    scheduler_request: SchedulerRunRequest | None = None
     with _vnext_store_context(context) as store:
         _actor_type, _actor_id, decision = _policy_checked(
             store,
@@ -4550,51 +4554,63 @@ def _handle_alice_vnext_scheduler_run_now(context: MCPRuntimeContext, arguments:
         if decision.decision == "blocked":
             blocked_decision = decision
         else:
-            payload = VNextSchedulerService(store).run_now(
-                SchedulerRunRequest(
-                    workflow_type=workflow_type,
-                    domains=decision.effective_domains,
-                    sensitivity_allowed=decision.effective_sensitivity_allowed,
-                    generated_for=_parse_optional_text(arguments, "generated_for"),
-                    triggered_by="agent" if identity is not None else "user",
-                    agent_identity=identity,
-                    policy_decision=decision,
-                    options=generation_kwargs,
-                )
+            scheduler_request = SchedulerRunRequest(
+                workflow_type=workflow_type,
+                domains=decision.effective_domains,
+                projects=decision.effective_project_scope,
+                sensitivity_allowed=decision.effective_sensitivity_allowed,
+                generated_for=_parse_optional_text(arguments, "generated_for"),
+                triggered_by="agent" if identity is not None else "user",
+                agent_identity=identity,
+                policy_decision=decision,
+                options=generation_kwargs,
             )
     if blocked_decision is not None:
         _raise_mcp_policy_blocked(blocked_decision)
-    if payload is None:
+    if scheduler_request is None:
         raise MCPToolError("vNext scheduler run-now did not complete")
+    payload = run_now_durable(
+        database_url=context.database_url,
+        user_id=context.user_id,
+        request=scheduler_request,
+    )
     return _json_object(payload)
 
 
 def _handle_alice_vnext_scheduler_run_due(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    if _is_sqlite_backend(context):
+        raise MCPToolError("vNext scheduler tools require the Postgres backend")
     identity = _agent_identity_from_arguments(context, arguments)
     limit_value = arguments.get("limit", 10)
     if not isinstance(limit_value, int):
         raise MCPToolError("limit must be an integer")
     blocked_decision: PolicyDecision | None = None
     payload: VNextJsonObject | None = None
+    actor_type = "scheduler"
+    decision: PolicyDecision | None = None
     with _vnext_store_context(context) as store:
         actor_type, _actor_id, decision = _policy_checked(store, identity=identity, action="scheduler.run_due")
         if decision.decision == "blocked":
             blocked_decision = decision
-        else:
-            payload = VNextSchedulerService(store).run_due_workflows(
-                limit=limit_value,
-                triggered_by=actor_type if identity is not None else "scheduler",
-                agent_identity=identity,
-                policy_decision=decision,
-            )
     if blocked_decision is not None:
         _raise_mcp_policy_blocked(blocked_decision)
+    if decision is not None:
+        payload = run_due_workflows_durable(
+            database_url=context.database_url,
+            user_id=context.user_id,
+            limit=limit_value,
+            triggered_by=actor_type if identity is not None else "scheduler",
+            agent_identity=identity,
+            policy_decision=decision,
+        )
     if payload is None:
         raise MCPToolError("vNext scheduler run-due did not complete")
     return _json_object(payload)
 
 
 def _handle_alice_vnext_scheduler_pause(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    if _is_sqlite_backend(context):
+        raise MCPToolError("vNext scheduler tools require the Postgres backend")
     identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
     payload: VNextJsonObject | None = None
@@ -4612,6 +4628,8 @@ def _handle_alice_vnext_scheduler_pause(context: MCPRuntimeContext, arguments: M
 
 
 def _handle_alice_vnext_scheduler_resume(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    if _is_sqlite_backend(context):
+        raise MCPToolError("vNext scheduler tools require the Postgres backend")
     identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
     payload: VNextJsonObject | None = None
@@ -5468,7 +5486,7 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
 ]
 
 # Legacy long-tail surface. Hidden unless ALICE_MCP_LEGACY_TOOLS=1; kept for
-# existing integrations. Tool names that collide with the core nine are owned
+# existing integrations. Tool names that collide with the current core set are owned
 # by the core definitions above.
 _LEGACY_TOOL_DEFINITIONS: list[dict[str, object]] = [
     {
@@ -6008,6 +6026,8 @@ _LEGACY_TOOL_DEFINITIONS: list[dict[str, object]] = [
             "properties": {
                 "generated_for": {"type": "string", "format": "date"},
                 "domains": {"type": "array", "items": {"type": "string"}},
+                "project_scope": {"type": "array", "items": {"type": "string"}},
+                "projects": {"type": "array", "items": {"type": "string"}},
                 "sensitivity_allowed": {"type": "array", "items": {"type": "string"}},
                 "source_limit": {"type": "integer", "minimum": 1, "maximum": 50},
                 "memory_limit": {"type": "integer", "minimum": 1, "maximum": 50},
@@ -6028,6 +6048,8 @@ _LEGACY_TOOL_DEFINITIONS: list[dict[str, object]] = [
             "properties": {
                 "generated_for": {"type": "string", "format": "date"},
                 "domains": {"type": "array", "items": {"type": "string"}},
+                "project_scope": {"type": "array", "items": {"type": "string"}},
+                "projects": {"type": "array", "items": {"type": "string"}},
                 "sensitivity_allowed": {"type": "array", "items": {"type": "string"}},
                 "source_limit": {"type": "integer", "minimum": 1, "maximum": 50},
                 "memory_limit": {"type": "integer", "minimum": 1, "maximum": 50},
@@ -6048,6 +6070,8 @@ _LEGACY_TOOL_DEFINITIONS: list[dict[str, object]] = [
             "properties": {
                 "query": {"type": "string"},
                 "domains": {"type": "array", "items": {"type": "string"}},
+                "project_scope": {"type": "array", "items": {"type": "string"}},
+                "projects": {"type": "array", "items": {"type": "string"}},
                 "sensitivity_allowed": {"type": "array", "items": {"type": "string"}},
                 "max_connections": {"type": "integer", "minimum": 1, "maximum": 50},
                 "auto_accept_threshold": {"type": "number", "minimum": 0.0, "maximum": 1.0},
@@ -6089,6 +6113,8 @@ _LEGACY_TOOL_DEFINITIONS: list[dict[str, object]] = [
             "properties": {
                 "query": {"type": "string"},
                 "domains": {"type": "array", "items": {"type": "string"}},
+                "project_scope": {"type": "array", "items": {"type": "string"}},
+                "projects": {"type": "array", "items": {"type": "string"}},
                 "sensitivity_allowed": {"type": "array", "items": {"type": "string"}},
                 "max_contradictions": {"type": "integer", "minimum": 1, "maximum": 50},
                 **_MODEL_GENERATION_SCHEMA_PROPERTIES,
@@ -6220,7 +6246,14 @@ _LEGACY_TOOL_DEFINITIONS: list[dict[str, object]] = [
                 "content": {"type": "string"},
                 "output_type": {
                     "type": "string",
-                    "enum": ["sprint_summary", "research_summary", "code_review", "project_update", "decision", "general"],
+                    "enum": [
+                        "sprint_summary",
+                        "research_summary",
+                        "code_review",
+                        "project_update",
+                        "decision",
+                        "general",
+                    ],
                 },
                 "domain": {"type": "string"},
                 "sensitivity": {"type": "string"},
@@ -6565,9 +6598,7 @@ _TOOL_HANDLERS = {
 
 _CORE_TOOL_NAMES = frozenset(str(tool["name"]) for tool in _CORE_TOOL_DEFINITIONS)
 _LEGACY_TOOL_NAMES = frozenset(str(tool["name"]) for tool in _LEGACY_TOOL_DEFINITIONS)
-_TOOL_DEFINITIONS_BY_NAME = {
-    str(tool["name"]): tool for tool in (*_CORE_TOOL_DEFINITIONS, *_LEGACY_TOOL_DEFINITIONS)
-}
+_TOOL_DEFINITIONS_BY_NAME = {str(tool["name"]): tool for tool in (*_CORE_TOOL_DEFINITIONS, *_LEGACY_TOOL_DEFINITIONS)}
 
 
 def _validate_mcp_arguments_against_advertised_schema(
@@ -6623,22 +6654,21 @@ def _validate_mcp_arguments_against_advertised_schema(
             try:
                 parsed_uuid = UUID(value)
             except (AttributeError, ValueError) as exc:
-                raise MCPToolError(
-                    f"tool '{name}' has invalid value at {path}: must be a UUID string"
-                ) from exc
+                raise MCPToolError(f"tool '{name}' has invalid value at {path}: must be a UUID string") from exc
             if str(parsed_uuid) != value.casefold():
                 fail(path, "must be a canonical UUID string")
             return
         if schema_format == "date-time":
-            if re.fullmatch(
-                r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})",
-                value,
-            ) is None:
+            if (
+                re.fullmatch(
+                    r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})",
+                    value,
+                )
+                is None
+            ):
                 fail(path, "must be an RFC 3339 date-time with a timezone")
             try:
-                parsed_datetime = datetime.fromisoformat(
-                    value.replace("Z", "+00:00").replace("z", "+00:00")
-                )
+                parsed_datetime = datetime.fromisoformat(value.replace("Z", "+00:00").replace("z", "+00:00"))
             except ValueError as exc:
                 raise MCPToolError(
                     f"tool '{name}' has invalid value at {path}: must be a valid RFC 3339 date-time"
@@ -6653,8 +6683,7 @@ def _validate_mcp_arguments_against_advertised_schema(
                 date.fromisoformat(value)
             except ValueError as exc:
                 raise MCPToolError(
-                    f"tool '{name}' has invalid value at {path}: "
-                    "must be a valid RFC 3339 full-date"
+                    f"tool '{name}' has invalid value at {path}: must be a valid RFC 3339 full-date"
                 ) from exc
             return
         fail(path, f"uses unsupported advertised format {schema_format!r}")
@@ -6687,29 +6716,23 @@ def _validate_mcp_arguments_against_advertised_schema(
             minimum = candidate_schema.get("minimum")
             maximum = candidate_schema.get("maximum")
             bounded_minimum = (
-                float(minimum)
-                if isinstance(minimum, (int, float)) and not isinstance(minimum, bool)
-                else None
+                float(minimum) if isinstance(minimum, (int, float)) and not isinstance(minimum, bool) else None
             )
             bounded_maximum = (
-                float(maximum)
-                if isinstance(maximum, (int, float)) and not isinstance(maximum, bool)
-                else None
+                float(maximum) if isinstance(maximum, (int, float)) and not isinstance(maximum, bool) else None
             )
             if bounded_minimum is not None and value < bounded_minimum:
                 if bounded_maximum is not None:
                     fail(
                         path,
-                        f"{field_name} must be between {bounded_minimum:g} and "
-                        f"{bounded_maximum:g}",
+                        f"{field_name} must be between {bounded_minimum:g} and {bounded_maximum:g}",
                     )
                 fail(path, f"{field_name} must be greater than or equal to {bounded_minimum:g}")
             if bounded_maximum is not None and value > bounded_maximum:
                 if bounded_minimum is not None:
                     fail(
                         path,
-                        f"{field_name} must be between {bounded_minimum:g} and "
-                        f"{bounded_maximum:g}",
+                        f"{field_name} must be between {bounded_minimum:g} and {bounded_maximum:g}",
                     )
                 fail(path, f"{field_name} must be less than or equal to {bounded_maximum:g}")
 
@@ -6728,33 +6751,16 @@ def _validate_mcp_arguments_against_advertised_schema(
         # object could bypass the advertised contract before the handler sees
         # it.
         if path != "arguments" and isinstance(value, Mapping) and isinstance(required, list):
-            missing = sorted(
-                str(key)
-                for key in required
-                if isinstance(key, str) and key not in value
-            )
+            missing = sorted(str(key) for key in required if isinstance(key, str) and key not in value)
             if missing:
                 location = "" if path == "arguments" else f" at {path}"
-                raise MCPToolError(
-                    f"tool '{name}' is missing required properties{location}: "
-                    + ", ".join(missing)
-                )
+                raise MCPToolError(f"tool '{name}' is missing required properties{location}: " + ", ".join(missing))
         minimum_properties = candidate_schema.get("minProperties")
-        if (
-            isinstance(value, Mapping)
-            and isinstance(minimum_properties, int)
-            and len(value) < minimum_properties
-        ):
+        if isinstance(value, Mapping) and isinstance(minimum_properties, int) and len(value) < minimum_properties:
             location = "" if path == "arguments" else f" at {path}"
-            raise MCPToolError(
-                f"tool '{name}' requires at least {minimum_properties} properties{location}"
-            )
+            raise MCPToolError(f"tool '{name}' requires at least {minimum_properties} properties{location}")
         maximum_properties = candidate_schema.get("maxProperties")
-        if (
-            isinstance(value, Mapping)
-            and isinstance(maximum_properties, int)
-            and len(value) > maximum_properties
-        ):
+        if isinstance(value, Mapping) and isinstance(maximum_properties, int) and len(value) > maximum_properties:
             fail(path, f"must contain at most {maximum_properties} properties")
         if isinstance(value, Mapping) and candidate_schema.get("additionalProperties") is False:
             allowed = set(properties) if isinstance(properties, Mapping) else set()
@@ -6762,8 +6768,7 @@ def _validate_mcp_arguments_against_advertised_schema(
             if unknown:
                 location = "" if path == "arguments" else f" at {path}"
                 raise MCPToolError(
-                    f"tool '{name}' does not accept additional properties{location}: "
-                    + ", ".join(unknown)
+                    f"tool '{name}' does not accept additional properties{location}: " + ", ".join(unknown)
                 )
         if isinstance(value, Mapping) and isinstance(properties, Mapping):
             for key, child in value.items():

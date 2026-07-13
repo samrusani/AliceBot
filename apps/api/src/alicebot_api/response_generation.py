@@ -50,10 +50,34 @@ class ModelInvocationError(RuntimeError):
     """Raised when the configured model provider cannot produce a response."""
 
 
+class ModelProviderUnavailableError(ModelInvocationError):
+    """Raised when an upstream model provider cannot be reached in time."""
+
+
+class ResponseGenerationConflictError(RuntimeError):
+    """Raised when newer thread activity supersedes a prepared response."""
+
+
 @dataclass(frozen=True, slots=True)
 class ResponseFailure:
     detail: str
     trace: ResponseTraceSummary
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedResponseGeneration:
+    """Frozen handoff between database preparation and provider invocation."""
+
+    user_id: UUID
+    thread_id: UUID
+    limits: ContextCompilerLimits
+    compiled_trace_id: str
+    compiled_trace_event_count: int
+    prompt: PromptAssemblyResult
+    model_request: ModelInvocationRequest
+    agent_profile_id: str
+    user_event_id: UUID
+    user_event_sequence_no: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,7 +245,7 @@ def _parse_usage(response_payload: _OpenAIResponsePayload) -> ModelUsagePayload:
 def _parse_openai_response_payload(raw_payload: bytes) -> _OpenAIResponsePayload:
     try:
         parsed_payload = json.loads(raw_payload)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ModelInvocationError("model provider returned invalid JSON") from exc
 
     if not isinstance(parsed_payload, dict):
@@ -342,8 +366,12 @@ def invoke_openai_compatible_model(
         if detail is not None:
             raise ModelInvocationError(detail) from exc
         raise ModelInvocationError(f"model provider returned HTTP {exc.code}") from exc
+    except TimeoutError as exc:
+        raise ModelProviderUnavailableError("model provider request timed out") from exc
     except URLError as exc:
-        raise ModelInvocationError(f"model provider request failed: {exc.reason}") from exc
+        raise ModelProviderUnavailableError(
+            f"model provider request failed: {exc.reason}"
+        ) from exc
 
     response_payload = _parse_openai_response_payload(raw_payload)
     output_text = _extract_output_text(response_payload)
@@ -454,7 +482,7 @@ def resolve_thread_model_runtime(
     return settings.model_provider, settings.model_name
 
 
-def generate_response(
+def prepare_response_generation(
     *,
     store: ContinuityStore,
     settings: Settings,
@@ -463,14 +491,15 @@ def generate_response(
     message_text: str,
     limits: ContextCompilerLimits,
     runtime_override: tuple[str, str] | None = None,
-    model_invoker: Callable[[ModelInvocationRequest], ModelInvocationResponse] | None = None,
     system_instruction: str = SYSTEM_INSTRUCTION,
     developer_instruction: str = DEVELOPER_INSTRUCTION,
-) -> GenerateResponseSuccess | ResponseFailure:
+) -> PreparedResponseGeneration:
+    """Persist the user turn and compile a provider-ready immutable request."""
+
     store.get_user(user_id)
     thread = store.get_thread(thread_id)
 
-    store.append_event(
+    user_event = store.append_event(
         thread_id,
         None,
         "message.user",
@@ -498,63 +527,110 @@ def generate_response(
         )
     else:
         model_provider, model_name = runtime_override
-    request = ModelInvocationRequest(
+    model_request = ModelInvocationRequest(
         provider=model_provider,  # type: ignore[arg-type]
         model=model_name,
         prompt=prompt,
     )
-    prompt_trace_event = TraceEventRecord(
-        kind=PROMPT_TRACE_EVENT_KIND,
-        payload=cast(JsonObject, prompt.trace_payload),
-    )
-
-    try:
-        if model_invoker is None:
-            model_response = invoke_model(settings=settings, request=request)
-        else:
-            model_response = model_invoker(request)
-    except ModelInvocationError as exc:
-        trace = _create_linked_response_trace(
-            store=store,
-            user_id=user_id,
-            thread_id=thread_id,
-            limits=limits,
-            compiled_trace_id=compiled_trace.trace_id,
-            compiled_trace_event_count=compiled_trace.trace_event_count,
-            status="failed",
-            trace_events=[
-                prompt_trace_event,
-                TraceEventRecord(
-                    kind=MODEL_FAILED_TRACE_EVENT_KIND,
-                    payload=cast(
-                        JsonObject,
-                        _model_failure_trace_payload(
-                            request=request,
-                            error_message=str(exc),
-                        ),
-                    ),
-                ),
-            ],
-        )
-        return ResponseFailure(detail=str(exc), trace=trace)
-
-    assistant_payload = build_assistant_response_payload(
-        prompt=prompt,
-        model_response=model_response,
-    )
-    assistant_event = store.append_event(
-        thread_id,
-        None,
-        "message.assistant",
-        cast(JsonObject, assistant_payload),
-    )
-    trace = _create_linked_response_trace(
-        store=store,
+    return PreparedResponseGeneration(
         user_id=user_id,
         thread_id=thread_id,
         limits=limits,
         compiled_trace_id=compiled_trace.trace_id,
         compiled_trace_event_count=compiled_trace.trace_event_count,
+        prompt=prompt,
+        model_request=model_request,
+        agent_profile_id=str(thread.get("agent_profile_id", DEFAULT_AGENT_PROFILE_ID)),
+        user_event_id=user_event["id"],
+        user_event_sequence_no=user_event["sequence_no"],
+    )
+
+
+def invoke_prepared_response(
+    prepared: PreparedResponseGeneration,
+    *,
+    settings: Settings,
+    model_invoker: Callable[[ModelInvocationRequest], ModelInvocationResponse] | None = None,
+) -> ModelInvocationResponse:
+    """Invoke the configured provider without requiring a persistence handle."""
+
+    if model_invoker is None:
+        return invoke_model(settings=settings, request=prepared.model_request)
+    return model_invoker(prepared.model_request)
+
+
+def fail_response_generation(
+    *,
+    store: ContinuityStore,
+    prepared: PreparedResponseGeneration,
+    error: ModelInvocationError,
+) -> ResponseFailure:
+    """Persist the failure trace after an out-of-transaction provider error."""
+
+    prompt_trace_event = TraceEventRecord(
+        kind=PROMPT_TRACE_EVENT_KIND,
+        payload=cast(JsonObject, prepared.prompt.trace_payload),
+    )
+    trace = _create_linked_response_trace(
+        store=store,
+        user_id=prepared.user_id,
+        thread_id=prepared.thread_id,
+        limits=prepared.limits,
+        compiled_trace_id=prepared.compiled_trace_id,
+        compiled_trace_event_count=prepared.compiled_trace_event_count,
+        status="failed",
+        trace_events=[
+            prompt_trace_event,
+            TraceEventRecord(
+                kind=MODEL_FAILED_TRACE_EVENT_KIND,
+                payload=cast(
+                    JsonObject,
+                    _model_failure_trace_payload(
+                        request=prepared.model_request,
+                        error_message=str(error),
+                    ),
+                ),
+            ),
+        ],
+    )
+    return ResponseFailure(detail=str(error), trace=trace)
+
+
+def complete_response_generation(
+    *,
+    store: ContinuityStore,
+    prepared: PreparedResponseGeneration,
+    model_response: ModelInvocationResponse,
+) -> GenerateResponseSuccess:
+    """Persist the assistant event and success trace in a short transaction."""
+
+    prompt_trace_event = TraceEventRecord(
+        kind=PROMPT_TRACE_EVENT_KIND,
+        payload=cast(JsonObject, prepared.prompt.trace_payload),
+    )
+    assistant_payload = build_assistant_response_payload(
+        prompt=prepared.prompt,
+        model_response=model_response,
+    )
+    assistant_event = store.append_event_if_tail(
+        prepared.thread_id,
+        None,
+        "message.assistant",
+        cast(JsonObject, assistant_payload),
+        expected_event_id=prepared.user_event_id,
+        expected_sequence_no=prepared.user_event_sequence_no,
+    )
+    if assistant_event is None:
+        raise ResponseGenerationConflictError(
+            "response was superseded by newer thread activity; retry against the latest thread state"
+        )
+    trace = _create_linked_response_trace(
+        store=store,
+        user_id=prepared.user_id,
+        thread_id=prepared.thread_id,
+        limits=prepared.limits,
+        compiled_trace_id=prepared.compiled_trace_id,
+        compiled_trace_event_count=prepared.compiled_trace_event_count,
         status="completed",
         trace_events=[
             prompt_trace_event,
@@ -574,3 +650,49 @@ def generate_response(
         },
         "trace": trace,
     }
+
+
+def generate_response(
+    *,
+    store: ContinuityStore,
+    settings: Settings,
+    user_id: UUID,
+    thread_id: UUID,
+    message_text: str,
+    limits: ContextCompilerLimits,
+    runtime_override: tuple[str, str] | None = None,
+    model_invoker: Callable[[ModelInvocationRequest], ModelInvocationResponse] | None = None,
+    system_instruction: str = SYSTEM_INSTRUCTION,
+    developer_instruction: str = DEVELOPER_INSTRUCTION,
+) -> GenerateResponseSuccess | ResponseFailure:
+    """Compatibility orchestration for callers that already own one store."""
+
+    prepared = prepare_response_generation(
+        store=store,
+        settings=settings,
+        user_id=user_id,
+        thread_id=thread_id,
+        message_text=message_text,
+        limits=limits,
+        runtime_override=runtime_override,
+        system_instruction=system_instruction,
+        developer_instruction=developer_instruction,
+    )
+
+    try:
+        model_response = invoke_prepared_response(
+            prepared,
+            settings=settings,
+            model_invoker=model_invoker,
+        )
+    except ModelInvocationError as exc:
+        return fail_response_generation(
+            store=store,
+            prepared=prepared,
+            error=exc,
+        )
+    return complete_response_generation(
+        store=store,
+        prepared=prepared,
+        model_response=model_response,
+    )

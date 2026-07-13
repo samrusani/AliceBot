@@ -21,7 +21,7 @@ from uuid import uuid4
 from psycopg import errors as pg_errors
 import pytest
 
-import apps.api.src.alicebot_api.main as main_module
+import alicebot_api.main as main_module
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore

@@ -1,8 +1,8 @@
 # Reference Integration Paths
 
 This page is the path-selection guide for external builders adopting Alice on
-top of the latest published `v0.9.4` baseline. The `v0.10.0` branch is an
-unpublished audit-remediation candidate.
+top of the latest published `v0.10.2` baseline. Later changes on `main` are
+unreleased post-v0.10.2 remediation until they receive a new version.
 
 ## Default Recommendation
 

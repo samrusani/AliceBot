@@ -395,8 +395,14 @@ def _probe_rows(
     except TypeError:
         try:
             return list(method(query=query, **kwargs))
-        except TypeError:
+        except Exception:
             return None
+    except Exception:
+        # Grounding is a best-effort statistic. An operational store failure
+        # must not abort retrieval or fabricate an unsupported-entity claim.
+        # Exception deliberately excludes cancellation/SystemExit and every
+        # other BaseException signal.
+        return None
 
 
 def corpus_support(
@@ -425,15 +431,21 @@ def corpus_support(
         normalized_by_name = {name: normalize_entity_name(name) for name in names}
         lookup_keys = tuple(dict.fromkeys(key for key in normalized_by_name.values() if key))
         known: set[str] = set()
-        for row in store.find_entities_by_names(lookup_keys) if lookup_keys else []:
-            known.add(str(row.get("normalized_name")))
-            aliases = row.get("aliases")
-            if isinstance(aliases, (list, tuple)):
-                known.update(str(alias) for alias in aliases)
-        for name in names:
-            if normalized_by_name[name] and normalized_by_name[name] in known:
-                support[name] = True
-        checked_any = True
+        try:
+            entity_rows = store.find_entities_by_names(lookup_keys) if lookup_keys else []
+            for row in entity_rows:
+                known.add(str(row.get("normalized_name")))
+                aliases = row.get("aliases")
+                if isinstance(aliases, (list, tuple)):
+                    known.update(str(alias) for alias in aliases)
+            for name in names:
+                if normalized_by_name[name] and normalized_by_name[name] in known:
+                    support[name] = True
+            checked_any = True
+        except Exception:
+            # Continue to the independent FTS probes. A failed entity lookup
+            # is "unknown", never evidence that an entity is unsupported.
+            pass
 
     chunk_search = getattr(store, "search_source_chunks", None)
     memory_search = getattr(store, "search_memories_fts", None)

@@ -146,7 +146,14 @@ def _get_env_bool(env: Environment, key: str, default: bool) -> bool:
     if raw_value is None:
         return default
 
-    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(
+        f"{key} must be a boolean (one of: true, false, 1, 0, yes, no, on, off)"
+    )
 
 
 def _get_env_csv(env: Environment, key: str, default: tuple[str, ...]) -> tuple[str, ...]:
@@ -250,7 +257,12 @@ class Settings:
     legacy_v0_enabled_outside_dev: bool = DEFAULT_LEGACY_V0_ENABLED_OUTSIDE_DEV
 
     @classmethod
-    def from_env(cls, env: Environment | None = None) -> "Settings":
+    def from_env(
+        cls,
+        env: Environment | None = None,
+        *,
+        require_production_services: bool = True,
+    ) -> "Settings":
         current_env = os.environ if env is None else env
         settings = cls(
             app_env=_get_env_value(current_env, "APP_ENV", cls.app_env),
@@ -505,7 +517,10 @@ class Settings:
                 cls.legacy_v0_enabled_outside_dev,
             ),
         )
-        return _validate_settings(settings)
+        return _validate_settings(
+            settings,
+            require_production_services=require_production_services,
+        )
 
 
 def _parse_workspace_provider_configs(raw_value: str) -> tuple[WorkspaceProviderConfig, ...]:
@@ -559,7 +574,13 @@ def _parse_workspace_provider_configs(raw_value: str) -> tuple[WorkspaceProvider
     return tuple(configs)
 
 
-def _validate_settings(settings: Settings) -> Settings:
+def _validate_settings(
+    settings: Settings,
+    *,
+    require_production_services: bool = True,
+) -> Settings:
+    if settings.app_port < 1 or settings.app_port > 65_535:
+        raise ValueError("APP_PORT must be between 1 and 65535")
     if settings.app_log_mode not in {"stdout", "file"}:
         raise ValueError("APP_LOG_MODE must be either 'stdout' or 'file'")
     if settings.app_log_level not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}:
@@ -572,6 +593,10 @@ def _validate_settings(settings: Settings) -> Settings:
         raise ValueError("APP_LOG_BACKUP_COUNT must be a positive integer")
     if settings.app_log_mode == "file" and settings.app_log_path == "":
         raise ValueError("APP_LOG_PATH must be configured when APP_LOG_MODE is 'file'")
+    if settings.healthcheck_timeout_seconds <= 0:
+        raise ValueError("HEALTHCHECK_TIMEOUT_SECONDS must be a positive integer")
+    if settings.model_timeout_seconds <= 0:
+        raise ValueError("MODEL_TIMEOUT_SECONDS must be a positive integer")
     if settings.auth_user_id != "":
         try:
             UUID(settings.auth_user_id)
@@ -654,7 +679,7 @@ def _validate_settings(settings: Settings) -> Settings:
                 f"WORKSPACE_PROVIDER_CONFIGS_JSON[{index}].api_key must be empty when auth_mode is none"
             )
 
-    if settings.app_env not in {"development", "test"}:
+    if require_production_services and settings.app_env not in {"development", "test"}:
         if "*" in settings.cors_allowed_origins:
             raise ValueError(
                 "CORS_ALLOWED_ORIGINS cannot include wildcard outside development/test environments"
@@ -684,3 +709,14 @@ def _validate_settings(settings: Settings) -> Settings:
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings.from_env()
+
+
+def get_runtime_settings() -> Settings:
+    """Load settings for local CLI/MCP runtimes without hosted-service gates.
+
+    The API process still uses ``get_settings`` and enforces the complete
+    production deployment contract. Local command and stdio runtimes require
+    only their own database/user settings, even when ``APP_ENV`` is production.
+    """
+
+    return Settings.from_env(require_production_services=False)

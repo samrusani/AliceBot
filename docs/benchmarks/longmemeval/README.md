@@ -1,6 +1,7 @@
 # Alice on LongMemEval
 
-**Overall accuracy: 79.4% (397/500) on LongMemEval_s** — run 2026-07-07 with
+**Historical single-run accuracy: 79.4% (397/500) on LongMemEval_s** — run
+2026-07-07 with
 GPT-4o generation and the benchmark's official judge protocol, up from the
 prior published run's 64.6% (323/500). Paired on the same 500 questions:
 +96 gained, −22 lost, net +74 (McNemar exact two-sided p = 3.26e-12). All 500
@@ -9,6 +10,10 @@ questions answered and judged; the complete per-question evidence is in
 the aggregate report in [report-2026-07-07.json](report-2026-07-07.json), and
 the question-by-question flip analysis in
 [paired-comparison-2026-07-07.txt](paired-comparison-2026-07-07.txt).
+
+This is a dated benchmark receipt, not a v0.10.2 release measurement, a
+repeated-run estimate, or a claim that every current deployment will reproduce
+79.4%.
 
 Non-abstention subset: **79.8%** (375/470). Abstention subset: 73.3% (22/30)
 — a regression from the baseline's 25/30, disclosed in its own section below.

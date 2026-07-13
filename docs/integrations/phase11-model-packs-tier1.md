@@ -68,6 +68,7 @@ Omit `provider_id` to set the workspace default pack used for briefing defaults.
 ```bash
 curl -sS -X POST "http://127.0.0.1:8000/v1/runtime/invoke" \
   -H "Authorization: Bearer $SESSION_TOKEN" \
+  -H "Idempotency-Key: model-pack-runtime-$(uuidgen)" \
   -H "Content-Type: application/json" \
   -d '{
     "provider_id": "'$PROVIDER_ID'",

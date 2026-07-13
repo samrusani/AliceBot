@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import inspect
 import re
-from typing import Protocol
+from typing import Callable, Protocol, Sequence, cast
 
+from alicebot_api.vnext_agent_control import resource_project_scope
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_model_intelligence import (
     ModelBackedRequest,
@@ -12,9 +14,11 @@ from alicebot_api.vnext_model_intelligence import (
     resolve_model_route,
 )
 from alicebot_api.vnext_repositories import JsonObject
+from alicebot_api.vnext_workflow_idempotency import logical_workflow_digest
 
 
 DEFAULT_CONTRADICTION_LIMIT = 8
+MAX_LEGACY_PROJECT_SCOPE_ROWS = 16_384
 DEFAULT_SENSITIVITY_ALLOWED = ("public", "internal", "private", "unknown")
 BELIEF_REVIEW_ACTIONS = {
     "reinforce": "active",
@@ -68,6 +72,32 @@ class VNextContradictionStore(Protocol):
 
     def create_edge(self, edge: JsonObject) -> JsonObject: ...
 
+    def find_artifact_by_workflow_digest(
+        self,
+        *,
+        artifact_type: str,
+        workflow: str,
+        digest: str,
+        scope_projects: Sequence[str] | None = None,
+    ) -> JsonObject | None: ...
+
+    def upsert_artifact_by_workflow_digest(
+        self,
+        artifact: JsonObject,
+        *,
+        workflow: str,
+        digest: str,
+        actor_type: str = "system",
+    ) -> JsonObject: ...
+
+    def upsert_edge_by_idempotency_digest(
+        self,
+        edge: JsonObject,
+        *,
+        digest: str,
+        actor_type: str = "system",
+    ) -> JsonObject: ...
+
     def search_sources(
         self,
         *,
@@ -113,6 +143,7 @@ class VNextContradictionStore(Protocol):
 class ContradictionFinderRequest:
     query: str = ""
     domains: tuple[str, ...] = ()
+    projects: tuple[str, ...] = ()
     sensitivity_allowed: tuple[str, ...] = DEFAULT_SENSITIVITY_ALLOWED
     max_contradictions: int = DEFAULT_CONTRADICTION_LIMIT
     generated_by: str = "system"
@@ -170,6 +201,99 @@ def _validate_request(request: ContradictionFinderRequest) -> None:
         raise VNextContradictionValidationError("generation_mode must be deterministic or model_backed")
     if request.model_temperature < 0.0 or request.model_temperature > 2.0:
         raise VNextContradictionValidationError("model_temperature must be between 0.0 and 2.0")
+
+
+def _supports_parameter(method: object, name: str) -> bool:
+    if not callable(method):
+        return False
+    try:
+        return name in inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _matches_projects(row: JsonObject, projects: tuple[str, ...]) -> bool:
+    requested = {project.strip().casefold() for project in projects if project.strip()}
+    if not requested:
+        return True
+    return bool(requested & {project.strip().casefold() for project in resource_project_scope(row) if project.strip()})
+
+
+def _project_scoped_search(
+    method: Callable[..., list[JsonObject]],
+    *,
+    kwargs: dict[str, object],
+    projects: tuple[str, ...],
+    project_parameter: str,
+    limit: int,
+) -> list[JsonObject]:
+    if not projects:
+        return list(method(limit=limit, **kwargs))
+    if _supports_parameter(method, project_parameter):
+        rows = method(limit=limit, **kwargs, **{project_parameter: projects})
+        return [row for row in rows if _matches_projects(row, projects)]
+    rows = list(method(limit=MAX_LEGACY_PROJECT_SCOPE_ROWS + 1, **kwargs))
+    if len(rows) > MAX_LEGACY_PROJECT_SCOPE_ROWS:
+        raise VNextContradictionValidationError("legacy contradiction store could not prove complete project scope")
+    return [row for row in rows if _matches_projects(row, projects)][:limit]
+
+
+def _project_scoped_beliefs(
+    store: VNextContradictionStore,
+    *,
+    domains: list[str] | None,
+    sensitivity_allowed: list[str],
+    projects: tuple[str, ...],
+    limit: int,
+) -> list[JsonObject]:
+    if not projects:
+        return list(
+            store.list_beliefs(
+                status="active",
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                limit=limit,
+            )
+        )
+    if _supports_parameter(store.list_beliefs, "scope_projects"):
+        scoped_list_beliefs = cast(Callable[..., list[JsonObject]], store.list_beliefs)
+        return list(
+            scoped_list_beliefs(
+                status="active",
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                scope_projects=projects,
+                limit=limit,
+            )
+        )
+    rows = list(
+        store.list_beliefs(
+            status="active",
+            domains=domains,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=MAX_LEGACY_PROJECT_SCOPE_ROWS + 1,
+        )
+    )
+    if len(rows) > MAX_LEGACY_PROJECT_SCOPE_ROWS:
+        raise VNextContradictionValidationError("legacy contradiction store could not prove complete project scope")
+    memory_ids = tuple(dict.fromkeys(str(row.get("memory_id") or "") for row in rows if row.get("memory_id")))
+    bulk_get = getattr(store, "get_memories_by_ids", None)
+    if callable(bulk_get):
+        backing_rows = list(bulk_get(memory_ids))
+    else:
+        get_memory = getattr(store, "get_memory", None)
+        backing_rows = (
+            [row for memory_id in memory_ids if (row := get_memory(memory_id)) is not None]
+            if callable(get_memory)
+            else []
+        )
+    backing_by_id = {str(row.get("id")): row for row in backing_rows}
+    return [
+        belief
+        for belief in rows
+        if (backing := backing_by_id.get(str(belief.get("memory_id") or ""))) is not None
+        and _matches_projects(backing, projects)
+    ][:limit]
 
 
 def _text(row: JsonObject) -> str:
@@ -236,9 +360,7 @@ def _candidate_for(new_item: JsonObject, belief: JsonObject) -> ContradictionCan
         new_item=new_item,
         belief=belief,
         contradiction_type=_contradiction_type(new_text, belief),
-        explanation=(
-            f"New claim and active belief disagree on {', '.join(sorted(shared_terms)[:4])}."
-        ),
+        explanation=(f"New claim and active belief disagree on {', '.join(sorted(shared_terms)[:4])}."),
         nuance="possible nuance" if nuanced else "direct conflict",
         recommended_action="request more info" if nuanced else "review",
         confidence=confidence,
@@ -307,59 +429,135 @@ class VNextContradictionService:
         _validate_request(request)
         domains = list(request.domains) if request.domains else None
         sensitivity_allowed = list(request.sensitivity_allowed)
-        sources = self.store.search_sources(
-            query=request.query,
-            domains=domains,
-            sensitivity_allowed=sensitivity_allowed,
-            limit=max(request.max_contradictions * 2, request.max_contradictions),
+        input_limit = max(request.max_contradictions * 2, request.max_contradictions)
+        sources = _project_scoped_search(
+            self.store.search_sources,
+            kwargs={
+                "query": request.query,
+                "domains": domains,
+                "sensitivity_allowed": sensitivity_allowed,
+            },
+            projects=request.projects,
+            project_parameter="scope_projects",
+            limit=input_limit,
         )
         memories = [
             memory
-            for memory in self.store.search_memories(
-                query=request.query,
-                domains=domains,
-                sensitivity_allowed=sensitivity_allowed,
-                limit=max(request.max_contradictions * 2, request.max_contradictions),
+            for memory in _project_scoped_search(
+                self.store.search_memories,
+                kwargs={
+                    "query": request.query,
+                    "domains": domains,
+                    "sensitivity_allowed": sensitivity_allowed,
+                },
+                projects=request.projects,
+                project_parameter="projects",
+                limit=input_limit,
             )
             if memory.get("memory_type") not in {"belief", "thesis"}
         ]
-        beliefs = self.store.list_beliefs(
-            status="active",
+        beliefs = _project_scoped_beliefs(
+            self.store,
             domains=domains,
             sensitivity_allowed=sensitivity_allowed,
-            limit=max(request.max_contradictions * 2, request.max_contradictions),
+            projects=request.projects,
+            limit=input_limit,
         )
         candidates = _find_candidates(
             new_items=[*sources, *memories],
             beliefs=beliefs,
             limit=request.max_contradictions,
         )
+        workflow_digest = logical_workflow_digest(
+            {
+                "workflow": "contradiction_report",
+                "scope": {
+                    "domains": sorted(request.domains),
+                    "projects": sorted(request.projects),
+                    "sensitivity_allowed": sorted(request.sensitivity_allowed),
+                },
+                "request": {
+                    "query": request.query,
+                    "max_contradictions": request.max_contradictions,
+                    "generated_by": request.generated_by,
+                    "actor_id": request.actor_id,
+                    "agent_identity": request.agent_identity,
+                    "policy_decision": request.policy_decision,
+                    "metadata_json": request.metadata_json,
+                    "generation_mode": request.generation_mode,
+                    "model_route_mode": request.model_route_mode,
+                    "model_provider": request.model_provider,
+                    "model": request.model,
+                    "model_temperature": request.model_temperature,
+                    "allow_cloud_private": request.allow_cloud_private,
+                    "brain_charter": _brain_charter(self.store),
+                },
+                "inputs": {
+                    "sources": sources,
+                    "memories": memories,
+                    "beliefs": beliefs,
+                },
+                "candidates": [candidate.to_record() for candidate in candidates],
+            }
+        )
+        find_existing = getattr(self.store, "find_artifact_by_workflow_digest", None)
+        if callable(find_existing):
+            existing = cast(Callable[..., JsonObject | None], find_existing)(
+                artifact_type="contradiction_report",
+                workflow="contradiction_finder",
+                digest=workflow_digest,
+                scope_projects=request.projects or None,
+            )
+            if existing is not None:
+                return existing
         edge_ids: list[str] = []
         records: list[JsonObject] = []
         for candidate in candidates:
             record = candidate.to_record()
             source_item = str(record["source_item"])
-            edge = self.store.create_edge(
+            edge_digest = logical_workflow_digest(
                 {
+                    "workflow_digest": workflow_digest,
+                    "edge_type": "contradicts",
                     "from_type": "source" if source_item.startswith("source:") else "memory",
                     "from_id": str(candidate.new_item.get("id")),
                     "to_type": "belief",
                     "to_id": str(candidate.belief.get("id")),
-                    "edge_type": "contradicts",
-                    "confidence": candidate.confidence,
-                    "explanation": candidate.explanation,
-                    "created_by": "vnext_contradiction_finder",
-                    "metadata_json": {
-                        "status": "candidate",
-                        "candidate": True,
-                        "contradiction": record,
-                        "generated_by": request.generated_by,
-                        "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
-                        "trace_id": request.trace_id,
-                        "policy_decision": request.policy_decision,
-                    },
+                    "contradiction": record,
                 }
             )
+            edge_payload: JsonObject = {
+                "from_type": "source" if source_item.startswith("source:") else "memory",
+                "from_id": str(candidate.new_item.get("id")),
+                "to_type": "belief",
+                "to_id": str(candidate.belief.get("id")),
+                "edge_type": "contradicts",
+                "confidence": candidate.confidence,
+                "explanation": candidate.explanation,
+                "created_by": "vnext_contradiction_finder",
+                "metadata_json": {
+                    "status": "candidate",
+                    "candidate": True,
+                    "contradiction": record,
+                    "workflow": "contradiction_finder",
+                    "workflow_digest": workflow_digest,
+                    "edge_digest": edge_digest,
+                    "generated_by": request.generated_by,
+                    "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
+                    "trace_id": request.trace_id,
+                    "policy_decision": request.policy_decision,
+                    "project_scope": list(request.projects),
+                },
+            }
+            upsert_edge = getattr(self.store, "upsert_edge_by_idempotency_digest", None)
+            if callable(upsert_edge):
+                edge = cast(Callable[..., JsonObject], upsert_edge)(
+                    edge_payload,
+                    digest=edge_digest,
+                    actor_type=request.generated_by,
+                )
+            else:
+                edge = self.store.create_edge(edge_payload)
             edge_id = str(edge["id"])
             edge_ids.append(edge_id)
             records.append(record)
@@ -408,8 +606,10 @@ class VNextContradictionService:
             "trace_id": request.trace_id,
             "policy_decision": request.policy_decision,
             "review_status": "needs_review",
+            "project_scope": list(request.projects),
             "generation_mode": request.generation_mode,
             **request.metadata_json,
+            "workflow_digest": workflow_digest,
         }
         prompt_hash: str | None = None
         model_info_json: JsonObject | None = None
@@ -447,20 +647,28 @@ class VNextContradictionService:
             prompt_hash = model_artifact.prompt_hash
             model_info_json = model_artifact.model_info
             metadata = {**metadata, **model_artifact.metadata}
-        artifact = self.store.create_artifact(
-            {
-                "artifact_type": "contradiction_report",
-                "title": "Contradiction Report",
-                "content_markdown": content,
-                "status": "needs_review",
-                "domain": request.domains[0] if len(request.domains) == 1 else "unknown",
-                "sensitivity": self._highest_sensitivity([*sources, *memories, *beliefs]),
-                "generated_by": request.generated_by if request.generated_by != "system" else "vnext_contradiction_finder",
-                "prompt_hash": prompt_hash,
-                "model_info_json": model_info_json,
-                "metadata_json": metadata,
-            }
-        )
+        artifact_payload: JsonObject = {
+            "artifact_type": "contradiction_report",
+            "title": "Contradiction Report",
+            "content_markdown": content,
+            "status": "needs_review",
+            "domain": request.domains[0] if len(request.domains) == 1 else "unknown",
+            "sensitivity": self._highest_sensitivity([*sources, *memories, *beliefs]),
+            "generated_by": request.generated_by if request.generated_by != "system" else "vnext_contradiction_finder",
+            "prompt_hash": prompt_hash,
+            "model_info_json": model_info_json,
+            "metadata_json": metadata,
+        }
+        upsert_artifact = getattr(self.store, "upsert_artifact_by_workflow_digest", None)
+        if callable(upsert_artifact):
+            artifact = cast(Callable[..., JsonObject], upsert_artifact)(
+                artifact_payload,
+                workflow="contradiction_finder",
+                digest=workflow_digest,
+                actor_type=request.generated_by,
+            )
+        else:
+            artifact = self.store.create_artifact(artifact_payload)
         append_event(
             self.store,
             event_type="artifact.generated",
@@ -491,7 +699,9 @@ class VNextContradictionService:
     ) -> JsonObject:
         status = BELIEF_REVIEW_ACTIONS.get(action)
         if status is None:
-            raise VNextContradictionValidationError("belief review action must be reinforce, challenge, supersede, or retire")
+            raise VNextContradictionValidationError(
+                "belief review action must be reinforce, challenge, supersede, or retire"
+            )
         belief = self.store.update_belief_status(
             belief_id=belief_id,
             status=status,

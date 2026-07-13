@@ -11,10 +11,35 @@ from alicebot_api.vnext_scheduler import (
     SchedulerRunRequest,
     VNextSchedulerService,
     VNextSchedulerValidationError,
+    _workflow_digest,
     compute_next_run_at,
     default_schedule,
     validate_schedule,
 )
+
+
+def test_scheduler_logical_digest_excludes_volatile_agent_run_id() -> None:
+    base = {
+        "workflow": "daily_brief",
+        "behavior": {
+            "agent_identity": {
+                "agent_id": "hermes",
+                "agent_run_id": "run-a",
+                "permission_profile": "trusted_local_agent",
+            }
+        },
+    }
+    replay = {
+        **base,
+        "behavior": {
+            "agent_identity": {
+                **base["behavior"]["agent_identity"],
+                "agent_run_id": "run-b",
+            }
+        },
+    }
+
+    assert _workflow_digest(base) == _workflow_digest(replay)
 
 
 class InMemorySchedulerStore:
@@ -160,6 +185,27 @@ class InMemorySchedulerStore:
         self.append_event({"event_type": "artifact.created", "actor_type": actor_type, "target_id": row["id"]})
         return row
 
+    def find_artifact_by_workflow_digest(
+        self,
+        *,
+        artifact_type: str,
+        workflow: str,
+        digest: str,
+        scope_projects: tuple[str, ...] | None = None,
+    ) -> dict[str, object] | None:
+        for row in self.artifacts.values():
+            metadata = row.get("metadata_json")
+            if row.get("artifact_type") != artifact_type or not isinstance(metadata, dict):
+                continue
+            if metadata.get("workflow") != workflow:
+                continue
+            if metadata.get("automation_digest") != digest and metadata.get("consolidation_digest") != digest:
+                continue
+            if scope_projects and not set(metadata.get("project_scope", [])) & set(scope_projects):
+                continue
+            return row
+        return None
+
     def create_memory(self, memory: dict[str, object], *, actor_type: str = "system") -> dict[str, object]:
         row = {**memory, "id": f"memory-{len(self.memories) + 1}"}
         self.memories.append(row)
@@ -216,14 +262,21 @@ class InMemorySchedulerStore:
     def search_memories(self, **kwargs) -> list[dict[str, object]]:
         return self.memories[: kwargs.get("limit", 8)]
 
-    def list_open_loops(self, **_kwargs) -> list[dict[str, object]]:
-        return list(self.open_loops)
+    def list_open_loops(self, **kwargs) -> list[dict[str, object]]:
+        rows = list(self.open_loops)
+        scope_projects = tuple(kwargs.get("scope_projects") or ())
+        if scope_projects:
+            rows = [row for row in rows if row.get("project_id") in scope_projects]
+        return rows[: kwargs.get("limit", 8)]
 
     def list_artifacts(self, **kwargs) -> list[dict[str, object]]:
         return list(self.artifacts.values())[: kwargs.get("limit", 8)]
 
     def list_projects(self, **kwargs) -> list[dict[str, object]]:
         return self.projects[: kwargs.get("limit", 8)]
+
+    def get_project(self, project_id: str) -> dict[str, object] | None:
+        return next((project for project in self.projects if project.get("id") == project_id), None)
 
     def list_beliefs(self, **kwargs) -> list[dict[str, object]]:
         return [] if kwargs else []
@@ -319,6 +372,131 @@ def test_scheduler_run_due_executes_due_enabled_workflows_and_advances_next_run(
     assert "scheduler.due_scan" in [event["event_type"] for event in store.events]
 
 
+def test_project_scoped_scheduler_reads_filter_before_workflow_limits() -> None:
+    store = InMemorySchedulerStore()
+    store.open_loops = [
+        {
+            "id": f"loop-b-{index}",
+            "title": f"Project B decoy {index}",
+            "status": "open",
+            "domain": "project",
+            "sensitivity": "private",
+            "project_id": "project-b",
+        }
+        for index in range(25)
+    ]
+    store.open_loops.append(
+        {
+            "id": "loop-a",
+            "title": "Project A target",
+            "status": "open",
+            "domain": "project",
+            "sensitivity": "private",
+            "project_id": "project-a",
+        }
+    )
+    store.projects = [
+        {
+            "id": "project-b",
+            "name": "Project B",
+            "slug": "project-b",
+            "status": "active",
+            "domain": "project",
+            "sensitivity": "private",
+        },
+        {
+            "id": "project-a",
+            "name": "Project A",
+            "slug": "project-a",
+            "status": "active",
+            "domain": "project",
+            "sensitivity": "private",
+        },
+    ]
+    service = VNextSchedulerService(store)
+
+    loop_result = service.run_now(
+        SchedulerRunRequest(
+            workflow_type="open_loop_review",
+            domains=("project",),
+            projects=("project-a",),
+        )
+    )
+    project_result = service.run_now(
+        SchedulerRunRequest(
+            workflow_type="project_update_scan",
+            domains=("project",),
+            projects=("project-a",),
+        )
+    )
+
+    assert loop_result["artifact"]["metadata_json"]["open_loop_ids"] == ["loop-a"]
+    assert "Project B decoy" not in loop_result["artifact"]["content_markdown"]
+    assert project_result["artifact"]["metadata_json"]["project_id"] == "project-a"
+    assert project_result["artifact"]["metadata_json"]["project_scope"] == ["project-a"]
+
+
+def test_project_scoped_staleness_sweep_never_mutates_out_of_scope_decoys() -> None:
+    class ScopedStalenessStore(InMemorySchedulerStore):
+        def list_memories_for_staleness_sweep(
+            self,
+            *,
+            reference_time,
+            confirmation_before,
+            review_memory_types,
+            limit: int,
+            projects=None,
+        ) -> list[dict[str, object]]:
+            del reference_time, confirmation_before, review_memory_types
+            allowed = set(projects or ())
+            rows = [
+                memory
+                for memory in self.memories
+                if memory.get("status") == "active"
+                and (not allowed or memory.get("project_id") in allowed)
+            ]
+            return rows[:limit]
+
+    store = ScopedStalenessStore()
+    store.memories = [
+        {
+            "id": f"memory-b-{index}",
+            "memory_type": "project_state",
+            "status": "active",
+            "project_id": "project-b",
+            "valid_to": "2026-01-01T00:00:00Z",
+            "domain": "project",
+            "sensitivity": "private",
+        }
+        for index in range(600)
+    ]
+    store.memories.append(
+        {
+            "id": "memory-a",
+            "memory_type": "project_state",
+            "status": "active",
+            "project_id": "project-a",
+            "valid_to": "2026-01-01T00:00:00Z",
+            "domain": "project",
+            "sensitivity": "private",
+        }
+    )
+
+    result = VNextSchedulerService(store).run_now(
+        SchedulerRunRequest(
+            workflow_type="staleness_sweep",
+            projects=("project-a",),
+            options={
+                "reference_time": "2026-07-01T00:00:00Z",
+                "staleness_memory_limit": 1,
+            },
+        )
+    )
+
+    assert result["artifact"]["metadata_json"]["stale_marked_memory_ids"] == ["memory-a"]
+    assert all(memory["status"] == "active" for memory in store.memories if memory.get("project_id") == "project-b")
+
+
 def test_scheduler_due_scan_can_run_model_backed_workflow_from_metadata_options() -> None:
     store = InMemorySchedulerStore()
     service = VNextSchedulerService(store)
@@ -365,6 +543,18 @@ def test_scheduler_run_due_skips_workflow_when_lock_is_not_acquired() -> None:
     assert result["due_count"] == 0
     assert not store.runs
     assert "scheduler.workflow_lock_skipped" in [event["event_type"] for event in store.events]
+
+
+def test_scheduler_empty_due_poll_does_not_grow_append_only_event_log() -> None:
+    store = InMemorySchedulerStore()
+    service = VNextSchedulerService(store)
+    service.ensure_default_workflows()
+    before = len(store.events)
+
+    result = service.run_due_workflows(now=datetime(2026, 5, 11, 8, 5, tzinfo=UTC))
+
+    assert result["due_count"] == 0
+    assert len(store.events) == before
 
 
 @pytest.mark.parametrize(

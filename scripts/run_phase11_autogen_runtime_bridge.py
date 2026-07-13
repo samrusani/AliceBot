@@ -13,6 +13,7 @@ import json
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
 
 def _request_json(
@@ -22,17 +23,21 @@ def _request_json(
     bearer_token: str,
     payload: dict[str, Any] | None = None,
     timeout_seconds: int = 30,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     body = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {bearer_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    if idempotency_key is not None:
+        headers["Idempotency-Key"] = idempotency_key
     request = Request(
         url=url,
         method=method,
         data=body,
-        headers={
-            "Authorization": f"Bearer {bearer_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
+        headers=headers,
     )
     try:
         with urlopen(request, timeout=timeout_seconds) as response:
@@ -92,6 +97,7 @@ class AutoGenAliceRuntimeClient:
             bearer_token=self.session_token,
             payload=payload,
             timeout_seconds=self.timeout_seconds,
+            idempotency_key=f"autogen-runtime-{uuid4()}",
         )
         assistant = runtime_response.get("assistant")
         if not isinstance(assistant, dict):

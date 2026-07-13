@@ -13,7 +13,10 @@ from alicebot_api.contracts import (
     ModelUsagePayload,
 )
 from alicebot_api.provider_security import validate_provider_base_url
-from alicebot_api.response_generation import ModelInvocationError
+from alicebot_api.response_generation import (
+    ModelInvocationError,
+    ModelProviderUnavailableError,
+)
 
 AZURE_AUTH_MODE_API_KEY = "azure_api_key"
 # Static auth-mode label; not a credential value.
@@ -62,12 +65,14 @@ def request_azure_json(
             raw_payload = response.read()
     except HTTPError as exc:
         raise ModelInvocationError(f"model provider returned HTTP {exc.code}") from exc
+    except TimeoutError as exc:
+        raise ModelProviderUnavailableError("model provider request timed out") from exc
     except URLError as exc:
-        raise ModelInvocationError("model provider request failed") from exc
+        raise ModelProviderUnavailableError("model provider request failed") from exc
 
     try:
         parsed_payload = json.loads(raw_payload)
-    except json.JSONDecodeError as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ModelInvocationError("model provider returned invalid JSON") from exc
 
     if not isinstance(parsed_payload, dict):

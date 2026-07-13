@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from typing import Any
 from urllib.parse import urlencode
@@ -7,8 +8,8 @@ from uuid import UUID, uuid4
 
 import anyio
 
-import apps.api.src.alicebot_api.main as main_module
-from apps.api.src.alicebot_api.config import Settings
+import alicebot_api.main as main_module
+from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
 from alicebot_api.vnext_agent_keys import create_agent_key
@@ -86,6 +87,7 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
     user_id_text = str(user_id)
+    generated_for = datetime.now(timezone.utc).date().isoformat()
 
     workspace_status, workspace_payload = invoke_request(
         "GET",
@@ -337,7 +339,7 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
         payload={
             "user_id": user_id_text,
             "scope": {"domains": ["project"]},
-            "options": {"generated_for": "2026-05-11"},
+            "options": {"generated_for": generated_for},
         },
     )
     assert daily_status == 201
@@ -358,7 +360,7 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
         payload={
             "user_id": user_id_text,
             "scope": {"domains": ["project"]},
-            "options": {"generated_for": "2026-05-11"},
+            "options": {"generated_for": generated_for},
         },
     )
     assert weekly_status == 201
@@ -433,7 +435,7 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
         payload={
             "user_id": user_id_text,
             "scope": {"domains": ["project"]},
-            "options": {"generated_for": "2026-05-11", "sensitivity_allowed": ["public", "internal", "private", "unknown"]},
+            "options": {"generated_for": generated_for, "sensitivity_allowed": ["public", "internal", "private", "unknown"]},
         },
     )
     assert scheduler_daily_status == 201
@@ -447,7 +449,7 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
         payload={
             "user_id": user_id_text,
             "scope": {"domains": ["project"]},
-            "options": {"generated_for": "2026-05-11", "sensitivity_allowed": ["public", "internal", "private", "unknown"]},
+            "options": {"generated_for": generated_for, "sensitivity_allowed": ["public", "internal", "private", "unknown"]},
         },
     )
     assert scheduler_weekly_status == 201

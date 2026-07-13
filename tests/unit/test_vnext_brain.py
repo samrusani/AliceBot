@@ -119,6 +119,7 @@ def _seed_store() -> InMemoryVNextBrainStore:
             "memory_type": "project_state",
             "canonical_text": "Alice vNext is building the brain workflows.",
             "status": "active",
+            "valid_from": "2026-05-10T09:00:00Z",
             "domain": "project",
             "sensitivity": "private",
         }
@@ -128,6 +129,7 @@ def _seed_store() -> InMemoryVNextBrainStore:
             "id": "loop-existing",
             "title": "Validate daily brief artifact",
             "status": "open",
+            "opened_at": "2026-05-10T10:00:00Z",
             "domain": "project",
             "sensitivity": "private",
         }
@@ -256,6 +258,88 @@ def test_weekly_synthesis_model_backed_mode_keeps_candidate_memory_reviewable() 
     assert artifact["model_info_json"]["provider"] == "deterministic_local"
     assert store.memories[-1]["status"] == "candidate"
     assert "## Uncertainties" in artifact["content_markdown"]
+
+
+def test_daily_and_weekly_reports_use_true_half_open_time_windows() -> None:
+    store = InMemoryVNextBrainStore()
+    for source_id, captured_at in (
+        ("before-week", "2026-05-03T23:59:59Z"),
+        ("week-start", "2026-05-04T00:00:00Z"),
+        ("daily", "2026-05-10T12:00:00Z"),
+        ("week-end", "2026-05-11T00:00:00Z"),
+    ):
+        store.sources.append(
+            {
+                "id": source_id,
+                "title": source_id,
+                "captured_at": captured_at,
+                "domain": "project",
+                "sensitivity": "private",
+            }
+        )
+
+    daily = VNextBrainService(store).generate_daily_brief(
+        BrainArtifactRequest(
+            generated_for="2026-05-10",
+            domains=("project",),
+            discover_open_loops=False,
+        )
+    )
+    weekly = VNextBrainService(store).generate_weekly_synthesis(
+        BrainArtifactRequest(
+            generated_for="2026-05-10",
+            domains=("project",),
+            create_candidate_memories=False,
+        )
+    )
+
+    assert daily["metadata_json"]["input_summary"]["source_ids"] == ["daily"]
+    assert weekly["metadata_json"]["input_summary"]["source_ids"] == [
+        "week-start",
+        "daily",
+    ]
+    assert daily["metadata_json"]["window_end"] == "2026-05-11T00:00:00+00:00"
+
+
+def test_daily_brief_applies_project_scope_before_bounded_legacy_limit() -> None:
+    store = InMemoryVNextBrainStore()
+    for index in range(201):
+        store.sources.append(
+            {
+                "id": f"project-b-{index}",
+                "title": "Project B decoy",
+                "captured_at": "2026-05-10T12:00:00Z",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"project_scope": ["project-b"]},
+            }
+        )
+    store.sources.append(
+        {
+            "id": "project-a-source",
+            "title": "Project A source",
+            "captured_at": "2026-05-10T12:00:00Z",
+            "domain": "project",
+            "sensitivity": "private",
+            "metadata_json": {
+                "project_scope": ["project-a"],
+                "raw_text": "TODO: ship project A",
+            },
+        }
+    )
+
+    artifact = VNextBrainService(store).generate_daily_brief(
+        BrainArtifactRequest(
+            generated_for="2026-05-10",
+            domains=("project",),
+            projects=("project-a",),
+            source_limit=1,
+        )
+    )
+
+    assert artifact["metadata_json"]["input_summary"]["source_ids"] == ["project-a-source"]
+    assert artifact["metadata_json"]["project_scope"] == ["project-a"]
+    assert store.open_loops[-1]["metadata_json"]["project_scope"] == ["project-a"]
 
 
 def test_brain_request_validation_rejects_bad_dates_and_limits() -> None:

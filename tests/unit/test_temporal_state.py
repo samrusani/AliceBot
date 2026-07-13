@@ -3,12 +3,15 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+import pytest
+
 from alicebot_api.contracts import (
     TemporalExplainQueryInput,
     TemporalStateAtQueryInput,
     TemporalTimelineQueryInput,
 )
 from alicebot_api.temporal_state import (
+    TemporalStateNotFoundError,
     get_temporal_explain,
     get_temporal_state_at,
     get_temporal_timeline,
@@ -148,6 +151,45 @@ def test_temporal_state_at_reconstructs_historical_fact_state() -> None:
     assert current["state_at"]["facts"][0]["value"] == {"name": "AliceBot v2"}
     assert historical["state_at"]["edges"][0]["relationship_type"] == "works_on"
     assert current["state_at"]["summary"]["fact_count"] == 1
+
+
+def test_temporal_state_does_not_expose_entity_before_creation() -> None:
+    store = TemporalStateStoreStub()
+
+    with pytest.raises(TemporalStateNotFoundError, match="did not exist"):
+        get_temporal_state_at(
+            store,  # type: ignore[arg-type]
+            user_id=uuid4(),
+            request=TemporalStateAtQueryInput(
+                entity_id=store.project_id,
+                at=datetime(2026, 3, 12, 8, 59, tzinfo=UTC),
+            ),
+        )
+
+
+def test_temporal_valid_to_is_half_open() -> None:
+    store = TemporalStateStoreStub()
+    store.revisions[0]["candidate"]["valid_to"] = "2026-03-12T10:00:00Z"
+
+    before = get_temporal_state_at(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        request=TemporalStateAtQueryInput(
+            entity_id=store.project_id,
+            at=datetime(2026, 3, 12, 9, 59, 59, tzinfo=UTC),
+        ),
+    )
+    at_boundary = get_temporal_state_at(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        request=TemporalStateAtQueryInput(
+            entity_id=store.project_id,
+            at=datetime(2026, 3, 12, 10, 0, tzinfo=UTC),
+        ),
+    )
+
+    assert before["state_at"]["summary"]["fact_count"] == 1
+    assert at_boundary["state_at"]["summary"]["fact_count"] == 0
 
 
 def test_temporal_timeline_is_chronological_and_explain_includes_provenance_and_supersession() -> None:

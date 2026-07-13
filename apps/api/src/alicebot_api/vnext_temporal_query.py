@@ -245,16 +245,42 @@ def _valid_date(year: int, month: int, day: int) -> date | None:
         return None
 
 
+def _supported_day_window(day: date) -> tuple[datetime, datetime] | None:
+    """Representable day window inside the parser's documented bounds."""
+    if day < WINDOW_FLOOR.date() or day >= WINDOW_CEILING.date():
+        return None
+    return _day_window(day)
+
+
+def _resolve_yearless_date(month: int, day_number: int, reference: datetime) -> date | None:
+    """Most recent valid month/day occurrence at or before ``reference``.
+
+    Searching a Gregorian cycle fixes yearless leap-day queries: on a
+    non-leap reference year, ``February 29`` resolves to the previous leap
+    year instead of being discarded as invalid.
+    """
+    start_year = min(reference.year, WINDOW_CEILING.year - 1)
+    for year in range(start_year, max(WINDOW_FLOOR.year - 1, start_year - 401), -1):
+        candidate = _valid_date(year, month, day_number)
+        if candidate is None:
+            continue
+        window = _supported_day_window(candidate)
+        if window is not None and window[0] <= reference:
+            return candidate
+    return None
+
+
 def _find_points(text: str, reference: datetime) -> list[_Point]:
     """Explicit calendar references, longest-match-wins on overlaps."""
     candidates: list[_Point] = []
 
     for match in _NUMERIC_DATE.finditer(text):
         day = _valid_date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
-        if day is None:
+        window = _supported_day_window(day) if day is not None else None
+        if day is None or window is None:
             continue
         candidates.append(
-            _Point(match.start(), match.end(), match.group(0), _KIND_DATE, _day_window(day), day.month)
+            _Point(match.start(), match.end(), match.group(0), _KIND_DATE, window, day.month)
         )
 
     for pattern, month_group, day_group, year_group in (
@@ -264,10 +290,11 @@ def _find_points(text: str, reference: datetime) -> list[_Point]:
         for match in pattern.finditer(text):
             month = _MONTHS_BY_NAME[match.group(month_group).casefold()]
             day = _valid_date(int(match.group(year_group)), month, int(match.group(day_group)))
-            if day is None:
+            window = _supported_day_window(day) if day is not None else None
+            if day is None or window is None:
                 continue
             candidates.append(
-                _Point(match.start(), match.end(), match.group(0), _KIND_DATE, _day_window(day), month)
+                _Point(match.start(), match.end(), match.group(0), _KIND_DATE, window, month)
             )
 
     for match in _MONTH_YEAR.finditer(text):
@@ -283,15 +310,14 @@ def _find_points(text: str, reference: datetime) -> list[_Point]:
         for match in pattern.finditer(text):
             month = _MONTHS_BY_NAME[match.group(month_group).casefold()]
             day_number = int(match.group(day_group))
-            day = _valid_date(_resolve_month_year(month, reference), month, day_number)
+            day = _resolve_yearless_date(month, day_number, reference)
             if day is None:
                 continue
-            if datetime(day.year, day.month, day.day, tzinfo=UTC) > reference:
-                day = _valid_date(day.year - 1, month, day_number)
-                if day is None:
-                    continue
+            window = _supported_day_window(day)
+            if window is None:
+                continue
             candidates.append(
-                _Point(match.start(), match.end(), match.group(0), _KIND_DATE, _day_window(day), month)
+                _Point(match.start(), match.end(), match.group(0), _KIND_DATE, window, month)
             )
 
     for match in _BARE_MONTH.finditer(text):

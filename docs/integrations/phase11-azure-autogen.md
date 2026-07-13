@@ -76,6 +76,7 @@ Azure capability snapshots include additional posture fields:
 ```bash
 curl -sS -X POST "http://127.0.0.1:8000/v1/runtime/invoke" \
   -H "Authorization: Bearer $SESSION_TOKEN" \
+  -H "Idempotency-Key: azure-runtime-$(uuidgen)" \
   -H "Content-Type: application/json" \
   -d '{
     "provider_id": "'"$PROVIDER_ID"'",

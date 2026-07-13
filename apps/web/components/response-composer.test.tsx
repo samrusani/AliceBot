@@ -1,7 +1,8 @@
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "../lib/api";
 import { ResponseComposer } from "./response-composer";
 
 const { submitAssistantResponseMock } = vi.hoisted(() => ({
@@ -39,6 +40,7 @@ describe("ResponseComposer", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
   });
 
   it("submits assistant messages through the shipped response endpoint", async () => {
@@ -75,11 +77,15 @@ describe("ResponseComposer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Ask assistant" }));
 
     await waitFor(() => {
-      expect(submitAssistantResponseMock).toHaveBeenCalledWith("https://api.example.com", {
-        user_id: "user-1",
-        thread_id: "thread-1",
-        message: "What do I usually take in coffee?",
-      });
+      expect(submitAssistantResponseMock).toHaveBeenCalledWith(
+        "https://api.example.com",
+        {
+          user_id: "user-1",
+          thread_id: "thread-1",
+          message: "What do I usually take in coffee?",
+        },
+        expect.any(String),
+      );
     });
 
     expect(await screen.findByText("You prefer oat milk.")).toBeInTheDocument();
@@ -88,6 +94,112 @@ describe("ResponseComposer", () => {
       "/traces?trace=compile-trace-1",
     );
     expect(screen.getByText(/Assistant reply added successfully/i)).toBeInTheDocument();
+  });
+
+  it("reuses one idempotency key while polling a 202 response job", async () => {
+    vi.useFakeTimers();
+    submitAssistantResponseMock
+      .mockResolvedValueOnce({
+        detail: {
+          code: "response_generation_in_progress",
+          message: "response generation is already in progress",
+        },
+        response_job: {
+          id: "job-1",
+          state: "running",
+          endpoint: "/v0/responses",
+          created_at: "2026-07-13T10:00:00Z",
+          updated_at: "2026-07-13T10:00:01Z",
+          completed_at: null,
+        },
+      })
+      .mockResolvedValueOnce({
+        assistant: {
+          event_id: "assistant-event-1",
+          sequence_no: 3,
+          text: "Finished once.",
+          model_provider: "openai_responses",
+          model: "gpt-5-mini",
+        },
+        trace: {
+          compile_trace_id: "compile-trace-1",
+          compile_trace_event_count: 3,
+          response_trace_id: "response-trace-1",
+          response_trace_event_count: 2,
+        },
+      });
+    render(
+      <ResponseComposer
+        initialEntries={[]}
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+        selectedThreadId="thread-1"
+        selectedThreadTitle="Polling thread"
+        source="live"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Ask the assistant"), {
+      target: { value: "Finish this once." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Ask assistant" }));
+    await act(async () => undefined);
+    expect(submitAssistantResponseMock).toHaveBeenCalledTimes(1);
+    const firstKey = submitAssistantResponseMock.mock.calls[0]?.[2];
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+
+    expect(submitAssistantResponseMock).toHaveBeenCalledTimes(2);
+    expect(submitAssistantResponseMock.mock.calls[1]?.[2]).toBe(firstKey);
+    expect(screen.getByText("Finished once.")).toBeInTheDocument();
+  });
+
+  it("retains an uncertain request key but rotates it after a terminal error", async () => {
+    submitAssistantResponseMock
+      .mockRejectedValueOnce(new ApiError("Request timed out", 0, "request_timeout"))
+      .mockRejectedValueOnce(new ApiError("Rate limited", 429, "response_rate_limit_exceeded"))
+      .mockResolvedValueOnce({
+        assistant: {
+          event_id: "assistant-event-2",
+          sequence_no: 4,
+          text: "Fresh logical attempt.",
+          model_provider: "openai_responses",
+          model: "gpt-5-mini",
+        },
+        trace: {
+          compile_trace_id: "compile-trace-2",
+          compile_trace_event_count: 3,
+          response_trace_id: "response-trace-2",
+          response_trace_event_count: 2,
+        },
+      });
+    render(
+      <ResponseComposer
+        initialEntries={[]}
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+        selectedThreadId="thread-1"
+        selectedThreadTitle="Retry thread"
+        source="live"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Ask the assistant"), {
+      target: { value: "Retry safely." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Ask assistant" }));
+    expect(await screen.findByText(/Request timed out/i)).toBeInTheDocument();
+    const uncertainKey = submitAssistantResponseMock.mock.calls[0]?.[2];
+
+    fireEvent.click(screen.getByRole("button", { name: "Ask assistant" }));
+    expect(await screen.findByText(/Rate limited/i)).toBeInTheDocument();
+    expect(submitAssistantResponseMock.mock.calls[1]?.[2]).toBe(uncertainKey);
+
+    fireEvent.click(screen.getByRole("button", { name: "Ask assistant" }));
+    expect(await screen.findByText("Fresh logical attempt.")).toBeInTheDocument();
+    expect(submitAssistantResponseMock.mock.calls[2]?.[2]).not.toBe(uncertainKey);
   });
 
   it("adds an explicit fixture preview when live API configuration is absent", async () => {

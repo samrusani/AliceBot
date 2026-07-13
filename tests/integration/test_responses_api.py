@@ -7,14 +7,18 @@ import anyio
 import psycopg
 import pytest
 
-import apps.api.src.alicebot_api.main as main_module
+import alicebot_api.main as main_module
 import alicebot_api.response_generation as response_generation_module
-from apps.api.src.alicebot_api.config import Settings
+from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
 
 
-def invoke_generate_response(payload: dict[str, object]) -> tuple[int, dict[str, object]]:
+def invoke_generate_response(
+    payload: dict[str, object],
+    *,
+    idempotency_key: str | None = None,
+) -> tuple[int, dict[str, object]]:
     messages: list[dict[str, object]] = []
     encoded_body = json.dumps(payload).encode()
     request_received = False
@@ -39,7 +43,10 @@ def invoke_generate_response(payload: dict[str, object]) -> tuple[int, dict[str,
         "path": "/v0/responses",
         "raw_path": b"/v0/responses",
         "query_string": b"",
-        "headers": [(b"content-type", b"application/json")],
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"idempotency-key", (idempotency_key or f"response-api-{uuid4()}").encode()),
+        ],
         "client": ("testclient", 50000),
         "server": ("testserver", 80),
         "root_path": "",

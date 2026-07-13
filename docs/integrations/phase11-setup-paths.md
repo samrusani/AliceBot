@@ -62,6 +62,7 @@ curl -sS -X POST "http://127.0.0.1:8000/v1/providers/test" \
 ```bash
 curl -sS -X POST "http://127.0.0.1:8000/v1/runtime/invoke" \
   -H "Authorization: Bearer $SESSION_TOKEN" \
+  -H "Idempotency-Key: runtime-$(uuidgen)" \
   -H "Content-Type: application/json" \
   -d '{
     "provider_id":"'"$PROVIDER_ID"'",
@@ -69,6 +70,12 @@ curl -sS -X POST "http://127.0.0.1:8000/v1/runtime/invoke" \
     "message":"Summarize local runtime status."
   }'
 ```
+
+`POST /v1/runtime/invoke` requires one `Idempotency-Key` per logical turn. Reuse
+the exact key when retrying the same request after a transport interruption;
+use a new key for a different turn. AliceBot replays persisted terminal outcomes,
+returns `202` while the original call is still active, and never invokes a
+provider again when an expired job's outcome is unknown.
 
 ## Self-Hosted Path: vLLM
 

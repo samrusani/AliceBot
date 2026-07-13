@@ -6,6 +6,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any, cast
+from uuid import uuid4
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -19,12 +20,17 @@ from alicebot_api.vnext_embeddings import (
 from alicebot_api.vnext_entity_names import ENTITY_IMMUTABLE_PATCH_FIELDS, normalize_entity_name
 from alicebot_api.vnext_event_log import build_event_log_record
 from alicebot_api.vnext_json import json_safe
-from alicebot_api.vnext_project_scope import canonical_memory_metadata, expose_memory_project_scope
+from alicebot_api.vnext_project_scope import (
+    canonical_memory_metadata,
+    expose_memory_project_scope,
+    normalize_project_scope,
+)
 from alicebot_api.vnext_repositories import JsonObject
 
 
 JsonList = list[object]
 VNextRow = dict[str, object]
+MAX_SOURCE_CHUNKS_PER_READ = 501
 
 # Statuses the memory read path returns. Everything else -- including
 # 'stale' (demoted by maintenance), 'superseded', and 'rejected' -- is
@@ -32,25 +38,62 @@ VNextRow = dict[str, object]
 # sqlite_store._MEMORY_SEARCHABLE_STATUSES_SQL; keep the two in sync.
 _MEMORY_SEARCHABLE_STATUSES_SQL = "('active', 'accepted')"
 
+
+def _jsonb_project_scope_values_sql(
+    metadata_expression: str,
+    *,
+    legacy_keys: tuple[str, ...],
+    project_id_expression: str | None = None,
+) -> str:
+    """Return one non-widening JSON array expression for project scope.
+
+    Presence of the canonical top-level ``project_scope`` key is
+    authoritative, including an explicit empty array.  Legacy nested and
+    singular representations are consulted only when that key is absent.
+    Malformed canonical values fail closed instead of resurrecting stale
+    legacy scope.
+    """
+
+    canonical_scope = f"{metadata_expression} -> 'project_scope'"
+    nested_scope = f"{metadata_expression} #> '{{agentic_memory,project_scope}}'"
+    project_id_branch = ""
+    if project_id_expression is not None:
+        project_id_branch = f"""
+  WHEN {project_id_expression} IS NOT NULL
+    THEN jsonb_build_array({project_id_expression})"""
+    legacy_values = ",\n      ".join(
+        f"{metadata_expression} #> '{{{','.join(key.split('.'))}}}'" for key in legacy_keys
+    )
+    return f"""
+CASE
+  WHEN {metadata_expression} ? 'project_scope'
+    THEN CASE
+      WHEN jsonb_typeof({canonical_scope}) = 'array' THEN {canonical_scope}
+      ELSE '[]'::jsonb
+    END
+  WHEN jsonb_typeof({nested_scope}) = 'array'
+       AND jsonb_array_length({nested_scope}) > 0
+    THEN {nested_scope}{project_id_branch}
+  ELSE jsonb_path_query_array(
+    jsonb_build_array(
+      {legacy_values}
+    ),
+    'strict $.** ? (@.type() == "string")'
+  )
+END
+"""
+
+
 # The canonical overlap-aware scope is the top-level metadata array.  The
 # nested agentic array covers early commit rows; project_id and its metadata
 # predecessor remain singular legacy/index fallbacks.  CASE precedence is
 # intentionally non-widening: stale lower-priority representations cannot add
 # projects once a higher-priority array is present.
-_MEMORY_PROJECT_SCOPE_SQL = """
-CASE
-  WHEN jsonb_typeof(metadata_json -> 'project_scope') = 'array'
-       AND jsonb_array_length(metadata_json -> 'project_scope') > 0
-    THEN metadata_json -> 'project_scope'
-  WHEN jsonb_typeof(metadata_json #> '{agentic_memory,project_scope}') = 'array'
-       AND jsonb_array_length(metadata_json #> '{agentic_memory,project_scope}') > 0
-    THEN metadata_json #> '{agentic_memory,project_scope}'
-  WHEN project_id IS NOT NULL THEN jsonb_build_array(project_id)
-  WHEN metadata_json ->> 'project_id' IS NOT NULL
-    THEN jsonb_build_array(metadata_json ->> 'project_id')
-  ELSE '[]'::jsonb
-END
-"""
+_MEMORY_PROJECT_SCOPE_SQL = _jsonb_project_scope_values_sql(
+    "metadata_json",
+    legacy_keys=("project_id",),
+    project_id_expression="project_id",
+)
 
 _MEMORY_DIRECT_PEOPLE_SQL = """
 EXISTS (
@@ -71,12 +114,35 @@ EXISTS (
 
 _MEMORY_SCOPE_EVENT_TIME_SQL = "COALESCE(valid_from, last_seen_at, updated_at, first_seen_at, created_at)"
 
+_SCOPED_MEMORY_PROJECT_SQL = _jsonb_project_scope_values_sql(
+    "m.metadata_json",
+    legacy_keys=("project_id",),
+    project_id_expression="m.project_id",
+)
+
+_SCOPED_MEMORY_DIRECT_PEOPLE_SQL = """
+EXISTS (
+  SELECT 1
+  FROM jsonb_path_query(
+    jsonb_build_array(
+      m.metadata_json -> 'person_id',
+      m.metadata_json -> 'person_ids',
+      m.metadata_json -> 'person',
+      m.metadata_json -> 'people',
+      m.metadata_json -> 'people_ids'
+    ),
+    'strict $.** ? (@.type() == "string")'
+  ) AS scoped_person(value)
+  WHERE lower(trim(both '"' FROM scoped_person.value::text)) = ANY(%s::text[])
+)
+"""
+
+_SCOPED_MEMORY_EVENT_TIME_SQL = "COALESCE(m.valid_from, m.last_seen_at, m.updated_at, m.first_seen_at, m.created_at)"
+
 
 def _jsonb_scope_values_sql(metadata_expression: str, keys: tuple[str, ...]) -> str:
     """SQL predicate matching normalized string leaves under selected keys."""
-    values = ",\n      ".join(
-        f"{metadata_expression} #> '{{{','.join(key.split('.'))}}}'" for key in keys
-    )
+    values = ",\n      ".join(f"{metadata_expression} #> '{{{','.join(key.split('.'))}}}'" for key in keys)
     return f"""
 EXISTS (
   SELECT 1
@@ -91,9 +157,9 @@ EXISTS (
 """
 
 
-_SOURCE_SCOPE_PROJECT_SQL = _jsonb_scope_values_sql(
+_SOURCE_SCOPE_PROJECT_SQL = _jsonb_project_scope_values_sql(
     "metadata_json",
-    ("project_id", "project", "projects", "project_scope", "agentic_memory.project_scope"),
+    legacy_keys=("project_id", "project", "projects"),
 )
 _SOURCE_SCOPE_PEOPLE_SQL = _jsonb_scope_values_sql(
     "metadata_json",
@@ -117,9 +183,14 @@ COALESCE(
   captured_at
 )
 """
-_OPEN_LOOP_SCOPE_PROJECT_SQL = _jsonb_scope_values_sql(
+_ARTIFACT_SCOPE_PROJECT_SQL = _jsonb_project_scope_values_sql(
     "metadata_json",
-    ("project_id", "project", "projects", "project_scope", "agentic_memory.project_scope"),
+    legacy_keys=("project_id", "project", "projects"),
+)
+_OPEN_LOOP_SCOPE_PROJECT_SQL = _jsonb_project_scope_values_sql(
+    "metadata_json",
+    legacy_keys=("project_id", "project", "projects"),
+    project_id_expression="project_id",
 )
 _OPEN_LOOP_SCOPE_PEOPLE_SQL = _jsonb_scope_values_sql(
     "metadata_json",
@@ -207,13 +278,9 @@ def _vector_literal(vector: list[float]) -> str:
         try:
             normalized = float(value)
         except (TypeError, ValueError) as exc:
-            raise ContinuityStoreInvariantError(
-                "embedding vectors must contain only numbers"
-            ) from exc
+            raise ContinuityStoreInvariantError("embedding vectors must contain only numbers") from exc
         if not math.isfinite(normalized):
-            raise ContinuityStoreInvariantError(
-                "embedding vectors must contain only finite numbers"
-            )
+            raise ContinuityStoreInvariantError("embedding vectors must contain only finite numbers")
         values.append(normalized)
     return "[" + ",".join(repr(value) for value in values) + "]"
 
@@ -278,11 +345,7 @@ def fts_fallback_tokens(query: str) -> list[str]:
     ``& | ! ( ) : * -`` and friends), so no user input can inject query
     syntax on either backend.
     """
-    return [
-        token
-        for token in re.findall(r"\w+", str(query))
-        if token.casefold() not in FTS_QUERY_STOPWORDS
-    ]
+    return [token for token in re.findall(r"\w+", str(query)) if token.casefold() not in FTS_QUERY_STOPWORDS]
 
 
 def _tsquery_any_expression(query: str) -> str | None:
@@ -386,9 +449,7 @@ SOURCE_CHUNK_COLUMNS = """
 # c.-prefixed chunk columns for search_source_chunks, whose JOIN to
 # sources would otherwise make id/user_id/metadata_json/created_at
 # ambiguous.
-_SOURCE_CHUNK_SEARCH_COLUMNS = ", ".join(
-    f"c.{column.strip()}" for column in SOURCE_CHUNK_COLUMNS.split(",")
-)
+_SOURCE_CHUNK_SEARCH_COLUMNS = ", ".join(f"c.{column.strip()}" for column in SOURCE_CHUNK_COLUMNS.split(","))
 
 MEMORY_COLUMNS = """
                   id,
@@ -695,6 +756,9 @@ SCHEDULER_WORKFLOW_COLUMNS = """
                   last_run_at,
                   last_result,
                   last_error,
+                  claim_token,
+                  claim_version,
+                  claim_expires_at,
                   created_at,
                   updated_at,
                   metadata_json
@@ -712,6 +776,10 @@ SCHEDULER_RUN_COLUMNS = """
                   finished_at,
                   artifact_id,
                   error_message,
+                  claim_token,
+                  claim_version,
+                  claim_expires_at,
+                  scheduled_for,
                   policy_decision_json,
                   agent_identity_json,
                   metadata_json
@@ -904,6 +972,197 @@ class PostgresVNextStore:
             """,
             (target_type, target_type, target_id, target_id),
         )
+
+    def list_events_for_source_trace(
+        self,
+        *,
+        source_id: str,
+        memory_ids: Sequence[str] = (),
+        artifact_ids: Sequence[str] = (),
+        open_loop_ids: Sequence[str] = (),
+        limit: int = 500,
+    ) -> list[VNextRow]:
+        """Bound source-trace events with relationship predicates before LIMIT."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        memories = list(dict.fromkeys(str(value) for value in memory_ids if value)) or None
+        artifacts = list(dict.fromkeys(str(value) for value in artifact_ids if value)) or None
+        open_loops = list(dict.fromkeys(str(value) for value in open_loop_ids if value)) or None
+        source_ref = f"source:{source_id}"
+        return self._fetch_all(
+            f"""
+                SELECT {EVENT_LOG_COLUMNS}
+                FROM event_log
+                WHERE (
+                  (target_type = 'source' AND target_id = %s)
+                  OR (%s::text[] IS NOT NULL AND target_type = 'memory' AND target_id = ANY(%s::text[]))
+                  OR (%s::text[] IS NOT NULL AND target_type = 'artifact' AND target_id = ANY(%s::text[]))
+                  OR (%s::text[] IS NOT NULL AND target_type = 'open_loop' AND target_id = ANY(%s::text[]))
+                  OR payload_json ->> 'source_id' = %s
+                  OR payload_json ->> 'source_ref' IN (%s, %s)
+                  OR payload_json -> 'source_ids' ? %s
+                  OR payload_json -> 'source_refs' ? %s
+                  OR payload_json -> 'source_refs' ? %s
+                  OR payload_json -> 'source_references' ? %s
+                  OR payload_json -> 'source_references' ? %s
+                  OR payload_json -> 'selected_source_ids' ? %s
+                )
+                ORDER BY occurred_at DESC, id DESC
+                LIMIT %s
+                """,
+            (
+                source_id,
+                memories,
+                memories,
+                artifacts,
+                artifacts,
+                open_loops,
+                open_loops,
+                source_id,
+                source_id,
+                source_ref,
+                source_id,
+                source_id,
+                source_ref,
+                source_id,
+                source_ref,
+                source_id,
+                limit,
+            ),
+        )
+
+    def list_memory_events(
+        self,
+        *,
+        event_type_prefix: str | None = None,
+        scope_projects: tuple[str, ...] = (),
+        scope_people: tuple[str, ...] = (),
+        scope_person_memory_ids: tuple[str, ...] = (),
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
+        limit: int = 20,
+    ) -> list[VNextRow]:
+        """Return memory-targeted events with target scope applied pre-LIMIT."""
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        project_list = list(normalize_project_scope(scope_projects)) or None
+        people_list = [str(value).strip().casefold() for value in scope_people if str(value).strip()] or None
+        person_memory_ids = [str(value) for value in scope_person_memory_ids if str(value)] or None
+        prefix_pattern = f"{event_type_prefix}%" if event_type_prefix is not None else None
+        return self._fetch_all(
+            f"""
+                SELECT
+                  e.id,
+                  e.user_id,
+                  e.event_type,
+                  e.actor_type,
+                  e.actor_id,
+                  e.target_type,
+                  e.target_id,
+                  e.occurred_at,
+                  e.payload_json,
+                  e.trace_id,
+                  e.run_id,
+                  e.integrity_hash
+                FROM event_log e
+                JOIN memories m
+                  ON e.target_type = 'memory'
+                 AND e.target_id = m.id::text
+                 AND e.user_id = m.user_id
+                WHERE m.deleted_at IS NULL
+                  AND (%s::text IS NULL OR e.event_type LIKE %s)
+                  AND (%s::text[] IS NULL OR ({_SCOPED_MEMORY_PROJECT_SQL}) ?| %s::text[])
+                  AND (
+                    %s::text[] IS NULL
+                    OR m.id::text = ANY(%s::text[])
+                    OR {_SCOPED_MEMORY_DIRECT_PEOPLE_SQL}
+                  )
+                  AND (%s::timestamptz IS NULL OR e.occurred_at >= %s::timestamptz)
+                  AND (%s::timestamptz IS NULL OR e.occurred_at <= %s::timestamptz)
+                ORDER BY e.occurred_at DESC, e.id DESC
+                LIMIT %s
+                """,
+            (
+                prefix_pattern,
+                prefix_pattern,
+                project_list,
+                project_list,
+                people_list,
+                person_memory_ids,
+                people_list,
+                scope_window_start,
+                scope_window_start,
+                scope_window_end,
+                scope_window_end,
+                limit,
+            ),
+        )
+
+    def count_events(
+        self,
+        *,
+        target_type: str | None = None,
+        target_id: str | None = None,
+    ) -> int:
+        """Count matching event rows without materializing the append-only log."""
+        row = self._fetch_one(
+            "count events",
+            """
+                SELECT COUNT(*)::bigint AS count
+                FROM event_log
+                WHERE (%s::text IS NULL OR target_type = %s)
+                  AND (%s::text IS NULL OR target_id = %s)
+                """,
+            (target_type, target_type, target_id, target_id),
+        )
+        return int(cast(int, row["count"]))
+
+    def count_sources(self) -> int:
+        row = self._fetch_one("count sources", "SELECT COUNT(*)::bigint AS count FROM sources WHERE deleted_at IS NULL")
+        return int(cast(int, row["count"]))
+
+    def count_artifacts(self) -> int:
+        row = self._fetch_one("count artifacts", "SELECT COUNT(*)::bigint AS count FROM generated_artifacts")
+        return int(cast(int, row["count"]))
+
+    def count_artifacts_by_status(self) -> dict[str, int]:
+        rows = self._fetch_all(
+            "SELECT status, COUNT(*)::bigint AS count FROM generated_artifacts GROUP BY status ORDER BY status"
+        )
+        return {str(row["status"]): int(cast(int, row["count"])) for row in rows}
+
+    def count_artifact_quality_ratings(self) -> int:
+        row = self._fetch_one(
+            "count artifact quality ratings",
+            "SELECT COUNT(*)::bigint AS count FROM artifact_quality_ratings",
+        )
+        return int(cast(int, row["count"]))
+
+    def count_projects(self) -> int:
+        row = self._fetch_one("count projects", "SELECT COUNT(*)::bigint AS count FROM projects")
+        return int(cast(int, row["count"]))
+
+    def count_open_loops(self, *, status: str | None = None) -> int:
+        row = self._fetch_one(
+            "count open loops",
+            "SELECT COUNT(*)::bigint AS count FROM open_loops WHERE (%s::text IS NULL OR status = %s)",
+            (status, status),
+        )
+        return int(cast(int, row["count"]))
+
+    def count_open_loops_by_status(self) -> dict[str, int]:
+        rows = self._fetch_all(
+            "SELECT status, COUNT(*)::bigint AS count FROM open_loops GROUP BY status ORDER BY status"
+        )
+        return {str(row["status"]): int(cast(int, row["count"])) for row in rows}
+
+    def count_agent_identities(self) -> int:
+        row = self._fetch_one(
+            "count agent identities",
+            "SELECT COUNT(*)::bigint AS count FROM agent_identities",
+        )
+        return int(cast(int, row["count"]))
 
     def list_connector_settings(self) -> list[VNextRow]:
         return self._fetch_all(
@@ -1473,15 +1732,19 @@ class PostgresVNextStore:
         )
         return row
 
-    def list_source_chunks(self, source_id: str) -> list[VNextRow]:
+    def list_source_chunks(self, source_id: str, *, limit: int = 500) -> list[VNextRow]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        bounded_limit = min(limit, MAX_SOURCE_CHUNKS_PER_READ)
         return self._fetch_all(
             f"""
                 SELECT {SOURCE_CHUNK_COLUMNS}
                 FROM source_chunks
                 WHERE source_id = %s::uuid
                 ORDER BY chunk_index ASC, id ASC
+                LIMIT %s
                 """,
-            (source_id,),
+            (source_id, bounded_limit),
         )
 
     def search_source_chunks(
@@ -1522,9 +1785,11 @@ class PostgresVNextStore:
         scope_people_list = list(scope_people) or None
         project_scope_sql = _SOURCE_SCOPE_PROJECT_SQL.replace("metadata_json", "s.metadata_json")
         people_scope_sql = _SOURCE_SCOPE_PEOPLE_SQL.replace("metadata_json", "s.metadata_json")
-        event_time_sql = _SOURCE_SCOPE_EVENT_TIME_SQL.replace(
-            "source_created_at", "s.source_created_at"
-        ).replace("captured_at", "s.captured_at").replace("metadata_json", "s.metadata_json")
+        event_time_sql = (
+            _SOURCE_SCOPE_EVENT_TIME_SQL.replace("source_created_at", "s.source_created_at")
+            .replace("captured_at", "s.captured_at")
+            .replace("metadata_json", "s.metadata_json")
+        )
         return self._fetch_all(
             f"""
                 SELECT {_SOURCE_CHUNK_SEARCH_COLUMNS},
@@ -1534,7 +1799,7 @@ class PostgresVNextStore:
                 WHERE s.deleted_at IS NULL
                   AND (%s::text[] IS NULL OR s.domain = ANY(%s::text[]) OR s.domain = 'unknown')
                   AND (%s::text[] IS NULL OR s.sensitivity = ANY(%s::text[]))
-                  AND (%s::text[] IS NULL OR {project_scope_sql})
+                  AND (%s::text[] IS NULL OR ({project_scope_sql}) ?| %s::text[])
                   AND (%s::text[] IS NULL OR {people_scope_sql})
                   AND (%s::timestamptz IS NULL OR {event_time_sql} >= %s::timestamptz)
                   AND (%s::timestamptz IS NULL OR {event_time_sql} <= %s::timestamptz)
@@ -1699,6 +1964,46 @@ class PostgresVNextStore:
         )
         return row
 
+    def get_memory_by_key(
+        self,
+        *,
+        memory_key: str,
+        agent_profile_id: str = "assistant_default",
+    ) -> VNextRow | None:
+        return self._fetch_optional_one(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories
+                WHERE agent_profile_id = %s
+                  AND memory_key = %s
+                  AND deleted_at IS NULL
+                LIMIT 1
+                """,
+            (agent_profile_id, memory_key),
+        )
+
+    def upsert_memory_by_key(self, memory: JsonObject, *, actor_type: str = "system") -> VNextRow:
+        """Create a deterministic-key memory or replay its existing row."""
+
+        memory_key = str(memory.get("memory_key") or "").strip()
+        if memory_key == "":
+            raise ValueError("memory_key must not be empty")
+        agent_profile_id = str(memory.get("agent_profile_id") or "assistant_default")
+        try:
+            return self.create_memory(memory, actor_type=actor_type)
+        except ContinuityStoreInvariantError:
+            # ``create_memory`` uses INSERT ... ON CONFLICT DO NOTHING.  A
+            # conflict is therefore a successful, transaction-safe no-op;
+            # resolve only the exact tenant/profile/key identity so unrelated
+            # uniqueness conflicts still fail closed.
+            existing = self.get_memory_by_key(
+                memory_key=memory_key,
+                agent_profile_id=agent_profile_id,
+            )
+            if existing is None:
+                raise
+            return existing
+
     def get_memory(self, memory_id: str) -> VNextRow | None:
         return self._fetch_optional_one(
             f"""
@@ -1722,6 +2027,55 @@ class PostgresVNextStore:
                   AND id = ANY(%s::uuid[])
                 """,
             (ids,),
+        )
+
+    def list_memories_referencing_source(self, *, source_id: str, limit: int = 500) -> list[VNextRow]:
+        """Bound memories related to one source, including provenance links."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        source_ref = f"source:{source_id}"
+        qualified_columns = ", ".join(f"m.{column.strip()}" for column in MEMORY_COLUMNS.split(",") if column.strip())
+        return self._fetch_all(
+            f"""
+                SELECT {qualified_columns}
+                FROM memories AS m
+                WHERE m.deleted_at IS NULL
+                  AND (
+                    m.source_event_ids ? %s
+                    OR EXISTS (
+                      SELECT 1
+                      FROM provenance_links AS p
+                      WHERE p.target_type = 'memory'
+                        AND p.target_id = m.id::text
+                        AND p.source_id = %s::uuid
+                    )
+                    OR m.metadata_json ->> 'source_id' = %s
+                    OR m.metadata_json ->> 'source_ref' IN (%s, %s)
+                    OR m.metadata_json -> 'source_ids' ? %s
+                    OR m.metadata_json -> 'source_refs' ? %s
+                    OR m.metadata_json -> 'source_refs' ? %s
+                    OR m.metadata_json -> 'source_references' ? %s
+                    OR m.metadata_json -> 'source_references' ? %s
+                    OR m.metadata_json -> 'selected_source_ids' ? %s
+                  )
+                ORDER BY m.updated_at DESC, m.created_at DESC, m.id DESC
+                LIMIT %s
+                """,
+            (
+                source_id,
+                source_id,
+                source_id,
+                source_id,
+                source_ref,
+                source_id,
+                source_id,
+                source_ref,
+                source_id,
+                source_ref,
+                source_id,
+                limit,
+            ),
         )
 
     def get_memory_for_update(self, memory_id: str) -> VNextRow | None:
@@ -1782,6 +2136,7 @@ class PostgresVNextStore:
         status: str | None = None,
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
+        projects: Sequence[str] | None = None,
         limit: int | None = None,
     ) -> list[VNextRow]:
         if limit is not None and limit < 1:
@@ -1801,6 +2156,11 @@ class PostgresVNextStore:
                 return []
             sensitivity_sql = " AND COALESCE(sensitivity, 'unknown') = ANY(%s::text[])"
             params.append(sensitivity_allowed)
+        projects_sql = ""
+        project_list = list(normalize_project_scope(projects or ())) or None
+        if project_list is not None:
+            projects_sql = f" AND ({_MEMORY_PROJECT_SCOPE_SQL}) ?| %s::text[]"
+            params.append(project_list)
         limit_sql = ""
         if limit is not None:
             limit_sql = " LIMIT %s"
@@ -1809,11 +2169,192 @@ class PostgresVNextStore:
             f"""
                 SELECT {MEMORY_COLUMNS}
                 FROM memories
-                WHERE deleted_at IS NULL{status_sql}{domains_sql}{sensitivity_sql}
+                WHERE deleted_at IS NULL{status_sql}{domains_sql}{sensitivity_sql}{projects_sql}
                 ORDER BY updated_at DESC, created_at DESC, id DESC
                 {limit_sql}
                 """,
             tuple(params),
+        )
+
+    def list_memories_by_statuses(
+        self,
+        *,
+        statuses: Sequence[str],
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int = 30,
+    ) -> list[VNextRow]:
+        """Return a bounded review/workspace slice for several statuses.
+
+        Callers previously materialized the entire memory corpus and filtered
+        it in Python.  Keep the status predicate, tenant RLS, ordering, and
+        limit in PostgreSQL so dashboard latency and memory use stay bounded.
+        """
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        normalized_statuses = list(dict.fromkeys(str(value) for value in statuses if str(value)))
+        if not normalized_statuses:
+            return []
+        if sensitivity_allowed is not None and not sensitivity_allowed:
+            return []
+        return self._fetch_all(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND status = ANY(%s::text[])
+                  AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
+                  AND (%s::text[] IS NULL OR COALESCE(sensitivity, 'unknown') = ANY(%s::text[]))
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """,
+            (
+                normalized_statuses,
+                domains,
+                domains,
+                sensitivity_allowed,
+                sensitivity_allowed,
+                limit,
+            ),
+        )
+
+    def count_memories_by_status(
+        self,
+        *,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+    ) -> dict[str, int]:
+        """Return exact status counts without loading memory rows."""
+        if sensitivity_allowed is not None and not sensitivity_allowed:
+            return {}
+        rows = self._fetch_all(
+            """
+                SELECT status, COUNT(*)::bigint AS count
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
+                  AND (%s::text[] IS NULL OR COALESCE(sensitivity, 'unknown') = ANY(%s::text[]))
+                GROUP BY status
+                ORDER BY status
+                """,
+            (domains, domains, sensitivity_allowed, sensitivity_allowed),
+        )
+        return {str(row["status"]): int(cast(int, row["count"])) for row in rows}
+
+    def list_recent_agentic_commits(self, *, limit: int = 20) -> list[VNextRow]:
+        """Bounded replacement for scanning all memories in ``recent_commits``."""
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        return self._fetch_all(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND metadata_json #>> '{{agentic_memory,kind}}' = 'agentic_memory_commit'
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """,
+            (limit,),
+        )
+
+    def list_pending_inline_confirmations(self, *, limit: int = 20) -> list[VNextRow]:
+        """Return only actionable inline confirmations, never resolved rows."""
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        return self._fetch_all(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND status = 'needs_review'
+                  AND confirmation_status = 'unconfirmed'
+                  AND metadata_json #>> '{{agentic_memory,kind}}' = 'agentic_memory_commit'
+                  AND metadata_json #>> '{{agentic_memory,confirmation,status}}' = 'pending'
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """,
+            (limit,),
+        )
+
+    def find_live_memory_by_canonical_text(
+        self,
+        canonical_text: str,
+        *,
+        domain: str,
+        sensitivity: str,
+        project_scope: Sequence[str] = (),
+    ) -> VNextRow | None:
+        """Find one live, exactly-scoped duplicate without an O(N) scan."""
+        normalized_text = str(canonical_text).strip()
+        if not normalized_text:
+            return None
+        normalized_scope = list(normalize_project_scope(project_scope))
+        return self._fetch_optional_one(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND status IN ('candidate', 'active', 'accepted', 'needs_review', 'private_only')
+                  AND md5(lower(canonical_text)) = md5(lower(%s))
+                  AND lower(canonical_text) = lower(%s)
+                  AND domain = %s
+                  AND sensitivity = %s
+                  AND {_MEMORY_PROJECT_SCOPE_SQL} = %s::jsonb
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT 1
+                """,
+            (
+                normalized_text,
+                normalized_text,
+                str(domain),
+                str(sensitivity),
+                _json_list(normalized_scope),
+            ),
+        )
+
+    def list_memories_for_staleness_sweep(
+        self,
+        *,
+        reference_time: datetime,
+        confirmation_before: datetime,
+        review_memory_types: Sequence[str],
+        limit: int,
+        projects: Sequence[str] | None = None,
+    ) -> list[VNextRow]:
+        """Read only active rows that actually cross a staleness threshold."""
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        memory_types = list(dict.fromkeys(str(value) for value in review_memory_types if str(value)))
+        project_list = list(normalize_project_scope(projects or ())) or None
+        return self._fetch_all(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND status = 'active'
+                  AND (%s::text[] IS NULL OR ({_MEMORY_PROJECT_SCOPE_SQL}) ?| %s::text[])
+                  AND (
+                    (valid_to IS NOT NULL AND valid_to < %s::timestamptz)
+                    OR (
+                      memory_type = ANY(%s::text[])
+                      AND COALESCE(last_confirmed_at, last_seen_at, created_at) < %s::timestamptz
+                    )
+                  )
+                ORDER BY
+                  CASE WHEN valid_to IS NOT NULL AND valid_to < %s::timestamptz THEN 0 ELSE 1 END,
+                  COALESCE(valid_to, last_confirmed_at, last_seen_at, created_at) ASC,
+                  id ASC
+                LIMIT %s
+                """,
+            (
+                project_list,
+                project_list,
+                reference_time,
+                memory_types,
+                confirmation_before,
+                reference_time,
+                limit,
+            ),
         )
 
     def count_memories(
@@ -1822,6 +2363,7 @@ class PostgresVNextStore:
         status: str | None = None,
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
+        projects: Sequence[str] | None = None,
     ) -> int:
         """Count the exact in-scope memory corpus without materializing it."""
         status_sql = ""
@@ -1839,12 +2381,17 @@ class PostgresVNextStore:
                 return 0
             sensitivity_sql = " AND COALESCE(sensitivity, 'unknown') = ANY(%s::text[])"
             params.append(sensitivity_allowed)
+        projects_sql = ""
+        project_list = list(normalize_project_scope(projects or ())) or None
+        if project_list is not None:
+            projects_sql = f" AND ({_MEMORY_PROJECT_SCOPE_SQL}) ?| %s::text[]"
+            params.append(project_list)
         row = self._fetch_one(
             "count memories",
             f"""
                 SELECT COUNT(*) AS count
                 FROM memories
-                WHERE deleted_at IS NULL{status_sql}{domains_sql}{sensitivity_sql}
+                WHERE deleted_at IS NULL{status_sql}{domains_sql}{sensitivity_sql}{projects_sql}
                 """,
             tuple(params),
         )
@@ -1857,6 +2404,7 @@ class PostgresVNextStore:
         sensitivity_allowed: list[str],
         excluded_candidate_kind: str,
         limit: int,
+        projects: Sequence[str] | None = None,
     ) -> list[VNextRow]:
         """Return the newest bounded roll-up inputs, excluding cards in SQL."""
         if limit < 1:
@@ -1864,6 +2412,7 @@ class PostgresVNextStore:
         if not sensitivity_allowed:
             return []
         domain_filter = domains or None
+        project_list = list(normalize_project_scope(projects or ())) or None
         return self._fetch_all(
             f"""
                 SELECT {MEMORY_COLUMNS}
@@ -1873,10 +2422,19 @@ class PostgresVNextStore:
                   AND COALESCE(metadata_json ->> 'candidate_kind', '') <> %s
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND COALESCE(sensitivity, 'unknown') = ANY(%s::text[])
+                  AND (%s::text[] IS NULL OR ({_MEMORY_PROJECT_SCOPE_SQL}) ?| %s::text[])
                 ORDER BY created_at DESC, id DESC
                 LIMIT %s
                 """,
-            (excluded_candidate_kind, domain_filter, domain_filter, sensitivity_allowed, limit),
+            (
+                excluded_candidate_kind,
+                domain_filter,
+                domain_filter,
+                sensitivity_allowed,
+                project_list,
+                project_list,
+                limit,
+            ),
         )
 
     def count_rollup_input_memories(
@@ -1885,11 +2443,13 @@ class PostgresVNextStore:
         domains: list[str] | None,
         sensitivity_allowed: list[str],
         excluded_candidate_kind: str,
+        projects: Sequence[str] | None = None,
     ) -> int:
         """Return the authoritative total behind the bounded roll-up read."""
         if not sensitivity_allowed:
             return 0
         domain_filter = domains or None
+        project_list = list(normalize_project_scope(projects or ())) or None
         row = self._fetch_one(
             "count rollup input memories",
             f"""
@@ -1900,8 +2460,16 @@ class PostgresVNextStore:
                   AND COALESCE(metadata_json ->> 'candidate_kind', '') <> %s
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND COALESCE(sensitivity, 'unknown') = ANY(%s::text[])
+                  AND (%s::text[] IS NULL OR ({_MEMORY_PROJECT_SCOPE_SQL}) ?| %s::text[])
                 """,
-            (excluded_candidate_kind, domain_filter, domain_filter, sensitivity_allowed),
+            (
+                excluded_candidate_kind,
+                domain_filter,
+                domain_filter,
+                sensitivity_allowed,
+                project_list,
+                project_list,
+            ),
         )
         return cast(int, row["count"])
 
@@ -1913,6 +2481,7 @@ class PostgresVNextStore:
         sensitivity_allowed: list[str],
         candidate_kind: str,
         limit: int,
+        projects: Sequence[str] | None = None,
     ) -> list[VNextRow]:
         """Return at most one newest pending candidate per requested digest."""
         unique_digests = tuple(sorted(set(rollup_digests)))
@@ -1922,6 +2491,7 @@ class PostgresVNextStore:
             raise ValueError("limit must be positive")
         bounded_limit = min(limit, len(unique_digests))
         domain_filter = domains or None
+        project_list = list(normalize_project_scope(projects or ())) or None
         return self._fetch_all(
             f"""
                 SELECT DISTINCT ON (metadata_json ->> 'rollup_digest') {MEMORY_COLUMNS}
@@ -1932,6 +2502,7 @@ class PostgresVNextStore:
                   AND metadata_json ->> 'rollup_digest' = ANY(%s::text[])
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND COALESCE(sensitivity, 'unknown') = ANY(%s::text[])
+                  AND (%s::text[] IS NULL OR ({_MEMORY_PROJECT_SCOPE_SQL}) ?| %s::text[])
                 ORDER BY metadata_json ->> 'rollup_digest', updated_at DESC, created_at DESC, id DESC
                 LIMIT %s
                 """,
@@ -1941,6 +2512,8 @@ class PostgresVNextStore:
                 domain_filter,
                 domain_filter,
                 sensitivity_allowed,
+                project_list,
+                project_list,
                 bounded_limit,
             ),
         )
@@ -1953,6 +2526,7 @@ class PostgresVNextStore:
         sensitivity_allowed: list[str],
         candidate_kind: str,
         limit: int,
+        projects: Sequence[str] | None = None,
     ) -> list[VNextRow]:
         """Return at most one active/accepted card per requested roll-up key."""
         unique_keys = tuple(sorted(set(rollup_keys)))
@@ -1962,6 +2536,7 @@ class PostgresVNextStore:
             raise ValueError("limit must be positive")
         bounded_limit = min(limit, len(unique_keys))
         domain_filter = domains or None
+        project_list = list(normalize_project_scope(projects or ())) or None
         return self._fetch_all(
             f"""
                 SELECT DISTINCT ON (metadata_json ->> 'rollup_key') {MEMORY_COLUMNS}
@@ -1972,6 +2547,7 @@ class PostgresVNextStore:
                   AND metadata_json ->> 'rollup_key' = ANY(%s::text[])
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND COALESCE(sensitivity, 'unknown') = ANY(%s::text[])
+                  AND (%s::text[] IS NULL OR ({_MEMORY_PROJECT_SCOPE_SQL}) ?| %s::text[])
                 ORDER BY
                   metadata_json ->> 'rollup_key',
                   CASE WHEN status = 'active' THEN 0 ELSE 1 END,
@@ -1986,6 +2562,8 @@ class PostgresVNextStore:
                 domain_filter,
                 domain_filter,
                 sensitivity_allowed,
+                project_list,
+                project_list,
                 bounded_limit,
             ),
         )
@@ -2208,9 +2786,7 @@ class PostgresVNextStore:
         signature_params: list[object] = []
         if embedding_provider is not None or embedding_model is not None:
             if not embedding_provider or not embedding_model:
-                raise ContinuityStoreInvariantError(
-                    "embedding_provider and embedding_model must be supplied together"
-                )
+                raise ContinuityStoreInvariantError("embedding_provider and embedding_model must be supplied together")
             signature_sql = f"""
                   AND metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'provider' = %s
                   AND metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'model' = %s
@@ -2229,6 +2805,14 @@ class PostgresVNextStore:
                   AND metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'version' = %s
                 """
                 signature_params.append(str(embedding_signature_version))
+            # Content freshness belongs in the indexed candidate query, not
+            # after its LIMIT.  Filtering stale signatures only in Python let
+            # four stale nearest neighbors exhaust a limit=1 overfetch and
+            # report zero vector candidates even when a current row followed.
+            signature_sql += f"""
+                  AND metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'content_sha256'
+                    = ({_MEMORY_EMBEDDING_CONTENT_SHA256_SQL})
+            """
         params: list[object] = [
             vector_param,
             domains,
@@ -2257,7 +2841,7 @@ class PostgresVNextStore:
         ]
         params.extend(signature_params)
         candidate_limit = max(limit, min(limit * 4, 1000)) if signature_sql else limit
-        params.extend((include_expired, vector_param, candidate_limit))
+        base_params = [*params, include_expired, vector_param]
         # Enable iterative HNSW scan so the lifecycle/scope/signature filters
         # applied alongside the approximate ORDER BY do not silently underfill
         # the result set (a plain filtered HNSW scan can return far fewer than
@@ -2266,8 +2850,7 @@ class PostgresVNextStore:
         # SET LOCAL scopes it to the current transaction.
         with self.conn.cursor() as cur:
             cur.execute("SET LOCAL hnsw.iterative_scan = 'strict_order'")
-        rows = self._fetch_all(
-            f"""
+        vector_query = f"""
                 SELECT {MEMORY_COLUMNS},
                   (embedding_vector <=> %s::vector) AS vector_distance
                 FROM memories
@@ -2305,12 +2888,22 @@ class PostgresVNextStore:
                   AND (%s::boolean OR valid_to IS NULL OR valid_to >= clock_timestamp())
                 ORDER BY embedding_vector <=> %s::vector
                 LIMIT %s
-                """,
-            tuple(params),
-        )
-        if not signature_sql:
-            return rows
-        return [row for row in rows if memory_embedding_signature_is_current(row)][:limit]
+                """
+        while True:
+            rows = self._fetch_all(vector_query, tuple((*base_params, candidate_limit)))
+            if not signature_sql:
+                return rows
+            current_rows = [row for row in rows if memory_embedding_signature_is_current(row)]
+            if len(current_rows) >= limit:
+                return current_rows[:limit]
+            # The SQL freshness predicate should make every row current. This
+            # bounded deepening is a defensive compatibility path for older
+            # pgcrypto/text-normalization behavior and test doubles: expand
+            # until PostgreSQL reports exhaustion rather than treating a
+            # fixed four-times overfetch as authoritative.
+            if len(rows) < candidate_limit or candidate_limit >= 1000:
+                return current_rows[:limit]
+            candidate_limit = min(candidate_limit * 2, 1000)
 
     def search_memories_by_time(
         self,
@@ -2446,9 +3039,15 @@ class PostgresVNextStore:
                         )
                     WHERE id = %s::uuid
                       AND deleted_at IS NULL
+                      AND ({_MEMORY_EMBEDDING_CONTENT_SHA256_SQL}) = %s
                     RETURNING id
                     """,
-                (_vector_literal(vector), Jsonb(signature_metadata), memory_id),
+                (
+                    _vector_literal(vector),
+                    Jsonb(signature_metadata),
+                    memory_id,
+                    content_sha256,
+                ),
             )
         return self._fetch_optional_one(
             f"""
@@ -2494,9 +3093,7 @@ class PostgresVNextStore:
         signature_params: list[object] = []
         if embedding_provider is not None or embedding_model is not None:
             if not embedding_provider or not embedding_model:
-                raise ContinuityStoreInvariantError(
-                    "embedding_provider and embedding_model must be supplied together"
-                )
+                raise ContinuityStoreInvariantError("embedding_provider and embedding_model must be supplied together")
             signature_sql = f"""
                   OR metadata_json -> '{EMBEDDING_SIGNATURE_METADATA_KEY}' ->> 'provider'
                        IS DISTINCT FROM %s
@@ -2550,9 +3147,7 @@ class PostgresVNextStore:
         """
         with self.conn.cursor() as cur:
             cur.execute(
-                "SELECT pg_advisory_xact_lock("
-                "hashtext('vnext_supersession'), "
-                "hashtext(app.current_user_id()::text))"
+                "SELECT pg_advisory_xact_lock(hashtext('vnext_supersession'), hashtext(app.current_user_id()::text))"
             )
 
     def list_memory_ids_with_embeddings(self, ids: "Sequence[str]") -> set[str]:
@@ -3115,7 +3710,7 @@ class PostgresVNextStore:
                 WHERE deleted_at IS NULL
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
-                  AND (%s::text[] IS NULL OR {_SOURCE_SCOPE_PROJECT_SQL})
+                  AND (%s::text[] IS NULL OR ({_SOURCE_SCOPE_PROJECT_SQL}) ?| %s::text[])
                   AND (%s::text[] IS NULL OR {_SOURCE_SCOPE_PEOPLE_SQL})
                   AND (
                     %s::timestamptz IS NULL
@@ -3243,6 +3838,114 @@ class PostgresVNextStore:
             target_id=row["id"],
             payload={"operation": "create", "edge_type": str(row["edge_type"])},
         )
+        return row
+
+    def find_edge_by_idempotency_digest(self, *, digest: str) -> VNextRow | None:
+        """Resolve one workflow-produced graph edge by its logical identity."""
+
+        normalized_digest = str(digest).strip()
+        if not normalized_digest:
+            return None
+        return self._fetch_optional_one(
+            f"""
+                SELECT {GRAPH_EDGE_COLUMNS}
+                FROM graph_edges
+                WHERE metadata_json ->> 'idempotency_digest' = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+            (normalized_digest,),
+        )
+
+    def upsert_edge_by_idempotency_digest(
+        self,
+        edge: JsonObject,
+        *,
+        digest: str,
+        actor_type: str = "system",
+    ) -> VNextRow:
+        """Atomically create or replay one workflow-produced graph edge."""
+
+        normalized_digest = str(digest).strip()
+        if not normalized_digest:
+            raise ValueError("digest must not be empty")
+        existing = self.find_edge_by_idempotency_digest(digest=normalized_digest)
+        if existing is not None:
+            return existing
+        metadata_value = edge.get("metadata_json")
+        metadata = dict(metadata_value) if isinstance(metadata_value, Mapping) else {}
+        metadata["idempotency_digest"] = normalized_digest
+        if edge.get("observed_at") is None:
+            metadata.setdefault("observed_at_source", "now")
+        row = self._fetch_optional_one(
+            f"""
+                INSERT INTO graph_edges (
+                  id,
+                  user_id,
+                  from_type,
+                  from_id,
+                  to_type,
+                  to_id,
+                  edge_type,
+                  confidence,
+                  explanation,
+                  created_by,
+                  observed_at,
+                  valid_from,
+                  valid_to,
+                  metadata_json
+                )
+                VALUES (
+                  COALESCE(%s::uuid, gen_random_uuid()),
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  COALESCE(%s::timestamptz, now()),
+                  COALESCE(%s::timestamptz, %s::timestamptz, now()),
+                  %s,
+                  %s
+                )
+                ON CONFLICT DO NOTHING
+                RETURNING {GRAPH_EDGE_COLUMNS}
+                """,
+            (
+                edge.get("id"),
+                edge["from_type"],
+                edge["from_id"],
+                edge["to_type"],
+                edge["to_id"],
+                edge["edge_type"],
+                edge.get("confidence", 0.5),
+                edge.get("explanation"),
+                edge.get("created_by", actor_type),
+                edge.get("observed_at"),
+                edge.get("valid_from"),
+                edge.get("observed_at"),
+                edge.get("valid_to"),
+                _json_object(metadata),
+            ),
+        )
+        created = row is not None
+        if row is None:
+            row = self.find_edge_by_idempotency_digest(digest=normalized_digest)
+        if row is None:
+            raise ContinuityStoreInvariantError(
+                "upsert_edge_by_idempotency_digest could not resolve the persisted edge"
+            )
+        if created:
+            self._append_mutation_event(
+                event_type="graph_edge.created",
+                actor_type=actor_type,
+                target_type="graph_edge",
+                target_id=row["id"],
+                payload={"operation": "create", "edge_type": str(row["edge_type"])},
+            )
         return row
 
     def list_edges(self, *, from_id: str | None = None, to_id: str | None = None) -> list[VNextRow]:
@@ -3411,14 +4114,30 @@ class PostgresVNextStore:
             (project_id,),
         )
 
+    def get_project_for_update(self, project_id: str) -> VNextRow | None:
+        """Lock a project while an artifact review applies its state."""
+
+        return self._fetch_optional_one(
+            f"""
+                SELECT {PROJECT_COLUMNS}
+                FROM projects
+                WHERE id = %s::uuid
+                FOR UPDATE
+                """,
+            (project_id,),
+        )
+
     def list_projects(
         self,
         *,
         status: str | None = "active",
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
+        scope_projects: Sequence[str] | None = None,
         limit: int = 8,
     ) -> list[VNextRow]:
+        project_scope = list(normalize_project_scope(scope_projects or ())) or None
+        normalized_scope = [value.casefold() for value in project_scope] if project_scope else None
         return self._fetch_all(
             f"""
                 SELECT {PROJECT_COLUMNS}
@@ -3426,6 +4145,12 @@ class PostgresVNextStore:
                 WHERE (%s::text IS NULL OR status = %s)
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
+                  AND (
+                    %s::text[] IS NULL
+                    OR id::text = ANY(%s::text[])
+                    OR lower(slug) = ANY(%s::text[])
+                    OR lower(name) = ANY(%s::text[])
+                  )
                 ORDER BY updated_at DESC, created_at DESC, id DESC
                 LIMIT %s
                 """,
@@ -3436,6 +4161,10 @@ class PostgresVNextStore:
                 domains,
                 sensitivity_allowed,
                 sensitivity_allowed,
+                project_scope,
+                project_scope,
+                normalized_scope,
+                normalized_scope,
                 limit,
             ),
         )
@@ -3724,9 +4453,7 @@ class PostgresVNextStore:
     def update_entity(self, *, entity_id: str, patch: JsonObject, actor_type: str = "system") -> VNextRow:
         immutable = sorted(set(patch) & ENTITY_IMMUTABLE_PATCH_FIELDS)
         if immutable:
-            raise ContinuityStoreInvariantError(
-                f"update_entity cannot modify immutable fields: {', '.join(immutable)}"
-            )
+            raise ContinuityStoreInvariantError(f"update_entity cannot modify immutable fields: {', '.join(immutable)}")
         row = self._fetch_one(
             "update_entity",
             f"""
@@ -3830,9 +4557,7 @@ class PostgresVNextStore:
             (entity_id,),
         )
         if current is None:
-            raise ContinuityStoreInvariantError(
-                "record_relationship_change requires an existing entity"
-            )
+            raise ContinuityStoreInvariantError("record_relationship_change requires an existing entity")
         before = current.get("relationship_type_before")
         row = self._fetch_one(
             "record_relationship_change",
@@ -3969,10 +4694,18 @@ class PostgresVNextStore:
         status: str | None = "active",
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
+        scope_projects: tuple[str, ...] = (),
+        scope_people: tuple[str, ...] = (),
+        scope_person_memory_ids: tuple[str, ...] = (),
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
         limit: int = 8,
     ) -> list[VNextRow]:
+        project_list = list(normalize_project_scope(scope_projects)) or None
+        people_list = [str(value).strip().casefold() for value in scope_people if str(value).strip()] or None
+        person_memory_ids = [str(value) for value in scope_person_memory_ids if str(value)] or None
         return self._fetch_all(
-            """
+            f"""
                 SELECT
                   b.id,
                   b.user_id,
@@ -3997,6 +4730,20 @@ class PostgresVNextStore:
                   AND m.deleted_at IS NULL
                   AND (%s::text[] IS NULL OR m.domain = ANY(%s::text[]) OR m.domain = 'unknown')
                   AND (%s::text[] IS NULL OR m.sensitivity = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR ({_SCOPED_MEMORY_PROJECT_SQL}) ?| %s::text[])
+                  AND (
+                    %s::text[] IS NULL
+                    OR m.id::text = ANY(%s::text[])
+                    OR {_SCOPED_MEMORY_DIRECT_PEOPLE_SQL}
+                  )
+                  AND (
+                    %s::timestamptz IS NULL
+                    OR {_SCOPED_MEMORY_EVENT_TIME_SQL} >= %s::timestamptz
+                  )
+                  AND (
+                    %s::timestamptz IS NULL
+                    OR {_SCOPED_MEMORY_EVENT_TIME_SQL} <= %s::timestamptz
+                  )
                 ORDER BY
                   b.last_challenged_at DESC NULLS LAST,
                   b.last_reinforced_at DESC NULLS LAST,
@@ -4011,6 +4758,15 @@ class PostgresVNextStore:
                 domains,
                 sensitivity_allowed,
                 sensitivity_allowed,
+                project_list,
+                project_list,
+                people_list,
+                person_memory_ids,
+                people_list,
+                scope_window_start,
+                scope_window_start,
+                scope_window_end,
+                scope_window_end,
                 limit,
             ),
         )
@@ -4101,6 +4857,7 @@ class PostgresVNextStore:
                   clock_timestamp(),
                   clock_timestamp()
                 )
+                ON CONFLICT DO NOTHING
                 RETURNING {OPEN_LOOP_COLUMNS}
                 """,
             (
@@ -4132,6 +4889,46 @@ class PostgresVNextStore:
         )
         return row
 
+    def upsert_open_loop_by_automation_digest(
+        self,
+        loop: JsonObject,
+        *,
+        digest: str,
+        actor_type: str = "system",
+    ) -> VNextRow:
+        """Create or replay one exact automation-discovered open loop."""
+
+        normalized_digest = str(digest).strip()
+        if normalized_digest == "":
+            raise ValueError("digest must not be empty")
+        existing = self.find_open_loop_by_automation_digest(
+            digest=normalized_digest,
+            project_id=str(loop["project_id"]) if loop.get("project_id") is not None else None,
+            person_id=str(loop["person_id"]) if loop.get("person_id") is not None else None,
+        )
+        if existing is not None:
+            return existing
+        metadata_value = loop.get("metadata_json")
+        metadata: JsonObject = dict(metadata_value) if isinstance(metadata_value, dict) else {}
+        metadata.update(
+            {
+                "automation_digest": normalized_digest,
+                "idempotency_digest": normalized_digest,
+            }
+        )
+        record: JsonObject = {**loop, "metadata_json": metadata}
+        try:
+            return self.create_open_loop(record, actor_type=actor_type)
+        except ContinuityStoreInvariantError:
+            existing = self.find_open_loop_by_automation_digest(
+                digest=normalized_digest,
+                project_id=str(loop["project_id"]) if loop.get("project_id") is not None else None,
+                person_id=str(loop["person_id"]) if loop.get("person_id") is not None else None,
+            )
+            if existing is None:
+                raise
+            return existing
+
     def get_open_loop(self, loop_id: str) -> VNextRow | None:
         return self._fetch_optional_one(
             f"""
@@ -4140,6 +4937,76 @@ class PostgresVNextStore:
                 WHERE id = %s::uuid
                 """,
             (loop_id,),
+        )
+
+    def find_open_loop_by_automation_digest(
+        self,
+        *,
+        digest: str,
+        project_id: str | None = None,
+        person_id: str | None = None,
+    ) -> VNextRow | None:
+        """Find an exact automation result with scope predicates in SQL."""
+        normalized_digest = str(digest).strip()
+        if not normalized_digest:
+            return None
+        return self._fetch_optional_one(
+            f"""
+                SELECT {OPEN_LOOP_COLUMNS}
+                FROM open_loops
+                WHERE COALESCE(
+                    metadata_json ->> 'idempotency_digest',
+                    metadata_json ->> 'automation_digest'
+                  ) = %s
+                  AND (%s::uuid IS NULL OR project_id = %s::uuid)
+                  AND (%s::uuid IS NULL OR person_id = %s::uuid)
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+            (
+                normalized_digest,
+                project_id,
+                project_id,
+                person_id,
+                person_id,
+            ),
+        )
+
+    def list_open_loops_referencing_source(self, *, source_id: str, limit: int = 500) -> list[VNextRow]:
+        """Bound open loops related to one source before LIMIT."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        source_ref = f"source:{source_id}"
+        return self._fetch_all(
+            f"""
+                SELECT {OPEN_LOOP_COLUMNS}
+                FROM open_loops
+                WHERE source_id = %s::uuid
+                  OR metadata_json ->> 'source_id' = %s
+                  OR metadata_json ->> 'source_ref' IN (%s, %s)
+                  OR metadata_json -> 'source_ids' ? %s
+                  OR metadata_json -> 'source_refs' ? %s
+                  OR metadata_json -> 'source_refs' ? %s
+                  OR metadata_json -> 'source_references' ? %s
+                  OR metadata_json -> 'source_references' ? %s
+                  OR metadata_json -> 'selected_source_ids' ? %s
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """,
+            (
+                source_id,
+                source_id,
+                source_id,
+                source_ref,
+                source_id,
+                source_id,
+                source_ref,
+                source_id,
+                source_ref,
+                source_id,
+                limit,
+            ),
         )
 
     def list_open_loops(
@@ -4151,12 +5018,12 @@ class PostgresVNextStore:
         project_id: str | None = None,
         person_id: str | None = None,
         limit: int = 8,
-        scope_projects: tuple[str, ...] = (),
+        scope_projects: Sequence[str] | None = None,
         scope_people: tuple[str, ...] = (),
         scope_window_start: datetime | None = None,
         scope_window_end: datetime | None = None,
     ) -> list[VNextRow]:
-        scope_projects_list = list(scope_projects) or None
+        scope_projects_list = list(normalize_project_scope(scope_projects or ())) or None
         scope_people_list = list(scope_people) or None
         return self._fetch_all(
             f"""
@@ -4169,8 +5036,7 @@ class PostgresVNextStore:
                   AND (%s::uuid IS NULL OR person_id = %s::uuid)
                   AND (
                     %s::text[] IS NULL
-                    OR project_id::text = ANY(%s::text[])
-                    OR {_OPEN_LOOP_SCOPE_PROJECT_SQL}
+                    OR ({_OPEN_LOOP_SCOPE_PROJECT_SQL}) ?| %s::text[]
                   )
                   AND (
                     %s::text[] IS NULL
@@ -4199,7 +5065,6 @@ class PostgresVNextStore:
                 project_id,
                 person_id,
                 person_id,
-                scope_projects_list,
                 scope_projects_list,
                 scope_projects_list,
                 scope_people_list,
@@ -4356,6 +5221,115 @@ class PostgresVNextStore:
         )
         return row
 
+    def upsert_artifact_by_workflow_digest(
+        self,
+        artifact: JsonObject,
+        *,
+        workflow: str,
+        digest: str,
+        actor_type: str = "system",
+    ) -> VNextRow:
+        """Atomically persist or replay one workflow artifact.
+
+        New writes carry the canonical ``idempotency_digest`` protected by a
+        unique partial index.  The fallback lookup also recognizes legacy
+        workflow-specific digest keys so upgrades replay an existing result
+        without rewriting historical rows.
+        """
+
+        normalized_workflow = str(workflow).strip()
+        normalized_digest = str(digest).strip()
+        if not normalized_workflow or not normalized_digest:
+            raise ValueError("workflow and digest must not be empty")
+        existing = self.find_artifact_by_workflow_digest(
+            artifact_type=str(artifact["artifact_type"]),
+            workflow=normalized_workflow,
+            digest=normalized_digest,
+        )
+        if existing is not None:
+            return existing
+        metadata_value = artifact.get("metadata_json")
+        metadata: JsonObject = dict(metadata_value) if isinstance(metadata_value, dict) else {}
+        metadata.update(
+            {
+                "workflow": normalized_workflow,
+                "idempotency_digest": normalized_digest,
+            }
+        )
+        row = self._fetch_optional_one(
+            f"""
+                INSERT INTO generated_artifacts (
+                  id,
+                  user_id,
+                  artifact_type,
+                  title,
+                  content_markdown,
+                  status,
+                  domain,
+                  sensitivity,
+                  generated_by,
+                  prompt_hash,
+                  model_info_json,
+                  reviewed_at,
+                  promoted_at,
+                  metadata_json
+                )
+                VALUES (
+                  COALESCE(%s::uuid, gen_random_uuid()),
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s::timestamptz,
+                  %s,
+                  %s
+                )
+                ON CONFLICT DO NOTHING
+                RETURNING {ARTIFACT_COLUMNS}
+                """,
+            (
+                artifact.get("id"),
+                artifact["artifact_type"],
+                artifact["title"],
+                artifact["content_markdown"],
+                artifact.get("status", "draft"),
+                artifact.get("domain", "unknown"),
+                artifact.get("sensitivity", "unknown"),
+                artifact.get("generated_by", actor_type),
+                artifact.get("prompt_hash"),
+                _json_object(artifact.get("model_info_json")),
+                artifact.get("reviewed_at"),
+                artifact.get("promoted_at"),
+                _json_object(metadata),
+            ),
+        )
+        created = row is not None
+        if row is None:
+            row = self.find_artifact_by_workflow_digest(
+                artifact_type=str(artifact["artifact_type"]),
+                workflow=normalized_workflow,
+                digest=normalized_digest,
+            )
+        if row is None:
+            raise ContinuityStoreInvariantError(
+                "upsert_artifact_by_workflow_digest could not resolve the persisted artifact"
+            )
+        if created:
+            self._append_mutation_event(
+                event_type="artifact.created",
+                actor_type=actor_type,
+                target_type="artifact",
+                target_id=row["id"],
+                payload={"operation": "create", "artifact_type": str(row["artifact_type"])},
+            )
+        return row
+
     def get_artifact(self, artifact_id: str) -> VNextRow | None:
         return self._fetch_optional_one(
             f"""
@@ -4385,8 +5359,10 @@ class PostgresVNextStore:
         artifact_type: str | None = None,
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
+        scope_projects: tuple[str, ...] = (),
         limit: int = 8,
     ) -> list[VNextRow]:
+        project_list = list(normalize_project_scope(scope_projects)) or None
         return self._fetch_all(
             f"""
                 SELECT {ARTIFACT_COLUMNS}
@@ -4394,6 +5370,7 @@ class PostgresVNextStore:
                 WHERE (%s::text IS NULL OR artifact_type = %s)
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR ({_ARTIFACT_SCOPE_PROJECT_SQL}) ?| %s::text[])
                 ORDER BY created_at DESC, id DESC
                 LIMIT %s
                 """,
@@ -4404,13 +5381,113 @@ class PostgresVNextStore:
                 domains,
                 sensitivity_allowed,
                 sensitivity_allowed,
+                project_list,
+                project_list,
                 limit,
             ),
         )
 
-    def update_artifact_status(self, *, artifact_id: str, status: str, actor_type: str = "system") -> VNextRow:
-        row = self._fetch_one(
-            "update_artifact_status",
+    def list_artifacts_referencing_source(self, *, source_id: str, limit: int = 500) -> list[VNextRow]:
+        """Bound artifacts related to one source before ordering and LIMIT."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        source_ref = f"source:{source_id}"
+        qualified_columns = ", ".join(f"a.{column.strip()}" for column in ARTIFACT_COLUMNS.split(",") if column.strip())
+        return self._fetch_all(
+            f"""
+                SELECT {qualified_columns}
+                FROM generated_artifacts AS a
+                WHERE (
+                  EXISTS (
+                    SELECT 1
+                    FROM provenance_links AS p
+                    WHERE p.target_type = 'artifact'
+                      AND p.target_id = a.id::text
+                      AND p.source_id = %s::uuid
+                  )
+                  OR a.metadata_json ->> 'source_id' = %s
+                  OR a.metadata_json ->> 'source_ref' IN (%s, %s)
+                  OR a.metadata_json -> 'source_ids' ? %s
+                  OR a.metadata_json -> 'source_refs' ? %s
+                  OR a.metadata_json -> 'source_refs' ? %s
+                  OR a.metadata_json -> 'source_references' ? %s
+                  OR a.metadata_json -> 'source_references' ? %s
+                  OR a.metadata_json -> 'selected_source_ids' ? %s
+                )
+                ORDER BY a.created_at DESC, a.id DESC
+                LIMIT %s
+                """,
+            (
+                source_id,
+                source_id,
+                source_id,
+                source_ref,
+                source_id,
+                source_id,
+                source_ref,
+                source_id,
+                source_ref,
+                source_id,
+                limit,
+            ),
+        )
+
+    def find_artifact_by_workflow_digest(
+        self,
+        *,
+        artifact_type: str,
+        workflow: str,
+        digest: str,
+        scope_projects: Sequence[str] | None = None,
+    ) -> VNextRow | None:
+        """Find one exact idempotency artifact without scanning a recent prefix."""
+        normalized_digest = str(digest).strip()
+        if not normalized_digest:
+            return None
+        project_list = list(normalize_project_scope(scope_projects or ())) or None
+        return self._fetch_optional_one(
+            f"""
+                SELECT {ARTIFACT_COLUMNS}
+                FROM generated_artifacts
+                WHERE artifact_type = %s
+                  AND metadata_json ->> 'workflow' = %s
+                  AND COALESCE(
+                    metadata_json ->> 'idempotency_digest',
+                    metadata_json ->> 'workflow_digest',
+                    metadata_json ->> 'automation_digest',
+                    metadata_json ->> 'consolidation_digest'
+                  ) = %s
+                  AND (%s::text[] IS NULL OR ({_ARTIFACT_SCOPE_PROJECT_SQL}) ?| %s::text[])
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+            (
+                str(artifact_type),
+                str(workflow),
+                normalized_digest,
+                project_list,
+                project_list,
+            ),
+        )
+
+    def update_artifact_status(
+        self,
+        *,
+        artifact_id: str,
+        status: str,
+        expected_status: str | None = None,
+        metadata_json: JsonObject | None = None,
+        actor_type: str = "system",
+    ) -> VNextRow | None:
+        """Apply a compare-and-set artifact transition.
+
+        ``expected_status`` is optional for compatibility with lower-level
+        callers, but review services always provide it after locking the row.
+        A lost comparison returns ``None`` instead of overwriting the winner.
+        """
+
+        row = self._fetch_optional_one(
             f"""
                 UPDATE generated_artifacts
                 SET status = %s,
@@ -4421,12 +5498,28 @@ class PostgresVNextStore:
                     promoted_at = CASE
                       WHEN %s = 'promoted_to_memory' THEN clock_timestamp()
                       ELSE promoted_at
+                    END,
+                    metadata_json = CASE
+                      WHEN %s::jsonb IS NULL THEN metadata_json
+                      ELSE metadata_json || %s::jsonb
                     END
                 WHERE id = %s::uuid
+                  AND (%s::text IS NULL OR status = %s)
                 RETURNING {ARTIFACT_COLUMNS}
                 """,
-            (status, status, status, artifact_id),
+            (
+                status,
+                status,
+                status,
+                _json_object(metadata_json) if metadata_json is not None else None,
+                _json_object(metadata_json) if metadata_json is not None else None,
+                artifact_id,
+                expected_status,
+                expected_status,
+            ),
         )
+        if row is None:
+            return None
         self._append_mutation_event(
             event_type="artifact.updated",
             actor_type=actor_type,
@@ -4508,17 +5601,27 @@ class PostgresVNextStore:
         self,
         *,
         artifact_id: str | None = None,
+        scope_projects: Sequence[str] | None = None,
         limit: int = 100,
     ) -> list[VNextRow]:
+        project_list = list(normalize_project_scope(scope_projects or ())) or None
         return self._fetch_all(
             f"""
                 SELECT {QUALITY_RATING_COLUMNS}
                 FROM artifact_quality_ratings
                 WHERE (%s::uuid IS NULL OR artifact_id = %s::uuid)
+                  AND (
+                    %s::text[] IS NULL
+                    OR artifact_id IN (
+                      SELECT id
+                      FROM generated_artifacts
+                      WHERE ({_ARTIFACT_SCOPE_PROJECT_SQL}) ?| %s::text[]
+                    )
+                  )
                 ORDER BY created_at DESC, id DESC
                 LIMIT %s
                 """,
-            (artifact_id, artifact_id, limit),
+            (artifact_id, artifact_id, project_list, project_list, limit),
         )
 
     def create_task(self, task: JsonObject, *, actor_type: str = "system") -> VNextRow:
@@ -4835,6 +5938,51 @@ class PostgresVNextStore:
             (agent_id, agent_id, limit),
         )
 
+    def list_agent_policy_artifacts(
+        self,
+        *,
+        agent_id: str | None = None,
+        limit: int = 200,
+    ) -> list[VNextRow]:
+        """Bound only agent-generated artifacts for policy telemetry."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        return self._fetch_all(
+            f"""
+                SELECT {ARTIFACT_COLUMNS}
+                FROM generated_artifacts
+                WHERE metadata_json ->> 'generated_by' = 'agent'
+                  AND (%s::text IS NULL OR metadata_json ->> 'agent_id' = %s)
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+            (agent_id, agent_id, limit),
+        )
+
+    def list_agent_policy_memories(
+        self,
+        *,
+        agent_id: str | None = None,
+        limit: int = 200,
+    ) -> list[VNextRow]:
+        """Bound only agent-attributed memory proposals for telemetry."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        return self._fetch_all(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND metadata_json ->> 'agent_id' IS NOT NULL
+                  AND (%s::text IS NULL OR metadata_json ->> 'agent_id' = %s)
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """,
+            (agent_id, agent_id, limit),
+        )
+
     def create_agent_api_key(self, key: JsonObject, *, actor_type: str = "user") -> VNextRow:
         row = self._fetch_one(
             "create_agent_api_key",
@@ -4959,8 +6107,7 @@ class PostgresVNextStore:
         return int(cast(int, row["active_count"]))
 
     def upsert_scheduler_workflow(self, workflow: JsonObject, *, actor_type: str = "system") -> VNextRow:
-        row = self._fetch_one(
-            "upsert_scheduler_workflow",
+        row = self._fetch_optional_one(
             f"""
                 INSERT INTO scheduler_workflows (
                   id,
@@ -4992,7 +6139,16 @@ class PostgresVNextStore:
                   timezone = EXCLUDED.timezone,
                   next_run_at = EXCLUDED.next_run_at,
                   metadata_json = scheduler_workflows.metadata_json || EXCLUDED.metadata_json,
+                  claim_token = NULL,
+                  claim_version = scheduler_workflows.claim_version + 1,
+                  claim_expires_at = NULL,
                   updated_at = clock_timestamp()
+                WHERE scheduler_workflows.enabled IS DISTINCT FROM EXCLUDED.enabled
+                   OR scheduler_workflows.paused IS DISTINCT FROM EXCLUDED.paused
+                   OR scheduler_workflows.schedule_json IS DISTINCT FROM EXCLUDED.schedule_json
+                   OR scheduler_workflows.timezone IS DISTINCT FROM EXCLUDED.timezone
+                   OR scheduler_workflows.next_run_at IS DISTINCT FROM EXCLUDED.next_run_at
+                   OR NOT (scheduler_workflows.metadata_json @> EXCLUDED.metadata_json)
                 RETURNING {SCHEDULER_WORKFLOW_COLUMNS}
                 """,
             (
@@ -5006,21 +6162,37 @@ class PostgresVNextStore:
                 _json_object(workflow.get("metadata_json")),
             ),
         )
-        self._append_mutation_event(
-            event_type="scheduler.workflow_upserted",
-            actor_type=actor_type,
-            target_type="scheduler_workflow",
-            target_id=row["id"],
-            payload={
-                "operation": "upsert",
-                "workflow_type": str(row["workflow_type"]),
-                "enabled": bool(row["enabled"]),
-                "paused": bool(row["paused"]),
-            },
-        )
+        mutated = row is not None
+        if row is None:
+            row = self.get_scheduler_workflow(str(workflow["workflow_type"]))
+        if row is None:
+            raise ContinuityStoreInvariantError("upsert_scheduler_workflow could not resolve the persisted workflow")
+        if mutated:
+            self._append_mutation_event(
+                event_type="scheduler.workflow_upserted",
+                actor_type=actor_type,
+                target_type="scheduler_workflow",
+                target_id=row["id"],
+                payload={
+                    "operation": "upsert",
+                    "workflow_type": str(row["workflow_type"]),
+                    "enabled": bool(row["enabled"]),
+                    "paused": bool(row["paused"]),
+                },
+            )
         return row
 
-    def update_scheduler_workflow(self, *, workflow_type: str, patch: JsonObject, actor_type: str = "system") -> VNextRow:
+    def update_scheduler_workflow(
+        self, *, workflow_type: str, patch: JsonObject, actor_type: str = "system"
+    ) -> VNextRow:
+        result_keys = {
+            "last_run_id",
+            "last_run_at",
+            "last_result",
+            "last_error",
+            "next_run_at",
+        }
+        preserve_live_claim = "last_run_id" in patch and set(patch) <= result_keys
         row = self._fetch_one(
             "update_scheduler_workflow",
             f"""
@@ -5041,6 +6213,9 @@ class PostgresVNextStore:
                       ELSE last_error
                     END,
                     metadata_json = COALESCE(%s, metadata_json),
+                    claim_token = CASE WHEN %s THEN claim_token ELSE NULL END,
+                    claim_version = claim_version + CASE WHEN %s THEN 0 ELSE 1 END,
+                    claim_expires_at = CASE WHEN %s THEN claim_expires_at ELSE NULL END,
                     updated_at = clock_timestamp()
                 WHERE workflow_type = %s
                 RETURNING {SCHEDULER_WORKFLOW_COLUMNS}
@@ -5058,6 +6233,9 @@ class PostgresVNextStore:
                 "last_error" in patch,
                 patch.get("last_error"),
                 _json_object(patch["metadata_json"]) if "metadata_json" in patch else None,
+                preserve_live_claim,
+                preserve_live_claim,
+                preserve_live_claim,
                 workflow_type,
             ),
         )
@@ -5101,6 +6279,10 @@ class PostgresVNextStore:
                   status,
                   triggered_by,
                   trace_id,
+                  claim_token,
+                  claim_version,
+                  claim_expires_at,
+                  scheduled_for,
                   policy_decision_json,
                   agent_identity_json,
                   metadata_json
@@ -5112,6 +6294,10 @@ class PostgresVNextStore:
                   %s,
                   COALESCE(%s, 'started'),
                   COALESCE(%s, 'scheduler'),
+                  %s,
+                  %s,
+                  COALESCE(%s, 0),
+                  %s,
                   %s,
                   %s,
                   %s,
@@ -5126,6 +6312,10 @@ class PostgresVNextStore:
                 run.get("status"),
                 run.get("triggered_by"),
                 run["trace_id"],
+                run.get("claim_token"),
+                run.get("claim_version"),
+                run.get("claim_expires_at"),
+                run.get("scheduled_for"),
                 _json_object(run.get("policy_decision_json")),
                 _json_object(run.get("agent_identity_json")),
                 _json_object(run.get("metadata_json")),
@@ -5156,7 +6346,10 @@ class PostgresVNextStore:
                     error_message = COALESCE(%s, error_message),
                     policy_decision_json = COALESCE(%s, policy_decision_json),
                     agent_identity_json = COALESCE(%s, agent_identity_json),
-                    metadata_json = COALESCE(%s, metadata_json)
+                    metadata_json = CASE
+                      WHEN %s::jsonb IS NULL THEN metadata_json
+                      ELSE metadata_json || %s::jsonb
+                    END
                 WHERE id = %s::uuid
                 RETURNING {SCHEDULER_RUN_COLUMNS}
                 """,
@@ -5168,10 +6361,17 @@ class PostgresVNextStore:
                 _json_object(patch["policy_decision_json"]) if "policy_decision_json" in patch else None,
                 _json_object(patch["agent_identity_json"]) if "agent_identity_json" in patch else None,
                 _json_object(patch["metadata_json"]) if "metadata_json" in patch else None,
+                _json_object(patch["metadata_json"]) if "metadata_json" in patch else None,
                 run_id,
             ),
         )
-        event_type = "scheduler.run_succeeded" if row["status"] == "succeeded" else "scheduler.run_failed" if row["status"] == "failed" else "scheduler.run_updated"
+        event_type = (
+            "scheduler.run_succeeded"
+            if row["status"] == "succeeded"
+            else "scheduler.run_failed"
+            if row["status"] == "failed"
+            else "scheduler.run_updated"
+        )
         self._append_mutation_event(
             event_type=event_type,
             actor_type=actor_type,
@@ -5200,13 +6400,402 @@ class PostgresVNextStore:
             (workflow_type, workflow_type, limit),
         )
 
+    def claim_due_scheduler_workflow(
+        self,
+        *,
+        checked_at: datetime,
+        lease_expires_at: datetime,
+        triggered_by: str,
+        policy_decision_json: JsonObject | None = None,
+        agent_identity_json: JsonObject | None = None,
+    ) -> VNextRow | None:
+        """Atomically claim the next due workflow and create its durable run."""
+
+        candidate = self._fetch_optional_one(
+            f"""
+                SELECT {SCHEDULER_WORKFLOW_COLUMNS}
+                FROM scheduler_workflows
+                WHERE enabled = true
+                  AND paused = false
+                  AND next_run_at IS NOT NULL
+                  AND next_run_at <= %s::timestamptz
+                  AND (claim_expires_at IS NULL OR claim_expires_at <= %s::timestamptz)
+                ORDER BY next_run_at ASC, workflow_type ASC, id ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+                """,
+            (checked_at, checked_at),
+        )
+        if candidate is None:
+            return None
+        workflow_type = str(candidate["workflow_type"])
+        if not self.try_scheduler_workflow_lock(workflow_type):
+            return None
+        # Re-read after both locks.  A configuration transaction may have
+        # changed enabled/paused/next_run_at between the daemon's snapshot and
+        # this claim attempt.
+        current = self._fetch_optional_one(
+            f"""
+                SELECT {SCHEDULER_WORKFLOW_COLUMNS}
+                FROM scheduler_workflows
+                WHERE id = %s::uuid
+                  AND enabled = true
+                  AND paused = false
+                  AND next_run_at IS NOT NULL
+                  AND next_run_at <= %s::timestamptz
+                  AND (claim_expires_at IS NULL OR claim_expires_at <= %s::timestamptz)
+                FOR UPDATE
+                """,
+            (str(candidate["id"]), checked_at, checked_at),
+        )
+        if current is None:
+            return None
+        scheduled_for = current["next_run_at"]
+        claim_token = str(uuid4())
+        claimed_workflow = self._fetch_one(
+            "claim_due_scheduler_workflow",
+            f"""
+                UPDATE scheduler_workflows
+                SET claim_token = %s,
+                    claim_version = claim_version + 1,
+                    claim_expires_at = %s::timestamptz,
+                    updated_at = clock_timestamp()
+                WHERE id = %s::uuid
+                  AND enabled = true
+                  AND paused = false
+                  AND next_run_at = %s::timestamptz
+                  AND (claim_expires_at IS NULL OR claim_expires_at <= %s::timestamptz)
+                RETURNING {SCHEDULER_WORKFLOW_COLUMNS}
+                """,
+            (
+                claim_token,
+                lease_expires_at,
+                str(current["id"]),
+                scheduled_for,
+                checked_at,
+            ),
+        )
+        claim_version = int(cast(int, claimed_workflow["claim_version"]))
+        trace_id = str(uuid4())
+        run = self.create_scheduler_run(
+            {
+                "workflow_id": claimed_workflow["id"],
+                "workflow_type": workflow_type,
+                "status": "started",
+                "triggered_by": triggered_by,
+                "trace_id": trace_id,
+                "claim_token": claim_token,
+                "claim_version": claim_version,
+                "claim_expires_at": lease_expires_at,
+                "scheduled_for": scheduled_for,
+                "policy_decision_json": policy_decision_json or {},
+                "agent_identity_json": agent_identity_json or {},
+                "metadata_json": {
+                    "durable_claim": True,
+                    "scheduled_for": scheduled_for,
+                },
+            },
+            actor_type=triggered_by,
+        )
+        return {
+            "workflow": claimed_workflow,
+            "run": run,
+            "claim_token": claim_token,
+            "claim_version": claim_version,
+            "claim_expires_at": lease_expires_at,
+            "scheduled_for": scheduled_for,
+        }
+
+    def heartbeat_scheduler_claim(
+        self,
+        *,
+        run_id: str,
+        claim_token: str,
+        claim_version: int,
+        lease_expires_at: datetime,
+    ) -> bool:
+        row = self._fetch_one(
+            "heartbeat_scheduler_claim",
+            """
+                WITH eligible AS (
+                  SELECT r.id AS run_id, r.workflow_id
+                  FROM scheduler_runs AS r
+                  JOIN scheduler_workflows AS w
+                    ON w.id = r.workflow_id
+                   AND w.user_id = r.user_id
+                  WHERE r.id = %s::uuid
+                    AND r.status = 'started'
+                    AND r.claim_token = %s
+                    AND r.claim_version = %s
+                    AND r.claim_expires_at > clock_timestamp()
+                    AND w.claim_token = %s
+                    AND w.claim_version = %s
+                    AND w.claim_expires_at > clock_timestamp()
+                  FOR UPDATE OF r, w
+                ),
+                updated_run AS (
+                  UPDATE scheduler_runs AS r
+                  SET claim_expires_at = %s::timestamptz
+                  FROM eligible AS e
+                  WHERE r.id = e.run_id
+                  RETURNING r.id
+                ),
+                updated_workflow AS (
+                  UPDATE scheduler_workflows AS w
+                  SET claim_expires_at = %s::timestamptz,
+                      updated_at = clock_timestamp()
+                  FROM eligible AS e
+                  WHERE w.id = e.workflow_id
+                    AND EXISTS (SELECT 1 FROM updated_run)
+                  RETURNING w.id
+                )
+                SELECT (
+                  EXISTS (SELECT 1 FROM updated_run)
+                  AND EXISTS (SELECT 1 FROM updated_workflow)
+                ) AS renewed
+                """,
+            (
+                run_id,
+                claim_token,
+                claim_version,
+                claim_token,
+                claim_version,
+                lease_expires_at,
+                lease_expires_at,
+            ),
+        )
+        return bool(row.get("renewed"))
+
+    def lock_scheduler_claim_for_publish(
+        self,
+        *,
+        run_id: str,
+        claim_token: str,
+        claim_version: int,
+    ) -> bool:
+        """Lock and validate the live claim before publishing staged writes."""
+
+        row = self._fetch_optional_one(
+            """
+                SELECT r.id AS run_id
+                FROM scheduler_runs AS r
+                JOIN scheduler_workflows AS w
+                  ON w.id = r.workflow_id
+                 AND w.user_id = r.user_id
+                WHERE r.id = %s::uuid
+                  AND r.status = 'started'
+                  AND r.claim_token = %s
+                  AND r.claim_version = %s
+                  AND r.claim_expires_at > clock_timestamp()
+                  AND w.claim_token = %s
+                  AND w.claim_version = %s
+                  AND w.claim_expires_at > clock_timestamp()
+                FOR UPDATE OF r, w
+                """,
+            (
+                run_id,
+                claim_token,
+                claim_version,
+                claim_token,
+                claim_version,
+            ),
+        )
+        return row is not None
+
+    def finalize_scheduler_claim(
+        self,
+        *,
+        run_id: str,
+        claim_token: str,
+        claim_version: int,
+        status: str,
+        artifact_id: str | None,
+        error_message: str | None,
+        next_run_at: str | None,
+        metadata_json: JsonObject,
+        actor_type: str = "scheduler",
+    ) -> VNextRow | None:
+        """Finalize only the still-live matching scheduler fence."""
+
+        if status not in {"succeeded", "failed"}:
+            raise ValueError("status must be succeeded or failed")
+        row = self._fetch_optional_one(
+            f"""
+                WITH eligible AS (
+                  SELECT r.id AS run_id, r.workflow_id
+                  FROM scheduler_runs AS r
+                  JOIN scheduler_workflows AS w
+                    ON w.id = r.workflow_id
+                   AND w.user_id = r.user_id
+                  WHERE r.id = %s::uuid
+                    AND r.status = 'started'
+                    AND r.claim_token = %s
+                    AND r.claim_version = %s
+                    AND r.claim_expires_at > clock_timestamp()
+                    AND w.claim_token = %s
+                    AND w.claim_version = %s
+                    AND w.claim_expires_at > clock_timestamp()
+                  FOR UPDATE OF r, w
+                ),
+                updated_run AS (
+                  UPDATE scheduler_runs AS r
+                  SET status = %s,
+                      finished_at = clock_timestamp(),
+                      artifact_id = %s::uuid,
+                      error_message = %s,
+                      claim_token = NULL,
+                      claim_expires_at = NULL,
+                      metadata_json = r.metadata_json || %s::jsonb
+                  FROM eligible AS e
+                  WHERE r.id = e.run_id
+                  RETURNING r.*
+                ),
+                updated_workflow AS (
+                  UPDATE scheduler_workflows AS w
+                  SET last_run_id = r.id,
+                      last_run_at = r.finished_at,
+                      last_result = r.status,
+                      last_error = r.error_message,
+                      next_run_at = %s::timestamptz,
+                      claim_token = NULL,
+                      claim_expires_at = NULL,
+                      updated_at = clock_timestamp()
+                  FROM updated_run AS r
+                  WHERE w.id = r.workflow_id
+                    AND w.claim_token = %s
+                    AND w.claim_version = %s
+                  RETURNING w.id
+                )
+                SELECT {SCHEDULER_RUN_COLUMNS}
+                FROM updated_run
+                WHERE EXISTS (SELECT 1 FROM updated_workflow)
+                """,
+            (
+                run_id,
+                claim_token,
+                claim_version,
+                claim_token,
+                claim_version,
+                status,
+                artifact_id,
+                error_message,
+                _json_object(metadata_json),
+                next_run_at,
+                claim_token,
+                claim_version,
+            ),
+        )
+        if row is None:
+            return None
+        self._append_mutation_event(
+            event_type="scheduler.run_succeeded" if status == "succeeded" else "scheduler.run_failed",
+            actor_type=actor_type,
+            target_type="scheduler_run",
+            target_id=row["id"],
+            trace_id=str(row["trace_id"]),
+            run_id=str(row["id"]),
+            payload={
+                "workflow_type": str(row["workflow_type"]),
+                "status": status,
+                "artifact_id": artifact_id,
+                "error_message": error_message,
+                "claim_version": claim_version,
+            },
+        )
+        return row
+
+    def reap_expired_scheduler_claims(
+        self,
+        *,
+        reference_time: datetime,
+        limit: int = 100,
+        actor_type: str = "scheduler",
+    ) -> list[VNextRow]:
+        """Fence abandoned runs and release their workflow leases."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        rows = self._fetch_all(
+            f"""
+                WITH expired AS MATERIALIZED (
+                  SELECT r.id, r.workflow_id, r.claim_token, r.claim_version
+                  FROM scheduler_runs AS r
+                  WHERE r.status = 'started'
+                    AND r.claim_token IS NOT NULL
+                    AND r.claim_expires_at <= %s::timestamptz
+                  ORDER BY r.claim_expires_at ASC, r.id ASC
+                  FOR UPDATE SKIP LOCKED
+                  LIMIT %s
+                ),
+                updated_runs AS (
+                  UPDATE scheduler_runs AS r
+                  SET status = 'failed',
+                      finished_at = clock_timestamp(),
+                      error_message = COALESCE(r.error_message, 'scheduler claim lease expired'),
+                      claim_token = NULL,
+                      claim_expires_at = NULL,
+                      metadata_json = r.metadata_json || jsonb_build_object(
+                        'claim_reaped', true,
+                        'claim_reaped_at', %s::timestamptz
+                      )
+                  FROM expired AS e
+                  WHERE r.id = e.id
+                    AND r.status = 'started'
+                    AND r.claim_token = e.claim_token
+                    AND r.claim_version = e.claim_version
+                  RETURNING r.*, e.claim_token AS expired_claim_token,
+                    e.claim_version AS expired_claim_version
+                ),
+                cleared_workflows AS (
+                  UPDATE scheduler_workflows AS w
+                  SET last_run_id = r.id,
+                      last_run_at = r.finished_at,
+                      last_result = 'failed',
+                      last_error = r.error_message,
+                      claim_token = NULL,
+                      claim_expires_at = NULL,
+                      updated_at = clock_timestamp()
+                  FROM updated_runs AS r
+                  WHERE w.id = r.workflow_id
+                    AND w.claim_token = r.expired_claim_token
+                    AND w.claim_version = r.expired_claim_version
+                  RETURNING w.id
+                )
+                SELECT {SCHEDULER_RUN_COLUMNS}
+                FROM updated_runs
+                ORDER BY finished_at ASC, id ASC
+                """,
+            (reference_time, limit, reference_time),
+        )
+        for row in rows:
+            self._append_mutation_event(
+                event_type="scheduler.run_failed",
+                actor_type=actor_type,
+                target_type="scheduler_run",
+                target_id=row["id"],
+                trace_id=str(row["trace_id"]),
+                run_id=str(row["id"]),
+                payload={
+                    "workflow_type": str(row["workflow_type"]),
+                    "status": "failed",
+                    "error_message": row.get("error_message"),
+                    "claim_reaped": True,
+                },
+            )
+        return rows
+
     def try_scheduler_workflow_lock(self, workflow_type: str) -> bool:
         row = self._fetch_one(
             "try_scheduler_workflow_lock",
             """
-                SELECT pg_try_advisory_xact_lock(hashtextextended(%s::text, 17)) AS acquired
+                SELECT pg_try_advisory_xact_lock(
+                  hashtextextended(
+                    concat_ws(':', 'vnext_scheduler', app.current_user_id()::text, %s::text),
+                    17
+                  )
+                ) AS acquired
                 """,
-            (f"vnext_scheduler:{workflow_type}",),
+            (workflow_type,),
         )
         return bool(row.get("acquired"))
 

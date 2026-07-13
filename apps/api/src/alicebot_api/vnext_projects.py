@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import json
 import re
+from collections.abc import Sequence
 from typing import Protocol, cast
-from uuid import uuid4
 
+from alicebot_api.vnext_agent_control import resource_project_scope
+from alicebot_api.vnext_embeddings import DeferredMemoryEmbedding
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_memory_commit import VNextMemoryCommitService
 from alicebot_api.vnext_model_intelligence import (
@@ -36,15 +40,29 @@ class VNextProjectStore(Protocol):
 
     def get_artifact(self, artifact_id: str) -> JsonObject | None: ...
 
-    def update_artifact_status(self, *, artifact_id: str, status: str, actor_type: str = "system") -> JsonObject: ...
+    def get_artifact_for_update(self, artifact_id: str) -> JsonObject | None: ...
+
+    def update_artifact_status(
+        self,
+        *,
+        artifact_id: str,
+        status: str,
+        expected_status: str | None = None,
+        metadata_json: JsonObject | None = None,
+        actor_type: str = "system",
+    ) -> JsonObject | None: ...
 
     def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
     def update_memory(self, *, memory_id: str, patch: JsonObject, actor_type: str = "system") -> JsonObject: ...
 
+    def get_memory_for_update(self, memory_id: str) -> JsonObject | None: ...
+
     def append_revision(self, revision: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
     def get_project(self, project_id: str) -> JsonObject | None: ...
+
+    def get_project_for_update(self, project_id: str) -> JsonObject | None: ...
 
     def list_projects(
         self,
@@ -70,6 +88,7 @@ class VNextProjectStore(Protocol):
         project_id: str | None = None,
         person_id: str | None = None,
         limit: int = DEFAULT_PROJECT_LIMIT,
+        scope_projects: tuple[str, ...] = (),
     ) -> list[JsonObject]: ...
 
     def update_open_loop(self, *, loop_id: str, patch: JsonObject, actor_type: str = "system") -> JsonObject: ...
@@ -90,6 +109,7 @@ class VNextProjectStore(Protocol):
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = DEFAULT_PROJECT_LIMIT,
+        scope_projects: tuple[str, ...] = (),
     ) -> list[JsonObject]: ...
 
     def search_memories(
@@ -99,6 +119,7 @@ class VNextProjectStore(Protocol):
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = DEFAULT_PROJECT_LIMIT,
+        projects: tuple[str, ...] = (),
     ) -> list[JsonObject]: ...
 
     def list_artifacts(
@@ -108,7 +129,44 @@ class VNextProjectStore(Protocol):
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = DEFAULT_PROJECT_LIMIT,
+        scope_projects: tuple[str, ...] = (),
     ) -> list[JsonObject]: ...
+
+    def find_artifact_by_workflow_digest(
+        self,
+        *,
+        artifact_type: str,
+        workflow: str,
+        digest: str,
+        scope_projects: Sequence[str] | None = None,
+    ) -> JsonObject | None: ...
+
+    def find_open_loop_by_automation_digest(
+        self,
+        *,
+        digest: str,
+        project_id: str | None = None,
+        person_id: str | None = None,
+    ) -> JsonObject | None: ...
+
+    def upsert_artifact_by_workflow_digest(
+        self,
+        artifact: JsonObject,
+        *,
+        workflow: str,
+        digest: str,
+        actor_type: str = "system",
+    ) -> JsonObject: ...
+
+    def upsert_open_loop_by_automation_digest(
+        self,
+        loop: JsonObject,
+        *,
+        digest: str,
+        actor_type: str = "system",
+    ) -> JsonObject: ...
+
+    def upsert_memory_by_key(self, memory: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +248,83 @@ def _source_ids(rows: list[JsonObject]) -> list[str]:
     return [str(row.get("id")) for row in rows if row.get("id") is not None]
 
 
+def _digest_payload(payload: object) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _is_in_project(row: JsonObject, project_id: str) -> bool:
+    requested = project_id.casefold()
+    return any(value.casefold() == requested for value in resource_project_scope(row))
+
+
+def _project_automation_digest(
+    *,
+    project: JsonObject,
+    sources: list[JsonObject],
+    memories: list[JsonObject],
+    request: ProjectAutomationRequest,
+    brain_charter: JsonObject | None,
+) -> str:
+    return _digest_payload(
+        {
+            "project": {
+                key: project.get(key)
+                for key in ("id", "name", "slug", "current_state", "domain", "sensitivity", "status")
+            },
+            "sources": [
+                {
+                    "id": row.get("id"),
+                    "text": _text(row),
+                    "domain": row.get("domain"),
+                    "sensitivity": row.get("sensitivity"),
+                    "project_scope": resource_project_scope(row),
+                }
+                for row in sources
+            ],
+            "memories": [
+                {
+                    "id": row.get("id"),
+                    "text": _text(row),
+                    "status": row.get("status"),
+                    "domain": row.get("domain"),
+                    "sensitivity": row.get("sensitivity"),
+                    "project_scope": resource_project_scope(row),
+                }
+                for row in memories
+            ],
+            "behavior": {
+                "domains": request.domains,
+                "sensitivity_allowed": request.sensitivity_allowed,
+                "max_items": request.max_items,
+                "generated_by": request.generated_by,
+                "agent_identity": request.agent_identity,
+                "generation_mode": request.generation_mode,
+                "model_route_mode": request.model_route_mode,
+                "model_provider": request.model_provider,
+                "model": request.model,
+                "model_temperature": request.model_temperature,
+                "allow_cloud_private": request.allow_cloud_private,
+                "brain_charter": brain_charter,
+            },
+        }
+    )
+
+
+def _open_loop_digest(candidate: JsonObject, *, project_id: str | None, person_id: str | None) -> str:
+    metadata = candidate.get("metadata_json")
+    loop_type = metadata.get("loop_type") if isinstance(metadata, dict) else None
+    return _digest_payload(
+        {
+            "source_id": candidate.get("source_id"),
+            "loop_type": loop_type,
+            "title": candidate.get("title"),
+            "project_id": project_id,
+            "person_id": person_id,
+        }
+    )
+
+
 def _brain_charter(store: VNextProjectStore) -> JsonObject | None:
     getter = getattr(store, "get_brain_charter", None)
     if not callable(getter):
@@ -264,7 +399,9 @@ def _project_update_markdown(
     memories: list[JsonObject],
 ) -> str:
     source_lines = [f"- source:{source.get('id')} {_title(source)}" for source in sources] or ["- No sources selected."]
-    memory_lines = [f"- memory:{memory.get('id')} {_title(memory)}" for memory in memories] or ["- No memories selected."]
+    memory_lines = [f"- memory:{memory.get('id')} {_title(memory)}" for memory in memories] or [
+        "- No memories selected."
+    ]
     return "\n".join(
         [
             f"# Project Update Candidate - {_title(project)}",
@@ -289,8 +426,23 @@ def _project_update_markdown(
 
 
 class VNextProjectService:
-    def __init__(self, store: VNextProjectStore) -> None:
+    def __init__(self, store: VNextProjectStore, *, defer_embeddings: bool = False) -> None:
         self.store = store
+        self._defer_embeddings = defer_embeddings
+        self._deferred_embedding_inputs: list[DeferredMemoryEmbedding] = []
+
+    @property
+    def deferred_embedding_inputs(self) -> tuple[DeferredMemoryEmbedding, ...]:
+        """Immutable embedding snapshots collected for post-commit work."""
+
+        return tuple(self._deferred_embedding_inputs)
+
+    @staticmethod
+    def is_project_update_candidate(artifact: JsonObject) -> bool:
+        """Return whether this artifact belongs to the coupled project-update workflow."""
+
+        metadata = artifact.get("metadata_json")
+        return isinstance(metadata, dict) and metadata.get("workflow") == "project_auto_update"
 
     def generate_project_update_candidate(self, request: ProjectAutomationRequest | None = None) -> JsonObject:
         request = request or ProjectAutomationRequest()
@@ -303,19 +455,49 @@ class VNextProjectService:
             domains=domains,
             sensitivity_allowed=sensitivity_allowed,
             limit=request.max_items,
+            scope_projects=(str(project["id"]),),
         )
         memories = self.store.search_memories(
             query=str(project.get("name", "")),
             domains=domains,
             sensitivity_allowed=sensitivity_allowed,
             limit=request.max_items,
+            projects=(str(project["id"]),),
         )
+        # The bundled stores apply these predicates in SQL. Keep this
+        # defensive check at the workflow boundary so legacy adapters cannot
+        # widen a project-scoped report by ignoring optional query arguments.
+        project_id = str(project["id"])
+        sources = [row for row in sources if _is_in_project(row, project_id)]
+        memories = [
+            row for row in memories if _is_in_project(row, project_id) and row.get("status") in {"active", "accepted"}
+        ]
+        brain_charter = _brain_charter(self.store)
+        automation_digest = _project_automation_digest(
+            project=project,
+            sources=sources,
+            memories=memories,
+            request=request,
+            brain_charter=brain_charter,
+        )
+        find_existing = getattr(self.store, "find_artifact_by_workflow_digest", None)
+        if callable(find_existing):
+            existing = find_existing(
+                artifact_type="project_update",
+                workflow="project_auto_update",
+                digest=automation_digest,
+                scope_projects=(project_id,),
+            )
+            if existing is not None:
+                return existing
         change = _detect_project_change(project, sources, memories)
         suggested_current_state = change
-        candidate_memory = self.store.create_memory(
+        upsert_memory = getattr(self.store, "upsert_memory_by_key", None)
+        persist_memory = upsert_memory if callable(upsert_memory) else self.store.create_memory
+        candidate_memory = persist_memory(
             {
                 "memory_type": "project_state",
-                "memory_key": f"project_update.{_slug(str(project.get('name', 'project')))}.{uuid4()}",
+                "memory_key": f"project_update.{_slug(str(project.get('name', 'project')))}.{automation_digest[:24]}",
                 "value": {"project_id": project.get("id"), "suggested_current_state": suggested_current_state},
                 "status": "candidate",
                 "confidence": 0.72,
@@ -323,10 +505,14 @@ class VNextProjectService:
                 "summary": suggested_current_state,
                 "domain": project.get("domain", "project"),
                 "sensitivity": _highest_sensitivity([project, *sources, *memories]),
+                "project_id": project_id,
                 "metadata_json": {
+                    **request.metadata_json,
                     "candidate": True,
                     "workflow": "project_auto_update",
                     "project_id": project.get("id"),
+                    "project_scope": [project_id],
+                    "automation_digest": automation_digest,
                     "source_ids": _source_ids(sources),
                     "memory_ids": _source_ids(memories),
                     "generated_by": request.generated_by,
@@ -334,7 +520,8 @@ class VNextProjectService:
                     "agent_id": request.actor_id if request.generated_by == "agent" else None,
                     "trace_id": request.trace_id,
                     "policy_decision": request.policy_decision,
-                    **request.metadata_json,
+                    "project_scope": [project_id],
+                    "automation_digest": automation_digest,
                 },
             },
             actor_type=request.generated_by,
@@ -347,38 +534,49 @@ class VNextProjectService:
             sources=sources,
             memories=memories,
         )
-        artifact = self.store.create_artifact(
-            {
-                "artifact_type": "project_update",
-                "title": f"Project Update Candidate - {_title(project)}",
-                "content_markdown": content,
-                "status": "needs_review",
-                "domain": project.get("domain", "project"),
-                "sensitivity": _highest_sensitivity([project, *sources, *memories]),
-                "generated_by": request.generated_by if request.generated_by != "system" else "vnext_project_auto_updater",
-                "prompt_hash": prompt_hash,
-                "model_info_json": model_info_json,
-                "metadata_json": {
-                    "workflow": "project_auto_update",
-                    "workflow_type": "project_update_scan",
-                    "project_id": project.get("id"),
-                    "candidate_memory_id": candidate_memory.get("id"),
-                    "suggested_current_state": suggested_current_state,
-                    "source_ids": _source_ids(sources),
-                    "source_refs": [f"source:{source_id}" for source_id in _source_ids(sources)],
-                    "memory_ids": _source_ids(memories),
-                    "generated_by": request.generated_by,
-                    "agent_identity": request.agent_identity,
-                    "agent_id": request.actor_id if request.generated_by == "agent" else None,
-                    "agent_run_id": request.run_id if request.generated_by == "agent" else None,
-                    "trace_id": request.trace_id,
-                    "policy_decision": request.policy_decision,
-                    **request.metadata_json,
-                    **model_metadata,
-                },
+        artifact_record: JsonObject = {
+            "artifact_type": "project_update",
+            "title": f"Project Update Candidate - {_title(project)}",
+            "content_markdown": content,
+            "status": "needs_review",
+            "domain": project.get("domain", "project"),
+            "sensitivity": _highest_sensitivity([project, *sources, *memories]),
+            "generated_by": request.generated_by if request.generated_by != "system" else "vnext_project_auto_updater",
+            "prompt_hash": prompt_hash,
+            "model_info_json": model_info_json,
+            "metadata_json": {
+                **request.metadata_json,
+                "workflow": "project_auto_update",
+                "workflow_type": "project_update_scan",
+                "project_id": project.get("id"),
+                "project_scope": [project_id],
+                "automation_digest": automation_digest,
+                "candidate_memory_id": candidate_memory.get("id"),
+                "suggested_current_state": suggested_current_state,
+                "source_ids": _source_ids(sources),
+                "source_refs": [f"source:{source_id}" for source_id in _source_ids(sources)],
+                "memory_ids": _source_ids(memories),
+                "generated_by": request.generated_by,
+                "agent_identity": request.agent_identity,
+                "agent_id": request.actor_id if request.generated_by == "agent" else None,
+                "agent_run_id": request.run_id if request.generated_by == "agent" else None,
+                "trace_id": request.trace_id,
+                "policy_decision": request.policy_decision,
+                **model_metadata,
+                "project_scope": [project_id],
+                "automation_digest": automation_digest,
             },
-            actor_type=request.generated_by,
-        )
+        }
+        upsert_artifact = getattr(self.store, "upsert_artifact_by_workflow_digest", None)
+        if callable(upsert_artifact):
+            artifact = upsert_artifact(
+                artifact_record,
+                workflow="project_auto_update",
+                digest=automation_digest,
+                actor_type=request.generated_by,
+            )
+        else:
+            artifact = self.store.create_artifact(artifact_record, actor_type=request.generated_by)
         append_event(
             self.store,
             event_type="project.update_candidate_created",
@@ -464,25 +662,60 @@ class VNextProjectService:
             domains=domains,
             sensitivity_allowed=list(request.sensitivity_allowed),
             limit=request.max_items,
+            scope_projects=(request.project_id,) if request.project_id is not None else (),
         )
+        if request.project_id is not None:
+            sources = [row for row in sources if _is_in_project(row, request.project_id)]
+        existing_by_digest: dict[str, JsonObject] = {}
+        find_existing_loop = getattr(self.store, "find_open_loop_by_automation_digest", None)
         created: list[JsonObject] = []
         for source in sources:
             for candidate in _open_loop_candidates(source):
-                if request.project_id is not None:
-                    candidate["project_id"] = request.project_id
+                source_scope = tuple(resource_project_scope(source))
+                canonical_scope = (request.project_id,) if request.project_id is not None else source_scope
+                if len(canonical_scope) == 1:
+                    candidate["project_id"] = canonical_scope[0]
                 if request.person_id is not None:
                     candidate["person_id"] = request.person_id
                 metadata_value = candidate.get("metadata_json")
-                metadata: JsonObject = metadata_value if isinstance(metadata_value, dict) else {}
+                candidate_metadata: JsonObject = metadata_value if isinstance(metadata_value, dict) else {}
+                automation_digest = _open_loop_digest(
+                    candidate,
+                    project_id=request.project_id,
+                    person_id=request.person_id,
+                )
+                existing = existing_by_digest.get(automation_digest)
+                if existing is None and callable(find_existing_loop):
+                    existing = find_existing_loop(
+                        digest=automation_digest,
+                        project_id=request.project_id,
+                        person_id=request.person_id,
+                    )
+                if existing is not None:
+                    existing_by_digest[automation_digest] = existing
+                    created.append(existing)
+                    continue
                 candidate["metadata_json"] = {
-                    **metadata,
+                    **candidate_metadata,
+                    "project_scope": list(canonical_scope),
+                    "automation_digest": automation_digest,
                     "generated_by": request.generated_by,
                     "agent_identity": request.agent_identity,
                     "agent_id": request.actor_id if request.generated_by == "agent" else None,
                     "trace_id": request.trace_id,
                     "policy_decision": request.policy_decision,
                 }
-                created.append(self.store.create_open_loop(candidate, actor_type=request.generated_by))
+                upsert_loop = getattr(self.store, "upsert_open_loop_by_automation_digest", None)
+                if callable(upsert_loop):
+                    created_loop = upsert_loop(
+                        candidate,
+                        digest=automation_digest,
+                        actor_type=request.generated_by,
+                    )
+                else:
+                    created_loop = self.store.create_open_loop(candidate, actor_type=request.generated_by)
+                created.append(created_loop)
+                existing_by_digest[automation_digest] = created_loop
         append_event(
             self.store,
             event_type="open_loop.extraction_completed",
@@ -504,14 +737,81 @@ class VNextProjectService:
     ) -> JsonObject:
         if action not in PROJECT_UPDATE_ACTIONS:
             raise VNextProjectValidationError("project update action must be accept, edit, or reject")
-        artifact = self.store.get_artifact(artifact_id)
+        # The artifact is the review decision's serialization point.  Every
+        # accept/edit/reject path must inspect and transition the same locked
+        # row so stale reviewers cannot split project, memory, and artifact
+        # state across contradictory outcomes.
+        artifact = self.store.get_artifact_for_update(artifact_id)
         if artifact is None:
             raise VNextProjectValidationError(f"artifact {artifact_id} was not found")
         metadata = artifact.get("metadata_json")
-        if not isinstance(metadata, dict) or metadata.get("workflow") != "project_auto_update":
+        if not self.is_project_update_candidate(artifact):
             raise VNextProjectValidationError(f"artifact {artifact_id} is not a project update candidate")
+        assert isinstance(metadata, dict)
+        artifact_status = str(artifact.get("status") or "")
+        if artifact_status == "accepted":
+            if action in {"accept", "edit"}:
+                return artifact
+            raise VNextProjectValidationError("accepted project update candidates cannot be rejected")
+        if artifact_status == "rejected":
+            if action == "reject":
+                return artifact
+            raise VNextProjectValidationError("rejected project update candidates cannot be accepted or edited")
+        if artifact_status != "needs_review":
+            raise VNextProjectValidationError("project update candidate is not pending review")
+        candidate_memory_id = str(metadata.get("candidate_memory_id") or "")
+        if candidate_memory_id == "":
+            raise VNextProjectValidationError("project update candidate is missing candidate_memory_id")
+        candidate_memory = self.store.get_memory_for_update(candidate_memory_id)
+        if candidate_memory is None:
+            raise VNextProjectValidationError("project update candidate memory was not found")
+        candidate_metadata_value = candidate_memory.get("metadata_json")
+        candidate_metadata: JsonObject = (
+            dict(candidate_metadata_value) if isinstance(candidate_metadata_value, dict) else {}
+        )
+        candidate_value_value = candidate_memory.get("value")
+        candidate_value: JsonObject = dict(candidate_value_value) if isinstance(candidate_value_value, dict) else {}
         if action == "reject":
-            updated_artifact = self.store.update_artifact_status(artifact_id=artifact_id, status="rejected")
+            rejected_memory = self.store.update_memory(
+                memory_id=candidate_memory_id,
+                patch={
+                    "status": "rejected",
+                    "value": {**candidate_value, "review_status": "rejected"},
+                    "metadata_json": {
+                        **candidate_metadata,
+                        "candidate": False,
+                        "review_status": "rejected",
+                        "review_action": action,
+                        "review_artifact_id": artifact_id,
+                    },
+                },
+            )
+            memory_key = str(rejected_memory.get("memory_key") or "")
+            if memory_key:
+                self.store.append_revision(
+                    {
+                        "memory_id": candidate_memory_id,
+                        "memory_key": memory_key,
+                        "revision_type": "rejected",
+                        "action": "project_update_review",
+                        "text_before": str(candidate_memory.get("canonical_text") or ""),
+                        "text_after": str(rejected_memory.get("canonical_text") or ""),
+                        "reason": "Project update candidate rejected by review action.",
+                        "metadata_json": {"artifact_id": artifact_id, "action": action},
+                    }
+                )
+            updated_artifact = self.store.update_artifact_status(
+                artifact_id=artifact_id,
+                status="rejected",
+                expected_status="needs_review",
+                metadata_json={
+                    "candidate": False,
+                    "review_status": "rejected",
+                    "review_action": action,
+                },
+            )
+            if updated_artifact is None:
+                raise VNextProjectValidationError("project update candidate review conflicted with another reviewer")
             append_event(
                 self.store,
                 event_type="project.update_candidate_rejected",
@@ -524,18 +824,52 @@ class VNextProjectService:
 
         if action == "edit" and (edited_current_state is None or edited_current_state.strip() == ""):
             raise VNextProjectValidationError("edited_current_state is required for edit")
-        current_state = edited_current_state.strip() if edited_current_state is not None else str(metadata.get("suggested_current_state", ""))
-        project_id = str(metadata.get("project_id"))
-        candidate_memory_id = str(metadata.get("candidate_memory_id"))
+        current_state = (
+            edited_current_state.strip()
+            if edited_current_state is not None
+            else str(metadata.get("suggested_current_state", ""))
+        )
+        if current_state.strip() == "":
+            raise VNextProjectValidationError("project update candidate current state is empty")
+        project_id = str(metadata.get("project_id") or "")
+        if project_id == "":
+            raise VNextProjectValidationError("project update candidate is missing project_id")
+        if self.store.get_project_for_update(project_id) is None:
+            raise VNextProjectValidationError("project update candidate project was not found")
         self.store.update_project(project_id=project_id, patch={"current_state": current_state})
         updated_memory = self.store.update_memory(
             memory_id=candidate_memory_id,
-            patch={"status": "active", "canonical_text": current_state},
+            patch={
+                "status": "active",
+                "value": {
+                    **candidate_value,
+                    "project_id": project_id,
+                    "suggested_current_state": current_state,
+                    "current_state": current_state,
+                    "review_status": "accepted",
+                },
+                "canonical_text": current_state,
+                "summary": current_state,
+                "confirmation_status": "confirmed",
+                "metadata_json": {
+                    **candidate_metadata,
+                    "candidate": False,
+                    "review_status": "accepted",
+                    "review_action": action,
+                    "review_artifact_id": artifact_id,
+                    "suggested_current_state": current_state,
+                },
+            },
         )
-        VNextMemoryCommitService(cast(PostgresVNextStore, self.store)).refresh_memory_derived_state(
+        memory_service = VNextMemoryCommitService(
+            cast(PostgresVNextStore, self.store),
+            defer_embeddings=self._defer_embeddings,
+        )
+        memory_service.refresh_memory_derived_state(
             updated_memory,
             stage="project_update_review",
         )
+        self._deferred_embedding_inputs.extend(memory_service.deferred_embedding_inputs)
         memory_key = str(updated_memory.get("memory_key", "")).strip()
         if memory_key == "":
             raise VNextProjectValidationError("candidate memory is missing memory_key")
@@ -545,12 +879,26 @@ class VNextProjectService:
                 "memory_key": memory_key,
                 "revision_type": "edited" if action == "edit" else "promoted",
                 "action": "project_update_review",
+                "text_before": str(candidate_memory.get("canonical_text") or ""),
                 "text_after": current_state,
                 "reason": "Project update candidate accepted by review action.",
                 "metadata_json": {"artifact_id": artifact_id, "project_id": project_id, "action": action},
             }
         )
-        updated_artifact = self.store.update_artifact_status(artifact_id=artifact_id, status="accepted")
+        updated_artifact = self.store.update_artifact_status(
+            artifact_id=artifact_id,
+            status="accepted",
+            expected_status="needs_review",
+            metadata_json={
+                "candidate": False,
+                "review_status": "accepted",
+                "review_action": action,
+                "suggested_current_state": current_state,
+                "accepted_current_state": current_state,
+            },
+        )
+        if updated_artifact is None:
+            raise VNextProjectValidationError("project update candidate review conflicted with another reviewer")
         append_event(
             self.store,
             event_type="project.update_candidate_accepted",
@@ -577,7 +925,9 @@ class VNextProjectService:
         if self.store.get_open_loop(loop_id) is None:
             raise VNextProjectValidationError(f"open loop {loop_id} was not found")
         if action == "close":
-            return self.store.update_open_loop_status(loop_id=loop_id, status="resolved", resolution_note=resolution_note)
+            return self.store.update_open_loop_status(
+                loop_id=loop_id, status="resolved", resolution_note=resolution_note
+            )
         if action == "reopen":
             return self.store.update_open_loop_status(loop_id=loop_id, status="open")
         patch: JsonObject = {}
@@ -595,7 +945,9 @@ class VNextProjectService:
             raise VNextProjectValidationError("at least one editable field is required")
         return self.store.update_open_loop(loop_id=loop_id, patch=patch)
 
-    def project_dashboard(self, *, project_id: str, sensitivity_allowed: tuple[str, ...] = DEFAULT_SENSITIVITY_ALLOWED) -> JsonObject:
+    def project_dashboard(
+        self, *, project_id: str, sensitivity_allowed: tuple[str, ...] = DEFAULT_SENSITIVITY_ALLOWED
+    ) -> JsonObject:
         project = self.store.get_project(project_id)
         if project is None:
             raise VNextProjectValidationError(f"project {project_id} was not found")
@@ -605,7 +957,11 @@ class VNextProjectService:
             domains=[domain],
             sensitivity_allowed=list(sensitivity_allowed),
             limit=DEFAULT_PROJECT_LIMIT,
+            projects=(project_id,),
         )
+        memories = [
+            row for row in memories if _is_in_project(row, project_id) and row.get("status") in {"active", "accepted"}
+        ]
         open_loops = self.store.list_open_loops(
             status="open",
             domains=[domain],
@@ -613,12 +969,14 @@ class VNextProjectService:
             project_id=project_id,
             limit=DEFAULT_PROJECT_LIMIT,
         )
-        artifacts = self.store.list_artifacts(
+        artifact_candidates = self.store.list_artifacts(
             artifact_type=None,
             domains=[domain],
             sensitivity_allowed=list(sensitivity_allowed),
             limit=DEFAULT_PROJECT_LIMIT,
+            scope_projects=(project_id,),
         )
+        artifacts = [row for row in artifact_candidates if _is_in_project(row, project_id)][:DEFAULT_PROJECT_LIMIT]
         return {
             "project": project,
             "state": project.get("current_state"),
