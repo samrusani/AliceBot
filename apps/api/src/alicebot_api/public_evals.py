@@ -13,8 +13,10 @@ from alicebot_api.continuity_open_loops import compile_continuity_open_loop_dash
 from alicebot_api.continuity_resumption import compile_continuity_resumption_brief
 from alicebot_api.continuity_review import apply_continuity_correction
 from alicebot_api.contracts import (
+    ContinuityCorrectionAction,
     ContinuityCorrectionInput,
     ContinuityOpenLoopDashboardQueryInput,
+    ContinuityOpenLoopPosture,
     ContinuityResumptionBriefRequestInput,
     PublicEvalResultRecord,
     PublicEvalRunDetailResponse,
@@ -100,6 +102,41 @@ def _json_objects(value: object) -> list[JsonObject]:
     return [_json_object(item) for item in value if isinstance(item, dict)]
 
 
+def _numeric_float(value: object, *, field_name: str, default: float | None = None) -> float:
+    if value is None and default is not None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError(f"{field_name} must be numeric")
+    return float(value)
+
+
+def _numeric_int(value: object, *, field_name: str, default: int | None = None) -> int:
+    if value is None and default is not None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError(f"{field_name} must be an integer")
+    parsed = int(value)
+    if float(value) != parsed:
+        raise ValueError(f"{field_name} must be an integer")
+    return parsed
+
+
+def _optional_string(value: object, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    return value
+
+
+def _optional_json_object(value: object, *, field_name: str) -> JsonObject | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be an object")
+    return cast(JsonObject, value)
+
+
 def _validate_fixture_catalog(catalog: JsonObject) -> list[JsonObject]:
     if str(catalog.get("schema_version")) != PUBLIC_EVAL_FIXTURE_SCHEMA_VERSION:
         raise ValueError("unexpected public eval fixture schema version")
@@ -133,7 +170,11 @@ def _build_candidate_row(
         "title": str(payload["title"]),
         "body": _json_object(payload.get("body")),
         "provenance": _json_object(payload.get("provenance")),
-        "confidence": float(payload.get("confidence", 1.0)),
+        "confidence": _numeric_float(
+            payload.get("confidence"),
+            field_name="confidence",
+            default=1.0,
+        ),
         "last_confirmed_at": (
             None if not isinstance(last_confirmed_raw, str) else _parse_datetime(last_confirmed_raw)
         ),
@@ -313,14 +354,15 @@ class _ContradictionStore:
 
     def create_contradiction_case(self, **kwargs: object) -> dict[str, object]:
         now = self._tick()
-        row = {
-            "id": uuid4(),
+        case_id = uuid4()
+        row: dict[str, object] = {
+            "id": case_id,
             "user_id": _stable_uuid("user", "public-eval"),
             "created_at": now,
             "updated_at": now,
             **kwargs,
         }
-        self._cases[row["id"]] = row
+        self._cases[case_id] = row
         return dict(row)
 
     def update_contradiction_case_optional(self, *, contradiction_case_id: UUID, **kwargs: object) -> dict[str, object] | None:
@@ -471,8 +513,16 @@ def _evaluate_recall_suite(
         fixture_id = str(fixture["fixture_id"])
         expected = case["expectations"]
         result = results_by_fixture_id[fixture_id]
-        minimum_precision = float(expected.get("minimum_precision_at_k", 1.0))
-        minimum_lift = float(expected.get("minimum_precision_lift_at_k", 0.0))
+        minimum_precision = _numeric_float(
+            expected.get("minimum_precision_at_k"),
+            field_name="minimum_precision_at_k",
+            default=1.0,
+        )
+        minimum_lift = _numeric_float(
+            expected.get("minimum_precision_lift_at_k"),
+            field_name="minimum_precision_lift_at_k",
+            default=0.0,
+        )
         require_expected_top_result = bool(expected.get("require_expected_top_result", True))
         expected_top_result_id = (
             result["expected_relevant_ids"][0] if result["expected_relevant_ids"] else None
@@ -495,12 +545,12 @@ def _evaluate_recall_suite(
             "top_k": result["top_k"],
             "require_expected_top_result": require_expected_top_result,
         }
-        details: JsonObject = {
+        details = cast(JsonObject, {
             "query": result["query"],
             "expected_relevant_ids": result["expected_relevant_ids"],
             "returned_ids": result["returned_ids"],
             "baseline_returned_ids": result["baseline_returned_ids"],
-        }
+        })
         suite_results.append(
             _serialize_case_result(
                 suite_key=suite_key,
@@ -517,8 +567,20 @@ def _evaluate_recall_suite(
 
 def _evaluate_resumption_case(*, suite_key: str, case: EvalCaseRow) -> JsonObject:
     rows = [_build_candidate_row(case_key=case["case_key"], payload=item) for item in _json_objects(case["fixture"].get("rows"))]
-    request_payload = case["fixture"].get("request")
-    request = ContinuityResumptionBriefRequestInput(**_json_object(request_payload))
+    request_payload = _json_object(case["fixture"].get("request"))
+    default_request = ContinuityResumptionBriefRequestInput()
+    request = ContinuityResumptionBriefRequestInput(
+        max_recent_changes=_numeric_int(
+            request_payload.get("max_recent_changes"),
+            field_name="max_recent_changes",
+            default=default_request.max_recent_changes,
+        ),
+        max_open_loops=_numeric_int(
+            request_payload.get("max_open_loops"),
+            field_name="max_open_loops",
+            default=default_request.max_open_loops,
+        ),
+    )
     payload = compile_continuity_resumption_brief(
         _RecallOnlyStore(rows),  # type: ignore[arg-type]
         user_id=_stable_uuid("user", "public-eval"),
@@ -553,10 +615,10 @@ def _evaluate_resumption_case(*, suite_key: str, case: EvalCaseRow) -> JsonObjec
             "open_loop_count": len(open_loop_titles),
             "recent_change_count": len(recent_change_titles),
         },
-        details={
+        details=cast(JsonObject, {
             "open_loop_titles": open_loop_titles,
             "recent_change_titles": recent_change_titles,
-        },
+        }),
     )
 
 
@@ -564,11 +626,49 @@ def _evaluate_correction_case(*, suite_key: str, case: EvalCaseRow) -> JsonObjec
     rows = [_build_candidate_row(case_key=case["case_key"], payload=item) for item in _json_objects(case["fixture"].get("rows"))]
     target_object_key = str(case["fixture"]["target_object_key"])
     store = _CorrectionStore(rows)
+    request_payload = _json_object(case["fixture"].get("request"))
+    raw_action = request_payload.get("action")
+    if raw_action not in {"confirm", "edit", "delete", "supersede", "mark_stale"}:
+        raise ValueError("correction action is not supported")
     payload = apply_continuity_correction(
         store,  # type: ignore[arg-type]
         user_id=_stable_uuid("user", "public-eval"),
         continuity_object_id=_stable_uuid("continuity_object", f"{case['case_key']}:{target_object_key}"),
-        request=ContinuityCorrectionInput(**_json_object(case["fixture"].get("request"))),
+        request=ContinuityCorrectionInput(
+            action=cast(ContinuityCorrectionAction, raw_action),
+            reason=_optional_string(request_payload.get("reason"), field_name="reason"),
+            title=_optional_string(request_payload.get("title"), field_name="title"),
+            body=_optional_json_object(request_payload.get("body"), field_name="body"),
+            provenance=_optional_json_object(
+                request_payload.get("provenance"),
+                field_name="provenance",
+            ),
+            confidence=(
+                None
+                if request_payload.get("confidence") is None
+                else _numeric_float(request_payload.get("confidence"), field_name="confidence")
+            ),
+            replacement_title=_optional_string(
+                request_payload.get("replacement_title"),
+                field_name="replacement_title",
+            ),
+            replacement_body=_optional_json_object(
+                request_payload.get("replacement_body"),
+                field_name="replacement_body",
+            ),
+            replacement_provenance=_optional_json_object(
+                request_payload.get("replacement_provenance"),
+                field_name="replacement_provenance",
+            ),
+            replacement_confidence=(
+                None
+                if request_payload.get("replacement_confidence") is None
+                else _numeric_float(
+                    request_payload.get("replacement_confidence"),
+                    field_name="replacement_confidence",
+                )
+            ),
+        ),
     )
     continuity_object = payload["continuity_object"]
     replacement_object = payload["replacement_object"]
@@ -622,7 +722,12 @@ def _evaluate_contradiction_case(*, suite_key: str, case: EvalCaseRow) -> JsonOb
     )
     expected = case["expectations"]
     passed = (
-        len(open_cases) == int(expected.get("open_case_count", 0))
+        len(open_cases)
+        == _numeric_int(
+            expected.get("open_case_count"),
+            field_name="open_case_count",
+            default=0,
+        )
         and open_case_kinds == _string_list(expected.get("open_case_kinds"))
         and active_signal_types == _string_list(expected.get("active_signal_types"))
     )
@@ -632,12 +737,12 @@ def _evaluate_contradiction_case(*, suite_key: str, case: EvalCaseRow) -> JsonOb
         title=_case_title(case),
         status="pass" if passed else "fail",
         score=1.0 if passed else 0.0,
-        summary={
+        summary=cast(JsonObject, {
             "open_case_count": len(open_cases),
             "open_case_kinds": open_case_kinds,
             "active_signal_types": active_signal_types,
             "scanned_object_count": sync.scanned_object_count,
-        },
+        }),
         details={
             "updated_case_count": sync.updated_case_count,
             "resolved_case_count": sync.resolved_case_count,
@@ -647,22 +752,36 @@ def _evaluate_contradiction_case(*, suite_key: str, case: EvalCaseRow) -> JsonOb
 
 def _evaluate_open_loop_case(*, suite_key: str, case: EvalCaseRow) -> JsonObject:
     rows = [_build_candidate_row(case_key=case["case_key"], payload=item) for item in _json_objects(case["fixture"].get("rows"))]
+    request_payload = _json_object(case["fixture"].get("request"))
+    default_request = ContinuityOpenLoopDashboardQueryInput()
     payload = compile_continuity_open_loop_dashboard(
         _RecallOnlyStore(rows),  # type: ignore[arg-type]
         user_id=_stable_uuid("user", "public-eval"),
-        request=ContinuityOpenLoopDashboardQueryInput(**_json_object(case["fixture"].get("request"))),
+        request=ContinuityOpenLoopDashboardQueryInput(
+            limit=_numeric_int(
+                request_payload.get("limit"),
+                field_name="limit",
+                default=default_request.limit,
+            ),
+        ),
     )
     dashboard = payload["dashboard"]
-    actual_titles: JsonObject = {
+    postures: tuple[ContinuityOpenLoopPosture, ...] = (
+        "waiting_for",
+        "blocker",
+        "stale",
+        "next_action",
+    )
+    actual_titles: dict[ContinuityOpenLoopPosture, list[str]] = {
         posture: [item["title"] for item in dashboard[posture]["items"]]
-        for posture in ("waiting_for", "blocker", "stale", "next_action")
+        for posture in postures
     }
-    expected_titles = {
+    expected_titles: dict[ContinuityOpenLoopPosture, list[str]] = {
         posture: _string_list(case["expectations"].get(f"{posture}_titles"))
-        for posture in ("waiting_for", "blocker", "stale", "next_action")
+        for posture in postures
     }
     passed = all(actual_titles[posture] == expected_titles[posture] for posture in expected_titles)
-    total_count = int(dashboard["summary"]["total_count"])
+    total_count = dashboard["summary"]["total_count"]
     return _serialize_case_result(
         suite_key=suite_key,
         case_key=case["case_key"],
@@ -671,10 +790,10 @@ def _evaluate_open_loop_case(*, suite_key: str, case: EvalCaseRow) -> JsonObject
         score=1.0 if passed else 0.0,
         summary={
             "total_count": total_count,
-            "waiting_for_count": len(cast(list[str], actual_titles["waiting_for"])),
-            "blocker_count": len(cast(list[str], actual_titles["blocker"])),
-            "stale_count": len(cast(list[str], actual_titles["stale"])),
-            "next_action_count": len(cast(list[str], actual_titles["next_action"])),
+            "waiting_for_count": len(actual_titles["waiting_for"]),
+            "blocker_count": len(actual_titles["blocker"]),
+            "stale_count": len(actual_titles["stale"]),
+            "next_action_count": len(actual_titles["next_action"]),
         },
         details=cast(JsonObject, actual_titles),
     )
@@ -768,8 +887,16 @@ def _build_suite_report(
     case_count = len(results)
     passed_case_count = sum(1 for result in results if result["status"] == "pass")
     failed_case_count = case_count - passed_case_count
-    average_score = 0.0 if case_count == 0 else sum(float(result["score"]) for result in results) / case_count
-    return {
+    average_score = (
+        0.0
+        if case_count == 0
+        else sum(
+            _numeric_float(result["score"], field_name="result.score")
+            for result in results
+        )
+        / case_count
+    )
+    return cast(JsonObject, {
         "suite_key": suite["suite_key"],
         "title": suite["title"],
         "description": suite["description"],
@@ -781,7 +908,7 @@ def _build_suite_report(
         "average_score": average_score,
         "status": _suite_status(passed_case_count, case_count),
         "cases": results,
-    }
+    })
 
 
 def _report_digest(report: JsonObject) -> str:
@@ -851,27 +978,28 @@ def run_public_evals(
     case_count = len(persisted_results)
     passed_case_count = sum(1 for result in persisted_results if result["status"] == "pass")
     failed_case_count = case_count - passed_case_count
-    report: JsonObject = {
+    report_summary: JsonObject = {
+        "status": _suite_status(passed_case_count, case_count),
+        "suite_count": suite_count,
+        "case_count": case_count,
+        "passed_case_count": passed_case_count,
+        "failed_case_count": failed_case_count,
+        "pass_rate": 0.0 if case_count == 0 else passed_case_count / case_count,
+    }
+    report = cast(JsonObject, {
         "schema_version": PUBLIC_EVAL_REPORT_SCHEMA_VERSION,
         "fixture_schema_version": PUBLIC_EVAL_FIXTURE_SCHEMA_VERSION,
         "fixture_source_path": PUBLIC_EVAL_FIXTURE_SOURCE_PATH,
-        "summary": {
-            "status": _suite_status(passed_case_count, case_count),
-            "suite_count": suite_count,
-            "case_count": case_count,
-            "passed_case_count": passed_case_count,
-            "failed_case_count": failed_case_count,
-            "pass_rate": 0.0 if case_count == 0 else passed_case_count / case_count,
-        },
+        "summary": report_summary,
         "suites": suite_reports,
-    }
+    })
     digest = _report_digest(report)
     run_row = store.create_eval_run(
         fixture_schema_version=PUBLIC_EVAL_FIXTURE_SCHEMA_VERSION,
         fixture_source_path=PUBLIC_EVAL_FIXTURE_SOURCE_PATH,
         requested_suite_keys=requested_suite_keys,
-        status=str(report["summary"]["status"]),
-        summary=_json_object(report["summary"]),
+        status=str(report_summary["status"]),
+        summary=report_summary,
         report=report,
         report_digest=digest,
     )
@@ -882,7 +1010,7 @@ def run_public_evals(
             suite_key=str(result["suite_key"]),
             case_key=str(result["case_key"]),
             status=str(result["status"]),
-            score=float(result["score"]),
+            score=_numeric_float(result["score"], field_name="result.score"),
             summary=_json_object(result["summary"]),
             details=_json_object(result["details"]),
         )

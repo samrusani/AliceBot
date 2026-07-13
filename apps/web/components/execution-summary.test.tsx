@@ -3,10 +3,12 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ExecutionSummary } from "./execution-summary";
+import type { ApprovalExecutionResponse, ToolExecutionItem } from "../lib/api";
 
-const execution = {
+const execution: ToolExecutionItem = {
   id: "execution-1",
   approval_id: "approval-1",
+  task_run_id: null,
   task_step_id: "step-1",
   thread_id: "thread-1",
   tool_id: "tool-1",
@@ -15,6 +17,7 @@ const execution = {
   result_event_id: "event-2",
   status: "completed",
   handler_key: "proxy.echo",
+  idempotency_key: null,
   request: {
     thread_id: "thread-1",
     tool_id: "tool-1",
@@ -54,14 +57,16 @@ const execution = {
   executed_at: "2026-03-17T00:10:00Z",
 };
 
-const executionPreview = {
+const executionPreview: ApprovalExecutionResponse = {
   request: {
     approval_id: "approval-1",
+    task_run_id: null,
     task_step_id: "step-1",
   },
   approval: {
     id: "approval-1",
     thread_id: "thread-1",
+    task_run_id: null,
     task_step_id: "step-1",
     status: "approved",
     request: execution.request,

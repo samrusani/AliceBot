@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -494,7 +495,10 @@ def _persist_refreshed_gmail_credential(
         access_token_expires_at=refreshed_credential.access_token_expires_at,
     )
     try:
-        secret_manager.write_secret(secret_ref=secret_ref, payload=replacement_credential_blob)
+        secret_manager.write_secret(
+            secret_ref=secret_ref,
+            payload=cast(JsonObject, replacement_credential_blob),
+        )
         store.update_gmail_account_credential(
             gmail_account_id=gmail_account_id,
             auth_kind=auth_kind,
@@ -505,7 +509,10 @@ def _persist_refreshed_gmail_credential(
         )
     except (GmailSecretManagerError, ContinuityStoreInvariantError, psycopg.Error) as exc:
         try:
-            secret_manager.write_secret(secret_ref=secret_ref, payload=original_credential_blob)
+            secret_manager.write_secret(
+                secret_ref=secret_ref,
+                payload=cast(JsonObject, original_credential_blob),
+            )
         except GmailSecretManagerError:
             pass
         raise GmailCredentialPersistenceError(
@@ -531,6 +538,16 @@ def resolve_gmail_access_token(
         or parsed_credential.access_token_expires_at > datetime.now(UTC)
     ):
         return parsed_credential.access_token
+
+    if (
+        parsed_credential.refresh_token is None
+        or parsed_credential.client_id is None
+        or parsed_credential.client_secret is None
+        or credential.secret_ref is None
+    ):
+        raise GmailCredentialInvalidError(
+            f"gmail account {gmail_account_id} has incomplete refresh credentials"
+        )
 
     refreshed_credential = refresh_gmail_access_token(
         gmail_account_id=gmail_account_id,
@@ -589,7 +606,7 @@ def create_gmail_account_record(
             secret_manager,
             gmail_account_id=row["id"],
             secret_ref=secret_ref,
-            credential_blob=credential_blob,
+            credential_blob=cast(JsonObject, credential_blob),
         )
         store.create_gmail_account_credential(
             gmail_account_id=row["id"],

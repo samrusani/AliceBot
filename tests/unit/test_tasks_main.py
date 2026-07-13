@@ -14,6 +14,53 @@ from alicebot_api.tasks import (
 )
 
 
+def test_task_step_http_models_convert_to_typed_storage_snapshots() -> None:
+    thread_id = uuid4()
+    tool_id = uuid4()
+    approval_id = uuid4()
+    execution_id = uuid4()
+
+    request_record = main_module._task_step_request_record(
+        main_module.TaskStepRequestSnapshot(
+            thread_id=thread_id,
+            tool_id=tool_id,
+            action="tool.run",
+            scope="workspace",
+            domain_hint="project",
+            risk_hint="medium",
+            attributes={"retries": 2, "nested": {"enabled": True}},
+        )
+    )
+    outcome_record = main_module._task_step_outcome_snapshot(
+        main_module.TaskStepOutcomeRequest(
+            routing_decision="approval_required",
+            approval_id=approval_id,
+            approval_status="approved",
+            execution_id=execution_id,
+            execution_status="completed",
+            blocked_reason=None,
+        )
+    )
+
+    assert request_record == {
+        "thread_id": str(thread_id),
+        "tool_id": str(tool_id),
+        "action": "tool.run",
+        "scope": "workspace",
+        "domain_hint": "project",
+        "risk_hint": "medium",
+        "attributes": {"retries": 2, "nested": {"enabled": True}},
+    }
+    assert outcome_record == {
+        "routing_decision": "approval_required",
+        "approval_id": str(approval_id),
+        "approval_status": "approved",
+        "execution_id": str(execution_id),
+        "execution_status": "completed",
+        "blocked_reason": None,
+    }
+
+
 def test_list_task_steps_endpoint_returns_payload(monkeypatch) -> None:
     user_id = uuid4()
     task_id = uuid4()

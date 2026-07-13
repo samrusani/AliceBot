@@ -7,7 +7,7 @@ PROJECT_VERSION = $(shell $(PYTHON) -c 'import tomllib; print(tomllib.load(open(
 ALICE_WEB_HOST ?= 127.0.0.1
 ALICE_WEB_PORT ?= 3000
 
-.PHONY: setup migrate api dev runtime web-build doctor vnext scheduler alpha-check test-web test-python test-longmemeval release-static release-identity release-finalization-check release-artifacts release-check
+.PHONY: setup setup-browser setup-browser-linux migrate api dev runtime web-build doctor vnext scheduler alpha-check test-web test-python test-longmemeval release-static release-identity release-finalization-check release-artifacts release-semantic-attestation release-check
 
 setup:
 	@python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' || \
@@ -20,7 +20,19 @@ setup:
 	python3 -m venv .venv
 	$(PYTHON) -m pip install -e '.[dev]'
 	PNPM="$(PNPM)" WEB_DIR="$(WEB_DIR)" ./scripts/pnpm_web_install.sh
-	@echo "Setup complete. Next: make migrate && make doctor"
+	@echo "Setup complete. Next: make setup-browser (or setup-browser-linux on Debian/Ubuntu), then make migrate && make doctor"
+
+# Install only the Playwright-managed Chromium binary on developer machines.
+# Linux CI installs its additional OS packages separately with --with-deps.
+setup-browser:
+	$(PNPM) --dir $(WEB_DIR) run setup:browser
+
+# Opt-in clean Debian/Ubuntu setup. The guard prevents macOS from ever running
+# Playwright's Linux system-package installer.
+setup-browser-linux:
+	@test "$$(uname -s)" = "Linux" || \
+		{ echo "ERROR: setup-browser-linux is supported only on Linux; use make setup-browser." ; exit 1; }
+	$(PNPM) --dir $(WEB_DIR) run setup:browser:linux
 
 migrate:
 	./scripts/dev_up.sh
@@ -68,10 +80,15 @@ test-python:
 	$(PYTHON) -m pytest tests/unit -q --cov=alicebot_api --cov-report=term --cov-fail-under=50
 	$(PYTHON) -m pytest tests/integration -q
 
-test-web:
+test-web: setup-browser
 	$(PNPM) --dir $(WEB_DIR) test
+	$(PNPM) --dir $(WEB_DIR) test:coverage:core
+	$(PNPM) --dir $(WEB_DIR) test:coverage:vnext
+	$(PNPM) --dir $(WEB_DIR) typecheck
 	$(PNPM) --dir $(WEB_DIR) lint
 	$(PNPM) --dir $(WEB_DIR) build
+	$(PNPM) --dir $(WEB_DIR) test:budget
+	$(PNPM) --dir $(WEB_DIR) test:browser
 
 test-longmemeval:
 	$(PYTHON) -m pytest eval/longmemeval -q
@@ -81,7 +98,7 @@ release-static:
 	$(PYTHON) scripts/check_control_doc_truth.py
 	$(PYTHON) scripts/release_check.py
 	$(PYTHON) -m ruff check apps/api/src/alicebot_api scripts tests eval/longmemeval
-	$(PYTHON) -m mypy --follow-imports=skip --ignore-missing-imports scripts/release_check.py scripts/test_distribution_artifact.py scripts/check_control_doc_truth.py scripts/check_github_release_checks.py
+	$(PYTHON) -m mypy --ignore-missing-imports apps/api/src/alicebot_api scripts/release_check.py scripts/test_distribution_artifact.py scripts/check_control_doc_truth.py scripts/check_github_release_checks.py scripts/check_release_controls_attestation.py
 
 release-identity:
 	git fetch --no-tags origin main
@@ -100,11 +117,20 @@ release-artifacts:
 # role-separated environment used by tests/integration.
 #
 # The release eval runs with --release-gate: a run that never exercises the
-# vector stage reports pass_fts_only and exits non-zero (fail closed), so the
+# vector suite reports pass_fts_only, the aggregate fails because semantic
+# cases did not pass, and the CLI exits non-zero (fail closed), so the
 # gate cannot go green without measuring semantic/paraphrase retrieval quality.
 # Point ALICEBOT_EVAL_DATABASE_URL at a pgvector database and set the
 # ALICE_EMBEDDINGS_* provider variables so the vector stage actually runs; the
 # default in-memory SQLite URL is a fail-closed smoke only.
 ALICEBOT_EVAL_DATABASE_URL ?= sqlite:///:memory:
-release-check: release-identity release-static test-python test-longmemeval test-web release-artifacts
-	ALICEBOT_EVAL_DATABASE_URL=$(ALICEBOT_EVAL_DATABASE_URL) $(PYTHON) -m alicebot_api eval run --suite all --release-gate
+SEMANTIC_EVAL_ARTIFACT_DIR ?= artifacts/release
+SEMANTIC_EVAL_REPORT ?= $(SEMANTIC_EVAL_ARTIFACT_DIR)/semantic-eval-report.json
+SEMANTIC_EVAL_ATTESTATION ?= $(SEMANTIC_EVAL_ARTIFACT_DIR)/semantic-eval-attestation.json
+
+release-semantic-attestation:
+	mkdir -p $(SEMANTIC_EVAL_ARTIFACT_DIR)
+	ALICEBOT_EVAL_DATABASE_URL=$(ALICEBOT_EVAL_DATABASE_URL) $(PYTHON) -m alicebot_api eval run --suite all --release-gate --report-path $(SEMANTIC_EVAL_REPORT)
+	$(PYTHON) scripts/release_check.py --expected-sha "$$(git rev-parse HEAD)" --semantic-eval-report $(SEMANTIC_EVAL_REPORT) --write-semantic-eval-attestation $(SEMANTIC_EVAL_ATTESTATION)
+
+release-check: release-identity release-static test-python test-longmemeval test-web release-artifacts release-semantic-attestation

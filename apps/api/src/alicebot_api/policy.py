@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal, cast
 from uuid import UUID
 
 from alicebot_api.contracts import (
@@ -12,22 +13,25 @@ from alicebot_api.contracts import (
     ConsentListResponse,
     ConsentListSummary,
     ConsentRecord,
+    ConsentStatus,
     ConsentUpsertInput,
     ConsentUpsertResponse,
     PolicyCreateInput,
     PolicyCreateResponse,
     PolicyDetailResponse,
     PolicyEvaluationReason,
+    PolicyEvaluationReasonCode,
     PolicyEvaluationRequestInput,
     PolicyEvaluationResponse,
     PolicyEvaluationSummary,
     PolicyEvaluationTraceSummary,
     PolicyListResponse,
     PolicyListSummary,
+    PolicyEffect,
     PolicyRecord,
     isoformat_or_none,
 )
-from alicebot_api.store import ConsentRow, ContinuityStore, PolicyRow
+from alicebot_api.store import ConsentRow, ContinuityStore, JsonObject, JsonValue, PolicyRow
 
 
 class PolicyValidationError(ValueError):
@@ -50,7 +54,7 @@ class PolicyEvaluationContext:
 
 @dataclass(frozen=True, slots=True)
 class PolicyEvaluationCoreDecision:
-    decision: str
+    decision: PolicyEffect
     matched_policy: PolicyRow | None
     reasons: list[PolicyEvaluationReason]
 
@@ -59,7 +63,7 @@ def _serialize_consent(consent: ConsentRow) -> ConsentRecord:
     return {
         "id": str(consent["id"]),
         "consent_key": consent["consent_key"],
-        "status": consent["status"],
+        "status": cast(ConsentStatus, consent["status"]),
         "metadata": consent["metadata"],
         "created_at": consent["created_at"].isoformat(),
         "updated_at": consent["updated_at"].isoformat(),
@@ -73,7 +77,7 @@ def _serialize_policy(policy: PolicyRow) -> PolicyRecord:
         "name": policy["name"],
         "action": policy["action"],
         "scope": policy["scope"],
-        "effect": policy["effect"],
+        "effect": cast(PolicyEffect, policy["effect"]),
         "priority": policy["priority"],
         "active": policy["active"],
         "conditions": policy["conditions"],
@@ -110,8 +114,8 @@ def _policy_matches(policy: PolicyRow, request: PolicyEvaluationRequestInput) ->
 
 def _build_reason(
     *,
-    code: str,
-    source: str,
+    code: PolicyEvaluationReasonCode,
+    source: Literal["policy", "consent", "system"],
     message: str,
     policy_id: UUID | None = None,
     consent_key: str | None = None,
@@ -260,7 +264,7 @@ def evaluate_policy_against_context(
     )
 
     reasons: list[PolicyEvaluationReason] = []
-    decision = "deny"
+    decision: PolicyEffect = "deny"
 
     if matched_policy is None:
         reasons.append(
@@ -313,12 +317,13 @@ def evaluate_policy_against_context(
             )
 
     if not missing_or_revoked:
-        decision = matched_policy["effect"]
-        effect_code = {
+        decision = cast(PolicyEffect, matched_policy["effect"])
+        effect_codes: dict[PolicyEffect, PolicyEvaluationReasonCode] = {
             "allow": "policy_effect_allow",
             "deny": "policy_effect_deny",
             "require_approval": "policy_effect_require_approval",
-        }[decision]
+        }
+        effect_code = effect_codes[decision]
         reasons.append(
             _build_reason(
                 code=effect_code,
@@ -371,21 +376,24 @@ def evaluate_policy_request(
         },
     )
 
-    trace_events = [
+    trace_events: list[tuple[str, JsonObject]] = [
         (
             "policy.evaluate.request",
             {
                 "thread_id": str(request.thread_id),
                 "action": request.action,
                 "scope": request.scope,
-                "attributes": request.attributes,
+                "attributes": cast(JsonValue, request.attributes),
             },
         ),
         (
             "policy.evaluate.order",
             {
-                "order": list(POLICY_LIST_ORDER),
-                "policy_ids": [str(policy["id"]) for policy in context.active_policies],
+                "order": cast(JsonValue, list(POLICY_LIST_ORDER)),
+                "policy_ids": cast(
+                    JsonValue,
+                    [str(policy["id"]) for policy in context.active_policies],
+                ),
             },
         ),
         (
@@ -395,15 +403,15 @@ def evaluate_policy_request(
                 "matched_policy_id": (
                     None if core_decision.matched_policy is None else str(core_decision.matched_policy["id"])
                 ),
-                "reasons": core_decision.reasons,
+                "reasons": cast(JsonValue, core_decision.reasons),
                 "evaluated_policy_count": len(context.active_policies),
-                "consent_states": {
+                "consent_states": cast(JsonValue, {
                     consent_key: {
                         "status": consent["status"],
                         "updated_at": isoformat_or_none(consent["updated_at"]),
                     }
                     for consent_key, consent in context.consents_by_key.items()
-                },
+                }),
             },
         ),
     ]

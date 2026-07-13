@@ -35,6 +35,23 @@
   min-width: 0;
 }
 
+.skip-link {
+  background: var(--text);
+  border-radius: 0 0 var(--radius-sm) 0;
+  color: #fff;
+  left: 0;
+  padding: 0.75rem 1rem;
+  position: fixed;
+  top: 0;
+  transform: translateY(-120%);
+  transition: transform 120ms ease;
+  z-index: 1000;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
 html {
   background:
     radial-gradient(circle at top left, rgba(211, 221, 232, 0.5), transparent 28%),

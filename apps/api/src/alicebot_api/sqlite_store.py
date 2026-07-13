@@ -37,6 +37,7 @@ from alicebot_api.store import ContinuityStoreInvariantError
 from alicebot_api.vnext_embeddings import (
     EMBEDDING_SIGNATURE_METADATA_KEY,
     EMBEDDING_VECTOR_DIMENSIONS,
+    memory_embedding_content_sha256,
     memory_embedding_signature_is_current,
     pad_embedding_vector,
 )
@@ -80,6 +81,7 @@ SOURCE_COLUMNS = (
     "uri",
     "raw_path",
     "content_hash",
+    "dedupe_key",
     "captured_at",
     "source_created_at",
     "source_modified_at",
@@ -314,6 +316,41 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
+def _embedding_content_sha256_sqlite(
+    title: object,
+    canonical_text: object,
+    summary: object,
+) -> str:
+    """SQLite UDF for the exact normalized text embedded by production."""
+    return memory_embedding_content_sha256(
+        {
+            "title": title,
+            "canonical_text": canonical_text,
+            "summary": summary,
+        }
+    )
+
+
+def _ensure_embedding_content_sha256_sqlite(conn: sqlite3.Connection) -> None:
+    """Register the deterministic digest UDF once per SQLite connection."""
+    cursor = conn.execute(
+        "SELECT 1 FROM pragma_function_list "
+        "WHERE name = 'alice_embedding_content_sha256' AND narg = 3 LIMIT 1"
+    )
+    try:
+        registered = cursor.fetchone() is not None
+    finally:
+        cursor.close()
+    if registered:
+        return
+    conn.create_function(
+        "alice_embedding_content_sha256",
+        3,
+        _embedding_content_sha256_sqlite,
+        deterministic=True,
+    )
+
+
 def _iso_or_none(value: object | None) -> str | None:
     """Normalize timestamps to ISO-8601 UTC TEXT with a trailing ``Z``."""
     if value is None:
@@ -486,6 +523,7 @@ class SQLiteVNextStore:
             raise ContinuityStoreInvariantError("SQLiteVNextStore requires a non-empty user_id")
         self.conn = conn
         self.user_id = str(user_id)
+        _ensure_embedding_content_sha256_sqlite(self.conn)
 
     # -- fetch helpers (mirror PostgresVNextStore conventions) ------------
 
@@ -644,6 +682,139 @@ class SQLiteVNextStore:
         clause = f" AND ({prefix}valid_to IS NULL OR {prefix}valid_to >= ?)"
         return clause, [_utc_now_iso()]
 
+    def _retrieval_scope_clause(
+        self,
+        *,
+        scope_thread_id: str | None = None,
+        scope_task_id: str | None = None,
+        scope_people: tuple[str, ...] = (),
+        scope_person_memory_ids: tuple[str, ...] = (),
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
+        prefix: str = "",
+    ) -> tuple[str, list[object]]:
+        """Complete people/time predicate applied before ranked LIMIT."""
+        clauses: list[str] = []
+        params: list[object] = []
+        if scope_thread_id is not None:
+            clauses.append(
+                f" AND LOWER(TRIM(CAST(json_extract({prefix}metadata_json, '$.thread_id') AS TEXT))) = ?"
+            )
+            params.append(scope_thread_id.casefold())
+        if scope_task_id is not None:
+            clauses.append(
+                f" AND LOWER(TRIM(CAST(json_extract({prefix}metadata_json, '$.task_id') AS TEXT))) = ?"
+            )
+            params.append(scope_task_id.casefold())
+        if scope_people:
+            people = list(scope_people)
+            person_ids = list(scope_person_memory_ids)
+            alternatives: list[str] = []
+            if person_ids:
+                alternatives.append(f"{prefix}id IN ({self._placeholders(person_ids)})")
+                params.extend(person_ids)
+            json_values = ", ".join(
+                f"json_extract({prefix}metadata_json, '$.{key}')"
+                for key in ("person_id", "person_ids", "person", "people", "people_ids")
+            )
+            alternatives.append(
+                "EXISTS (SELECT 1 FROM json_tree(json_array("
+                + json_values
+                + ")) AS scoped_person "
+                + "WHERE scoped_person.type = 'text' "
+                + f"AND LOWER(TRIM(CAST(scoped_person.value AS TEXT))) IN ({self._placeholders(people)}))"
+            )
+            params.extend(people)
+            clauses.append(" AND (" + " OR ".join(alternatives) + ")")
+        if scope_window_start is not None or scope_window_end is not None:
+            event_time = (
+                f"COALESCE(julianday({prefix}valid_from), julianday({prefix}last_seen_at), "
+                f"julianday({prefix}updated_at), julianday({prefix}first_seen_at), "
+                f"julianday({prefix}created_at))"
+            )
+        if scope_window_start is not None:
+            clauses.append(f" AND {event_time} >= julianday(?)")
+            params.append(_iso_or_none(scope_window_start))
+        if scope_window_end is not None:
+            clauses.append(f" AND {event_time} <= julianday(?)")
+            params.append(_iso_or_none(scope_window_end))
+        return "".join(clauses), params
+
+    def _metadata_scope_clause(
+        self,
+        *,
+        metadata_expression: str,
+        scope_projects: tuple[str, ...] = (),
+        scope_people: tuple[str, ...] = (),
+        direct_project_expression: str | None = None,
+        direct_person_expression: str | None = None,
+        event_time_expression: str,
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
+    ) -> tuple[str, list[object]]:
+        """Project/people/time predicate for source and open-loop reads."""
+
+        clauses: list[str] = []
+        params: list[object] = []
+
+        def _metadata_values(keys: tuple[str, ...], values: tuple[str, ...]) -> str:
+            json_values = ", ".join(
+                f"json_extract({metadata_expression}, '$.{key}')" for key in keys
+            )
+            params.extend(values)
+            return (
+                "EXISTS (SELECT 1 FROM json_tree(json_array("
+                + json_values
+                + ")) AS scoped_value WHERE scoped_value.type = 'text' "
+                + "AND LOWER(TRIM(CAST(scoped_value.value AS TEXT))) "
+                + f"IN ({self._placeholders(list(values))}))"
+            )
+
+        if scope_projects:
+            alternatives = [
+                _metadata_values(
+                    (
+                        "project_id",
+                        "project",
+                        "projects",
+                        "project_scope",
+                        "agentic_memory.project_scope",
+                    ),
+                    scope_projects,
+                )
+            ]
+            if direct_project_expression is not None:
+                alternatives.insert(
+                    0,
+                    f"LOWER(TRIM(CAST({direct_project_expression} AS TEXT))) "
+                    f"IN ({self._placeholders(list(scope_projects))})",
+                )
+                params[:0] = list(scope_projects)
+            clauses.append(" AND (" + " OR ".join(alternatives) + ")")
+        if scope_people:
+            alternatives = [
+                _metadata_values(
+                    ("person_id", "person_ids", "person", "people", "people_ids"),
+                    scope_people,
+                )
+            ]
+            if direct_person_expression is not None:
+                insertion_index = len(params) - len(scope_people)
+                alternatives.insert(
+                    0,
+                    f"LOWER(TRIM(CAST({direct_person_expression} AS TEXT))) "
+                    f"IN ({self._placeholders(list(scope_people))})",
+                )
+                params[insertion_index:insertion_index] = list(scope_people)
+            clauses.append(" AND (" + " OR ".join(alternatives) + ")")
+        if scope_window_start is not None:
+            clauses.append(f" AND {event_time_expression} >= julianday(?)")
+            params.append(_iso_or_none(scope_window_start))
+        if scope_window_end is not None:
+            clauses.append(f" AND {event_time_expression} <= julianday(?)")
+            params.append(_iso_or_none(scope_window_end))
+        return "".join(clauses), params
+
     @staticmethod
     def _like_any(column: str, pattern_count: int) -> str:
         predicate = f"LOWER(COALESCE({column}, '')) LIKE ?"
@@ -757,6 +928,7 @@ class SQLiteVNextStore:
                   uri,
                   raw_path,
                   content_hash,
+                  dedupe_key,
                   captured_at,
                   source_created_at,
                   source_modified_at,
@@ -766,7 +938,7 @@ class SQLiteVNextStore:
                   sensitivity,
                   metadata_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
             (
                 source_id,
@@ -777,6 +949,7 @@ class SQLiteVNextStore:
                 source.get("uri"),
                 source.get("raw_path"),
                 source["content_hash"],
+                source.get("dedupe_key", source["content_hash"]),
                 _iso_or_now(source.get("captured_at")),
                 _iso_or_none(source.get("source_created_at")),
                 _iso_or_none(source.get("source_modified_at")),
@@ -797,6 +970,77 @@ class SQLiteVNextStore:
         )
         return row
 
+    def get_or_create_source(
+        self,
+        source: JsonObject,
+        *,
+        actor_type: str = "system",
+    ) -> tuple[VNextRow, bool]:
+        """Atomically claim a live capture identity under SQLite's writer lock."""
+        source_id = _new_id(source.get("id"))
+        dedupe_key = str(source.get("dedupe_key") or source["content_hash"])
+        cursor = self._execute(
+            """
+                INSERT INTO sources (
+                  id, user_id, source_type, title, author, uri, raw_path,
+                  content_hash, dedupe_key, captured_at, source_created_at,
+                  source_modified_at, connector_name, external_id, domain,
+                  sensitivity, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, dedupe_key)
+                  WHERE deleted_at IS NULL AND dedupe_key IS NOT NULL
+                DO NOTHING
+                RETURNING id
+                """,
+            (
+                source_id,
+                self.user_id,
+                source["source_type"],
+                source.get("title"),
+                source.get("author"),
+                source.get("uri"),
+                source.get("raw_path"),
+                source["content_hash"],
+                dedupe_key,
+                _iso_or_now(source.get("captured_at")),
+                _iso_or_none(source.get("source_created_at")),
+                _iso_or_none(source.get("source_modified_at")),
+                source.get("connector_name"),
+                source.get("external_id"),
+                source.get("domain", "unknown"),
+                source.get("sensitivity", "unknown"),
+                _json_object_text(source.get("metadata_json")),
+            ),
+        )
+        created = cursor.fetchone() is not None
+        row = (
+            self._get_row("get_or_create_source", "sources", SOURCE_COLUMNS, source_id)
+            if created
+            else self._fetch_one(
+                "get_or_create_source",
+                f"""
+                    SELECT {", ".join(SOURCE_COLUMNS)}
+                    FROM sources
+                    WHERE user_id = ?
+                      AND dedupe_key = ?
+                      AND deleted_at IS NULL
+                    ORDER BY captured_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                (self.user_id, dedupe_key),
+            )
+        )
+        if created:
+            self._append_mutation_event(
+                event_type="source.created",
+                actor_type=actor_type,
+                target_type="source",
+                target_id=row["id"],
+                payload={"operation": "create", "fields": _sorted_field_names(source)},
+            )
+        return row, created
+
     def get_source(self, source_id: str) -> VNextRow | None:
         return self._fetch_optional_one(
             f"""
@@ -807,6 +1051,22 @@ class SQLiteVNextStore:
                   AND deleted_at IS NULL
                 """,
             (str(source_id), self.user_id),
+        )
+
+    def get_sources_by_ids(self, source_ids: Sequence[str]) -> list[VNextRow]:
+        ids = list(dict.fromkeys(str(source_id) for source_id in source_ids if source_id))
+        if not ids:
+            return []
+        placeholders = self._placeholders(ids)
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(SOURCE_COLUMNS)}
+                FROM sources
+                WHERE user_id = ?
+                  AND deleted_at IS NULL
+                  AND id IN ({placeholders})
+                """,
+            (self.user_id, *ids),
         )
 
     def get_source_by_content_hash(self, content_hash: str) -> VNextRow | None:
@@ -821,6 +1081,33 @@ class SQLiteVNextStore:
                 LIMIT 1
                 """,
             (content_hash, self.user_id),
+        )
+
+    def get_sources_by_content_hash(self, content_hash: str) -> list[VNextRow]:
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(SOURCE_COLUMNS)}
+                FROM sources
+                WHERE content_hash = ?
+                  AND user_id = ?
+                  AND deleted_at IS NULL
+                ORDER BY captured_at DESC, id DESC
+                """,
+            (content_hash, self.user_id),
+        )
+
+    def get_source_by_dedupe_key(self, dedupe_key: str) -> VNextRow | None:
+        return self._fetch_optional_one(
+            f"""
+                SELECT {", ".join(SOURCE_COLUMNS)}
+                FROM sources
+                WHERE dedupe_key = ?
+                  AND user_id = ?
+                  AND deleted_at IS NULL
+                ORDER BY captured_at DESC, id DESC
+                LIMIT 1
+                """,
+            (dedupe_key, self.user_id),
         )
 
     def create_source_chunk(self, chunk: JsonObject, *, actor_type: str = "system") -> VNextRow:
@@ -880,6 +1167,10 @@ class SQLiteVNextStore:
         sensitivity_allowed: list[str] | None = None,
         limit: int = 50,
         match_any: bool = False,
+        scope_projects: tuple[str, ...] = (),
+        scope_people: tuple[str, ...] = (),
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
     ) -> list[VNextRow]:
         """Content search over source_chunks.text; best chunk hit first.
 
@@ -897,10 +1188,25 @@ class SQLiteVNextStore:
             return []
         domain_sql, domain_params = self._domain_clause(domains, prefix="s.")
         sensitivity_sql, sensitivity_params = self._sensitivity_clause(sensitivity_allowed, prefix="s.")
+        scope_sql, scope_params = self._metadata_scope_clause(
+            metadata_expression="s.metadata_json",
+            scope_projects=scope_projects,
+            scope_people=scope_people,
+            event_time_expression=(
+                "COALESCE(julianday(s.source_created_at), "
+                "julianday(json_extract(s.metadata_json, '$.session_date')), "
+                "julianday(json_extract(s.metadata_json, '$.event_date')), "
+                "julianday(json_extract(s.metadata_json, '$.date')), "
+                "julianday(s.captured_at))"
+            ),
+            scope_window_start=scope_window_start,
+            scope_window_end=scope_window_end,
+        )
         prefixed_columns = ", ".join(f"c.{column}" for column in SOURCE_CHUNK_COLUMNS)
         params: list[object] = [match_expression, self.user_id]
         params.extend(domain_params)
         params.extend(sensitivity_params)
+        params.extend(scope_params)
         params.append(limit)
         try:
             return self._fetch_all(
@@ -912,7 +1218,7 @@ class SQLiteVNextStore:
                     JOIN sources s ON s.id = c.source_id AND s.user_id = c.user_id
                     WHERE source_chunks_fts MATCH ?
                       AND c.user_id = ?
-                      AND s.deleted_at IS NULL{domain_sql}{sensitivity_sql}
+                      AND s.deleted_at IS NULL{domain_sql}{sensitivity_sql}{scope_sql}
                     ORDER BY fts_score DESC, c.created_at DESC, c.id DESC
                     LIMIT ?
                     """,
@@ -930,17 +1236,36 @@ class SQLiteVNextStore:
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = 8,
+        scope_projects: tuple[str, ...] = (),
+        scope_people: tuple[str, ...] = (),
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
     ) -> list[VNextRow]:
         patterns = [pattern.casefold() for pattern in _search_patterns(query)]
         exact_pattern = patterns[0]
         domain_sql, domain_params = self._domain_clause(domains)
         sensitivity_sql, sensitivity_params = self._sensitivity_clause(sensitivity_allowed)
+        scope_sql, scope_params = self._metadata_scope_clause(
+            metadata_expression="metadata_json",
+            scope_projects=scope_projects,
+            scope_people=scope_people,
+            event_time_expression=(
+                "COALESCE(julianday(source_created_at), "
+                "julianday(json_extract(metadata_json, '$.session_date')), "
+                "julianday(json_extract(metadata_json, '$.event_date')), "
+                "julianday(json_extract(metadata_json, '$.date')), "
+                "julianday(captured_at))"
+            ),
+            scope_window_start=scope_window_start,
+            scope_window_end=scope_window_end,
+        )
         count = len(patterns)
         match_columns = ("title", "author", "uri", "raw_path", "content_hash", "metadata_json")
         match_sql = " OR ".join(self._like_any(column, count) for column in match_columns)
         params: list[object] = [self.user_id]
         params.extend(domain_params)
         params.extend(sensitivity_params)
+        params.extend(scope_params)
         for _column in match_columns:
             params.extend(patterns)
         params.append(exact_pattern)
@@ -951,7 +1276,7 @@ class SQLiteVNextStore:
                 SELECT {", ".join(SOURCE_COLUMNS)}
                 FROM sources
                 WHERE user_id = ?
-                  AND deleted_at IS NULL{domain_sql}{sensitivity_sql}
+                  AND deleted_at IS NULL{domain_sql}{sensitivity_sql}{scope_sql}
                   AND ({match_sql})
                 ORDER BY
                   CASE
@@ -1082,6 +1407,22 @@ class SQLiteVNextStore:
                   AND deleted_at IS NULL
                 """,
             (str(memory_id), self.user_id),
+        )
+
+    def get_memories_by_ids(self, memory_ids: Sequence[str]) -> list[VNextRow]:
+        ids = list(dict.fromkeys(str(memory_id) for memory_id in memory_ids if memory_id))
+        if not ids:
+            return []
+        placeholders = self._placeholders(ids)
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM memories
+                WHERE user_id = ?
+                  AND deleted_at IS NULL
+                  AND id IN ({placeholders})
+                """,
+            (self.user_id, *ids),
         )
 
     def get_memory_for_update(self, memory_id: str) -> VNextRow | None:
@@ -1229,6 +1570,46 @@ class SQLiteVNextStore:
             tuple(params),
         )
 
+    def count_memories(
+        self,
+        *,
+        status: str | None = None,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+    ) -> int:
+        """Count the exact in-scope memory corpus without materializing it."""
+        params: list[object] = [self.user_id]
+        status_sql = ""
+        if status is not None:
+            status_sql = " AND status = ?"
+            params.append(status)
+        domains_sql = ""
+        if domains:
+            placeholders = ", ".join("?" for _domain in domains)
+            domains_sql = f" AND (domain IN ({placeholders}) OR domain = 'unknown')"
+            params.extend(domains)
+        sensitivity_sql = ""
+        if sensitivity_allowed is not None:
+            if not sensitivity_allowed:
+                return 0
+            placeholders = ", ".join("?" for _value in sensitivity_allowed)
+            sensitivity_sql = f" AND COALESCE(sensitivity, 'unknown') IN ({placeholders})"
+            params.extend(sensitivity_allowed)
+        row = self._fetch_one(
+            "count memories",
+            f"""
+                SELECT COUNT(*) AS count
+                FROM memories
+                WHERE user_id = ?
+                  AND deleted_at IS NULL
+                  {status_sql}
+                  {domains_sql}
+                  {sensitivity_sql}
+                """,
+            tuple(params),
+        )
+        return cast(int, row["count"])
+
     def list_rollup_input_memories(
         self,
         *,
@@ -1266,6 +1647,40 @@ class SQLiteVNextStore:
                 """,
             tuple(params),
         )
+
+    def count_rollup_input_memories(
+        self,
+        *,
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        excluded_candidate_kind: str,
+    ) -> int:
+        """Return the authoritative total behind the bounded roll-up read."""
+        if not sensitivity_allowed:
+            return 0
+        params: list[object] = [self.user_id, excluded_candidate_kind]
+        domains_sql = ""
+        if domains:
+            placeholders = ", ".join("?" for _domain in domains)
+            domains_sql = f" AND (domain IN ({placeholders}) OR domain = 'unknown')"
+            params.extend(domains)
+        sensitivity_placeholders = ", ".join("?" for _value in sensitivity_allowed)
+        params.extend(sensitivity_allowed)
+        row = self._fetch_one(
+            "count rollup input memories",
+            f"""
+                SELECT COUNT(*) AS count
+                FROM memories
+                WHERE user_id = ?
+                  AND deleted_at IS NULL
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}
+                  AND COALESCE(json_extract(metadata_json, '$.candidate_kind'), '') <> ?
+                  {domains_sql}
+                  AND COALESCE(sensitivity, 'unknown') IN ({sensitivity_placeholders})
+                """,
+            tuple(params),
+        )
+        return cast(int, row["count"])
 
     def list_pending_rollup_candidates(
         self,
@@ -1543,6 +1958,12 @@ class SQLiteVNextStore:
         run_id: str | None = None,
         include_expired: bool = False,
         match_any: bool = False,
+        scope_thread_id: str | None = None,
+        scope_task_id: str | None = None,
+        scope_people: tuple[str, ...] = (),
+        scope_person_memory_ids: tuple[str, ...] = (),
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
     ) -> list[VNextRow]:
         # Strict pass ANDs every non-stopword term (websearch parity);
         # match_any (the retrieval OR-fallback) ORs them instead so a
@@ -1558,6 +1979,15 @@ class SQLiteVNextStore:
         created_by_sql, created_by_params = self._created_by_clause(created_by_agent_ids, prefix="m.")
         run_sql, run_params = self._run_clause(run_id, prefix="m.")
         expiry_sql, expiry_params = self._expiry_clause(include_expired, prefix="m.")
+        scope_sql, scope_params = self._retrieval_scope_clause(
+            scope_thread_id=scope_thread_id,
+            scope_task_id=scope_task_id,
+            scope_people=scope_people,
+            scope_person_memory_ids=scope_person_memory_ids,
+            scope_window_start=scope_window_start,
+            scope_window_end=scope_window_end,
+            prefix="m.",
+        )
         prefixed_columns = ", ".join(f"m.{column}" for column in MEMORY_COLUMNS)
         params: list[object] = [match_expression, self.user_id]
         params.extend(domain_params)
@@ -1567,6 +1997,7 @@ class SQLiteVNextStore:
         params.extend(created_by_params)
         params.extend(run_params)
         params.extend(expiry_params)
+        params.extend(scope_params)
         params.append(limit)
         try:
             # Column weights follow the Postgres search_tsv setweights:
@@ -1582,7 +2013,7 @@ class SQLiteVNextStore:
                     WHERE memories_fts MATCH ?
                       AND m.user_id = ?
                       AND m.deleted_at IS NULL
-                      AND m.status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{created_by_sql}{run_sql}{expiry_sql}
+                      AND m.status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{created_by_sql}{run_sql}{expiry_sql}{scope_sql}
                     ORDER BY fts_score DESC, m.updated_at DESC, m.created_at DESC, m.id DESC
                     LIMIT ?
                     """,
@@ -1609,11 +2040,17 @@ class SQLiteVNextStore:
         embedding_model: str | None = None,
         embedding_endpoint: str | None = None,
         embedding_signature_version: int | None = None,
+        scope_thread_id: str | None = None,
+        scope_task_id: str | None = None,
+        scope_people: tuple[str, ...] = (),
+        scope_person_memory_ids: tuple[str, ...] = (),
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
     ) -> list[VNextRow]:
         if not query_vector:
             raise ContinuityStoreInvariantError("embedding vectors must not be empty")
         padded = pad_embedding_vector(query_vector)
-        query_array = np.asarray(padded, dtype=np.float32)
+        query_array: np.ndarray = np.asarray(padded, dtype=np.float32)
         query_norm = float(np.linalg.norm(query_array))
         domain_sql, domain_params = self._domain_clause(domains)
         sensitivity_sql, sensitivity_params = self._sensitivity_clause(sensitivity_allowed)
@@ -1622,6 +2059,14 @@ class SQLiteVNextStore:
         created_by_sql, created_by_params = self._created_by_clause(created_by_agent_ids)
         run_sql, run_params = self._run_clause(run_id)
         expiry_sql, expiry_params = self._expiry_clause(include_expired)
+        scope_sql, scope_params = self._retrieval_scope_clause(
+            scope_thread_id=scope_thread_id,
+            scope_task_id=scope_task_id,
+            scope_people=scope_people,
+            scope_person_memory_ids=scope_person_memory_ids,
+            scope_window_start=scope_window_start,
+            scope_window_end=scope_window_end,
+        )
         signature_sql = ""
         signature_params: list[object] = []
         if embedding_provider is not None or embedding_model is not None:
@@ -1668,6 +2113,7 @@ class SQLiteVNextStore:
         params.extend(created_by_params)
         params.extend(run_params)
         params.extend(expiry_params)
+        params.extend(scope_params)
         params.extend(signature_params)
         candidates = self._fetch_all(
             f"""
@@ -1676,7 +2122,7 @@ class SQLiteVNextStore:
                 WHERE user_id = ?
                   AND deleted_at IS NULL
                   AND embedding IS NOT NULL
-                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{created_by_sql}{run_sql}{expiry_sql}{signature_sql}
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{created_by_sql}{run_sql}{expiry_sql}{scope_sql}{signature_sql}
                 """,
             tuple(params),
         )
@@ -1685,9 +2131,9 @@ class SQLiteVNextStore:
             if signature_sql and not memory_embedding_signature_is_current(row):
                 continue
             blob = cast(bytes, row.pop("embedding"))
-            vector = np.frombuffer(blob, dtype=np.float32)
+            vector: np.ndarray = np.frombuffer(blob, dtype=np.float32)
             if vector.size != EMBEDDING_VECTOR_DIMENSIONS:
-                resized = np.zeros(EMBEDDING_VECTOR_DIMENSIONS, dtype=np.float32)
+                resized: np.ndarray = np.zeros(EMBEDDING_VECTOR_DIMENSIONS, dtype=np.float32)
                 resized[: min(vector.size, EMBEDDING_VECTOR_DIMENSIONS)] = vector[:EMBEDDING_VECTOR_DIMENSIONS]
                 vector = resized
             vector_norm = float(np.linalg.norm(vector))
@@ -1912,6 +2358,8 @@ class SQLiteVNextStore:
             signature_sql = (
                 " OR json_extract(metadata_json, ?) IS NOT ?"
                 " OR json_extract(metadata_json, ?) IS NOT ?"
+                " OR json_extract(metadata_json, ?) IS NOT "
+                "alice_embedding_content_sha256(title, canonical_text, summary)"
             )
             signature_params.extend(
                 (
@@ -1919,6 +2367,7 @@ class SQLiteVNextStore:
                     embedding_provider,
                     f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.model",
                     embedding_model,
+                    f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.content_sha256",
                 )
             )
             if embedding_endpoint is not None:
@@ -2353,6 +2802,28 @@ class SQLiteVNextStore:
             (target_type, target_id, self.user_id),
         )
 
+    def list_provenance_links_for_targets(
+        self,
+        *,
+        target_type: str,
+        target_ids: Sequence[str],
+    ) -> list[VNextRow]:
+        ids = list(dict.fromkeys(str(target_id) for target_id in target_ids if target_id))
+        if not ids:
+            return []
+        placeholders = self._placeholders(ids)
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(PROVENANCE_COLUMNS)}
+                FROM provenance_links
+                WHERE user_id = ?
+                  AND target_type = ?
+                  AND target_id IN ({placeholders})
+                ORDER BY created_at DESC, id DESC
+                """,
+            (self.user_id, target_type, *ids),
+        )
+
     # -- graph edges -----------------------------------------------------------------
     #
     # Minimal graph substrate for the on-ramp: create + list + as-of list.
@@ -2365,7 +2836,8 @@ class SQLiteVNextStore:
         edge_id = _new_id(edge.get("id"))
         now = _utc_now_iso()
         observed_at = _iso_or_none(edge.get("observed_at"))
-        metadata = dict(edge.get("metadata_json") or {})
+        metadata_value = edge.get("metadata_json")
+        metadata = dict(metadata_value) if isinstance(metadata_value, Mapping) else {}
         if observed_at is None:
             observed_at = now
             metadata.setdefault("observed_at_source", "now")
@@ -2431,6 +2903,35 @@ class SQLiteVNextStore:
                 ORDER BY created_at DESC, id DESC
                 """,
             (self.user_id, from_id, from_id, to_id, to_id),
+        )
+
+    def list_memory_entity_edges(
+        self,
+        *,
+        entity_ids: Sequence[str],
+        edge_types: Sequence[str] = ("mentions", "about"),
+    ) -> list[VNextRow]:
+        ids = list(dict.fromkeys(str(entity_id) for entity_id in entity_ids if entity_id))
+        types = list(dict.fromkeys(str(edge_type) for edge_type in edge_types if edge_type))
+        if not ids or not types:
+            return []
+        id_placeholders = self._placeholders(ids)
+        type_placeholders = self._placeholders(types)
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(GRAPH_EDGE_COLUMNS)}
+                FROM graph_edges
+                WHERE user_id = ?
+                  AND valid_to IS NULL
+                  AND edge_type IN ({type_placeholders})
+                  AND (
+                    (from_type = 'memory' AND to_type = 'entity' AND to_id IN ({id_placeholders}))
+                    OR
+                    (from_type = 'entity' AND to_type = 'memory' AND from_id IN ({id_placeholders}))
+                  )
+                ORDER BY created_at DESC, id DESC
+                """,
+            (self.user_id, *types, *ids, *ids),
         )
 
     def expire_edge(self, *, edge_id: str, actor_type: str = "system") -> VNextRow:
@@ -2907,9 +3408,23 @@ class SQLiteVNextStore:
         project_id: str | None = None,
         person_id: str | None = None,
         limit: int = 8,
+        scope_projects: tuple[str, ...] = (),
+        scope_people: tuple[str, ...] = (),
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
     ) -> list[VNextRow]:
         domain_sql, domain_params = self._domain_clause(domains)
         sensitivity_sql, sensitivity_params = self._sensitivity_clause(sensitivity_allowed)
+        scope_sql, scope_params = self._metadata_scope_clause(
+            metadata_expression="metadata_json",
+            scope_projects=scope_projects,
+            scope_people=scope_people,
+            direct_project_expression="project_id",
+            direct_person_expression="person_id",
+            event_time_expression="COALESCE(julianday(opened_at), julianday(updated_at), julianday(created_at))",
+            scope_window_start=scope_window_start,
+            scope_window_end=scope_window_end,
+        )
         clauses = ["user_id = ?"]
         params: list[object] = [self.user_id]
         if status is not None:
@@ -2917,6 +3432,7 @@ class SQLiteVNextStore:
             params.append(status)
         params.extend(domain_params)
         params.extend(sensitivity_params)
+        params.extend(scope_params)
         extra_sql = ""
         if project_id is not None:
             extra_sql += " AND project_id = ?"
@@ -2929,7 +3445,7 @@ class SQLiteVNextStore:
             f"""
                 SELECT {", ".join(OPEN_LOOP_COLUMNS)}
                 FROM open_loops
-                WHERE {" AND ".join(clauses)}{domain_sql}{sensitivity_sql}{extra_sql}
+                WHERE {" AND ".join(clauses)}{domain_sql}{sensitivity_sql}{scope_sql}{extra_sql}
                 ORDER BY opened_at DESC, created_at DESC, id DESC
                 LIMIT ?
                 """,

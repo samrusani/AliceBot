@@ -4,7 +4,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Any, TypedDict, cast
+from typing import Any, TypedDict
+from typing import Literal, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import UUID
@@ -97,7 +98,7 @@ def _deterministic_json(value: JsonObject | list[object]) -> str:
 
 
 def _context_section_payload(context_pack: CompiledContextPack) -> JsonObject:
-    return {
+    return cast(JsonObject, {
         "compiler_version": context_pack["compiler_version"],
         "scope": context_pack["scope"],
         "limits": context_pack["limits"],
@@ -112,7 +113,7 @@ def _context_section_payload(context_pack: CompiledContextPack) -> JsonObject:
         "entity_summary": context_pack["entity_summary"],
         "entity_edges": context_pack["entity_edges"],
         "entity_edge_summary": context_pack["entity_edge_summary"],
-    }
+    })
 
 
 def assemble_prompt(
@@ -129,7 +130,9 @@ def assemble_prompt(
         ),
         PromptSection(
             name="conversation",
-            content=_deterministic_json({"events": request.context_pack["events"]}),
+            content=_deterministic_json(
+                cast(JsonObject, {"events": request.context_pack["events"]})
+            ),
         ),
     )
     prompt_text = "\n\n".join(
@@ -344,7 +347,9 @@ def invoke_openai_compatible_model(
 
     response_payload = _parse_openai_response_payload(raw_payload)
     output_text = _extract_output_text(response_payload)
-    finish_reason = "completed" if response_payload.get("status") == "completed" else "incomplete"
+    finish_reason: Literal["completed", "incomplete"] = (
+        "completed" if response_payload.get("status") == "completed" else "incomplete"
+    )
     return ModelInvocationResponse(
         provider=request.provider,
         model=request.model,
@@ -500,7 +505,7 @@ def generate_response(
     )
     prompt_trace_event = TraceEventRecord(
         kind=PROMPT_TRACE_EVENT_KIND,
-        payload=prompt.trace_payload,
+        payload=cast(JsonObject, prompt.trace_payload),
     )
 
     try:
@@ -521,9 +526,12 @@ def generate_response(
                 prompt_trace_event,
                 TraceEventRecord(
                     kind=MODEL_FAILED_TRACE_EVENT_KIND,
-                    payload=_model_failure_trace_payload(
-                        request=request,
-                        error_message=str(exc),
+                    payload=cast(
+                        JsonObject,
+                        _model_failure_trace_payload(
+                            request=request,
+                            error_message=str(exc),
+                        ),
                     ),
                 ),
             ],
@@ -538,7 +546,7 @@ def generate_response(
         thread_id,
         None,
         "message.assistant",
-        assistant_payload,
+        cast(JsonObject, assistant_payload),
     )
     trace = _create_linked_response_trace(
         store=store,
@@ -552,7 +560,7 @@ def generate_response(
             prompt_trace_event,
             TraceEventRecord(
                 kind=MODEL_COMPLETED_TRACE_EVENT_KIND,
-                payload=model_response.to_trace_payload(),
+                payload=cast(JsonObject, model_response.to_trace_payload()),
             ),
         ],
     )

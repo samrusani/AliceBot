@@ -305,8 +305,8 @@ def normalize_model_pack_contract(contract: Mapping[str, object]) -> JsonObject:
             "developer_instruction_append": developer_instruction_append,
         },
         "compatibility": {
-            "provider_keys": provider_keys,
-            "runtime_providers": runtime_providers,
+            "provider_keys": list(provider_keys),
+            "runtime_providers": list(runtime_providers),
             "notes": compatibility_notes,
         },
     }

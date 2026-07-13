@@ -13,9 +13,9 @@ model-backed merge seam in
 
 ## What runs deterministically (no model, no cloud)
 
-- **Near-duplicate clustering.** Pairwise cosine similarity (numpy) over the
-  user's active/accepted memories that have embeddings, single-linkage
-  grouping at a configurable threshold (default `0.88`), minimum cluster size
+- **Near-duplicate clustering.** Blockwise cosine similarity over the user's
+  active/accepted memories that have embeddings, with cohesive complete-link
+  admission at a configurable threshold (default `0.88`) and minimum cluster size
   `2`. The pass is capped at the **2000** most recently updated in-scope
   memories; when the cap truncates, the bound is logged
   (`alicebot_api.vnext_consolidation` at INFO) and recorded in the artifact's
@@ -56,27 +56,31 @@ Everything upstream of the report: clustering requires an embedding provider
 `ALICE_EMBEDDINGS_API_KEY`, the same embed-on-write configuration). Store
 rows never expose the raw embedding column, so the service:
 
-1. re-derives each memory's vector from the exact embed-on-write text
+1. asks the store for exact embedding presence across the selected IDs before
+   making a provider call; this is a non-null vector presence check and does
+   not by itself claim signature compatibility;
+2. re-derives each eligible memory's vector from the exact embed-on-write text
    (`memory_embedding_text`: title + canonical_text + summary), which
    reproduces the stored vector for unmodified rows;
-2. issues **one** `search_memories_vector` probe to learn which rows actually
-   have stored embeddings (and records the probe row's self-distance as a
-   staleness check — a non-zero value means the stored embeddings drifted and
-   the backfill should be rerun);
-3. computes one bounded float32 pairwise cosine matrix over that intersection.
-   The upper triangle is scanned row by row; pair indexes and per-cluster
-   similarity lists are never materialized.
+3. evaluates cosine similarities in bounded float32 row blocks and admits a
+   member only when it meets the threshold against every existing cluster
+   member. It never materializes an `n x n` matrix.
 
-Without a provider (or on a store without vector search) the run still
-produces the report artifact, with an explicit skip reason and **zero**
-candidates — there is no keyword-scan fallback and no placeholder candidate.
+Without a provider, or on a store without the exact-ID embedding-presence read,
+the run still produces the report artifact with an explicit skip reason and
+**zero** candidates. ANN/vector-search capability remains optional here:
+clustering uses the exact presence read plus provider-rederived vectors, not a
+nearest-neighbor query. There is no keyword-scan fallback or placeholder
+candidate.
 
 The roll-up pass's **semantic grouping tier** (`vnext_rollups`) shares this
-exact access pattern and the same provider instance: when embeddings are
-configured, memories that the deterministic entity/lexical roll-up passes
-left unclaimed are agglomerated by pairwise cosine at one conservatively
-swept threshold (chosen by a silhouette-style criterion, disclosed in the
-outcome metadata as `rollups.semantic_grouping`), so aggregation topics whose
+access pattern, provider instance, and bounded per-run embedding cache: rows
+already embedded for consolidation are not embedded again. When embeddings
+are configured, memories that the deterministic entity/lexical roll-up passes
+left unclaimed are grouped through the same cohesive all-pairs gate at one
+conservatively swept threshold (chosen by a blockwise silhouette-style
+criterion, disclosed in the outcome metadata as
+`rollups.semantic_grouping`), so aggregation topics whose
 instances share no anchor token ("kitchen items replaced" =
 faucet/toaster/shelves) can still form one review-gated card. Every semantic
 cluster passes the same roll-up utility gate, with mean pairwise similarity
@@ -153,12 +157,13 @@ supplied by direct callers via
 
 ## Bounds and costs
 
-- At most 2000 memories are embedded and compared per run (`O(n^2)` cosine in
-  float32). The similarity matrix is capped at 16 MB and the unique-pair
-  count at 1,999,000; the report records both values under
+- At most 2000 memories are compared per run (`O(n^2)` cosine work in
+  float32). Similarities are processed in bounded row blocks (about 1 MB at
+  the default 128 x 2000 cap), not a dense 16 MB matrix; the report records
+  peak block bytes and the logical unique-pair count under
   `metadata_json.consolidation.resource_guard`.
 - At most `max_clusters` (default 20) proposals per run; extra clusters are
   reported in *Skipped / Bounds* and picked up on later runs.
-- One embedding-provider batch pass over the in-scope memories and one
-  vector-search probe per run; one model completion per cluster only in
-  model-backed mode.
+- One exact store presence read precedes provider work. The provider embeds
+  only eligible rows, and semantic rollups reuse the consolidation cache; one
+  model completion per cluster occurs only in model-backed mode.

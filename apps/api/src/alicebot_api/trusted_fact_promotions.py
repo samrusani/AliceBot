@@ -10,6 +10,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from alicebot_api.contracts import (
     TRUSTED_FACT_PATTERN_ORDER,
     TRUSTED_FACT_PLAYBOOK_ORDER,
+    MemoryPromotionEligibility,
     TemporalTrustRecord,
     TrustedFactEvidenceLinkRecord,
     TrustedFactPatternExplainResponse,
@@ -30,6 +31,7 @@ from alicebot_api.store import (
     FactPlaybookRow,
     MemoryRevisionRow,
     MemoryRow,
+    JsonValue,
 )
 
 _TRUSTED_PATTERN_CLASSES = frozenset({"deterministic", "llm_corroborated", "human_curated"})
@@ -135,7 +137,10 @@ def _evidence_link(memory: MemoryRow, latest_revision: MemoryRevisionRow | None)
         "memory_type": memory["memory_type"],
         "value": memory["value"],
         "trust": _trust_record(memory),
-        "promotion_eligibility": memory["promotion_eligibility"],
+        "promotion_eligibility": cast(
+            MemoryPromotionEligibility,
+            memory["promotion_eligibility"],
+        ),
         "evidence_count": memory["evidence_count"],
         "independent_source_count": memory["independent_source_count"],
         "extracted_by_model": memory["extracted_by_model"],
@@ -256,7 +261,7 @@ def sync_trusted_fact_promotions(
             namespace_key=namespace_key,
             fact_count=len(grouped_memories),
             source_fact_ids=[str(memory["id"]) for memory in grouped_memories],
-            evidence_chain=evidence_chain,
+            evidence_chain=cast(JsonValue, evidence_chain),
             explanation=_pattern_explanation(memory_type, namespace_key, len(grouped_memories)),
         )
         pattern_ids.append(pattern_id)
@@ -285,7 +290,7 @@ def sync_trusted_fact_promotions(
             memory_type=memory_type,
             source_fact_ids=[str(memory["id"]) for memory in grouped_memories],
             source_pattern_ids=[str(pattern_id)],
-            steps=steps,
+            steps=cast(JsonValue, steps),
             explanation=_playbook_explanation(pattern_key),
         )
         playbook_ids.append(playbook_id)

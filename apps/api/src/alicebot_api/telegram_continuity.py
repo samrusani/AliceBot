@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import hashlib
 import re
 from typing import Any, Literal, TypedDict
+from typing import cast
 from uuid import UUID
 
 from psycopg.types.json import Jsonb
@@ -34,13 +35,17 @@ from alicebot_api.continuity_review import (
     apply_continuity_correction,
 )
 from alicebot_api.contracts import (
+    ApprovalChallengeRecord,
     ApprovalApproveInput,
+    ApprovalRecord,
     ApprovalRejectInput,
+    ApprovalResolutionTraceSummary,
     ContinuityCaptureCreateInput,
     ContinuityCorrectionInput,
     ContinuityOpenLoopDashboardQueryInput,
     ContinuityOpenLoopReviewActionInput,
     ContinuityRecallQueryInput,
+    ContinuityRecallProvenanceReference,
     ContinuityResumptionBriefRequestInput,
 )
 from alicebot_api.db import set_current_user
@@ -149,12 +154,31 @@ class _ApprovalChallengeRow(TypedDict):
     workspace_id: UUID
     approval_id: UUID
     channel_message_id: UUID | None
-    status: str
+    status: Literal["pending", "approved", "rejected", "dismissed"]
     challenge_prompt: str
     challenge_payload: JsonObject
     resolved_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class _TelegramApprovalListSummary(TypedDict):
+    status: Literal["pending", "all"]
+    returned_count: int
+    pending_count: int
+    order: list[str]
+
+
+class _TelegramApprovalListPayload(TypedDict):
+    items: list[ApprovalRecord]
+    summary: _TelegramApprovalListSummary
+    challenges: list[ApprovalChallengeRecord]
+
+
+class _TelegramApprovalResolutionPayload(TypedDict):
+    approval: ApprovalRecord
+    trace: ApprovalResolutionTraceSummary
+    challenge_updates: list[ApprovalChallengeRecord]
 
 
 def _utcnow() -> datetime:
@@ -212,7 +236,7 @@ def _serialize_chat_intent(row: _ChatIntentRow) -> dict[str, object]:
     }
 
 
-def _serialize_approval_challenge(row: _ApprovalChallengeRow) -> dict[str, object]:
+def _serialize_approval_challenge(row: _ApprovalChallengeRow) -> ApprovalChallengeRecord:
     return {
         "id": str(row["id"]),
         "workspace_id": str(row["workspace_id"]),
@@ -505,7 +529,11 @@ def _fetch_latest_chat_intent_result(
     return row
 
 
-def _format_provenance_reference_list(references: list[dict[str, object]], *, limit: int = 3) -> str:
+def _format_provenance_reference_list(
+    references: list[ContinuityRecallProvenanceReference],
+    *,
+    limit: int = 3,
+) -> str:
     compact: list[str] = []
     for item in references[:limit]:
         source_kind = str(item.get("source_kind", "source"))
@@ -518,10 +546,10 @@ def _record_pending_approval_challenges(
     conn,
     *,
     workspace_id: UUID,
-    approvals: list[dict[str, object]],
+    approvals: list[ApprovalRecord],
     channel_message_id: UUID | None,
-) -> list[dict[str, object]]:
-    recorded: list[dict[str, object]] = []
+) -> list[ApprovalChallengeRecord]:
+    recorded: list[ApprovalChallengeRecord] = []
     if not approvals:
         return recorded
 
@@ -540,7 +568,7 @@ def _record_pending_approval_challenges(
                 else f"Approval {approval_id} is pending for action '{action_hint}'."
             )
             challenge_payload: JsonObject = {
-                "approval": approval,
+                "approval": cast(JsonObject, approval),
                 "source": "telegram",
             }
             cur.execute(
@@ -594,7 +622,7 @@ def _resolve_pending_approval_challenges(
     workspace_id: UUID,
     approval_id: UUID,
     resolution_status: Literal["approved", "rejected"],
-) -> list[dict[str, object]]:
+) -> list[ApprovalChallengeRecord]:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -636,7 +664,7 @@ def list_telegram_approvals(
     workspace_id: UUID,
     status_filter: Literal["pending", "all"] = "pending",
     channel_message_id: UUID | None = None,
-) -> dict[str, object]:
+) -> _TelegramApprovalListPayload:
     payload = list_approval_records(
         ContinuityStore(conn),
         user_id=user_account_id,
@@ -673,7 +701,7 @@ def approve_telegram_approval(
     user_account_id: UUID,
     workspace_id: UUID,
     approval_id: UUID,
-) -> dict[str, object]:
+) -> _TelegramApprovalResolutionPayload:
     payload = approve_approval_record(
         ContinuityStore(conn),
         user_id=user_account_id,
@@ -686,7 +714,8 @@ def approve_telegram_approval(
         resolution_status="approved",
     )
     return {
-        **payload,
+        "approval": payload["approval"],
+        "trace": payload["trace"],
         "challenge_updates": challenge_updates,
     }
 
@@ -697,7 +726,7 @@ def reject_telegram_approval(
     user_account_id: UUID,
     workspace_id: UUID,
     approval_id: UUID,
-) -> dict[str, object]:
+) -> _TelegramApprovalResolutionPayload:
     payload = reject_approval_record(
         ContinuityStore(conn),
         user_id=user_account_id,
@@ -710,7 +739,8 @@ def reject_telegram_approval(
         resolution_status="rejected",
     )
     return {
-        **payload,
+        "approval": payload["approval"],
+        "trace": payload["trace"],
         "challenge_updates": challenge_updates,
     }
 
@@ -823,7 +853,7 @@ def _execute_intent(
         return (
             {
                 "mode": "capture",
-                "capture": capture_payload["capture"],
+                "capture": cast(JsonObject, capture_payload["capture"]),
                 "provenance_references": [
                     {
                         "source_kind": "continuity_capture_event",
@@ -856,7 +886,7 @@ def _execute_intent(
             {
                 "mode": "recall",
                 "query": query,
-                "recall": recall_payload,
+                "recall": cast(JsonObject, recall_payload),
             },
             reply_text,
         )
@@ -883,7 +913,7 @@ def _execute_intent(
         return (
             {
                 "mode": "resume",
-                "brief": brief,
+                "brief": cast(JsonObject, brief),
             },
             reply_text,
         )
@@ -911,7 +941,7 @@ def _execute_intent(
         return (
             {
                 "mode": "correction",
-                "correction": correction_payload,
+                "correction": cast(JsonObject, correction_payload),
                 "provenance_references": [
                     {
                         "source_kind": "continuity_correction_event",
@@ -943,7 +973,7 @@ def _execute_intent(
         return (
             {
                 "mode": "open_loops",
-                "dashboard": dashboard,
+                "dashboard": cast(JsonObject, dashboard),
             },
             reply_text,
         )
@@ -973,7 +1003,7 @@ def _execute_intent(
         return (
             {
                 "mode": "open_loop_review",
-                "review": review_payload,
+                "review": cast(JsonObject, review_payload),
             },
             reply_text,
         )
@@ -996,7 +1026,7 @@ def _execute_intent(
         return (
             {
                 "mode": "approvals",
-                "approvals": approvals_payload,
+                "approvals": cast(JsonObject, approvals_payload),
             },
             reply_text,
         )
@@ -1017,7 +1047,7 @@ def _execute_intent(
         return (
             {
                 "mode": "approval_approve",
-                "resolution": approval_payload,
+                "resolution": cast(JsonObject, approval_payload),
             },
             reply_text,
         )
@@ -1038,7 +1068,7 @@ def _execute_intent(
         return (
             {
                 "mode": "approval_reject",
-                "resolution": approval_payload,
+                "resolution": cast(JsonObject, approval_payload),
             },
             reply_text,
         )

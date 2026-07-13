@@ -4,7 +4,7 @@
 
 **The continuity layer for AI agents.**
 
-[![LongMemEval](https://img.shields.io/badge/LongMemEval__s-79.4%25-6f42c1)](docs/benchmarks/longmemeval/README.md)
+[![LongMemEval](https://img.shields.io/badge/LongMemEval__s-79.4%25-6f42c1)](https://github.com/samrusani/AliceBot/blob/main/docs/benchmarks/longmemeval/README.md)
 ![Local-first](https://img.shields.io/badge/local--first-core-0A7B61)
 ![MCP](https://img.shields.io/badge/MCP-supported-1f6feb)
 ![Python](https://img.shields.io/badge/python-3.12%2B-3776AB)
@@ -12,7 +12,7 @@
 
 Alice is a local-first memory service that lets AI agents resume interrupted work, track open loops, recall decisions with provenance, and improve when corrected — instead of re-reading transcripts or trusting opaque summaries.
 
-It scores **79.4%** on [LongMemEval](docs/benchmarks/longmemeval/README.md), a long-term-memory benchmark — a single run, with one disclosed trade-off on the abstention subset (25/30 → 22/30) — and the full per-question evidence, methodology, and reproduction script are committed to this repo so anyone can verify it. Open source, local-first, MIT-licensed.
+It scores **79.4%** on [LongMemEval](https://github.com/samrusani/AliceBot/blob/main/docs/benchmarks/longmemeval/README.md), a long-term-memory benchmark — a single run, with one disclosed trade-off on the abstention subset (25/30 → 22/30) — and the full per-question evidence, methodology, and reproduction script are committed to this repo so anyone can verify it. Open source, local-first, MIT-licensed.
 
 Agents connect over MCP, HTTP API, or CLI. Humans stay in control: agent writes land as policy-checked commits or reviewable proposals, and a local review console is where memory gets approved, corrected, or forgotten. That review boundary is a feature, not a limitation — it is what makes the memory trustworthy enough to act on.
 
@@ -54,7 +54,7 @@ MCP client config (Claude Desktop, IDEs) — note there is no `DATABASE_URL`:
 }
 ```
 
-SQLite mode is the trial and single-agent path: it serves the eleven core tools for one user, and memory review happens through `alice_memory_review` / `alice_memory_correct` instead of the web console. Boundaries are listed in [known limitations](docs/alpha/known-limitations.md).
+SQLite mode is the trial and single-agent path: it serves the eleven core tools for one user, and memory review happens through `alice_memory_review` / `alice_memory_correct` instead of the web console. Boundaries are listed in [known limitations](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/known-limitations.md).
 
 > **Install note:** the PyPI package is [`alice-memory`](https://pypi.org/project/alice-memory/). The name `alice-core` on PyPI belongs to an unrelated project.
 
@@ -76,7 +76,7 @@ make dev
 - `make doctor` runs readiness checks and applies safe fixes.
 - `make dev` runs the API on port 8000 and the web review console on port 3000.
 
-Open the review console at `http://localhost:3000/vnext`. The detailed walkthrough — demo data, smoke checks, first memory — is in [docs/alpha/quickstart.md](docs/alpha/quickstart.md).
+Open the review console at `http://localhost:3000/vnext`. The detailed walkthrough — demo data, smoke checks, first memory — is in [the alpha quickstart](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/quickstart.md).
 
 ## Connect an agent
 
@@ -104,7 +104,7 @@ The core MCP surface is eleven tools:
 
 - `alice_capture` — submit new information as source-backed, reviewable memory
 - `alice_memory_commit` — write an explicit "remember this" memory through policy: committed, confirmation-required, review-required, or rejected
-- `alice_recall` — search memory (full-text plus vector, fused ranking; filterable by memory type and project)
+- `alice_recall` — search memory (full-text plus vector, fused ranking; hard-scopable by thread, task, project, person, time, and memory type)
 - `alice_resume` — resumption brief for a project or thread
 - `alice_context_pack` — project/person/time-scoped context for a task, with a bounded unique-content budget and a complete serialized-size estimate
 - `alice_open_loops` — list and manage open loops
@@ -114,11 +114,11 @@ The core MCP surface is eleven tools:
 - `alice_memory_manage` — confirm, undo, or forget a committed memory, audit trail intact
 - `alice_explain` — provenance and trust explanation for a memory
 
-Calling directly from a human client (Claude Desktop, an IDE)? `alice_memory_commit` needs only `title` and `canonical_text` — no identity fields. Agent integrations declare `agent_id` and `agent_type`; see [docs/alpha/agent-integration.md](docs/alpha/agent-integration.md).
+Calling directly from a human client (Claude Desktop, an IDE)? `alice_memory_commit` needs only `title` and `canonical_text` — no identity fields. Agent integrations declare `agent_id` and `agent_type`; see [agent integration](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/agent-integration.md).
 
-The write verbs follow one contract — outcomes, audit guarantees, and honest boundaries per verb are documented in the [Memory Operations Protocol](docs/memory-operations-protocol.md). The legacy long-tail tool surface stays available for unauthenticated local operator compatibility behind `ALICE_MCP_LEGACY_TOOLS=1`; a server bound with `ALICE_AGENT_API_KEY` exposes only the policy-complete core surface.
+The write verbs follow one contract — outcomes, audit guarantees, and honest boundaries per verb are documented in the [Memory Operations Protocol](https://github.com/samrusani/AliceBot/blob/main/docs/memory-operations-protocol.md). The legacy long-tail tool surface stays available for unauthenticated local operator compatibility behind `ALICE_MCP_LEGACY_TOOLS=1`; a server bound with `ALICE_AGENT_API_KEY` exposes only the policy-complete core surface.
 
-Custom agents calling the HTTP API authenticate with per-agent API keys. See [docs/alpha/agent-integration.md](docs/alpha/agent-integration.md).
+Custom agents calling the HTTP API authenticate with per-agent API keys. See [agent integration](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/agent-integration.md).
 
 ### Embeddings
 
@@ -130,7 +130,9 @@ ALICE_EMBEDDINGS_MODEL=nomic-embed-text
 ALICE_EMBEDDINGS_API_KEY=            # only if the endpoint requires one
 ```
 
-Search fuses Postgres full-text results with pgvector (HNSW) similarity using reciprocal-rank fusion. If no embedding endpoint is configured, search degrades to full-text only and says so explicitly in the retrieval trace.
+Search fuses Postgres full-text results with pgvector 0.8+ (iterative HNSW)
+similarity using reciprocal-rank fusion. If no embedding endpoint is configured,
+search degrades to full-text only and says so explicitly in the retrieval trace.
 
 ## Status
 
@@ -144,27 +146,27 @@ Alice is pre-1.0. What that means in practice:
 
 ## Docs
 
-- [Quickstart walkthrough](docs/alpha/quickstart.md)
-- [Agent integration](docs/alpha/agent-integration.md)
-- [MCP tools](docs/alpha/mcp-tools.md)
-- [Custom agent guide](docs/alpha/custom-agent-guide.md)
-- [Known limitations](docs/alpha/known-limitations.md)
-- [Backup and restore](docs/alpha/backup-and-restore.md)
-- [Security and privacy](docs/alpha/security-and-privacy.md)
-- [v0.9.2 release notes](docs/release/v0.9.2-release-notes.md)
-- [Release procedure](RELEASING.md)
-- [Architecture](ARCHITECTURE.md)
-- [Roadmap](ROADMAP.md)
-- [Changelog](CHANGELOG.md)
+- [Quickstart walkthrough](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/quickstart.md)
+- [Agent integration](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/agent-integration.md)
+- [MCP tools](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/mcp-tools.md)
+- [Custom agent guide](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/custom-agent-guide.md)
+- [Known limitations](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/known-limitations.md)
+- [Backup and restore](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/backup-and-restore.md)
+- [Security and privacy](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/security-and-privacy.md)
+- [v0.9.4 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.9.4-release-notes.md)
+- [Release procedure](https://github.com/samrusani/AliceBot/blob/main/RELEASING.md)
+- [Architecture](https://github.com/samrusani/AliceBot/blob/main/ARCHITECTURE.md)
+- [Roadmap](https://github.com/samrusani/AliceBot/blob/main/ROADMAP.md)
+- [Changelog](https://github.com/samrusani/AliceBot/blob/main/CHANGELOG.md)
 
 ## Contributing
 
-Issues, integrations, importers, and eval contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues, integrations, importers, and eval contributions are welcome. See [CONTRIBUTING.md](https://github.com/samrusani/AliceBot/blob/main/CONTRIBUTING.md).
 
 ## Security
 
-If you discover a security issue, follow the process in [SECURITY.md](SECURITY.md).
+If you discover a security issue, follow the process in [SECURITY.md](https://github.com/samrusani/AliceBot/blob/main/SECURITY.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/samrusani/AliceBot/blob/main/LICENSE).

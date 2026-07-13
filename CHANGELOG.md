@@ -2,12 +2,23 @@
 
 ## Unreleased
 
+- v0.10.0 audit remediation is in progress: complete hard filters and bulk
+  retrieval, production-signed vector writers/evals, exact-SHA semantic
+  attestations, atomic scoped capture dedupe, fail-closed lifecycle graphs,
+  cohesive bounded-memory rollups, hardened backup restore, web correctness,
+  typing, packaging, and documentation truth. Nothing in this section is
+  published yet.
+- Published migration `20260712_0084` remains immutable; new idempotent
+  migration `20260713_0086` carries the 3+ duplicate retry/confirmation
+  pointer repair for databases already stamped at the released 0084 state.
+
 ## v0.9.4 — 2026-07-12
 
 `v0.9.3` was an internal security-hotfix candidate; a follow-up external audit
-returned NO-GO, so it was withdrawn and never published. `v0.9.4` supersedes it:
-it carries the original five fixes plus resolves all nine P1 findings from the
-second audit. Each fix was written reproduction-first.
+returned NO-GO, so it was withdrawn and never published. `v0.9.4` supersedes
+it and attempted the original five fixes plus all nine P1 remediations from the
+second audit. A post-publication third audit found partial fixes and regressions;
+the v0.10.0 matrix is the current closure record.
 
 - Lifecycle correctness: all memory lifecycle mutations (confirm, review, correct, undo, forget, expire/unexpire, supersession) route through one central transition table (`vnext_lifecycle`) that rejects invalid transitions — a rejected or superseded row can no longer be confirmed back to active, `correct()` no longer promotes rows while leaving them unconfirmed/review-required, supersession `A → B → A` cycles are blocked, and `unexpire` cannot report active while the row stays stale.
 - Supersession graph mutation is serialized per user with a transaction-scoped advisory lock, and the cycle guard now fails closed when it cannot verify acyclicity within its hop bound — so concurrent supersessions on disjoint row pairs can no longer each pass an unlocked check and together close a cycle (audit 2 P1 #1).
@@ -20,7 +31,9 @@ second audit. Each fix was written reproduction-first.
 - Roll-up cards persist their full authoritative membership rather than the truncated display subset, so a group larger than the per-card instance cap no longer re-proposes a revision on every run (audit 2 P1 #6).
 - Filtered PostgreSQL vector search enables iterative HNSW scan, so lifecycle/scope/signature filters no longer silently under-return valid rows (audit 2 P1 #7).
 - The canonical release eval runs with `--release-gate`: a run that never exercises the vector stage reports `pass_fts_only` and exits non-zero, and eval failure now propagates to the process exit code, so the gate cannot be green without measuring semantic retrieval quality (audit 2 P1 #8).
-- Release finalization is honest: `release_check --require-finalized-release-docs` rejects premature-publication claims (present-tense "published to PyPI", or a checksums file referenced before it exists), not just stale-candidate phrases (audit 2 P1 #9).
+- Release finalization in v0.9.4 attempted a prose-based premature-publication
+  check. The v0.10.0 repair replaces that bypassable phrase logic with one
+  strictly positioned structured publication/checksum declaration.
 
 **Upgrade:** `alembic upgrade head` applies migration `0084` (idempotent). Because embedding signatures gained an endpoint fingerprint, run `alicebot vnext memories backfill-embeddings` after upgrade to re-embed existing vectors under the new signature; until then those rows fall back to full-text retrieval.
 
@@ -28,7 +41,7 @@ second audit. Each fix was written reproduction-first.
 
 - Release hardening for the `v0.9.2` candidate: project-bound agent keys now inherit scope on omitted reads; every lifecycle mutation authorizes the persisted target and locked review targets are rechecked; all 70 `/v0/vnext` routes authenticate centrally and routes without resource-aware policy fail closed for scoped or restricted keys; key-bound MCP exposes only the policy-complete core surface; read-only and proposal-only profiles cannot mutate memory.
 - Data integrity hardening: versioned and checksummed SQLite backup/restore with atomic secure files and tamper/collision defenses; safe data-bearing 0067 upgrades; new 0083 uniqueness and derived-edge invariants; content edits refresh derived state; stale consolidation acceptance is rejected.
-- Retrieval and performance hardening: hard project/person/time filters across context sections, service-authoritative request caps and honest serialized-budget disclosure, embedding compatibility signatures plus reindex recovery, and consolidation capped at 2,000 memories / 16 MB / 1,999,000 comparisons.
+- Retrieval and performance hardening: hard project/person/time filters across context sections, service-authoritative request caps and honest serialized-budget disclosure, embedding compatibility signatures plus reindex recovery, and consolidation capped at 2,000 memories / 1,999,000 logical comparisons with bounded float32 blocks instead of a dense similarity matrix.
 - Release engineering: patched web dependencies and live/fixture write gates; packaged Alembic and eval resources; exact wheel/sdist installation smokes; exact-SHA required-check enforcement; one-build checksum-preserving PyPI publication; candidate, backup/restore, upgrade, rollback, and security-note documentation.
 
 - Currency chains: packs render same-slot update sequences as explicit chains — stale values labeled `[SUPERSEDED as of <date>]`, the current value labeled and positioned last — built from supersession edges and value-shape matching with collision-safe gates (ambiguous groups emit nothing, disclosed in traces); approved supersessions now stamp the retired row's `valid_to`.
@@ -37,7 +50,7 @@ second audit. Each fix was written reproduction-first.
 - Judge-free stale-pick metric (`eval/longmemeval/stale_pick.py`): programmatic detection of superseded-value answers, replayable over any checkpoint; plus the published honesty kit (docs/benchmarks/longmemeval/HONESTY-KIT.md) — judge protocol, config fingerprints, our negative results as first-class findings, and a reproduction pledge.
 - Benchmark evidence correction (no new score claim): seven committed candidate checkpoints on the 172-question development slice range from -14 to +3 net flips against the historical 79.4% run, with no statistically significant improvement. The 86.6% FTS-only and 95.3% vector session-coverage probes were not a paired scored experiment, so the report no longer claims that they prove a retrieval ceiling or a reader bottleneck. The published 79.4% result remains a single historical run.
 
-- Semantic roll-up grouping: when embeddings are configured, a third grouping tier clusters anchor-less same-topic memories (single-linkage cosine with a deterministic silhouette-chosen threshold) through the same utility gate — "faucet, toaster, shelves" becomes one "kitchen" card; fully dormant without a provider (byte-identical, tested on real stores).
+- Semantic roll-up grouping: when embeddings are configured, a third grouping tier clusters anchor-less same-topic memories through cohesive all-pairs cosine admission with a deterministic blockwise silhouette-chosen threshold — "faucet, toaster, shelves" becomes one "kitchen" card; fully dormant without a provider (byte-identical, tested on real stores).
 - Aggregation queries now rank accepted roll-up cards above their own member memories (gated on aggregation intent, ≥2 slotted members, 2-card cap, members retained as receipts below; disclosed as card_promotions in traces).
 - Disclosed reranker stage (`ALICE_RERANKER_*` env): provider-side listwise precision scoring of the fused candidate head before slot spend; reorders but never shrinks, fails open to fusion order, dormant unconfigured, generic sha-pinned scoring prompt.
 
@@ -90,7 +103,7 @@ second audit. Each fix was written reproduction-first.
 
 - Published Alice's first benchmark result: **64.6% on LongMemEval_s** with the official judge protocol, in the same range as the best published results in the category — full methodology, per-question evidence, and reproduction script in `docs/benchmarks/longmemeval/`.
 - Real memory scopes: `project_id`, `created_by_agent_id`, and `run_id` columns on memories (backfilled from metadata, migration `20260704_0076`); scope filters through both store backends, the context compiler, and the `alice_recall`/`alice_context_pack` tools; agent API keys can bind a project scope — bound identities may narrow but never widen it, with escalations rejected and audited.
-- Consolidation that actually consolidates: embedding-based near-duplicate clustering (single-linkage, bounded and logged) produces merge/dedup candidate memories through the existing review gate — model-backed merges are grounding-gated with structured refusals, the deterministic path never fabricates text, supersession is never automatic, and reinforced preferences spanning ≥3 sources/days are surfaced for review.
+- Consolidation that actually consolidates: embedding-based near-duplicate clustering (cohesive complete-link admission, blockwise, bounded, and logged) produces merge/dedup candidate memories through the existing review gate — model-backed merges are grounding-gated with structured refusals, the deterministic path never fabricates text, supersession is never automatic, and reinforced preferences spanning ≥3 sources/days are surfaced for review.
 - Temporal slice: graph edges carry real event time (`observed_at`/`valid_from` from source timestamps, migration `20260704_0077`); supersession pointers are first-class columns with metadata backfill; both stores answer as-of edge queries; `alice_explain` returns the full supersession chain (cycle-safe, both directions); the SQLite on-ramp gains the graph substrate.
 
 - Context packs enforce `max_tokens` with greedy budget packing and report `{token_budget, token_estimate, truncated, dropped_item_count}`; the `projects` retrieval filter is honored; contradictions and recent changes are populated from real services; the dead `historical_timeline` section is removed and pack rows are no longer duplicated across sections.

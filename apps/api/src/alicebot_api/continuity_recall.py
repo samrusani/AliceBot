@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 import math
 import re
 from dataclasses import dataclass
@@ -25,8 +25,10 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_RECALL_LIMIT,
     MAX_RETRIEVAL_RUN_LIST_LIMIT,
     ContinuityRecallFreshnessPosture,
+    ContinuityObjectType,
     ContinuityRetrievalDebugCandidateRecord,
     ContinuityRetrievalDebugRecord,
+    ContinuityRetrievalStageScoreRecord,
     ContinuityRecallOrderingMetadata,
     ContinuityRecallProvenancePosture,
     ContinuityRecallProvenanceReference,
@@ -165,7 +167,7 @@ _SCOPE_FILTER_KEYS: dict[ContinuityRecallScopeKind, set[str]] = {
     "project": {"project", "project_id", "project_name"},
     "person": {"person", "person_id", "person_name", "owner", "assignee"},
 }
-_CONFIRMATION_RANK: dict[MemoryConfirmationStatus, int] = {
+_CONFIRMATION_RANK: dict[str, int] = {
     "confirmed": 3,
     "unconfirmed": 2,
     "contested": 1,
@@ -176,7 +178,7 @@ _TRUST_CLASS_RANK: dict[MemoryTrustClass, int] = {
     "llm_corroborated": 2,
     "llm_single_source": 1,
 }
-_FRESHNESS_RANK: dict[ContinuityRecallFreshnessPosture, int] = {
+_FRESHNESS_RANK: dict[str, int] = {
     "fresh": 4,
     "aging": 3,
     "stale": 2,
@@ -302,7 +304,7 @@ def _collect_strings_in_order(payload: object, *, keys: set[str]) -> list[str]:
     return values
 
 
-def _select_ranked_value(values: list[str], *, rank_map: dict[str, int]) -> str | None:
+def _select_ranked_value(values: list[str], *, rank_map: Mapping[str, int]) -> str | None:
     candidates = {
         value.casefold()
         for value in values
@@ -954,16 +956,16 @@ def _lexical_scores(
     scores: dict[UUID, float] = {}
     for row in target_rows:
         score = 0.0
-        frequencies = corpus_term_frequencies.get(row["id"])
-        if frequencies is None:
-            frequencies = _token_frequency(
+        target_frequencies = corpus_term_frequencies.get(row["id"])
+        if target_frequencies is None:
+            target_frequencies = _token_frequency(
                 _candidate_text(row),
                 max_chars=_MAX_SIMILARITY_CANDIDATE_TEXT_CHARS,
                 max_tokens=_MAX_SIMILARITY_TOKEN_COUNT,
             )
-        doc_length = max(sum(frequencies.values()), 1)
+        doc_length = max(sum(target_frequencies.values()), 1)
         for term in unique_terms:
-            term_frequency = frequencies.get(term, 0)
+            term_frequency = target_frequencies.get(term, 0)
             if term_frequency <= 0:
                 continue
             doc_frequency = document_frequencies.get(term, 0)
@@ -1614,8 +1616,8 @@ def _serialize_debug_candidate(
     return {
         "object_id": str(trace_candidate.ranked.row["id"]),
         "title": trace_candidate.ranked.row["title"],
-        "object_type": trace_candidate.ranked.row["object_type"],  # type: ignore[typeddict-item]
-        "status": trace_candidate.ranked.row["status"],  # type: ignore[typeddict-item]
+        "object_type": cast(ContinuityObjectType, trace_candidate.ranked.row["object_type"]),
+        "status": trace_candidate.ranked.row["status"],
         "selected": trace_candidate.selected,
         "rank": trace_candidate.rank,
         "exclusion_reason": trace_candidate.exclusion_reason,
@@ -1680,14 +1682,14 @@ def _debug_candidate_from_row(row: RetrievalCandidateRow) -> ContinuityRetrieval
     return {
         "object_id": str(row["continuity_object_id"]),
         "title": row["title"],
-        "object_type": row["object_type"],  # type: ignore[typeddict-item]
-        "status": row["status"],  # type: ignore[typeddict-item]
+        "object_type": cast(ContinuityObjectType, row["object_type"]),
+        "status": row["status"],
         "selected": row["selected"],
         "rank": row["rank"],
         "exclusion_reason": row["exclusion_reason"],
         "scope_matches": cast(list[ContinuityRecallScopeMatch], row["scope_matches"]),
         "ordering": ordering,
-        "stage_scores": cast(dict[str, dict[str, object]], stage_details),
+        "stage_scores": cast(dict[str, ContinuityRetrievalStageScoreRecord], stage_details),
         "relevance": float(row["relevance"]),
     }
 
@@ -1710,9 +1712,10 @@ def _persist_retrieval_trace(
     for trace_candidate in trace_candidates:
         if trace_candidate.exclusion_reason is None:
             continue
-        exclusion_summary[trace_candidate.exclusion_reason] = int(
-            exclusion_summary.get(trace_candidate.exclusion_reason, 0)
-        ) + 1
+        current_count = exclusion_summary.get(trace_candidate.exclusion_reason, 0)
+        exclusion_summary[trace_candidate.exclusion_reason] = (
+            current_count + 1 if isinstance(current_count, int) else 1
+        )
 
     run = create_retrieval_run(
         source_surface=source_surface,

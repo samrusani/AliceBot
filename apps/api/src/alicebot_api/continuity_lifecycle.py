@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import cast
 from uuid import UUID
 
 from alicebot_api.continuity_objects import serialize_continuity_lifecycle_state_from_record
@@ -10,6 +11,7 @@ from alicebot_api.contracts import (
     ContinuityLifecycleDetailResponse,
     ContinuityLifecycleListResponse,
     ContinuityLifecycleQueryInput,
+    ContinuityObjectType,
     ContinuityReviewObjectRecord,
     isoformat_or_none,
 )
@@ -25,10 +27,18 @@ class ContinuityLifecycleNotFoundError(LookupError):
 
 
 def _serialize_object(record: ContinuityObjectRow | ContinuityRecallCandidateRow) -> ContinuityReviewObjectRecord:
+    if "object_created_at" in record:
+        recall_record = cast(ContinuityRecallCandidateRow, record)
+        created_at = recall_record["object_created_at"]
+        updated_at = recall_record["object_updated_at"]
+    else:
+        object_record = cast(ContinuityObjectRow, record)
+        created_at = object_record["created_at"]
+        updated_at = object_record["updated_at"]
     return {
         "id": str(record["id"]),
         "capture_event_id": str(record["capture_event_id"]),
-        "object_type": record["object_type"],  # type: ignore[typeddict-item]
+        "object_type": cast(ContinuityObjectType, record["object_type"]),
         "status": record["status"],
         "lifecycle": serialize_continuity_lifecycle_state_from_record(record),
         "title": record["title"],
@@ -42,16 +52,8 @@ def _serialize_object(record: ContinuityObjectRow | ContinuityRecallCandidateRow
         "superseded_by_object_id": (
             None if record["superseded_by_object_id"] is None else str(record["superseded_by_object_id"])
         ),
-        "created_at": (
-            record["object_created_at"].isoformat()
-            if "object_created_at" in record
-            else record["created_at"].isoformat()
-        ),
-        "updated_at": (
-            record["object_updated_at"].isoformat()
-            if "object_updated_at" in record
-            else record["updated_at"].isoformat()
-        ),
+        "created_at": created_at.isoformat(),
+        "updated_at": updated_at.isoformat(),
     }
 
 

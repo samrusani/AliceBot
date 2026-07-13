@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from typing import cast
 from uuid import UUID
 
 from alicebot_api.continuity_objects import (
@@ -20,9 +21,14 @@ from alicebot_api.contracts import (
     DEFAULT_CONTINUITY_CAPTURE_LIMIT,
     MAX_CONTINUITY_CAPTURE_LIMIT,
     ContinuityCaptureCandidateRecord,
+    ContinuityCaptureCandidateType,
     ContinuityCaptureCandidatesInput,
     ContinuityCaptureCandidatesResponse,
+    ContinuityCaptureCandidatesSummary,
+    ContinuityCaptureAdmissionPosture,
+    ContinuityCaptureCommitDecision,
     ContinuityCaptureCommitInput,
+    ContinuityCaptureCommitMode,
     ContinuityCaptureCommitRecord,
     ContinuityCaptureCommitResponse,
     ContinuityCaptureCommitSummary,
@@ -30,8 +36,12 @@ from alicebot_api.contracts import (
     ContinuityCaptureCreateResponse,
     ContinuityCaptureDetailResponse,
     ContinuityCaptureEventRecord,
+    ContinuityCaptureExplicitSignal,
     ContinuityCaptureInboxItem,
     ContinuityCaptureInboxResponse,
+    ContinuityCaptureProposedAction,
+    ContinuityObjectRecord,
+    ContinuityObjectType,
     MemoryTrustClass,
 )
 from alicebot_api.store import ContinuityCaptureEventRow, ContinuityStore, JsonObject
@@ -47,7 +57,7 @@ class ContinuityCaptureNotFoundError(LookupError):
 
 @dataclass(frozen=True, slots=True)
 class DerivedObjectDecision:
-    object_type: str
+    object_type: ContinuityObjectType
     normalized_text: str
     confidence: float
     admission_reason: str
@@ -55,8 +65,8 @@ class DerivedObjectDecision:
 
 @dataclass(frozen=True, slots=True)
 class ExtractedCandidate:
-    candidate_type: str
-    object_type: str | None
+    candidate_type: ContinuityCaptureCandidateType
+    object_type: ContinuityObjectType | None
     normalized_text: str
     confidence: float
     trust_class: MemoryTrustClass
@@ -66,7 +76,27 @@ class ExtractedCandidate:
     admission_reason: str
 
 
-_EXPLICIT_SIGNAL_TO_OBJECT_TYPE: dict[str, str] = {
+_CANDIDATE_TYPES: tuple[ContinuityCaptureCandidateType, ...] = (
+    "decision",
+    "commitment",
+    "waiting_for",
+    "blocker",
+    "preference",
+    "correction",
+    "note",
+    "no_op",
+)
+_OBJECT_TYPES: tuple[ContinuityObjectType, ...] = (
+    "Note",
+    "MemoryFact",
+    "Decision",
+    "Commitment",
+    "WaitingFor",
+    "Blocker",
+    "NextAction",
+)
+
+_EXPLICIT_SIGNAL_TO_OBJECT_TYPE: dict[ContinuityCaptureExplicitSignal, ContinuityObjectType] = {
     "remember_this": "MemoryFact",
     "task": "NextAction",
     "decision": "Decision",
@@ -77,7 +107,7 @@ _EXPLICIT_SIGNAL_TO_OBJECT_TYPE: dict[str, str] = {
     "note": "Note",
 }
 
-_HIGH_CONFIDENCE_PREFIXES: tuple[tuple[str, str, str], ...] = (
+_HIGH_CONFIDENCE_PREFIXES: tuple[tuple[str, ContinuityObjectType, str], ...] = (
     ("decision:", "Decision", "high_confidence_prefix_decision"),
     ("task:", "NextAction", "high_confidence_prefix_task"),
     ("todo:", "NextAction", "high_confidence_prefix_todo"),
@@ -90,7 +120,9 @@ _HIGH_CONFIDENCE_PREFIXES: tuple[tuple[str, str, str], ...] = (
     ("note:", "Note", "high_confidence_prefix_note"),
 )
 
-_CANDIDATE_PREFIX_RULES: tuple[tuple[str, str, str | None, str], ...] = (
+_CANDIDATE_PREFIX_RULES: tuple[
+    tuple[str, ContinuityCaptureCandidateType, ContinuityObjectType | None, str], ...
+] = (
     ("decision:", "decision", "Decision", "explicit_prefix_decision"),
     ("commitment:", "commitment", "Commitment", "explicit_prefix_commitment"),
     ("waiting for:", "waiting_for", "WaitingFor", "explicit_prefix_waiting_for"),
@@ -102,7 +134,16 @@ _CANDIDATE_PREFIX_RULES: tuple[tuple[str, str, str | None, str], ...] = (
     ("note:", "note", "Note", "explicit_prefix_note"),
 )
 
-_CANDIDATE_REGEX_RULES: tuple[tuple[re.Pattern[str], str, str | None, str, float], ...] = (
+_CANDIDATE_REGEX_RULES: tuple[
+    tuple[
+        re.Pattern[str],
+        ContinuityCaptureCandidateType,
+        ContinuityObjectType | None,
+        str,
+        float,
+    ],
+    ...,
+] = (
     (
         re.compile(r"\b(i prefer|i like|i don't like|remember that i prefer)\b", re.IGNORECASE),
         "preference",
@@ -214,7 +255,7 @@ def _body_for_object_type(
 
 def _resolve_explicit_signal_decision(
     *,
-    explicit_signal: str,
+    explicit_signal: ContinuityCaptureExplicitSignal,
     normalized_text: str,
 ) -> DerivedObjectDecision:
     object_type = _EXPLICIT_SIGNAL_TO_OBJECT_TYPE[explicit_signal]
@@ -248,11 +289,17 @@ def _resolve_high_confidence_decision(normalized_text: str) -> DerivedObjectDeci
 
 
 def _serialize_capture_event(row: ContinuityCaptureEventRow) -> ContinuityCaptureEventRecord:
+    explicit_signal = row["explicit_signal"]
+    if explicit_signal is not None and explicit_signal not in _EXPLICIT_SIGNAL_TO_OBJECT_TYPE:
+        raise ValueError(f"unsupported stored explicit signal: {explicit_signal}")
+    admission_posture = row["admission_posture"]
+    if admission_posture not in {"DERIVED", "TRIAGE"}:
+        raise ValueError(f"unsupported stored admission posture: {admission_posture}")
     return {
         "id": str(row["id"]),
         "raw_content": row["raw_content"],
-        "explicit_signal": row["explicit_signal"],
-        "admission_posture": row["admission_posture"],
+        "explicit_signal": cast(ContinuityCaptureExplicitSignal | None, explicit_signal),
+        "admission_posture": cast(ContinuityCaptureAdmissionPosture, admission_posture),
         "admission_reason": row["admission_reason"],
         "created_at": row["created_at"].isoformat(),
     }
@@ -260,7 +307,7 @@ def _serialize_capture_event(row: ContinuityCaptureEventRow) -> ContinuityCaptur
 
 def _build_inbox_item(
     capture_event: ContinuityCaptureEventRecord,
-    derived_object: dict[str, object] | None,
+    derived_object: ContinuityObjectRecord | None,
 ) -> ContinuityCaptureInboxItem:
     return {
         "capture_event": capture_event,
@@ -295,7 +342,7 @@ def _build_candidate_record(candidate: ExtractedCandidate) -> ContinuityCaptureC
         source_role=candidate.source_role,
     )
     if candidate.candidate_type == "no_op":
-        proposed_action = "no_op"
+        proposed_action: ContinuityCaptureProposedAction = "no_op"
     elif (
         candidate.explicit
         and candidate.candidate_type in CONTINUITY_CAPTURE_ASSIST_AUTOSAVE_TYPES
@@ -394,11 +441,14 @@ def _no_op_candidate(*, user_text: str, assistant_text: str) -> ContinuityCaptur
     return _build_candidate_record(candidate)
 
 
-def _object_type_for_candidate(candidate_type: str, object_type: str | None) -> str:
+def _object_type_for_candidate(
+    candidate_type: ContinuityCaptureCandidateType,
+    object_type: ContinuityObjectType | None,
+) -> ContinuityObjectType:
     if object_type is not None:
         return object_type
 
-    fallback_map = {
+    fallback_map: dict[ContinuityCaptureCandidateType, ContinuityObjectType] = {
         "decision": "Decision",
         "commitment": "Commitment",
         "waiting_for": "WaitingFor",
@@ -410,8 +460,10 @@ def _object_type_for_candidate(candidate_type: str, object_type: str | None) -> 
     return fallback_map.get(candidate_type, "Note")
 
 
-def _explicit_signal_for_candidate(candidate_type: str) -> str | None:
-    signal_map = {
+def _explicit_signal_for_candidate(
+    candidate_type: ContinuityCaptureCandidateType,
+) -> ContinuityCaptureExplicitSignal | None:
+    signal_map: dict[ContinuityCaptureCandidateType, ContinuityCaptureExplicitSignal] = {
         "decision": "decision",
         "commitment": "commitment",
         "waiting_for": "waiting_for",
@@ -423,7 +475,11 @@ def _explicit_signal_for_candidate(candidate_type: str) -> str | None:
     return signal_map.get(candidate_type)
 
 
-def _body_for_candidate(*, candidate: ContinuityCaptureCandidateRecord, object_type: str) -> JsonObject:
+def _body_for_candidate(
+    *,
+    candidate: ContinuityCaptureCandidateRecord,
+    object_type: ContinuityObjectType,
+) -> JsonObject:
     normalized_text = candidate["normalized_text"]
     candidate_type = candidate["candidate_type"]
 
@@ -455,25 +511,28 @@ def _body_for_candidate(*, candidate: ContinuityCaptureCandidateRecord, object_t
     return payload
 
 
-def _normalize_commit_mode(mode: str) -> str:
+def _normalize_commit_mode(mode: str) -> ContinuityCaptureCommitMode:
     normalized = mode.strip().lower()
     if normalized not in CONTINUITY_CAPTURE_COMMIT_MODES:
         allowed = ", ".join(CONTINUITY_CAPTURE_COMMIT_MODES)
         raise ContinuityCaptureValidationError(f"mode must be one of: {allowed}")
-    return normalized
+    return cast(ContinuityCaptureCommitMode, normalized)
 
 
 def _normalize_candidate(payload: JsonObject) -> ContinuityCaptureCandidateRecord:
     candidate_type = str(payload.get("candidate_type", "")).strip().lower()
-    if candidate_type not in CONTINUITY_CAPTURE_CANDIDATE_TYPES:
+    if candidate_type not in _CANDIDATE_TYPES:
         allowed = ", ".join(CONTINUITY_CAPTURE_CANDIDATE_TYPES)
         raise ContinuityCaptureValidationError(f"candidate_type must be one of: {allowed}")
 
     raw_object_type = payload.get("object_type")
     if raw_object_type is None:
-        object_type: str | None = None
+        object_type: ContinuityObjectType | None = None
     elif isinstance(raw_object_type, str) and raw_object_type.strip() != "":
-        object_type = raw_object_type.strip()
+        normalized_object_type = raw_object_type.strip()
+        if normalized_object_type not in _OBJECT_TYPES:
+            raise ContinuityCaptureValidationError("object_type is not supported")
+        object_type = cast(ContinuityObjectType, normalized_object_type)
     else:
         raise ContinuityCaptureValidationError("object_type must be a string when provided")
 
@@ -482,7 +541,7 @@ def _normalize_candidate(payload: JsonObject) -> ContinuityCaptureCandidateRecor
         raise ContinuityCaptureValidationError("normalized_text must not be empty for non-no-op candidates")
 
     raw_confidence = payload.get("confidence", 0.0)
-    if isinstance(raw_confidence, bool):
+    if isinstance(raw_confidence, bool) or not isinstance(raw_confidence, (str, int, float)):
         raise ContinuityCaptureValidationError("confidence must be a number")
     try:
         confidence = float(raw_confidence)
@@ -500,7 +559,7 @@ def _normalize_candidate(payload: JsonObject) -> ContinuityCaptureCandidateRecor
     evidence_snippet = _normalize_content(str(payload.get("evidence_snippet", normalized_text)))
 
     candidate = ExtractedCandidate(
-        candidate_type=candidate_type,
+        candidate_type=cast(ContinuityCaptureCandidateType, candidate_type),
         object_type=object_type,
         normalized_text=normalized_text,
         confidence=confidence,
@@ -516,8 +575,8 @@ def _normalize_candidate(payload: JsonObject) -> ContinuityCaptureCandidateRecor
 def _resolve_commit_decision(
     *,
     candidate: ContinuityCaptureCandidateRecord,
-    mode: str,
-) -> tuple[str, str, str]:
+    mode: ContinuityCaptureCommitMode,
+) -> tuple[ContinuityCaptureCommitDecision, str, str]:
     candidate_type = candidate["candidate_type"]
     confidence = candidate["confidence"]
     explicit = candidate["explicit"]
@@ -577,7 +636,7 @@ def capture_continuity_candidates(
     elif _is_ack_only_turn(user_text=user_text, assistant_text=assistant_text):
         candidates = [_no_op_candidate(user_text=user_text, assistant_text=assistant_text)]
 
-    summary = {
+    summary: ContinuityCaptureCandidatesSummary = {
         "candidate_count": len(candidates),
         "explicit_count": sum(1 for candidate in candidates if candidate["explicit"]),
         "high_confidence_count": sum(1 for candidate in candidates if candidate["confidence"] >= 0.9),
@@ -713,7 +772,7 @@ def commit_continuity_captures(
         )
 
     summary: ContinuityCaptureCommitSummary = {
-        "mode": mode,  # type: ignore[typeddict-item]
+        "mode": mode,
         "candidate_count": len(normalized_candidates),
         "auto_saved_count": auto_saved_count,
         "review_queued_count": review_queued_count,

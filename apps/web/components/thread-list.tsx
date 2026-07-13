@@ -9,6 +9,7 @@ type ThreadListProps = {
   threads: ThreadItem[];
   selectedThreadId?: string;
   currentMode: ChatMode;
+  demoMode?: boolean;
   agentProfiles?: AgentProfileItem[];
   source: "live" | "fixture" | "unavailable";
   unavailableReason?: string;
@@ -25,13 +26,16 @@ function formatDate(value: string) {
   }).format(new Date(value));
 }
 
-function buildThreadHref(mode: ChatMode, threadId: string) {
+function buildThreadHref(mode: ChatMode, threadId: string, demoMode: boolean) {
   const params = new URLSearchParams();
 
   if (mode === "request") {
     params.set("mode", mode);
   }
   params.set("thread", threadId);
+  if (demoMode) {
+    params.set("demo", "fixture");
+  }
 
   return `/chat?${params.toString()}`;
 }
@@ -47,6 +51,7 @@ export function ThreadList({
   threads,
   selectedThreadId,
   currentMode,
+  demoMode = false,
   agentProfiles = [],
   source,
   unavailableReason,
@@ -103,7 +108,7 @@ export function ThreadList({
             return (
               <Link
                 key={thread.id}
-                href={buildThreadHref(currentMode, thread.id)}
+                href={buildThreadHref(currentMode, thread.id, demoMode)}
                 className={["list-row", isSelected ? "is-selected" : ""].filter(Boolean).join(" ")}
                 aria-current={isSelected ? "page" : undefined}
               >

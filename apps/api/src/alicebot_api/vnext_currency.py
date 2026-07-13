@@ -65,7 +65,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import hashlib
 import re
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Mapping, Sequence, cast
 
 # Deliberate reuse of the fact-key derivation internals: slot identity must
 # match the phrasings the fact keys index, and the value machinery (currency
@@ -665,7 +665,7 @@ def _date_order(members: Sequence[_Member], group_class: str | None) -> list[_Me
     ordered = sorted(
         members,
         key=lambda member: (
-            member.event,  # type: ignore[arg-type]  (None filtered above)
+            cast(datetime, member.event),
             member.source_id,
             member.chunk_index if member.chunk_index is not None else -1,
             member.memory_id,
@@ -756,17 +756,22 @@ def _annotate_chain(
     group_class: str | None,
     edge_only: bool,
 ) -> tuple[CurrencyChain, dict[str, JsonObject]]:
+    def value_of(member: _Member) -> str | None:
+        if group_class is None:
+            return None
+        return member.signature.values.get(group_class)
+
     member_ids = tuple(member.memory_id for member in ordered)
     chain_id = _chain_id(slot_key, member_ids)
     last = ordered[-1]
-    current_value = last.signature.values.get(group_class) if group_class else None
+    current_value = value_of(last)
     current_as_of = _iso_date(last.event)
     annotations: dict[str, JsonObject] = {}
     for position, member in enumerate(ordered):
         if edge_only or current_value is None:
             is_current = position == len(ordered) - 1
         else:
-            is_current = member.signature.values.get(group_class) == current_value
+            is_current = value_of(member) == current_value
         if is_current:
             status, as_of = CURRENT_STATUS, current_as_of
         else:
@@ -777,7 +782,7 @@ def _annotate_chain(
                     for later in ordered[position + 1 :]
                     if edge_only
                     or current_value is None
-                    or later.signature.values.get(group_class) != member.signature.values.get(group_class)
+                    or value_of(later) != value_of(member)
                 ),
                 None,
             )
@@ -980,13 +985,13 @@ def apply_currency_chains(
     reordered: list[JsonObject] = []
     for memory in memories:
         memory_id = str(memory.get("id"))
-        chain = chain_of.get(memory_id)
-        if chain is None:
+        resolved_chain = chain_of.get(memory_id)
+        if resolved_chain is None:
             reordered.append(memory)
             continue
         if memory_id in emitted:
             continue
-        for member_id in chain.member_ids:
+        for member_id in resolved_chain.member_ids:
             member = by_id.get(member_id)
             if member is not None and member_id not in emitted:
                 reordered.append(member)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import json
-from typing import Any, NotRequired, Protocol, TypedDict
+from typing import Any, NotRequired, Protocol, TypedDict, cast
 from uuid import UUID
 
 from alicebot_api.azure_provider_helpers import (
@@ -18,6 +18,7 @@ from alicebot_api.config import Settings
 from alicebot_api.contracts import (
     ModelInvocationRequest,
     ModelInvocationResponse,
+    ModelProvider,
     PromptAssemblyResult,
     PromptSection,
 )
@@ -47,7 +48,7 @@ OLLAMA_ADAPTER_KEY = "ollama"
 LLAMACPP_ADAPTER_KEY = "llamacpp"
 VLLM_ADAPTER_KEY = "vllm"
 AZURE_ADAPTER_KEY = "azure"
-OPENAI_RESPONSES_PROVIDER = "openai_responses"
+OPENAI_RESPONSES_PROVIDER: ModelProvider = "openai_responses"
 PROVIDER_CAPABILITY_VERSION_V1 = "provider_capability_v1"
 
 
@@ -104,9 +105,9 @@ class RuntimeProviderConfig:
     @classmethod
     def from_row(cls, row: dict[str, object]) -> RuntimeProviderConfig:
         return cls(
-            provider_id=row["id"],  # type: ignore[arg-type]
-            workspace_id=row["workspace_id"],  # type: ignore[arg-type]
-            created_by_user_account_id=row["created_by_user_account_id"],  # type: ignore[arg-type]
+            provider_id=cast(UUID, row["id"]),
+            workspace_id=cast(UUID, row["workspace_id"]),
+            created_by_user_account_id=cast(UUID, row["created_by_user_account_id"]),
             provider_key=str(row["provider_key"]),
             display_name=str(row["display_name"]),
             model_provider=str(row["model_provider"]),
@@ -120,7 +121,7 @@ class RuntimeProviderConfig:
             invoke_path=str(row.get("invoke_path", "")),
             azure_api_version=str(row.get("azure_api_version", "")),
             azure_auth_secret_ref=str(row.get("azure_auth_secret_ref", "")),
-            metadata=row["metadata"],  # type: ignore[assignment]
+            metadata=cast(JsonObject, row["metadata"]),
         )
 
 
@@ -136,7 +137,7 @@ class ProviderModelCatalogResult(TypedDict):
 
 class ProviderAdapter(Protocol):
     adapter_key: str
-    runtime_provider: str
+    runtime_provider: ModelProvider
 
     def healthcheck(
         self,
@@ -203,7 +204,32 @@ class ProviderAdapter(Protocol):
 
 class BaseProviderAdapter:
     adapter_key: str
-    runtime_provider: str
+    runtime_provider: ModelProvider
+
+    def healthcheck(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+    ) -> ProviderHealthcheckResult:
+        raise NotImplementedError
+
+    def list_models(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+    ) -> ProviderModelCatalogResult:
+        raise NotImplementedError
+
+    def invoke_responses(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+        request: ModelInvocationRequest,
+    ) -> ModelInvocationResponse:
+        raise NotImplementedError
 
     def supports_tools(self) -> bool:
         return False
@@ -226,7 +252,13 @@ class BaseProviderAdapter:
 
     def normalize_usage(self, *, payload: Any) -> JsonObject:
         if isinstance(payload, ModelInvocationResponse):
-            return dict(payload.usage)
+            usage = payload.usage
+            return {
+                "input_tokens": usage["input_tokens"],
+                "output_tokens": usage["output_tokens"],
+                "total_tokens": usage["total_tokens"],
+                "cached_input_tokens": usage.get("cached_input_tokens"),
+            }
         if isinstance(payload, dict):
             return payload
         raise ModelInvocationError("provider adapter returned invalid usage payload")

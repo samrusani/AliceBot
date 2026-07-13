@@ -263,6 +263,10 @@ describe("api helpers", () => {
     const error = await requestJson("http://127.0.0.1:8000", "/v0/vnext/workspace").catch(
       (value) => value,
     );
+    expect(error).toBeInstanceOf(ApiError);
+    if (!(error instanceof ApiError)) {
+      throw new Error("Expected requestJson to reject with ApiError");
+    }
     const serialized = JSON.stringify({
       message: error.message,
       code: error.code,
@@ -270,7 +274,7 @@ describe("api helpers", () => {
     });
 
     expect(error).toEqual(
-      expect.objectContaining<ApiError>({
+      expect.objectContaining({
         message: "Rejected credential [redacted agent key]",
         code: "request_failed",
         detail: expect.objectContaining({
@@ -288,6 +292,7 @@ describe("api helpers", () => {
     const approval = {
       id: "approval-new",
       thread_id: "thread-1",
+      task_run_id: null,
       task_step_id: "step-new",
       status: "approved",
       request: {
@@ -362,6 +367,7 @@ describe("api helpers", () => {
     const olderExecution = {
       id: "execution-old",
       approval_id: "approval-old",
+      task_run_id: null,
       task_step_id: "step-old",
       thread_id: "thread-1",
       tool_id: "tool-1",
@@ -370,6 +376,7 @@ describe("api helpers", () => {
       result_event_id: "result-event-old",
       status: "completed",
       handler_key: "proxy.echo",
+      idempotency_key: null,
       request: approval.request,
       tool: approval.tool,
       result: {
@@ -398,6 +405,7 @@ describe("api helpers", () => {
     const approval = {
       id: "approval-1",
       thread_id: "thread-1",
+      task_run_id: null,
       task_step_id: "step-1",
       status: "approved",
       request: {
@@ -456,6 +464,7 @@ describe("api helpers", () => {
     const execution = {
       id: "execution-1",
       approval_id: "approval-1",
+      task_run_id: null,
       task_step_id: "step-1",
       thread_id: "thread-1",
       tool_id: "tool-1",
@@ -464,6 +473,7 @@ describe("api helpers", () => {
       result_event_id: "result-event-1",
       status: "completed",
       handler_key: "proxy.echo",
+      idempotency_key: null,
       request: approval.request,
       tool: approval.tool,
       result: {
@@ -794,7 +804,7 @@ describe("api helpers", () => {
 
     await expect(
       resolveApproval("https://api.example.com", "approval-1", "approve", "user-1"),
-    ).rejects.toEqual(expect.objectContaining<ApiError>({ message: "approval conflict", status: 409 }));
+    ).rejects.toEqual(expect.objectContaining({ message: "approval conflict", status: 409 }));
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.com/v0/approvals/approval-1/approve",
@@ -817,7 +827,7 @@ describe("api helpers", () => {
     );
 
     await expect(listThreads("https://api.example.com", "user-1")).rejects.toEqual(
-      expect.objectContaining<ApiError>({
+      expect.objectContaining({
         message: "Field required; Invalid domain",
         status: 422,
         code: "validation_failed",
@@ -848,7 +858,7 @@ describe("api helpers", () => {
     const error = await listThreads("https://api.example.com", "user-1").catch((value) => value);
 
     expect(error).toEqual(
-      expect.objectContaining<ApiError>({
+      expect.objectContaining({
         message: "Upstream failed at https://api.example.com/v0/run",
         status: 429,
         code: "upstream_unavailable",
@@ -876,7 +886,7 @@ describe("api helpers", () => {
     const error = await listThreads("https://api.example.com", "user-1").catch((value) => value);
 
     expect(error).toEqual(
-      expect.objectContaining<ApiError>({
+      expect.objectContaining({
         message: "Unable to reach the configured API",
         status: 0,
         code: "transport_error",
@@ -893,7 +903,7 @@ describe("api helpers", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(error).toEqual(
-      expect.objectContaining<ApiError>({
+      expect.objectContaining({
         message: "The configured API base URL is invalid",
         code: "invalid_api_base_url",
       }),
@@ -914,7 +924,7 @@ describe("api helpers", () => {
 
     const request = listThreads("https://api.example.com", "user-1");
     const rejection = expect(request).rejects.toEqual(
-      expect.objectContaining<ApiError>({
+      expect.objectContaining({
         message: "Request timed out after 15 seconds",
         status: 0,
         code: "request_timeout",
@@ -943,7 +953,7 @@ describe("api helpers", () => {
       message: "Run the model-backed response path.",
     });
     const rejection = expect(request).rejects.toEqual(
-      expect.objectContaining<ApiError>({
+      expect.objectContaining({
         message: "Request timed out after 120 seconds",
         code: "request_timeout",
       }),
@@ -971,7 +981,7 @@ describe("api helpers", () => {
       timeoutMs: 25,
     });
     const rejection = expect(request).rejects.toEqual(
-      expect.objectContaining<ApiError>({ message: "Request timed out after 0.025 seconds" }),
+      expect.objectContaining({ message: "Request timed out after 0.025 seconds" }),
     );
     await vi.advanceTimersByTimeAsync(25);
     await rejection;
@@ -2700,7 +2710,7 @@ describe("api helpers", () => {
         source_event_id: "missing-event",
       }),
     ).rejects.toEqual(
-      expect.objectContaining<ApiError>({
+      expect.objectContaining({
         message: "source_event_id must reference an existing message.user event",
         status: 400,
       }),
@@ -2840,7 +2850,7 @@ describe("api helpers", () => {
         source_event_ids: ["missing-event"],
       }),
     ).rejects.toEqual(
-      expect.objectContaining<ApiError>({
+      expect.objectContaining({
         message: "source_event_ids must all reference existing events owned by the user",
         status: 400,
       }),
@@ -2950,7 +2960,7 @@ describe("api helpers", () => {
     );
 
     await expect(listTaskRuns("https://api.example.com", "task-1", "user-1")).rejects.toEqual(
-      expect.objectContaining<ApiError>({
+      expect.objectContaining({
         message: "task task-1 was not found",
         status: 404,
       }),

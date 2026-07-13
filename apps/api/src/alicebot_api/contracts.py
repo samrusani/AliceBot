@@ -602,7 +602,7 @@ POLICY_EFFECTS = ["allow", "deny", "require_approval"]
 POLICY_LIST_ORDER = ["priority_asc", "created_at_asc", "id_asc"]
 POLICY_EVALUATION_VERSION_V0 = "policy_evaluation_v0"
 TRACE_KIND_POLICY_EVALUATE = "policy.evaluate"
-TOOL_METADATA_VERSION_V0 = "tool_metadata_v0"
+TOOL_METADATA_VERSION_V0: ToolMetadataVersion = "tool_metadata_v0"
 TOOL_LIST_ORDER = ["tool_key_asc", "version_asc", "created_at_asc", "id_asc"]
 TOOL_ALLOWLIST_EVALUATION_VERSION_V0 = "tool_allowlist_evaluation_v0"
 TRACE_KIND_TOOL_ALLOWLIST_EVALUATE = "tool.allowlist.evaluate"
@@ -2013,7 +2013,7 @@ class ContinuityCaptureCommitInput:
     def as_payload(self) -> JsonObject:
         return {
             "mode": self.mode,
-            "candidates": self.candidates,
+            "candidates": [dict(candidate) for candidate in self.candidates],
             "sync_fingerprint": self.sync_fingerprint,
             "source_kind": self.source_kind,
         }

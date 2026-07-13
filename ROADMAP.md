@@ -7,9 +7,10 @@
   original five v0.9.3 fixes (central lifecycle transition table,
   expire/unexpire row-locking, corrective migration 0084 for the
   migration-0083 identifier-reservation bug, project-scoped capture
-  persistence, and hard people/time filter pagination) and resolving all nine
-  P1 findings from the follow-up external audit that returned NO-GO on
-  `v0.9.3`. Tagged and published on PyPI and GitHub as an immutable release,
+  persistence, and hard people/time filter pagination) and attempting all nine
+  P1 remediations from the follow-up external audit that returned NO-GO on
+  `v0.9.3`. A third audit found incomplete fixes and new regressions, now in the
+  v0.10.0 remediation gate. Tagged and published on PyPI and GitHub as an immutable release,
   with Trusted Publishing attestations and digests recorded in
   `docs/release/v0.9.4-checksums.txt`.
 - `v0.9.2`: prior published release. A security and reliability patch —
@@ -32,21 +33,18 @@
 
 ## Release Candidate
 
-- `v0.10.0`: current development-cycle candidate — the reopened next cycle over
-  the published `v0.9.4` baseline. It resumes feature work (multi-session
-  synthesis, daily dogfooding, and reference integrations) and clears the
-  second audit's P2 backlog: full-package mypy plus web typecheck,
-  packaged-README PyPI links, backup/restore hardening, removing the N+1
-  retrieval fan-out, non-finite embedding validation, and related items. The
-  original five v0.9.3 P1 fixes and all nine second-audit P1 findings already
-  shipped in the published `v0.9.4`; `v0.9.3` was an internal security-hotfix
-  candidate that was withdrawn and never published. No `v0.10.0` work has
-  shipped yet; `v0.10.0` is not tagged or published until one exact clean SHA
-  passes the canonical release check and review.
+- `v0.10.0`: active audit-remediation candidate over the published, immutable
+  `v0.9.4` baseline. It must close the third audit's correctness, reliability,
+  performance, typing, web, backup, packaging, and documentation findings
+  before feature work resumes. The gate includes a configured semantic eval
+  that proves nonzero production-signed vector participation, full first-party
+  Python and web type checks, installed-artifact smokes, and independent
+  review. No `v0.10.0` work has shipped; it is not tagged or published until
+  every required check passes on one exact clean SHA.
 
 ## Next
 
-In rough priority order for and beyond v0.10.0:
+After the v0.10.0 audit-remediation gate is approved, continue in this order:
 
 1. **Multi-session synthesis** — still the weakest published LongMemEval
    category at 58.6%. Aggregation-aware retrieval now ships; the next work is

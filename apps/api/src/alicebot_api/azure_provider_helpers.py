@@ -6,7 +6,12 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
-from alicebot_api.contracts import ModelInvocationRequest, ModelInvocationResponse, ModelUsagePayload
+from alicebot_api.contracts import (
+    ModelFinishReason,
+    ModelInvocationRequest,
+    ModelInvocationResponse,
+    ModelUsagePayload,
+)
 from alicebot_api.provider_security import validate_provider_base_url
 from alicebot_api.response_generation import ModelInvocationError
 
@@ -107,7 +112,9 @@ def invoke_azure_openai_responses(
         payload=_build_openai_responses_payload(request),
     )
     output_text = _extract_output_text(payload)
-    finish_reason = "completed" if payload.get("status") == "completed" else "incomplete"
+    finish_reason: ModelFinishReason = (
+        "completed" if payload.get("status") == "completed" else "incomplete"
+    )
     response_id = payload.get("id")
     return ModelInvocationResponse(
         provider=request.provider,

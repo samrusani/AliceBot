@@ -22,6 +22,7 @@ from alicebot_api.contracts import (
 )
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
+from alicebot_api.vnext_store import PostgresVNextStore
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -52,6 +53,12 @@ def build_runtime_env(*, database_url: str, user_id: UUID) -> dict[str, str]:
     env = os.environ.copy()
     env["DATABASE_URL"] = database_url
     env["ALICEBOT_AUTH_USER_ID"] = str(user_id)
+    for name in (
+        "ALICE_EMBEDDINGS_BASE_URL",
+        "ALICE_EMBEDDINGS_MODEL",
+        "ALICE_EMBEDDINGS_API_KEY",
+    ):
+        env.pop(name, None)
     # These suites exercise the legacy long-tail tools as well as the core
     # nine, so enable the legacy MCP surface for the spawned server.
     env["ALICE_MCP_LEGACY_TOOLS"] = "1"
@@ -164,6 +171,14 @@ def _call_tool(client: MCPClient, *, name: str, arguments: dict[str, object]) ->
     result = response["result"]
     assert result["isError"] is False
     return json.loads(result["content"][0]["text"])
+
+
+def _call_tool_error(client: MCPClient, *, name: str, arguments: dict[str, object]) -> str:
+    response = client.request("tools/call", params={"name": name, "arguments": arguments})
+    assert "error" not in response
+    result = response["result"]
+    assert result["isError"] is True
+    return str(result["content"][0]["text"])
 
 
 def test_mcp_recall_and_resume_match_core_and_cli_behavior(migrated_database_urls) -> None:
@@ -306,6 +321,328 @@ def test_mcp_recall_and_resume_match_core_and_cli_behavior(migrated_database_url
     assert cli_resume.returncode == 0
     assert core_resume["brief"]["last_decision"]["item"]["title"] in cli_resume.stdout
     assert core_resume["brief"]["next_action"]["item"]["title"] in cli_resume.stdout
+
+
+def test_mcp_review_provenance_is_validated_atomically_on_postgres(
+    migrated_database_urls,
+) -> None:
+    user_id = seed_user(
+        migrated_database_urls["app"], email="mcp-provenance-atomic@example.com"
+    )
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = PostgresVNextStore(conn)
+        source = store.create_source(
+            {
+                "source_type": "manual_text",
+                "title": "Reviewed source",
+                "content_hash": f"sha256:{uuid4().hex}",
+                "domain": "project",
+                "sensitivity": "internal",
+                "metadata_json": {"raw_text": "The reviewed release decision."},
+            },
+            actor_type="user",
+        )
+        chunk = store.create_source_chunk(
+            {
+                "source_id": str(source["id"]),
+                "chunk_index": 0,
+                "text": "The reviewed release decision.",
+                "token_count": 5,
+                "metadata_json": {},
+            },
+            actor_type="user",
+        )
+        unrelated_source = store.create_source(
+            {
+                "source_type": "manual_text",
+                "title": "Unrelated source",
+                "content_hash": f"sha256:{uuid4().hex}",
+                "domain": "project",
+                "sensitivity": "internal",
+                "metadata_json": {"raw_text": "Unrelated evidence."},
+            },
+            actor_type="user",
+        )
+        unrelated_chunk = store.create_source_chunk(
+            {
+                "source_id": str(unrelated_source["id"]),
+                "chunk_index": 0,
+                "text": "Unrelated evidence.",
+                "token_count": 2,
+                "metadata_json": {},
+            },
+            actor_type="user",
+        )
+        memory = store.create_memory(
+            {
+                "memory_key": f"mcp.review.{uuid4().hex}",
+                "value": {"text": "Pending release decision."},
+                "status": "needs_review",
+                "memory_type": "decision",
+                "confidence": 0.6,
+                "title": "Pending release decision",
+                "canonical_text": "Pending release decision.",
+                "summary": "Pending release decision.",
+                "domain": "project",
+                "sensitivity": "internal",
+                "metadata_json": {"review_required": True},
+            },
+            actor_type="user",
+        )
+
+    other_user_id = seed_user(
+        migrated_database_urls["app"], email="mcp-provenance-other-user@example.com"
+    )
+    with user_connection(migrated_database_urls["app"], other_user_id) as conn:
+        out_of_scope_source = PostgresVNextStore(conn).create_source(
+            {
+                "source_type": "manual_text",
+                "title": "Other user's source",
+                "content_hash": f"sha256:{uuid4().hex}",
+                "domain": "project",
+                "sensitivity": "internal",
+                "metadata_json": {"raw_text": "Must not cross tenant scope."},
+            },
+            actor_type="user",
+        )
+
+    client = start_mcp_client(database_url=migrated_database_urls["app"], user_id=user_id)
+    try:
+        for invalid_confidence in (-0.1, 1.5):
+            confidence_error = _call_tool_error(
+                client,
+                name="alice_memory_correct",
+                arguments={
+                    "review_item_id": str(memory["id"]),
+                    "action": "edit-and-approve",
+                    "confidence": invalid_confidence,
+                },
+            )
+            assert "arguments.confidence" in confidence_error
+            assert "confidence must be between 0 and 1" in confidence_error
+
+        for invalid_confidence in (-0.1, 1.5):
+            replacement_confidence_error = _call_tool_error(
+                client,
+                name="alice_memory_correct",
+                arguments={
+                    "review_item_id": str(memory["id"]),
+                    "action": "supersede-existing",
+                    "replacement_title": "Invalid replacement",
+                    "replacement_confidence": invalid_confidence,
+                },
+            )
+            assert "arguments.replacement_confidence" in replacement_confidence_error
+            assert "replacement_confidence must be between 0 and 1" in (
+                replacement_confidence_error
+            )
+
+        malformed_body_error = _call_tool_error(
+            client,
+            name="alice_memory_correct",
+            arguments={
+                "review_item_id": str(memory["id"]),
+                "action": "edit-and-approve",
+                "body": {"text": 7},
+            },
+        )
+        assert "body.text" in malformed_body_error
+        assert "text must have type string" in malformed_body_error
+
+        malformed_provenance_error = _call_tool_error(
+            client,
+            name="alice_memory_correct",
+            arguments={
+                "review_item_id": str(memory["id"]),
+                "action": "edit-and-approve",
+                "provenance": {
+                    "source_id": str(source["id"]),
+                    "evidence_role": "not-real",
+                },
+            },
+        )
+        assert "provenance.evidence_role" in malformed_provenance_error
+        assert "must be one of" in malformed_provenance_error
+
+        malformed_uuid_error = _call_tool_error(
+            client,
+            name="alice_memory_correct",
+            arguments={
+                "review_item_id": str(memory["id"]),
+                "action": "edit-and-approve",
+                "provenance": {"source_id": "not-a-uuid"},
+            },
+        )
+        assert "provenance.source_id" in malformed_uuid_error
+        assert "UUID string" in malformed_uuid_error
+
+        error = _call_tool_error(
+            client,
+            name="alice_memory_correct",
+            arguments={
+                "review_item_id": str(memory["id"]),
+                "action": "edit-and-approve",
+                "provenance": {
+                    "source_id": str(out_of_scope_source["id"]),
+                    "evidence_role": "supports",
+                },
+            },
+        )
+        assert "was not found in the current user scope" in error
+
+        mismatched_chunk_error = _call_tool_error(
+            client,
+            name="alice_memory_correct",
+            arguments={
+                "review_item_id": str(memory["id"]),
+                "action": "edit-and-approve",
+                "provenance": {
+                    "source_id": str(source["id"]),
+                    "source_chunk_id": str(unrelated_chunk["id"]),
+                    "evidence_role": "supports",
+                },
+            },
+        )
+        assert "does not belong to source" in mismatched_chunk_error
+
+        with user_connection(migrated_database_urls["app"], user_id) as conn:
+            store = PostgresVNextStore(conn)
+            unchanged = store.get_memory(str(memory["id"]))
+            assert unchanged is not None
+            assert unchanged["status"] == "needs_review"
+            assert unchanged["canonical_text"] == "Pending release decision."
+            assert store.list_provenance_links(
+                target_type="memory", target_id=str(memory["id"])
+            ) == []
+            assert store.list_revisions(str(memory["id"])) == []
+
+        approved = _call_tool(
+            client,
+            name="alice_memory_correct",
+            arguments={
+                "review_item_id": str(memory["id"]),
+                "action": "edit-and-approve",
+                "body": {"text": "Approved release decision."},
+                "provenance": {
+                    "source_id": str(source["id"]),
+                    "source_chunk_id": str(chunk["id"]),
+                    "evidence_role": "quoted_from",
+                    "confidence": 0.91,
+                    "quote": "The reviewed release decision.",
+                },
+            },
+        )
+    finally:
+        client.close()
+
+    assert approved["memory"]["status"] == "active"
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = PostgresVNextStore(conn)
+        links = store.list_provenance_links(
+            target_type="memory", target_id=str(memory["id"])
+        )
+        assert len(links) == 1
+        assert str(links[0]["source_id"]) == str(source["id"])
+        assert str(links[0]["source_chunk_id"]) == str(chunk["id"])
+        assert links[0]["evidence_role"] == "quoted_from"
+        assert float(links[0]["confidence"]) == 0.91
+
+
+def test_mcp_recall_advertises_and_applies_all_distributed_scopes_on_postgres(
+    migrated_database_urls,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="mcp-recall-scopes@example.com")
+    thread_id = UUID("11111111-1111-4111-8111-111111111111")
+    task_id = UUID("22222222-2222-4222-8222-222222222222")
+    in_window = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)
+
+    def create_scoped_memory(
+        store: PostgresVNextStore,
+        *,
+        suffix: str,
+        scoped_thread_id: UUID = thread_id,
+        scoped_task_id: UUID = task_id,
+        project: str = "Apollo",
+        person: str = "Sam",
+        valid_from: datetime = in_window,
+    ) -> dict[str, object]:
+        return store.create_memory(
+            {
+                "memory_key": f"mcp.scope.{suffix}.{uuid4().hex}",
+                "value": {"text": f"Scope parity release marker {suffix}."},
+                "status": "active",
+                "memory_type": "decision",
+                "confidence": 0.9,
+                "title": f"Scope parity {suffix}",
+                "canonical_text": f"Scope parity release marker {suffix}.",
+                "summary": f"Scope parity release marker {suffix}.",
+                "domain": "project",
+                "sensitivity": "internal",
+                "valid_from": valid_from,
+                "metadata_json": {
+                    "thread_id": str(scoped_thread_id),
+                    "task_id": str(scoped_task_id),
+                    "project_scope": [project],
+                    "person": person,
+                },
+            },
+            actor_type="user",
+        )
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = PostgresVNextStore(conn)
+        expected = create_scoped_memory(store, suffix="expected")
+        create_scoped_memory(
+            store,
+            suffix="wrong-thread",
+            scoped_thread_id=UUID("33333333-3333-4333-8333-333333333333"),
+        )
+        create_scoped_memory(
+            store,
+            suffix="wrong-task",
+            scoped_task_id=UUID("44444444-4444-4444-8444-444444444444"),
+        )
+        create_scoped_memory(store, suffix="wrong-project", project="Zeus")
+        create_scoped_memory(store, suffix="wrong-person", person="Alex")
+        create_scoped_memory(
+            store,
+            suffix="outside-window",
+            valid_from=datetime(2025, 1, 1, 12, 0, tzinfo=UTC),
+        )
+
+    client = start_mcp_client(database_url=migrated_database_urls["app"], user_id=user_id)
+    try:
+        listed = client.request("tools/list")["result"]["tools"]
+        recall_tool = next(tool for tool in listed if tool["name"] == "alice_recall")
+        recall_properties = recall_tool["inputSchema"]["properties"]
+        assert {
+            "thread_id",
+            "task_id",
+            "project",
+            "person",
+            "since",
+            "until",
+        } <= set(recall_properties)
+
+        recalled = _call_tool(
+            client,
+            name="alice_recall",
+            arguments={
+                "query": "scope parity release marker",
+                "thread_id": str(thread_id),
+                "task_id": str(task_id),
+                "project": "Apollo",
+                "person": "Sam",
+                "since": "2026-07-01T00:00:00Z",
+                "until": "2026-07-31T23:59:59Z",
+                "limit": 20,
+            },
+        )
+    finally:
+        client.close()
+
+    assert recalled["count"] == 1
+    assert [item["id"] for item in recalled["results"]] == [str(expected["id"])]
 
 
 def test_mcp_one_call_brief_matches_core_and_cli_surface(migrated_database_urls) -> None:

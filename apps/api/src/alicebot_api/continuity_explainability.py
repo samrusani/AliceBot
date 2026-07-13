@@ -73,11 +73,11 @@ def _iter_leaf_values(payload: object, *, prefix: str = "") -> list[tuple[str, s
             leaves.extend(_iter_leaf_values(child, prefix=next_prefix))
         return leaves
     if isinstance(payload, list):
-        rendered_values = [
-            _normalize_text(str(item))
-            for item in payload
-            if _normalize_text(str(item)) is not None
-        ]
+        rendered_values: list[str] = []
+        for item in payload:
+            normalized_item = _normalize_text(str(item))
+            if normalized_item is not None:
+                rendered_values.append(normalized_item)
         if rendered_values:
             leaves.append((prefix or "value", ", ".join(rendered_values)))
         return leaves

@@ -33,7 +33,10 @@ from alicebot_api.vnext_consolidation import (
     MemoryConsolidationRequest,
     VNextConsolidationService,
 )
-from alicebot_api.vnext_embeddings import memory_embedding_text
+from alicebot_api.vnext_embeddings import (
+    memory_embedding_text,
+    signed_memory_embedding_update,
+)
 from alicebot_api.vnext_entity_names import normalize_entity_name
 from alicebot_api.vnext_memory_commit import MemoryCommitRequest, VNextMemoryCommitService
 from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService
@@ -41,7 +44,7 @@ from alicebot_api.vnext_scheduler import SchedulerRunRequest, VNextSchedulerServ
 
 from scale import corpus
 from scale.backends import BENCH_USER_ID, BackendSession
-from scale.vectors import DeterministicEmbeddingProvider, deterministic_vector
+from scale.vectors import DeterministicEmbeddingProvider
 
 SEED_COMMIT_EVERY = 1000
 
@@ -169,6 +172,7 @@ def seed_corpus(session: BackendSession, scale: int, *, seed: int = corpus.SEED_
     edge_count = 0
     provenance_count = 0
     memory_count = 0
+    embedding_provider = DeterministicEmbeddingProvider()
     for spec in corpus.iter_memories(scale, seed=seed, entities=entities):
         memory = store.create_memory(
             {
@@ -194,8 +198,11 @@ def seed_corpus(session: BackendSession, scale: int, *, seed: int = corpus.SEED_
         memory_id = str(memory["id"])
         memory_count += 1
         store.update_memory_embedding(
-            memory_id=memory_id,
-            vector=deterministic_vector(memory_embedding_text(memory)),
+            **signed_memory_embedding_update(
+                memory,
+                embedding_provider.embed_text(memory_embedding_text(memory)),
+                provider=embedding_provider,
+            )
         )
         store.create_provenance_link(
             {
@@ -490,9 +497,9 @@ def run_operations(
     results["staleness_sweep_pass"] = sweep.to_record()
 
     # 8. consolidation clustering pass (embedding clustering -> merge
-    #    proposals). Hard-capped at the 5000 most recently updated actives
-    #    (MAX_EMBEDDED_MEMORIES_HARD_CAP), so 10k/100k cluster only a 5k
-    #    window -- but the pre-cap list_memories fetch is still O(N).
+    #    proposals). Hard-capped at the most recent bounded active corpus
+    #    (MAX_EMBEDDED_MEMORIES_HARD_CAP); the store applies the cap before
+    #    materialization and clustering uses bounded float32 row blocks.
     cons_store = store if session.backend == "postgres" else ArtifactSinkStore(store)
     consolidation = VNextConsolidationService(cons_store, embedding_provider=provider)
     cons_request = MemoryConsolidationRequest()

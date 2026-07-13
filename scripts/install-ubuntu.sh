@@ -17,6 +17,7 @@ INSTALL_SYSTEMD=0
 DRY_RUN=0
 RUN_ALPHA_CHECK=1
 PNPM_VERSION="${PNPM_VERSION:-10.23.0}"
+PGVECTOR_MINIMUM_VERSION="0.8.0"
 
 log() {
   printf '[alice-install] %s\n' "$*"
@@ -217,6 +218,12 @@ install_pgvector_package() {
   fi
 
   run sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${package}"
+
+  local installed_version
+  installed_version="$(dpkg-query -W -f='${Version}' "${package}")"
+  if ! dpkg --compare-versions "${installed_version}" ge "${PGVECTOR_MINIMUM_VERSION}"; then
+    fail "Installed ${package} ${installed_version} is too old. Alice requires pgvector >= ${PGVECTOR_MINIMUM_VERSION} for filtered iterative HNSW scans."
+  fi
 }
 
 prepare_postgres() {
@@ -363,7 +370,13 @@ SELECT 'CREATE DATABASE alicebot OWNER alicebot_admin'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'alicebot')\\gexec
 GRANT CONNECT ON DATABASE alicebot TO alicebot_app;
 SQL
-  sudo -u postgres psql -d alicebot -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null
+  sudo -u postgres psql -d alicebot -v ON_ERROR_STOP=1 \
+    -c "CREATE EXTENSION IF NOT EXISTS vector; ALTER EXTENSION vector UPDATE;" >/dev/null
+  local pgvector_version
+  pgvector_version="$(sudo -u postgres psql -d alicebot -Atqc "SELECT extversion FROM pg_extension WHERE extname = 'vector'")"
+  if ! dpkg --compare-versions "${pgvector_version}" ge "${PGVECTOR_MINIMUM_VERSION}"; then
+    fail "Database alicebot has pgvector ${pgvector_version:-missing}; Alice requires >= ${PGVECTOR_MINIMUM_VERSION}. Install a newer package and run ALTER EXTENSION vector UPDATE."
+  fi
 }
 
 seed_default_user_from_env() {

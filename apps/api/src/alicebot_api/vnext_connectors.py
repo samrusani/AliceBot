@@ -370,6 +370,14 @@ def _cursor_sort_key(cursor: str) -> tuple[int, int | str]:
     return (1, cursor)
 
 
+def _int_count(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    return 0
+
+
 def _stable_external_id(*parts: str) -> str:
     joined = "|".join(parts)
     return "sha256:" + sha256(joined.encode("utf-8")).hexdigest()
@@ -389,17 +397,17 @@ def _csv_rows_to_text(rows: object) -> str | None:
             for key in row:
                 if isinstance(key, str) and key not in fieldnames:
                     fieldnames.append(key)
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
-        writer.writeheader()
+        dict_writer = csv.DictWriter(output, fieldnames=fieldnames)
+        dict_writer.writeheader()
         for row in rows:
-            writer.writerow({key: cast(Mapping[str, object], row).get(key, "") for key in fieldnames})
+            dict_writer.writerow({key: cast(Mapping[str, object], row).get(key, "") for key in fieldnames})
         return output.getvalue().strip()
 
-    writer = csv.writer(output)
+    list_writer = csv.writer(output)
     for row in rows:
         if not isinstance(row, list):
             raise VNextConnectorValidationError("csv_table rows must all be objects or all be arrays")
-        writer.writerow(row)
+        list_writer.writerow(row)
     return output.getvalue().strip()
 
 
@@ -1151,10 +1159,10 @@ class VNextConnectorService:
         cursor_state: str | None = None
         for event in sync_events:
             payload = cast(JsonObject, event["payload_json"])
-            items_seen += int(payload.get("item_count", 0) or 0)
-            items_captured += int(payload.get("imported_count", 0) or 0)
-            items_deduped += int(payload.get("duplicate_count", 0) or 0)
-            items_failed += int(payload.get("failed_count", 0) or 0)
+            items_seen += _int_count(payload.get("item_count"))
+            items_captured += _int_count(payload.get("imported_count"))
+            items_deduped += _int_count(payload.get("duplicate_count"))
+            items_failed += _int_count(payload.get("failed_count"))
             cursor = _as_optional_text(payload.get("sync_cursor"))
             if cursor_state is None and cursor is not None:
                 cursor_state = cursor
@@ -1162,11 +1170,15 @@ class VNextConnectorService:
             if isinstance(processing_time, (int, float)) and not isinstance(processing_time, bool):
                 processing_times.append(float(processing_time))
         last_error = None
-        if latest_failure is not None and isinstance(latest_failure.get("payload_json"), dict):
-            errors = latest_failure["payload_json"].get("errors")  # type: ignore[index]
+        latest_failure_payload = latest_failure.get("payload_json") if latest_failure is not None else None
+        if isinstance(latest_failure_payload, dict):
+            errors = latest_failure_payload.get("errors")
             last_error = str(errors[0]) if isinstance(errors, list) and errors else None
-        if last_error is None and latest_item_failure is not None and isinstance(latest_item_failure.get("payload_json"), dict):
-            last_error = _as_optional_text(latest_item_failure["payload_json"].get("error_message"))  # type: ignore[index]
+        latest_item_failure_payload = (
+            latest_item_failure.get("payload_json") if latest_item_failure is not None else None
+        )
+        if last_error is None and isinstance(latest_item_failure_payload, dict):
+            last_error = _as_optional_text(latest_item_failure_payload.get("error_message"))
 
         latest_import_payload = latest_import.get("payload_json") if latest_import is not None else None
         return {
@@ -1529,6 +1541,9 @@ class VNextConnectorService:
                 "metadata_json": {
                     "connector_name": "agent_output",
                     "agent_identity": agent_identity,
+                    "agent_id": agent_id,
+                    "agent_run_id": item.metadata_json.get("agent_run_id"),
+                    "project_scope": item.metadata_json.get("project_scope") or [],
                     "source_id": source_id,
                     "source_refs": [f"source:{source_id}"] if source_id else [],
                     "output_type": _as_optional_text(payload.get("output_type")) or "general",
@@ -1580,9 +1595,14 @@ class VNextConnectorService:
                     "domain": _as_optional_text(payload.get("domain")) or "project",
                     "sensitivity": _as_optional_text(payload.get("sensitivity")) or "private",
                     "project_scope": list(proposal_scope),
+                    "project_id": proposal_scope[0] if len(proposal_scope) == 1 else None,
+                    "created_by_agent_id": agent_id,
+                    "run_id": item.metadata_json.get("agent_run_id"),
                     "metadata_json": {
                         "connector_name": "agent_output",
                         "agent_identity": agent_identity,
+                        "agent_id": agent_id,
+                        "agent_run_id": item.metadata_json.get("agent_run_id"),
                         "source_id": source_id,
                         "artifact_id": artifact_id,
                         "review_required": True,
@@ -1706,32 +1726,32 @@ class VNextConnectorService:
 
         normalized_items.sort(key=lambda item: _cursor_sort_key(item.cursor))
 
-        for item in normalized_items:
-            if _cursor_lte(item.cursor, previous_cursor):
+        for normalized_item in normalized_items:
+            if _cursor_lte(normalized_item.cursor, previous_cursor):
                 skipped_count += 1
                 continue
 
             try:
-                result = self.capture_service.capture_source(
+                capture_result = self.capture_service.capture_source(
                     SourceCaptureInput(
-                        source_type=item.source_type,
-                        title=item.title,
-                        author=item.author,
-                        uri=item.uri,
-                        raw_path=item.raw_path,
-                        raw_text=item.raw_text,
-                        connector_name=item.connector_name,
-                        external_id=item.external_id,
+                        source_type=normalized_item.source_type,
+                        title=normalized_item.title,
+                        author=normalized_item.author,
+                        uri=normalized_item.uri,
+                        raw_path=normalized_item.raw_path,
+                        raw_text=normalized_item.raw_text,
+                        connector_name=normalized_item.connector_name,
+                        external_id=normalized_item.external_id,
                         domain=domain,
                         sensitivity=sensitivity,
-                        captured_at=item.captured_at,
-                        source_created_at=item.source_created_at,
-                        source_modified_at=item.source_modified_at,
+                        captured_at=normalized_item.captured_at,
+                        source_created_at=normalized_item.source_created_at,
+                        source_modified_at=normalized_item.source_modified_at,
                         metadata_json={
-                            **item.metadata_json,
-                            "connector_name": item.connector_name,
-                            "external_id": item.external_id,
-                            "sync_cursor": item.cursor,
+                            **normalized_item.metadata_json,
+                            "connector_name": normalized_item.connector_name,
+                            "external_id": normalized_item.external_id,
+                            "sync_cursor": normalized_item.cursor,
                             "default_domain": domain,
                             "default_sensitivity": sensitivity,
                         },
@@ -1739,43 +1759,43 @@ class VNextConnectorService:
                 )
             except Exception as exc:
                 failed_count += 1
-                failed_external_ids.append(item.external_id)
-                errors.append(f"{item.external_id}: {exc}")
+                failed_external_ids.append(normalized_item.external_id)
+                errors.append(f"{normalized_item.external_id}: {exc}")
                 failure_blocked_cursor_advance = True
                 self._log_event(
                     event_type="connector.item_failed",
                     connector_name=definition.name,
                     payload={
                         "connector_name": definition.name,
-                        "external_id": item.external_id,
-                        "sync_cursor": item.cursor,
+                        "external_id": normalized_item.external_id,
+                        "sync_cursor": normalized_item.cursor,
                         "error_type": type(exc).__name__,
                         "error_message": str(exc),
                     },
                 )
                 continue
 
-            if result.duplicate:
+            if capture_result.duplicate:
                 duplicate_count += 1
             else:
                 imported_count += 1
-                if result.source_id is not None:
-                    source_ids.append(result.source_id)
+                if capture_result.source_id is not None:
+                    source_ids.append(capture_result.source_id)
 
             self._log_event(
                 event_type="connector.item_imported",
                 connector_name=definition.name,
                 payload={
                     "connector_name": definition.name,
-                    "external_id": item.external_id,
-                    "sync_cursor": item.cursor,
-                    "source_id": result.source_id,
-                    "duplicate": result.duplicate,
+                    "external_id": normalized_item.external_id,
+                    "sync_cursor": normalized_item.cursor,
+                    "source_id": capture_result.source_id,
+                    "duplicate": capture_result.duplicate,
                     "raw_evidence_preserved": True,
                 },
             )
             if not failure_blocked_cursor_advance:
-                sync_cursor = item.cursor
+                sync_cursor = normalized_item.cursor
 
         if not failure_blocked_cursor_advance and safe_cursor_override is not None:
             if sync_cursor is None or _cursor_sort_key(safe_cursor_override) > _cursor_sort_key(sync_cursor):
@@ -1789,7 +1809,7 @@ class VNextConnectorService:
         elif imported_count == 0 and duplicate_count == 0 and skipped_count > 0:
             status = "skipped"
 
-        result = ConnectorSyncResult(
+        sync_result = ConnectorSyncResult(
             status=status,
             connector_name=definition.name,
             item_count=original_item_count if original_item_count is not None else len(items),
@@ -1808,10 +1828,10 @@ class VNextConnectorService:
         self._log_event(
             event_type=final_event_type,
             connector_name=definition.name,
-            payload={**result.to_record(), "processing_time_ms": processing_time_ms},
+            payload={**sync_result.to_record(), "processing_time_ms": processing_time_ms},
         )
-        self._record_connector_state(result, processing_time_ms=processing_time_ms)
-        return result
+        self._record_connector_state(sync_result, processing_time_ms=processing_time_ms)
+        return sync_result
 
 
 __all__ = [

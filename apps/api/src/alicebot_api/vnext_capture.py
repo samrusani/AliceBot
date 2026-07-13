@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from hashlib import sha256
+from hashlib import md5, sha256
 import json
 from pathlib import Path
 import re
@@ -147,6 +147,35 @@ def content_hash_for_text(raw_text: str, project_scope: Sequence[str] = ()) -> s
         # exactly as before, so global/unscoped captures stay byte-identical.
         normalized = normalized + "\x00project_scope:" + "\x00".join(scope)
     return "sha256:" + sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def raw_text_sha256(raw_text: str) -> str:
+    """Digest the exact captured text, without folding identity scope into it."""
+    return "sha256:" + sha256(raw_text.encode("utf-8")).hexdigest()
+
+
+def capture_dedupe_key_for_text(
+    raw_text: str,
+    project_scope: Sequence[str] = (),
+    *,
+    domain: str | None = None,
+    sensitivity: str | None = None,
+) -> str:
+    """Internal source identity, including any explicitly supplied classification.
+
+    Calls that omit classification retain the pre-v0.10 digest so upgraded
+    stores can still recognize legacy rows. New capture writes always supply
+    both values: the same evidence may legitimately exist under a different
+    domain or sensitivity without losing the newly intended classification.
+    """
+    normalized = normalize_text(raw_text)
+    scope = tuple(sorted(project_scope))
+    if scope:
+        normalized += "\x1fproject_scope:" + "\x1f".join(scope)
+    if domain is not None or sensitivity is not None:
+        normalized += "\x1fdomain:" + str(domain or "unknown").strip().casefold()
+        normalized += "\x1fsensitivity:" + str(sensitivity or "unknown").strip().casefold()
+    return "capture-md5:" + md5(normalized.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def _truncate(value: str, *, max_length: int) -> str:
@@ -382,7 +411,10 @@ def extract_candidate_memories(chunks: list[JsonObject]) -> list[CaptureCandidat
     seen: set[str] = set()
     for chunk in chunks:
         chunk_id = str(chunk["id"])
-        chunk_index = int(chunk["chunk_index"])
+        chunk_index_value = chunk["chunk_index"]
+        if not isinstance(chunk_index_value, int):
+            raise VNextCaptureValidationError("source chunk index must be an integer")
+        chunk_index = chunk_index_value
         text = str(chunk["text"])
         for line in text.splitlines():
             candidate = _candidate_from_line(
@@ -400,8 +432,17 @@ def extract_candidate_memories(chunks: list[JsonObject]) -> list[CaptureCandidat
     return candidates
 
 
-def _memory_key(*, content_hash: str, candidate: CaptureCandidate) -> str:
-    digest = sha256(f"{content_hash}|{candidate.source_chunk_index}|{candidate.text}".encode("utf-8")).hexdigest()[:16]
+def _memory_key(
+    *,
+    content_hash: str,
+    candidate: CaptureCandidate,
+    domain: str | None = None,
+    sensitivity: str | None = None,
+) -> str:
+    identity = f"{content_hash}|{candidate.source_chunk_index}|{candidate.text}"
+    if domain is not None or sensitivity is not None:
+        identity += f"|domain:{domain or 'unknown'}|sensitivity:{sensitivity or 'unknown'}"
+    digest = sha256(identity.encode("utf-8")).hexdigest()[:16]
     return f"vnext.capture.{candidate.memory_type}.{digest}"
 
 
@@ -575,12 +616,25 @@ class VNextCaptureService:
             project_scope_metadata: JsonObject = (
                 {"project_scope": list(project_scope)} if project_scope else {}
             )
-            # Dedupe is scope-aware: the content hash folds in the project scope
-            # so identical text captured under a different project keeps its own
-            # scoped source and candidate instead of being silently skipped as a
-            # global duplicate (audit 2 P1 #2).
+            # Public content identity stays text/project based. The internal
+            # atomic dedupe identity additionally includes classification so an
+            # exact recapture under a changed domain or sensitivity can retain
+            # its own correctly classified source and candidate.
             content_hash = content_hash_for_text(normalized_text, project_scope)
-            duplicate = self.store.get_source_by_content_hash(content_hash)
+            dedupe_key = capture_dedupe_key_for_text(
+                normalized_text,
+                project_scope,
+                domain=source_input.domain,
+                sensitivity=source_input.sensitivity,
+            )
+            duplicate = self._find_compatible_source(
+                dedupe_key=dedupe_key,
+                content_hash=content_hash,
+                legacy_content_hash=content_hash_for_text(normalized_text),
+                project_scope=project_scope,
+                domain=source_input.domain,
+                sensitivity=source_input.sensitivity,
+            )
             if duplicate is not None:
                 source_id = str(duplicate["id"])
                 self._log_event(
@@ -600,35 +654,66 @@ class VNextCaptureService:
                     duplicate=True,
                 )
 
-            source = self.store.create_source(
-                {
-                    "source_type": source_input.source_type,
-                    "title": source_input.title,
-                    "author": source_input.author,
-                    "uri": source_input.uri,
-                    "raw_path": source_input.raw_path,
-                    "content_hash": content_hash,
-                    "captured_at": source_input.captured_at,
-                    "source_created_at": source_input.source_created_at,
-                    "source_modified_at": source_input.source_modified_at,
-                    "connector_name": source_input.connector_name,
-                    "external_id": source_input.external_id,
-                    "domain": source_input.domain,
-                    "sensitivity": source_input.sensitivity,
-                    "metadata_json": {
-                        **source_input.metadata_json,
-                        **project_scope_metadata,
-                        "generated_by": self.actor_type,
-                        "agent_identity": self.agent_identity,
-                        "agent_id": self.actor_id if self.actor_type == "agent" else None,
-                        "trace_id": self.trace_id,
-                        "policy_decision": self.policy_decision,
-                        "raw_text": normalized_text,
-                        "raw_text_sha256": content_hash,
-                    },
+            source_record: JsonObject = {
+                "source_type": source_input.source_type,
+                "title": source_input.title,
+                "author": source_input.author,
+                "uri": source_input.uri,
+                "raw_path": source_input.raw_path,
+                # ``content_hash`` remains the v0.9.4 public identity.  The
+                # separately persisted dedupe key lets legacy pre-v0.9.4
+                # scoped rows participate in atomic uniqueness after backfill.
+                "content_hash": content_hash,
+                "dedupe_key": dedupe_key,
+                "captured_at": source_input.captured_at,
+                "source_created_at": source_input.source_created_at,
+                "source_modified_at": source_input.source_modified_at,
+                "connector_name": source_input.connector_name,
+                "external_id": source_input.external_id,
+                "domain": source_input.domain,
+                "sensitivity": source_input.sensitivity,
+                "metadata_json": {
+                    **source_input.metadata_json,
+                    **project_scope_metadata,
+                    "generated_by": self.actor_type,
+                    "agent_identity": self.agent_identity,
+                    "agent_id": self.actor_id if self.actor_type == "agent" else None,
+                    "agent_run_id": self.run_id if self.actor_type == "agent" else None,
+                    "trace_id": self.trace_id,
+                    "policy_decision": self.policy_decision,
+                    # Preserve and digest the exact evidence.  In particular,
+                    # a scoped capture's raw digest must not equal its
+                    # scope-folded identity merely because both use SHA-256.
+                    "raw_text": source_input.raw_text,
+                    "raw_text_sha256": raw_text_sha256(source_input.raw_text),
                 },
-                actor_type=self.actor_type,
-            )
+            }
+            get_or_create_source = getattr(self.store, "get_or_create_source", None)
+            if callable(get_or_create_source):
+                source, source_created = get_or_create_source(
+                    source_record,
+                    actor_type=self.actor_type,
+                )
+                if not source_created:
+                    source_id = str(source["id"])
+                    self._log_event(
+                        event_type="source.duplicate_skipped",
+                        target_type="source",
+                        target_id=source_id,
+                        payload={
+                            "content_hash": content_hash,
+                            "source_type": source_input.source_type,
+                            "title": source_input.title,
+                        },
+                    )
+                    return CaptureResult(
+                        status="duplicate",
+                        source_id=source_id,
+                        content_hash=content_hash,
+                        duplicate=True,
+                    )
+            else:
+                source = self.store.create_source(source_record, actor_type=self.actor_type)
             source_id = str(source["id"])
             self._log_event(
                 event_type="source.captured",
@@ -663,7 +748,12 @@ class VNextCaptureService:
                 payload={"content_hash": content_hash, "chunk_count": len(chunk_rows)},
             )
 
-            candidates = self._drop_cross_batch_user_asserted_duplicates(extract_candidate_memories(chunk_rows))
+            candidates = self._drop_cross_batch_user_asserted_duplicates(
+                extract_candidate_memories(chunk_rows),
+                project_scope=project_scope,
+                domain=source_input.domain,
+                sensitivity=source_input.sensitivity,
+            )
             memory_rows: list[JsonObject] = []
             for candidate in candidates:
                 # Speaker provenance is only stamped when a role was derived,
@@ -678,7 +768,12 @@ class VNextCaptureService:
                 )
                 memory = self.store.create_memory(
                     {
-                        "memory_key": _memory_key(content_hash=content_hash, candidate=candidate),
+                        "memory_key": _memory_key(
+                            content_hash=content_hash,
+                            candidate=candidate,
+                            domain=source_input.domain,
+                            sensitivity=source_input.sensitivity,
+                        ),
                         "value": {
                             "text": candidate.text,
                             "source_id": source_id,
@@ -693,6 +788,9 @@ class VNextCaptureService:
                         "summary": _truncate(candidate.text, max_length=280),
                         "domain": source_input.domain,
                         "sensitivity": source_input.sensitivity,
+                        "project_id": project_scope[0] if len(project_scope) == 1 else None,
+                        "created_by_agent_id": self.actor_id if self.actor_type == "agent" else None,
+                        "run_id": self.run_id if self.actor_type == "agent" else None,
                         "metadata_json": {
                             "source_id": source_id,
                             "source_chunk_id": candidate.source_chunk_id,
@@ -704,6 +802,7 @@ class VNextCaptureService:
                             "generated_by": self.actor_type,
                             "agent_identity": self.agent_identity,
                             "agent_id": self.actor_id if self.actor_type == "agent" else None,
+                            "agent_run_id": self.run_id if self.actor_type == "agent" else None,
                             "trace_id": self.trace_id,
                             "policy_decision": self.policy_decision,
                         },
@@ -766,8 +865,52 @@ class VNextCaptureService:
             )
             raise
 
+    def _find_compatible_source(
+        self,
+        *,
+        dedupe_key: str,
+        content_hash: str,
+        legacy_content_hash: str,
+        project_scope: tuple[str, ...],
+        domain: str,
+        sensitivity: str,
+    ) -> JsonObject | None:
+        """Find the same scoped and classified identity across legacy rows."""
+        by_dedupe_key = getattr(self.store, "get_source_by_dedupe_key", None)
+        if callable(by_dedupe_key):
+            source = by_dedupe_key(dedupe_key)
+            if source is not None:
+                return source
+
+        many_by_hash = getattr(self.store, "get_sources_by_content_hash", None)
+        for candidate_hash in dict.fromkeys((content_hash, legacy_content_hash)):
+            if callable(many_by_hash):
+                matches = many_by_hash(candidate_hash)
+            else:
+                match = self.store.get_source_by_content_hash(candidate_hash)
+                matches = [] if match is None else [match]
+            for source in matches:
+                metadata = source.get("metadata_json")
+                source_scope = normalize_project_scope(
+                    metadata.get("project_scope") if isinstance(metadata, dict) else None
+                )
+                source_domain = str(source.get("domain") or "unknown").strip().casefold()
+                source_sensitivity = str(source.get("sensitivity") or "unknown").strip().casefold()
+                if (
+                    source_scope == project_scope
+                    and source_domain == domain.strip().casefold()
+                    and source_sensitivity == sensitivity.strip().casefold()
+                ):
+                    return source
+        return None
+
     def _drop_cross_batch_user_asserted_duplicates(
-        self, candidates: list[CaptureCandidate]
+        self,
+        candidates: list[CaptureCandidate],
+        *,
+        project_scope: tuple[str, ...],
+        domain: str,
+        sensitivity: str,
     ) -> list[CaptureCandidate]:
         """Dedupe user-asserted-value promotions against the whole store.
 
@@ -784,11 +927,26 @@ class VNextCaptureService:
         list_memories = getattr(self.store, "list_memories", None)
         if not callable(list_memories):
             return candidates
-        existing_texts = {
-            str(row.get("canonical_text") or "").casefold()
-            for row in list_memories()
-            if isinstance(row, dict)
-        }
+        live_statuses = {"candidate", "active", "accepted", "needs_review", "private_only"}
+        existing_texts = set()
+        for row in list_memories():
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("status") or "") not in live_statuses:
+                continue
+            if str(row.get("domain") or "unknown") != domain:
+                continue
+            if str(row.get("sensitivity") or "unknown") != sensitivity:
+                continue
+            metadata = row.get("metadata_json")
+            row_scope = normalize_project_scope(
+                row.get("project_scope")
+                or (metadata.get("project_scope") if isinstance(metadata, dict) else None)
+                or row.get("project_id")
+            )
+            if row_scope != project_scope:
+                continue
+            existing_texts.add(str(row.get("canonical_text") or "").casefold())
         existing_texts.discard("")
         return [
             candidate

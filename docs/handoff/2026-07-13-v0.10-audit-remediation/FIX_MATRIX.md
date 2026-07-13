@@ -1,0 +1,83 @@
+# Alice v0.10.0 Audit Remediation Matrix
+
+This matrix is the source of truth for the remediation sprint based on
+`68d6bf2`. `v0.9.4` remains immutable. Security analysis was excluded. A row is
+`closed` only when implementation, a regression test, and verification
+evidence are all present. `In progress` and `unverified` rows block release.
+The first five acceptance passes rejected residuals; the sixth acceptance is
+the final **PASS with no P0, P1, or P2 finding**. `REVIEW_REPORT.md` is the
+authoritative verdict.
+
+| ID | Audit finding / acceptance requirement | Status | Implementation | Regression / evidence |
+|---|---|---|---|---|
+| A1 | Every bundled vector writer persists provider, model, endpoint, content digest, and v2 signature through one contract | Closed; independently accepted in sixth review | centralized signed-write kwargs used by CLI/onramp/eval/scale | production signed-retrieval tests in 274/147 passing slices |
+| A2 | Endpoint canonicalization lowers only scheme/host, removes default ports, and preserves case-sensitive path/query | Closed; independently accepted in sixth review | `vnext_embeddings.py` endpoint identity | canonicalization matrix passes |
+| A3 | NaN and infinity vectors are rejected consistently before SQLite/Postgres persistence | Closed; independently accepted in sixth review | embedding helper + Postgres boundary | non-finite helper/store tests pass |
+| A4 | CLI and SQLite backfill failures exit nonzero and content-stale signatures are selected | Closed; independently accepted in sixth review | `cli.py`, `onramp.py`, both stores | 127 focused tests + live PostgreSQL stale-content selection pass |
+| A5 | Release gate rejects skipped, partially skipped, and all-skipped suites | Closed; independently accepted in sixth review | eval CLI/status logic | release aggregation + independent CLI partial-skip regressions pass |
+| A6 | Vector participation is measured from actual signed candidates, not a stage label | Closed; independently accepted in sixth review | per-query candidate metrics + release gate | positive candidate-count and empty-vector rejection tests pass |
+| A7 | Configured eval seeds vectors usable by production retrieval | Closed; independently accepted in sixth review | signed eval seeding | deterministic configured provider retrieves seeded signed vectors |
+| A8 | Scale harness uses the same signed-vector contract | Closed; independently accepted in sixth review | scale vector writer | signed scale-seed retrieval test passes |
+| A9 | Release/publish requires internally consistent exact-SHA semantic evidence and structured provider/model/endpoint signature identity | Closed; independently accepted in sixth review | one canonical digest binds the producer-owned strict 78-case contract; every attestation copy uses recursive JSON-type-sensitive equality plus strict positive-int, exactly-true, and finite-float summary validation | 131 release/eval tests; all five fifth-review substitutions reject; 102/102 recursive copied-field type drifts reject; valid six-suite/78-case roundtrip passes; protected dispatch still required |
+| A10 | Publication independently requires a fresh verified repository-control declaration; semantic evidence cannot replace it | Closed; independently accepted in sixth review | structured `ALICE_RELEASE_CONTROLS_ATTESTATION` binds exact repository/SHA/tag, <=24h UTC validity, and a closed all-true control set before semantic resolution/build | missing, malformed, duplicate/unknown/missing-key, stale/future/expired, wrong repository/SHA/tag, wrong-type/false-control and gate-substitution regressions pass; operator readback still required |
+| B1 | Hard people/time filters are complete beyond rank 4,000 | Closed; independently accepted in sixth review | bundled pre-LIMIT predicates; uncapped adapter fallback | rank 4,002 unit + live PostgreSQL 4,002-row predicate test |
+| B2 | Person resolution is complete beyond 200 entity edges | Closed; independently accepted in sixth review | bulk edge/memory lookup; no 200 slice | 251-edge unit query counts + live PostgreSQL resolution test |
+| B3 | Query embedding is computed once per request | Closed; independently accepted in sixth review | request-scoped vector reuse | rank 4,002 test records exactly one provider embed |
+| B4 | Graph/provenance retrieval avoids N+1 fan-out | Closed; independently accepted in sixth review | bulk memories/edges/links/sources with adapter fallbacks | 251-edge and 40-provenance query-count tests; 325 focused passed |
+| B5 | Source chunks/titles and open loops apply complete people/time predicates before limits | Closed; independently accepted in sixth review | bundled store predicates + terminating legacy fallback | 361 focused units + live PG 420-decoy chunk/title/open-loop test pass |
+| C1 | Candidate dedupe includes project, status, domain, and sensitivity semantics | Closed; independently accepted in sixth review | classification-aware atomic source/candidate identity | exact same-text reclassification passes on SQLite and PostgreSQL |
+| C2 | Raw-text digest remains a true text digest; scoped dedupe identity is separate and backward compatible | Closed; independently accepted in sixth review | stable `content_hash`, exact raw digest, internal `dedupe_key` | 135 focused units + 2 live PG capture tests pass |
+| C3 | Concurrent capture dedupe is atomic in SQLite and PostgreSQL | Closed; independently accepted in sixth review | migration 0085 partial unique index + get-or-create | real two-connection SQLite and PostgreSQL races pass |
+| C4 | Agent-output artifacts propagate project scope | Closed; independently accepted in sixth review | connector/capture scope + agent/run propagation | agent-output scope tests in focused slice |
+| C5 | Review edits keep title, summary, and searchable text consistent | Closed; independently accepted in sixth review | HTTP/MCP edit synchronization | edit/search tests in focused slice |
+| C6 | MCP provenance editing matches its advertised schema and validates evidence atomically | Closed; independently accepted in sixth review | advertised provenance persists and links | invalid source/chunk/ownership/role/confidence rollback + 2 live PG tests pass |
+| C7 | Every advertised nested MCP JSON-schema value contract is enforced before mutation | Closed in repair pass 5; independently accepted in fifth review | recursive validation enforces RFC 3339 full-date syntax/calendar validity, rejects unsupported advertised formats, and applies finite 0..1 core/legacy correction-confidence schemas before handlers | 184 MCP units; 58 focused date/confidence cases; 8 durable SQLite boolean/non-finite rollback cases; representative PostgreSQL edit/replacement rollback; valid dates and 0/1 boundaries remain accepted |
+| C8 | Invalid domain/sensitivity values return 4xx, not DB 500 | Closed; independently accepted in sixth review | HTTP Literal enums + MCP enum schema | API 422/MCP validation tests |
+| C9 | Historical SQLite agent/run attribution is backfilled | Closed; independently accepted in sixth review | SQLite bootstrap attribution repair | upgrade test in focused slice |
+| C10 | Documented scoped `alice_recall` arguments remain advertised and functional | Closed; independently accepted in sixth review | MCP schema + retrieval filter mapping | thread/task/project/person/since/until parity + PG decoys pass |
+| D1 | Existing repeated or dangling successor chains fail closed | Closed; independently accepted in sixth review | lifecycle walker | focused lifecycle/MCP/migration units: 85 passed |
+| D2 | One graph/candidate/member serialization order precedes involved row locks on every entry path | Closed; independently accepted in sixth review | HTTP/MCP/CLI/direct lifecycle paths | 120 focused units + 11 live PG lock-order/race tests pass |
+| D3 | Successor lifecycle status is validated | Closed; independently accepted in sixth review | lifecycle service accepts valid live heads only | invalid successor matrix in 85-test slice |
+| D4 | `unexpire()` no-op response and stored state agree | Closed; independently accepted in sixth review | memory commit | status matrix; real PostgreSQL expire/unexpire races: 2 passed |
+| D5 | Expired confirmation writes a revision and event | Closed; independently accepted in sixth review | confirmation path | expiry audit test in focused slice |
+| D6 | Every MCP and generic HTTP terminal review action closes nested confirmation metadata truthfully | Closed in repair pass 3; independently accepted in third review | shared terminal metadata treatment across MCP and HTTP | 41 full vNext-main units + 5 actual ASGI/PostgreSQL action/row-to-graph tests pass |
+| D7 | Published 0084 remains byte-identical and a new 0086 repairs all 3+ duplicate pointers repeatably | Closed; independently accepted in sixth review | restored 0084; new idempotent 0086 after 0085 | byte comparison + released-0084-stamped upgrade-to-head/rerun tests pass |
+| E1 | Rollup totals use authoritative membership and disclose display truncation | Closed; independently accepted in sixth review | exact scoped counts + total/display metadata | capped-card truth test; 213 focused passed |
+| E2 | Model summaries do not claim full-group knowledge from capped input | Closed; independently accepted in sixth review | bounded-corpus metadata + model refusal | truncated-summary refusal test |
+| E3 | Consolidation/rollups require cohesive groups rather than unsafe single-linkage chains | Closed; independently accepted in sixth review | complete-link/all-pairs admission | bridge endpoint rejection tests |
+| E4 | Semantic rollup peak memory is materially reduced and bounded | Closed; independently accepted in sixth review | float32 blockwise similarity/silhouette | peak temp 1,024,000 bytes at 2,000 cap vs prior 16,000,000 dense matrix |
+| E5 | Embedding presence is checked before provider calls and vectors are reused across consolidation/rollup | Closed; independently accepted in sixth review | exact presence first + shared cache | zero calls for absent rows; six rows reused with zero rollup re-embeds |
+| F1 | Installer/migration/doctor enforce pgvector 0.8+ or fail clearly | Closed; independently accepted in sixth review | installer, doctor, tests workflow, semantic gate | unsupported-version and shell/workflow checks pass |
+| G1 | Import consumes one immutable input snapshot, closing validate/import TOCTOU | Closed; independently accepted in sixth review | immutable private input plus bounded disk spool | substitution/error cleanup tests; full onramp 112 passed |
+| G2 | Export ignores SQLite-reserved internal tables but rejects future application tables | Closed; independently accepted in sixth review | `onramp.py` snapshot validation | `ANALYZE` export passes and populated unknown app table rejects |
+| G3 | Import decodes JSONL once with bounded memory | Closed; independently accepted in sixth review | private disk spool | 50k/2.660 MiB input peaks at 0.041 MiB; exact one-decode test passes |
+| G4 | Existing-target restore retains documented quiesce-writer contract | Closed; independently accepted in sixth review | behavior unchanged; docs clarified | existing backup suite |
+| G5 | SQLite end-only time filters and no-work bootstrap are contract-correct and bounded | Closed; independently accepted in sixth review | SQLite store/schema | end-only + indexed zero-decode/query-plan bootstrap regressions pass |
+| H1 | Response/request drafts cannot cross thread navigation | Closed; independently accepted in sixth review | thread-keyed assistant and governed-request composers | 252-unit-test suite + Playwright navigation reset pass |
+| H2 | Partial continuity outages preserve safe live-known correction while fixture IDs remain blocked | Closed in repair pass 3; independently accepted in third review | queue-derived live target provenance is independent from detail/history health | focused units + real-browser queue-success/detail-503 correction pass; fixture IDs remain blocked |
+| H3 | Independent SSR/data requests and review detail are parallelized with loading boundaries | Closed; independently accepted in sixth review | review detail chained from queue promise | concurrency unit proves detail starts before unrelated pending reads |
+| H4 | Full web TypeScript is zero and enforced by script/CI | Closed; independently accepted in sixth review | package script + CI gate | `pnpm typecheck` passes with zero errors (baseline: 69) |
+| H5 | Real-browser navigation and configured-live outage coverage exists | Closed; independently accepted in sixth review | core + full/partial-outage Playwright suites | 8/8 browser tests pass |
+| H6 | Accessibility checks and landmark/skip-link/heading/aria-current fixes | Closed; independently accepted in sixth review | shell/pages/axe checks | axe passes on `/`, `/chat`, `/continuity`, and `/vnext` |
+| H7 | vNext coverage exercises representative orchestrator behaviors with nonzero per-file function threshold | Closed in repair pass 3; independently accepted in third review | four stable shard tests exercise capture/review/artifact/scheduler/connector/charter handlers | orchestrator 63.93% lines/statements, 42.85% branches, 14.42% functions; hard per-file floor 60/40/10/60 |
+| H8 | 4,590-line vNext workspace is materially decomposed | Closed; independently accepted in sixth review | 1,281-line model + 65-line overview extraction | orchestrator reduced 27.2% to 3,342 lines; unit/build/browser gates pass |
+| H9 | Clean local release setup installs the Playwright Chromium runtime without macOS-incompatible Linux package installation | Closed in repair pass 4; independently accepted in fourth review | idempotent `make setup-browser`; guarded Debian/Ubuntu variant; `test-web` prerequisite; CI shares Linux script | setup target + guard contract + 9 static release-polish tests + 19-route build + full 8/8 browser tests pass |
+| I1 | Release-note truth validation requires exactly one correctly positioned structured state | Closed; independently accepted in sixth review | strict line-2 structured state parser | fenced/duplicate/misplaced/malformed regressions pass |
+| I2 | Normal cross-module first-party Python mypy reports zero errors | Closed; independently accepted in sixth review | shared DB/payload contracts and real CI/Makefile command | reviewer 262/7 baseline -> success; current pass-6 mypy covers 134 files with no skip flag |
+| I3 | Packaged README uses portable links | Closed; independently accepted in sixth review | `README.md` absolute repository links | relative-link scan zero; wheel and sdist artifact smokes pass |
+| I4 | Active release, vNext, Ubuntu, integration, protocol, and handoff docs are truthful and durable | Closed; independently accepted in sixth review | expanded control checker + narrow report unignore | 10 control-doc tests and live truth check pass; reports are not ignored |
+| I5 | HTTP/MCP/searchable edit/SQLite attribution items | Closed via C5-C9; independently accepted in sixth review | see corresponding rows | see corresponding rows |
+| J1 | Unit coverage, PostgreSQL integration, LongMemEval, scale, web, package, Ruff, normal mypy, docs, and diff gates pass together | Closed; independently accepted in sixth review | pass-3 broad gate, pass-4 browser, pass-5 semantic/MCP, and pass-6 release-control/attestation/package/static revalidation | 2,497 units/69.47%, 418 sequential PG, 127 LongMemEval+evidence remain pass-3 evidence; affected pass-6 gates green |
+| J2 | Desloppify objective scan runs only after implementation queue | Closed; independently accepted in sixth review | fresh isolated full-profile post-change scan | objective/verified 85.6; all mechanical and 20 unassessed subjective dimensions recorded in build report |
+| J3 | Independent reviewer reports no blocker | Closed; sixth acceptance PASS with no P0/P1/P2 | `REVIEW_REPORT.md` | first five passes rejected residuals; the sixth independently accepted the frozen pass-6 tree and is authoritative |
+
+## Release blockers
+
+All remediation rows are closed and independently accepted. That review result
+does not authorize publication from the dirty, uncommitted tree. The engineer
+must establish a clean committed candidate SHA, pass the complete required
+CI/check set on that exact SHA, perform fresh external control readback and
+provide `ALICE_RELEASE_CONTROLS_ATTESTATION` for its repository/SHA/tag, and
+produce the protected configured semantic report/attestation for the same SHA.
+Local deterministic providers cannot satisfy the semantic gate, and neither
+attestation substitutes for the other.

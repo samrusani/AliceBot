@@ -12,6 +12,9 @@ from alicebot_api.contracts import (
     DEFAULT_TEMPORAL_TIMELINE_LIMIT,
     TEMPORAL_TIMELINE_ORDER,
     EntityRecord,
+    EntityType,
+    TemporalEdgeExplainRecord,
+    TemporalEdgeSupersessionRecord,
     TemporalExplainQueryInput,
     TemporalExplainResponse,
     TemporalFactExplainRecord,
@@ -80,7 +83,7 @@ def _validate_time_window(*, since: datetime | None, until: datetime | None) -> 
 def _serialize_entity(entity: EntityRow) -> EntityRecord:
     return {
         "id": str(entity["id"]),
-        "entity_type": entity["entity_type"],
+        "entity_type": cast(EntityType, entity["entity_type"]),
         "name": entity["name"],
         "source_memory_ids": entity["source_memory_ids"],
         "created_at": entity["created_at"].isoformat(),
@@ -336,7 +339,7 @@ def get_temporal_state_at(
             "summary": {
                 "entity_id": str(entity["id"]),
                 "entity_name": entity["name"],
-                "entity_type": entity["entity_type"],
+                "entity_type": cast(EntityType, entity["entity_type"]),
                 "as_of": as_of.isoformat(),
                 "fact_count": len(facts),
                 "edge_count": len(edges),
@@ -386,8 +389,11 @@ def _timeline_memory_events(
                     "memory_key": memory["memory_key"],
                     "value": snapshot.value,
                     "status": snapshot.status,
-                    "validity": _serialize_validity(snapshot.valid_from, snapshot.valid_to, at=at),
-                    "source_event_ids": snapshot.source_event_ids,
+                    "validity": cast(
+                        JsonValue,
+                        _serialize_validity(snapshot.valid_from, snapshot.valid_to, at=at),
+                    ),
+                    "source_event_ids": cast(JsonValue, snapshot.source_event_ids),
                 },
             }
         )
@@ -409,8 +415,11 @@ def _timeline_edge_events(edge: EntityEdgeRow, *, at: datetime) -> list[Temporal
                 "relationship_type": edge["relationship_type"],
                 "from_entity_id": str(edge["from_entity_id"]),
                 "to_entity_id": str(edge["to_entity_id"]),
-                "validity": _serialize_validity(edge["valid_from"], edge["valid_to"], at=at),
-                "source_memory_ids": edge["source_memory_ids"],
+                "validity": cast(
+                    JsonValue,
+                    _serialize_validity(edge["valid_from"], edge["valid_to"], at=at),
+                ),
+                "source_memory_ids": cast(JsonValue, edge["source_memory_ids"]),
             },
         }
     ]
@@ -427,7 +436,7 @@ def _timeline_edge_events(edge: EntityEdgeRow, *, at: datetime) -> list[Temporal
                     "relationship_type": edge["relationship_type"],
                     "from_entity_id": str(edge["from_entity_id"]),
                     "to_entity_id": str(edge["to_entity_id"]),
-                    "source_memory_ids": edge["source_memory_ids"],
+                    "source_memory_ids": cast(JsonValue, edge["source_memory_ids"]),
                 },
             }
         )
@@ -462,7 +471,7 @@ def get_temporal_timeline(
             "payload": {
                 "entity_type": entity["entity_type"],
                 "name": entity["name"],
-                "source_memory_ids": entity["source_memory_ids"],
+                "source_memory_ids": cast(JsonValue, entity["source_memory_ids"]),
             },
         }
     ]
@@ -490,7 +499,7 @@ def get_temporal_timeline(
             "summary": {
                 "entity_id": str(entity["id"]),
                 "entity_name": entity["name"],
-                "entity_type": entity["entity_type"],
+                "entity_type": cast(EntityType, entity["entity_type"]),
                 "since": isoformat_or_none(since),
                 "until": isoformat_or_none(until),
                 "returned_count": len(limited_events),
@@ -643,7 +652,7 @@ def _edge_supersession_chain(
     *,
     edge: EntityEdgeRow,
     at: datetime,
-) -> list[dict[str, object]]:
+) -> list[TemporalEdgeSupersessionRecord]:
     related_edges = sorted(
         (
             candidate
@@ -707,12 +716,15 @@ def get_temporal_explain(
             }
         )
 
-    edge_records: list[dict[str, object]] = []
+    edge_records: list[TemporalEdgeExplainRecord] = []
     for edge in sorted(active_edges, key=lambda item: (item["created_at"], str(item["id"]))):
         supporting_snapshots = [
-            snapshot
+            supporting_snapshot
             for raw_memory_id in edge["source_memory_ids"]
-            if (snapshot := snapshots_by_memory_id.get(UUID(raw_memory_id))) is not None
+            if (
+                supporting_snapshot := snapshots_by_memory_id.get(UUID(raw_memory_id))
+            )
+            is not None
         ]
         edge_records.append(
             {
@@ -727,11 +739,11 @@ def get_temporal_explain(
         "explain": {
             "entity": _serialize_entity(entity),
             "facts": fact_records,
-            "edges": cast(list[dict[str, object]], edge_records),
+            "edges": edge_records,
             "summary": {
                 "entity_id": str(entity["id"]),
                 "entity_name": entity["name"],
-                "entity_type": entity["entity_type"],
+                "entity_type": cast(EntityType, entity["entity_type"]),
                 "as_of": as_of.isoformat(),
                 "fact_count": len(fact_records),
                 "edge_count": len(edge_records),

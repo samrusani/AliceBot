@@ -11,6 +11,7 @@ import pytest
 import alicebot_api.cli as cli_module
 from alicebot_api.config import Settings
 from alicebot_api.contracts import ContinuityRecallResponse
+from alicebot_api.vnext_embeddings import VNextEmbeddingProviderError
 
 
 def test_parser_routes_required_commands() -> None:
@@ -847,6 +848,37 @@ def test_eval_run_cli_release_gate_fts_only_exits_nonzero(monkeypatch, capsys) -
     assert exit_code == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["report"]["status"] == "pass_fts_only"
+
+
+def test_eval_run_cli_release_gate_all_skipped_exits_nonzero(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "run_vnext_evals",
+        lambda **kwargs: _stub_eval_report("skipped"),
+    )
+
+    exit_code = cli_module.main(["eval", "run", "--suite", "all", "--release-gate"])
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["report"]["status"] == "skipped"
+
+
+def test_eval_run_cli_release_gate_partial_skip_exits_nonzero(monkeypatch, capsys) -> None:
+    report = _stub_eval_report("pass")
+    report["summary"] = {
+        "status": "pass",
+        "suite_count": 6,
+        "executed_suite_count": 5,
+        "skipped_suite_count": 1,
+    }
+    monkeypatch.setattr(cli_module, "run_vnext_evals", lambda **kwargs: report)
+
+    exit_code = cli_module.main(["eval", "run", "--suite", "all", "--release-gate"])
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["report"]["summary"]["skipped_suite_count"] == 1
 
 
 def test_eval_run_cli_exits_zero_on_pass(monkeypatch, capsys) -> None:
@@ -1854,6 +1886,7 @@ def test_backfill_embeddings_cli_embeds_missing_memories_in_batches(monkeypatch)
         def __init__(self) -> None:
             super().__init__()
             self.embedding_updates: list[tuple[str, list[float]]] = []
+            self.embedding_signatures: list[dict[str, object]] = []
             self.missing = [
                 {"id": "00000000-0000-4000-8000-000000000001", "title": "One", "canonical_text": "First fact."},
                 {"id": "00000000-0000-4000-8000-000000000002", "title": "Two", "canonical_text": "Second fact."},
@@ -1875,14 +1908,16 @@ def test_backfill_embeddings_cli_embeds_missing_memories_in_batches(monkeypatch)
             *,
             memory_id: str,
             vector: list[float],
-            **_signature: object,
+            **signature: object,
         ):
             self.embedding_updates.append((memory_id, vector))
+            self.embedding_signatures.append(signature)
             return {"id": memory_id}
 
     class StubProvider:
         provider = "stub"
         model = "stub-embedding"
+        base_url = "https://Embed.Example:443/Case/V1"
 
         def embed_batch(self, texts):
             return [[0.5] * 4 for _text in texts]
@@ -1917,6 +1952,58 @@ def test_backfill_embeddings_cli_embeds_missing_memories_in_batches(monkeypatch)
         "00000000-0000-4000-8000-000000000001",
         "00000000-0000-4000-8000-000000000002",
     ]
+    assert all(signature["signature_version"] == 2 for signature in store.embedding_signatures)
+    assert all(signature["endpoint"] for signature in store.embedding_signatures)
+
+
+def test_backfill_embeddings_cli_exits_nonzero_when_any_batch_fails(
+    monkeypatch, capsys
+) -> None:
+    class BackfillStore(FakeVNextCliStore):
+        def list_memories_missing_embeddings(
+            self,
+            *,
+            limit: int = 100,
+            after_id: str | None = None,
+            **_signature: object,
+        ):
+            del limit
+            if after_id is not None:
+                return []
+            return [
+                {
+                    "id": "00000000-0000-4000-8000-000000000001",
+                    "canonical_text": "Embedding request will fail.",
+                }
+            ]
+
+    class FailingProvider:
+        provider = "stub"
+        model = "stub-embedding"
+        base_url = "http://127.0.0.1:9999/v1"
+
+        def embed_batch(self, texts):
+            del texts
+            raise VNextEmbeddingProviderError("connection refused")
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        yield BackfillStore()
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(cli_module, "get_embedding_provider", lambda: FailingProvider())
+    monkeypatch.setattr(
+        cli_module,
+        "get_settings",
+        lambda: Settings(database_url="postgresql://db", auth_user_id=str(uuid4())),
+    )
+
+    exit_code = cli_module.main(["vnext", "memories", "backfill-embeddings"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert json.loads(captured.out)["failed"] == 1
+    assert "embedding batch failed" in captured.err
 
 
 def test_main_rejects_sqlite_database_url_with_onramp_pointer(monkeypatch, capsys) -> None:

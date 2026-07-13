@@ -9,7 +9,18 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit --pretty false",
     "test": "vitest run",
+    "test:coverage": "pnpm run test:coverage:core && pnpm run test:coverage:vnext",
+    "test:coverage:core": "vitest run --coverage --maxWorkers=4 --exclude app/vnext/page.test.tsx --exclude components/vnext-operator-auth.test.tsx --exclude test/vnext-coverage/vnext-coverage.test.tsx",
+    "test:coverage:vnext": "vitest run --config vitest.vnext.config.ts --coverage",
+    "setup:browser": "playwright install chromium",
+    "setup:browser:linux": "playwright install --with-deps chromium",
+    "test:browser": "pnpm run test:browser:core && pnpm run test:browser:outage && pnpm run test:browser:partial-outage",
+    "test:browser:core": "playwright test",
+    "test:browser:outage": "playwright test --config playwright.outage.config.ts",
+    "test:browser:partial-outage": "playwright test --config playwright.partial-outage.config.ts",
+    "test:budget": "node scripts/check-bundle-budget.mjs",
     "test:mvp:validation-matrix": "vitest run app/chat/page.test.tsx components/approval-actions.test.tsx components/approval-detail.test.tsx components/task-step-list.test.tsx components/thread-workflow-panel.test.tsx app/artifacts/page.test.tsx components/gmail-account-list.test.tsx components/gmail-message-ingest-form.test.tsx app/calendar/page.test.tsx app/memories/page.test.tsx app/entities/page.test.tsx components/trace-list.test.tsx lib/api.test.ts"
   },
   "dependencies": {
@@ -18,11 +29,14 @@
     "react-dom": "19.2.7"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.10.2",
+    "@playwright/test": "1.55.1",
     "@testing-library/jest-dom": "6.6.3",
     "@testing-library/react": "16.3.0",
     "@types/node": "22.13.10",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
+    "@vitest/coverage-v8": "3.2.6",
     "eslint": "9.39.5",
     "eslint-config-next": "15.5.20",
     "jsdom": "26.1.0",

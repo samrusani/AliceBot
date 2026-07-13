@@ -5,6 +5,7 @@ export type ChatMode = "assistant" | "request";
 type ModeToggleProps = {
   currentMode: ChatMode;
   selectedThreadId?: string;
+  demoMode?: boolean;
 };
 
 const MODE_ITEMS: Array<{
@@ -24,7 +25,7 @@ const MODE_ITEMS: Array<{
   },
 ];
 
-export function ModeToggle({ currentMode, selectedThreadId }: ModeToggleProps) {
+export function ModeToggle({ currentMode, selectedThreadId, demoMode = false }: ModeToggleProps) {
   return (
     <nav className="mode-toggle" aria-label="Chat mode">
       {MODE_ITEMS.map((item) => {
@@ -37,6 +38,10 @@ export function ModeToggle({ currentMode, selectedThreadId }: ModeToggleProps) {
 
         if (selectedThreadId) {
           params.set("thread", selectedThreadId);
+        }
+
+        if (demoMode) {
+          params.set("demo", "fixture");
         }
 
         const query = params.toString();

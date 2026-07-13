@@ -42,6 +42,14 @@ LIVE_STATUSES: frozenset[str] = frozenset(
 )
 ALL_STATUSES: frozenset[str] = RETIRED_STATUSES | LIVE_STATUSES
 
+# A supersession successor is the new head of a memory chain. It must already
+# be an accepted/live value, not a pending review candidate or a stale row that
+# default retrieval excludes. ``private_only`` remains a valid head: its
+# exclusion is an intentional visibility policy, not a pending/retired state.
+SUPERSESSION_SUCCESSOR_STATUSES: frozenset[str] = frozenset(
+    {"active", "accepted", "private_only"}
+)
+
 
 # -- lifecycle operations ------------------------------------------------------
 #
@@ -208,16 +216,30 @@ def supersession_would_cycle(
                 f"supersession chain exceeds {max_depth} hops; cannot verify "
                 "acyclicity, rejecting the supersession to fail closed"
             )
-        current_id = str(current["id"])
+        current_id_raw = current.get("id")
+        if current_id_raw is None:
+            raise LifecycleTransitionError(
+                "supersession chain contains a row without an id; cannot verify "
+                "acyclicity, rejecting the supersession to fail closed"
+            )
+        current_id = str(current_id_raw)
         if current_id == target:
             return True
         if current_id in seen:
-            break
+            raise LifecycleTransitionError(
+                f"supersession chain already contains a cycle at memory {current_id}; "
+                "rejecting the supersession to fail closed"
+            )
         seen.add(current_id)
         next_id = read_pointer(current, "superseded_by")
         if not next_id:
             break
         current = load_memory(next_id)
+        if current is None:
+            raise LifecycleTransitionError(
+                f"supersession chain points to missing memory {next_id}; cannot verify "
+                "acyclicity, rejecting the supersession to fail closed"
+            )
         depth += 1
     return False
 
@@ -235,6 +257,7 @@ __all__ = [
     "REVIEW_REJECT",
     "REVIEW_SUPERSEDE",
     "RETIRED_STATUSES",
+    "SUPERSESSION_SUCCESSOR_STATUSES",
     "SUPERSEDE_MEMBER",
     "UNDO",
     "UNEXPIRE",

@@ -36,9 +36,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+import inspect
 import json
 import re
-from typing import Callable, Mapping, Protocol, Sequence
+from typing import Callable, Mapping, Protocol, Sequence, TypeVar, TypedDict, cast
 from uuid import uuid4
 
 # Read-only reuse of the contradiction-detection machinery that backs
@@ -93,6 +94,24 @@ from alicebot_api.vnext_temporal_query import (
 )
 
 
+class QueryInterpretation(TypedDict):
+    query: str
+    query_type: str
+    terms: list[str]
+    domains: list[str]
+    projects: list[str]
+    people: list[str]
+    memory_types: list[str]
+    time_window: str | None
+    sensitivity_allowed: list[str]
+    requires_sources: bool
+    requires_contradictions: bool
+    requires_raw_evidence: bool
+
+
+StageSourceT = TypeVar("StageSourceT")
+
+
 DEFAULT_CONTEXT_PACK_LIMIT = 8
 MAX_CONTEXT_PACK_ITEMS = 50
 MAX_CONTEXT_PACK_TOKENS = 50_000
@@ -102,13 +121,12 @@ DEFAULT_SOURCE_LIMIT = 8
 DEFAULT_OPEN_LOOP_LIMIT = 8
 DEFAULT_RECENT_CHANGES_LIMIT = 5
 SCOPED_ROW_OVERFETCH_LIMIT = 200
-# Hard ceiling on how deep a scoped ranked scan will page before giving up.
-# People/time scope filters run in Python over ranked candidates, so a fixed
-# over-fetch only moves the "valid row erased behind a decoy window" cliff to
-# its size. The scan deepens progressively up to this bound so a genuine match
-# ranked past the first window is still surfaced, while unbounded scans are
-# prevented.
-SCOPED_ROW_SCAN_CEILING = 4_000
+# Legacy stores expose only ``limit`` (no cursor/offset and no server-side
+# scope predicate).  Compatibility deepening therefore needs a finite proof
+# boundary: bundled stores never use this ceiling because they apply scope in
+# SQL, while an adapter that cannot prove exhaustion before the boundary fails
+# closed instead of doubling forever or silently returning an incomplete pack.
+LEGACY_SCOPED_SCAN_MAX_ROWS = 16_384
 DEFAULT_SENSITIVITY_ALLOWED = ("public", "internal", "private", "unknown")
 STRATEGIC_QUERY_TYPES = {"strategic_synthesis", "contradiction_check", "project_status", "agent_context"}
 RRF_K = 60
@@ -316,6 +334,10 @@ class VNextRetrievalValidationError(ValueError):
     """Raised when a vNext retrieval request is invalid."""
 
 
+class VNextRetrievalCompletenessError(RuntimeError):
+    """Raised when a legacy adapter cannot prove scoped recall completeness."""
+
+
 class VNextRetrievalStore(Protocol):
     """Minimum store surface for context-pack retrieval.
 
@@ -338,7 +360,13 @@ class VNextRetrievalStore(Protocol):
     ``memory_types``/``projects``/``created_by_agent_ids``/``run_id`` are
     only forwarded to the store when the request sets them, so minimal
     stores that predate those keyword arguments keep working for unfiltered
-    requests.
+    requests. Bundled ranked searches also accept the optional
+    ``scope_people``/``scope_person_memory_ids``/``scope_window_*`` predicate
+    arguments so filtering happens before LIMIT. Third-party adapters without
+    them retain a complete (uncapped) compatibility scan. Optional bulk
+    ``list_memory_entity_edges``/``get_memories_by_ids``/
+    ``list_provenance_links_for_targets``/``get_sources_by_ids`` methods avoid
+    graph and evidence N+1 reads; legacy single-row methods remain supported.
     """
 
     def append_event(self, event: JsonObject) -> JsonObject: ...
@@ -364,6 +392,10 @@ class VNextRetrievalStore(Protocol):
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = DEFAULT_SOURCE_LIMIT,
+        scope_projects: tuple[str, ...] = (),
+        scope_people: tuple[str, ...] = (),
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
     ) -> list[JsonObject]: ...
 
     def list_open_loops(
@@ -373,6 +405,10 @@ class VNextRetrievalStore(Protocol):
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = DEFAULT_OPEN_LOOP_LIMIT,
+        scope_projects: tuple[str, ...] = (),
+        scope_people: tuple[str, ...] = (),
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
     ) -> list[JsonObject]: ...
 
     def list_provenance_links(self, *, target_type: str, target_id: str) -> list[JsonObject]: ...
@@ -529,7 +565,7 @@ def _resolve_section_flags(request: VNextRetrievalRequest, *, query_type: str) -
     return requires_sources, requires_contradictions
 
 
-def classify_query(request: VNextRetrievalRequest) -> JsonObject:
+def classify_query(request: VNextRetrievalRequest) -> QueryInterpretation:
     _validate_choice(request.context_depth, field_name="context_depth", choices=CONTEXT_DEPTHS)
     query = normalize_query(request.query)
     lowered = query.casefold()
@@ -603,7 +639,6 @@ _SCOPE_EVENT_KEYS = (
     "updated_at",
     "first_seen_at",
     "created_at",
-    "captured_at",
 )
 
 
@@ -616,7 +651,12 @@ class _ResolvedRetrievalScope:
 
     @property
     def active(self) -> bool:
-        return bool(self.projects or self.people or self.window_start is not None)
+        return bool(
+            self.projects
+            or self.people
+            or self.window_start is not None
+            or self.window_end is not None
+        )
 
 
 def _normalized_scope_values(values: Sequence[str], *, field_name: str) -> frozenset[str]:
@@ -717,7 +757,7 @@ def _row_scope_event_time(row: Mapping[str, object]) -> datetime | None:
             parsed = parse_event_datetime(metadata.get(key))
             if parsed is not None:
                 return parsed
-    return None
+    return parse_event_datetime(row.get("captured_at"))
 
 
 def _row_matches_scope(
@@ -761,36 +801,141 @@ def _filter_rows_for_scope(
     ]
 
 
+def _retrieval_row_identity(row: Mapping[str, object]) -> str:
+    """Stable identity for compatibility-scan dedupe/progress detection."""
+    row_id = row.get("id")
+    if row_id not in (None, ""):
+        return f"id:{row_id}"
+    return "row:" + json.dumps(json_safe(row), sort_keys=True, separators=(",", ":"))
+
+
+def _dedupe_retrieval_rows(rows: Sequence[JsonObject]) -> list[JsonObject]:
+    deduped: list[JsonObject] = []
+    seen: set[str] = set()
+    for row in rows:
+        identity = _retrieval_row_identity(row)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        deduped.append(row)
+    return deduped
+
+
+def _fetch_filtered_prefix(
+    fetch: "Callable[[int], tuple[list[JsonObject], StageSourceT]]",
+    *,
+    select_rows: "Callable[[Sequence[JsonObject]], list[JsonObject]]",
+    target: int,
+    predicate_applied_before_limit: bool = False,
+) -> tuple[list[JsonObject], StageSourceT]:
+    """Fetch/select a ranked prefix with finite legacy compatibility deepening.
+
+    ``fetch(limit)`` returns ``(rows, source)`` ranked best-first. Bundled
+    stores apply the complete predicate before ranking/limiting and need one
+    bounded query. Older adapters retain only the legacy top-N API, so grow the
+    requested prefix until enough rows survive or the adapter proves
+    exhaustion. The compatibility path is explicitly finite: rows are
+    deduplicated, repeated/non-growing prefixes fail closed, and an adapter
+    that still returns a full prefix at ``LEGACY_SCOPED_SCAN_MAX_ROWS`` raises
+    ``VNextRetrievalCompletenessError`` instead of doubling forever or
+    returning a false-negative pack.
+    """
+    if predicate_applied_before_limit:
+        rows, source = fetch(target)
+        return _dedupe_retrieval_rows(select_rows(_dedupe_retrieval_rows(rows))), source
+    limit = min(
+        LEGACY_SCOPED_SCAN_MAX_ROWS,
+        max(target, SCOPED_ROW_OVERFETCH_LIMIT),
+    )
+    previous_unique_count = -1
+    while True:
+        raw_rows, source = fetch(limit)
+        rows = _dedupe_retrieval_rows(raw_rows)
+        filtered = _dedupe_retrieval_rows(select_rows(rows))
+        if len(filtered) >= target or len(raw_rows) < limit:
+            return filtered, source
+        if len(rows) <= previous_unique_count:
+            raise VNextRetrievalCompletenessError(
+                "legacy scoped retrieval adapter returned a repeated or non-progressing prefix"
+            )
+        if limit >= LEGACY_SCOPED_SCAN_MAX_ROWS:
+            raise VNextRetrievalCompletenessError(
+                "legacy scoped retrieval adapter did not prove exhaustion within "
+                f"{LEGACY_SCOPED_SCAN_MAX_ROWS} rows"
+            )
+        previous_unique_count = len(rows)
+        limit = min(limit * 2, LEGACY_SCOPED_SCAN_MAX_ROWS)
+
+
 def _fetch_scope_filtered(
-    fetch: "Callable[[int], tuple[list[JsonObject], object]]",
+    fetch: "Callable[[int], tuple[list[JsonObject], StageSourceT]]",
     *,
     scope: _ResolvedRetrievalScope,
     person_linked_memory_ids: frozenset[str],
     target: int,
-    ceiling: int = SCOPED_ROW_SCAN_CEILING,
-) -> tuple[list[JsonObject], object]:
-    """Fetch a ranked list and scope-filter it, deepening until enough survive.
-
-    ``fetch(limit)`` returns ``(rows, source)`` ranked best-first. Because
-    people/time scope filters run in Python over these ranked rows, a valid row
-    ranked behind a full window of non-matching candidates would be dropped by a
-    fixed over-fetch. Grow the fetch limit (doubling) until at least ``target``
-    filtered rows survive, the store is exhausted (returned fewer than asked),
-    or the hard scan ceiling is reached. When the scope is inactive this makes a
-    single fetch at ``target`` so unscoped packs stay byte-identical.
-    """
+    store_scope_complete: bool = False,
+) -> tuple[list[JsonObject], StageSourceT]:
+    """Fetch a ranked list and apply the resolved scope before selection."""
     if not scope.active:
         rows, source = fetch(target)
-        return list(rows), source
-    limit = min(max(target, SCOPED_ROW_OVERFETCH_LIMIT), ceiling)
-    while True:
-        rows, source = fetch(limit)
-        filtered = _filter_rows_for_scope(
-            rows, scope, person_linked_memory_ids=person_linked_memory_ids
-        )
-        if len(filtered) >= target or len(rows) < limit or limit >= ceiling:
-            return filtered, source
-        limit = min(limit * 2, ceiling)
+        return _dedupe_retrieval_rows(rows), source
+    return _fetch_filtered_prefix(
+        fetch,
+        select_rows=lambda rows: _filter_rows_for_scope(
+            rows,
+            scope,
+            person_linked_memory_ids=person_linked_memory_ids,
+        ),
+        target=target,
+        predicate_applied_before_limit=store_scope_complete,
+    )
+
+
+_STORE_SCOPE_PARAMETERS = frozenset(
+    {
+        "scope_thread_id",
+        "scope_task_id",
+        "scope_people",
+        "scope_person_memory_ids",
+        "scope_window_start",
+        "scope_window_end",
+    }
+)
+
+_RESOURCE_SCOPE_PARAMETERS = frozenset(
+    {
+        "scope_projects",
+        "scope_people",
+        "scope_window_start",
+        "scope_window_end",
+    }
+)
+
+
+def _supports_store_scope_predicate(method: object) -> bool:
+    """Whether a duck-typed search method accepts the complete scope filter."""
+    if not callable(method):
+        return False
+    try:
+        parameters = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    names = {parameter.name for parameter in parameters}
+    # **kwargs alone is not evidence that an adapter actually applies the
+    # predicate; treating an ignore-only shim as complete would reintroduce the
+    # top-N correctness cliff. Require the four explicit capability names.
+    return _STORE_SCOPE_PARAMETERS <= names
+
+
+def _supports_resource_scope_predicate(method: object) -> bool:
+    """Whether source/open-loop reads apply the complete scope in-store."""
+    if not callable(method):
+        return False
+    try:
+        names = set(inspect.signature(method).parameters)
+    except (TypeError, ValueError):
+        return False
+    return _RESOURCE_SCOPE_PARAMETERS <= names
 
 
 _GRAPH_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -815,6 +960,12 @@ def _graph_memory_admissible(
     projects: tuple[str, ...],
     created_by_agent_ids: tuple[str, ...],
     run_id: str | None,
+    scope_thread_id: str | None = None,
+    scope_task_id: str | None = None,
+    scope_people: tuple[str, ...] = (),
+    scope_person_memory_ids: tuple[str, ...] = (),
+    scope_window_start: datetime | None = None,
+    scope_window_end: datetime | None = None,
 ) -> bool:
     """Apply the search stages' row discipline to a hop-sourced memory row.
 
@@ -840,6 +991,29 @@ def _graph_memory_admissible(
         return False
     if run_id is not None and row.get("run_id") != run_id:
         return False
+    if scope_thread_id is not None and scope_thread_id.casefold() not in _row_scope_values(
+        row, ("thread_id",)
+    ):
+        return False
+    if scope_task_id is not None and scope_task_id.casefold() not in _row_scope_values(
+        row, ("task_id",)
+    ):
+        return False
+    if scope_people:
+        requested_people = {person.strip().casefold() for person in scope_people if person.strip()}
+        if (
+            str(row.get("id")) not in scope_person_memory_ids
+            and not (_row_scope_values(row, _PEOPLE_SCOPE_KEYS) & requested_people)
+        ):
+            return False
+    if scope_window_start is not None or scope_window_end is not None:
+        event_time = _row_scope_event_time(row)
+        if event_time is None:
+            return False
+        if scope_window_start is not None and event_time < scope_window_start:
+            return False
+        if scope_window_end is not None and event_time > scope_window_end:
+            return False
     return True
 
 
@@ -1347,6 +1521,77 @@ class VNextRetrievalService:
         )
         # ---- reranker (disclosed precision stage) end ---------------------
 
+    def _memory_entity_edges(self, entity_ids: Sequence[str]) -> list[JsonObject]:
+        """Resolve active memory/entity edges in one read when supported."""
+        normalized_ids = tuple(dict.fromkeys(str(entity_id) for entity_id in entity_ids if entity_id))
+        if not normalized_ids:
+            return []
+        bulk = getattr(self.store, "list_memory_entity_edges", None)
+        if callable(bulk):
+            return list(bulk(entity_ids=normalized_ids, edge_types=tuple(MEMORY_ENTITY_EDGE_TYPES)))
+        list_edges = getattr(self.store, "list_edges", None)
+        if not callable(list_edges):
+            return []
+        edges: list[JsonObject] = []
+        for entity_id in normalized_ids:
+            edges.extend(list_edges(to_id=entity_id))
+            edges.extend(list_edges(from_id=entity_id))
+        return edges
+
+    def _memories_by_ids(self, memory_ids: Sequence[str]) -> dict[str, JsonObject]:
+        normalized_ids = tuple(dict.fromkeys(str(memory_id) for memory_id in memory_ids if memory_id))
+        if not normalized_ids:
+            return {}
+        bulk = getattr(self.store, "get_memories_by_ids", None)
+        if callable(bulk):
+            rows = bulk(normalized_ids)
+        else:
+            get_memory = getattr(self.store, "get_memory", None)
+            rows = (
+                [row for memory_id in normalized_ids if (row := get_memory(memory_id)) is not None]
+                if callable(get_memory)
+                else []
+            )
+        return {str(row.get("id")): row for row in rows}
+
+    def _sources_by_ids(self, source_ids: Sequence[str]) -> dict[str, JsonObject]:
+        normalized_ids = tuple(dict.fromkeys(str(source_id) for source_id in source_ids if source_id))
+        if not normalized_ids:
+            return {}
+        bulk = getattr(self.store, "get_sources_by_ids", None)
+        if callable(bulk):
+            rows = bulk(normalized_ids)
+        else:
+            get_source = getattr(self.store, "get_source", None)
+            rows = (
+                [row for source_id in normalized_ids if (row := get_source(source_id)) is not None]
+                if callable(get_source)
+                else []
+            )
+        return {str(row.get("id")): row for row in rows}
+
+    def _provenance_by_target(
+        self,
+        *,
+        target_type: str,
+        target_ids: Sequence[str],
+    ) -> dict[str, list[JsonObject]]:
+        normalized_ids = tuple(dict.fromkeys(str(target_id) for target_id in target_ids if target_id))
+        grouped: dict[str, list[JsonObject]] = {target_id: [] for target_id in normalized_ids}
+        if not normalized_ids:
+            return grouped
+        bulk = getattr(self.store, "list_provenance_links_for_targets", None)
+        if callable(bulk):
+            rows = bulk(target_type=target_type, target_ids=normalized_ids)
+            for row in rows:
+                grouped.setdefault(str(row.get("target_id")), []).append(row)
+            return grouped
+        for target_id in normalized_ids:
+            grouped[target_id] = list(
+                self.store.list_provenance_links(target_type=target_type, target_id=target_id)
+            )
+        return grouped
+
     def _person_linked_memory_ids(self, people: frozenset[str]) -> frozenset[str]:
         """Resolve explicit people scope through the entity graph once.
 
@@ -1358,28 +1603,27 @@ class VNextRetrievalService:
         if not people:
             return frozenset()
         find_entities_by_names = getattr(self.store, "find_entities_by_names", None)
-        list_edges = getattr(self.store, "list_edges", None)
-        if not (callable(find_entities_by_names) and callable(list_edges)):
+        if not callable(find_entities_by_names):
             return frozenset()
         normalized_people = tuple(sorted(normalize_entity_name(person) for person in people))
         entities = list(find_entities_by_names(normalized_people))[:MAX_CONTEXT_SCOPE_VALUES]
         memory_ids: set[str] = set()
-        for entity in entities:
-            entity_id = str(entity.get("id"))
-            for edge in list(list_edges(to_id=entity_id))[:SCOPED_ROW_OVERFETCH_LIMIT]:
-                if (
-                    edge.get("edge_type") in MEMORY_ENTITY_EDGE_TYPES
-                    and str(edge.get("from_type")) == "memory"
-                    and str(edge.get("to_type")) == "entity"
-                ):
-                    memory_ids.add(str(edge.get("from_id")))
-            for edge in list(list_edges(from_id=entity_id))[:SCOPED_ROW_OVERFETCH_LIMIT]:
-                if (
-                    edge.get("edge_type") in MEMORY_ENTITY_EDGE_TYPES
-                    and str(edge.get("from_type")) == "entity"
-                    and str(edge.get("to_type")) == "memory"
-                ):
-                    memory_ids.add(str(edge.get("to_id")))
+        entity_ids = {str(entity.get("id")) for entity in entities}
+        for edge in self._memory_entity_edges(tuple(entity_ids)):
+            if edge.get("edge_type") not in MEMORY_ENTITY_EDGE_TYPES:
+                continue
+            if (
+                str(edge.get("from_type")) == "memory"
+                and str(edge.get("to_type")) == "entity"
+                and str(edge.get("to_id")) in entity_ids
+            ):
+                memory_ids.add(str(edge.get("from_id")))
+            elif (
+                str(edge.get("from_type")) == "entity"
+                and str(edge.get("to_type")) == "memory"
+                and str(edge.get("from_id")) in entity_ids
+            ):
+                memory_ids.add(str(edge.get("to_id")))
         return frozenset(memory_ids)
 
     def _sanitize_memory_scope_pointers(
@@ -1397,13 +1641,19 @@ class VNextRetrievalService:
         """
         if not scope.active:
             return
-        get_memory = getattr(self.store, "get_memory", None)
+        pointer_ids = [
+            str(pointer)
+            for memory in memories
+            for pointer_key in ("supersedes", "superseded_by")
+            if (pointer := memory.get(pointer_key))
+        ]
+        targets = self._memories_by_ids(pointer_ids)
         for memory in memories:
             for pointer_key in ("supersedes", "superseded_by"):
                 pointer = memory.get(pointer_key)
                 if not pointer:
                     continue
-                target = get_memory(str(pointer)) if callable(get_memory) else None
+                target = targets.get(str(pointer))
                 if target is None or not _row_matches_scope(
                     target,
                     scope,
@@ -1429,8 +1679,6 @@ class VNextRetrievalService:
         """
         if not scope.active:
             return
-        get_source = getattr(self.store, "get_source", None)
-        get_memory = getattr(self.store, "get_memory", None)
         source_cache: dict[str, Mapping[str, object] | None] = {}
         memory_cache: dict[str, Mapping[str, object] | None] = {}
 
@@ -1449,25 +1697,35 @@ class VNextRetrievalService:
                 return [ref for item in value for ref in _reference_strings(item)]
             return []
 
+        all_references = [
+            reference
+            for memory in memories
+            for reference in _reference_strings(memory)
+        ]
+        memory_reference_ids = [
+            reference.removeprefix("memory:")
+            for reference in all_references
+            if reference.startswith("memory:")
+        ]
+        source_reference_ids = [
+            reference.removeprefix("source:")
+            for reference in all_references
+            if not reference.startswith("memory:")
+        ]
+        memory_cache.update(self._memories_by_ids(memory_reference_ids))
+        source_cache.update(self._sources_by_ids(source_reference_ids))
+
         def _reference_allowed(reference: str) -> bool:
             if reference.startswith("memory:"):
                 memory_id = reference.removeprefix("memory:")
-                if memory_id not in memory_cache:
-                    memory_cache[memory_id] = (
-                        get_memory(memory_id) if callable(get_memory) and memory_id else None
-                    )
-                target = memory_cache[memory_id]
+                target = memory_cache.get(memory_id)
                 return target is not None and _row_matches_scope(
                     target,
                     scope,
                     person_linked_memory_ids=person_linked_memory_ids,
                 )
             source_id = reference.removeprefix("source:")
-            if source_id not in source_cache:
-                source_cache[source_id] = (
-                    get_source(source_id) if callable(get_source) and source_id else None
-                )
-            source = source_cache[source_id]
+            source = source_cache.get(source_id)
             return source is not None and _row_matches_scope(source, scope)
 
         def _value_allowed(value: object) -> bool:
@@ -1542,9 +1800,40 @@ class VNextRetrievalService:
         projects: tuple[str, ...] = (),
         created_by_agent_ids: tuple[str, ...] = (),
         run_id: str | None = None,
+        scope: _ResolvedRetrievalScope | None = None,
+        person_linked_memory_ids: frozenset[str] = frozenset(),
+        scope_thread_id: str | None = None,
+        scope_task_id: str | None = None,
+        scope_people: tuple[str, ...] = (),
+        scope_person_memory_ids: tuple[str, ...] = (),
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
     ) -> tuple[list[JsonObject], str]:
         filters = _optional_search_filters(memory_types, projects, created_by_agent_ids, run_id)
+        scope_filters: dict[str, object] = {}
         search_memories_fts = getattr(self.store, "search_memories_fts", None)
+        active_search = search_memories_fts if callable(search_memories_fts) else self.store.search_memories
+        effective_people = tuple(sorted(scope.people)) if scope is not None else scope_people
+        effective_window_start = scope.window_start if scope is not None else scope_window_start
+        effective_window_end = scope.window_end if scope is not None else scope_window_end
+        direct_scope_active = bool(
+            scope_thread_id
+            or scope_task_id
+            or effective_people
+            or effective_window_start is not None
+            or effective_window_end is not None
+        )
+        if direct_scope_active and _supports_store_scope_predicate(active_search):
+            scope_filters = {
+                "scope_thread_id": scope_thread_id,
+                "scope_task_id": scope_task_id,
+                "scope_people": effective_people,
+                "scope_person_memory_ids": (
+                    scope_person_memory_ids or tuple(sorted(person_linked_memory_ids))
+                ),
+                "scope_window_start": effective_window_start,
+                "scope_window_end": effective_window_end,
+            }
         if callable(search_memories_fts):
             rows = search_memories_fts(
                 query=query,
@@ -1552,6 +1841,7 @@ class VNextRetrievalService:
                 sensitivity_allowed=sensitivity_allowed,
                 limit=limit,
                 **filters,
+                **scope_filters,
             )
             # Display-only trace label; SQLite stores override it via
             # ``fts_stage_source`` so traces do not claim a Postgres stage.
@@ -1575,6 +1865,7 @@ class VNextRetrievalService:
                         limit=limit,
                         match_any=True,
                         **filters,
+                        **scope_filters,
                     )
                 except TypeError:
                     # Store predates the match_any kwarg; keep the strict
@@ -1582,14 +1873,30 @@ class VNextRetrievalService:
                     return [], fts_source
                 return _stabilize_scored_rows(rows), f"{fts_source}_or_fallback"
             return _stabilize_scored_rows(rows), fts_source
-        rows = self.store.search_memories(
+        legacy_search = cast(
+            Callable[..., list[JsonObject]],
+            getattr(self.store, "search_memories"),
+        )
+        rows = legacy_search(
             query=query,
             domains=domains or None,
             sensitivity_allowed=sensitivity_allowed,
             limit=limit,
             **filters,
+            **scope_filters,
         )
         return list(rows), "store_lexical"
+
+    def _query_embedding(self, query: str) -> tuple[list[float] | None, str]:
+        if self.embedding_provider is None:
+            return None, VECTOR_STAGE_DISABLED_NO_PROVIDER
+        search_memories_vector = getattr(self.store, "search_memories_vector", None)
+        if not callable(search_memories_vector):
+            return None, VECTOR_STAGE_DISABLED_NO_STORE_SUPPORT
+        try:
+            return self.embedding_provider.embed_text(query), VECTOR_STAGE_ENABLED
+        except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
+            return None, f"disabled: query embedding failed ({exc})"
 
     def _memory_vector_rows(
         self,
@@ -1602,14 +1909,25 @@ class VNextRetrievalService:
         projects: tuple[str, ...] = (),
         created_by_agent_ids: tuple[str, ...] = (),
         run_id: str | None = None,
+        scope: _ResolvedRetrievalScope | None = None,
+        person_linked_memory_ids: frozenset[str] = frozenset(),
+        query_vector: list[float] | None = None,
+        query_embedding_status: str | None = None,
+        scope_thread_id: str | None = None,
+        scope_task_id: str | None = None,
+        scope_people: tuple[str, ...] = (),
+        scope_person_memory_ids: tuple[str, ...] = (),
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
     ) -> tuple[list[JsonObject], str]:
-        if self.embedding_provider is None:
-            return [], VECTOR_STAGE_DISABLED_NO_PROVIDER
         search_memories_vector = getattr(self.store, "search_memories_vector", None)
-        if not callable(search_memories_vector):
-            return [], VECTOR_STAGE_DISABLED_NO_STORE_SUPPORT
+        if query_embedding_status is None:
+            query_vector, query_embedding_status = self._query_embedding(query)
+        if query_embedding_status != VECTOR_STAGE_ENABLED or query_vector is None:
+            return [], query_embedding_status
+        assert self.embedding_provider is not None
+        assert callable(search_memories_vector)
         try:
-            query_vector = self.embedding_provider.embed_text(query)
             search_kwargs: dict[str, object] = {
                 "query_vector": query_vector,
                 "domains": domains or None,
@@ -1617,6 +1935,29 @@ class VNextRetrievalService:
                 "limit": limit,
                 **_optional_search_filters(memory_types, projects, created_by_agent_ids, run_id),
             }
+            effective_people = tuple(sorted(scope.people)) if scope is not None else scope_people
+            effective_window_start = scope.window_start if scope is not None else scope_window_start
+            effective_window_end = scope.window_end if scope is not None else scope_window_end
+            direct_scope_active = bool(
+                scope_thread_id
+                or scope_task_id
+                or effective_people
+                or effective_window_start is not None
+                or effective_window_end is not None
+            )
+            if direct_scope_active and _supports_store_scope_predicate(search_memories_vector):
+                search_kwargs.update(
+                    {
+                        "scope_thread_id": scope_thread_id,
+                        "scope_task_id": scope_task_id,
+                        "scope_people": effective_people,
+                        "scope_person_memory_ids": (
+                            scope_person_memory_ids or tuple(sorted(person_linked_memory_ids))
+                        ),
+                        "scope_window_start": effective_window_start,
+                        "scope_window_end": effective_window_end,
+                    }
+                )
             try:
                 rows = search_memories_vector(
                     **search_kwargs,
@@ -1650,6 +1991,12 @@ class VNextRetrievalService:
         projects: tuple[str, ...] = (),
         created_by_agent_ids: tuple[str, ...] = (),
         run_id: str | None = None,
+        scope_thread_id: str | None = None,
+        scope_task_id: str | None = None,
+        scope_people: tuple[str, ...] = (),
+        scope_person_memory_ids: tuple[str, ...] = (),
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
     ) -> tuple[list[JsonObject], str, list[JsonObject]]:
         """Entity-hop graph stage: ``(rows, stage_status, matched_entities)``.
 
@@ -1667,9 +2014,13 @@ class VNextRetrievalService:
         substrate degrade to an honest disabled status instead of failing.
         """
         find_entities_by_names = getattr(self.store, "find_entities_by_names", None)
-        list_edges = getattr(self.store, "list_edges", None)
-        get_memory = getattr(self.store, "get_memory", None)
-        if not (callable(find_entities_by_names) and callable(list_edges) and callable(get_memory)):
+        has_edges = callable(getattr(self.store, "list_memory_entity_edges", None)) or callable(
+            getattr(self.store, "list_edges", None)
+        )
+        has_memories = callable(getattr(self.store, "get_memories_by_ids", None)) or callable(
+            getattr(self.store, "get_memory", None)
+        )
+        if not (callable(find_entities_by_names) and has_edges and has_memories):
             return [], GRAPH_STAGE_DISABLED_NO_STORE_SUPPORT, []
         candidate_names = entity_name_candidates(query)
         entities = list(find_entities_by_names(tuple(candidate_names))) if candidate_names else []
@@ -1679,28 +2030,34 @@ class VNextRetrievalService:
 
         # One hop: newest edge observed_at per connected memory.
         observed_at_by_memory: dict[str, datetime] = {}
-        for entity in entities:
-            entity_id = str(entity.get("id"))
-            edge_sides = (
-                (list_edges(to_id=entity_id), "memory", "entity", "from_id"),
-                (list_edges(from_id=entity_id), "entity", "memory", "to_id"),
-            )
-            for edges, from_type, to_type, memory_key in edge_sides:
-                for edge in edges:
-                    if edge.get("edge_type") not in MEMORY_ENTITY_EDGE_TYPES:
-                        continue
-                    if str(edge.get("from_type")) != from_type or str(edge.get("to_type")) != to_type:
-                        continue
-                    memory_id = str(edge.get(memory_key))
-                    observed_at = _parse_timestamp(edge.get("observed_at")) or _GRAPH_EPOCH
-                    previous = observed_at_by_memory.get(memory_id)
-                    if previous is None or observed_at > previous:
-                        observed_at_by_memory[memory_id] = observed_at
+        entity_ids = {str(entity.get("id")) for entity in entities}
+        for edge in self._memory_entity_edges(tuple(entity_ids)):
+            if edge.get("edge_type") not in MEMORY_ENTITY_EDGE_TYPES:
+                continue
+            if (
+                str(edge.get("from_type")) == "memory"
+                and str(edge.get("to_type")) == "entity"
+                and str(edge.get("to_id")) in entity_ids
+            ):
+                memory_id = str(edge.get("from_id"))
+            elif (
+                str(edge.get("from_type")) == "entity"
+                and str(edge.get("to_type")) == "memory"
+                and str(edge.get("from_id")) in entity_ids
+            ):
+                memory_id = str(edge.get("to_id"))
+            else:
+                continue
+            observed_at = _parse_timestamp(edge.get("observed_at")) or _GRAPH_EPOCH
+            previous = observed_at_by_memory.get(memory_id)
+            if previous is None or observed_at > previous:
+                observed_at_by_memory[memory_id] = observed_at
 
         now = datetime.now(UTC)
         ranked: list[tuple[datetime, datetime, str, JsonObject]] = []
+        memories_by_id = self._memories_by_ids(tuple(observed_at_by_memory))
         for memory_id, observed_at in observed_at_by_memory.items():
-            row = get_memory(memory_id)
+            row = memories_by_id.get(memory_id)
             if row is None:
                 continue
             if not _graph_memory_admissible(
@@ -1712,6 +2069,12 @@ class VNextRetrievalService:
                 projects=projects,
                 created_by_agent_ids=created_by_agent_ids,
                 run_id=run_id,
+                scope_thread_id=scope_thread_id,
+                scope_task_id=scope_task_id,
+                scope_people=scope_people,
+                scope_person_memory_ids=scope_person_memory_ids,
+                scope_window_start=scope_window_start,
+                scope_window_end=scope_window_end,
             ):
                 continue
             recency = (
@@ -1803,97 +2166,133 @@ class VNextRetrievalService:
         scope = scope or _ResolvedRetrievalScope(
             projects=frozenset(), people=frozenset(), window_start=None, window_end=None
         )
-        get_source = getattr(self.store, "get_source", None)
-        resolve_source = get_source if callable(get_source) else None
+        has_source_resolver = callable(getattr(self.store, "get_sources_by_ids", None)) or callable(
+            getattr(self.store, "get_source", None)
+        )
 
         def _resolve_sources(source_ids: list[str]) -> list[JsonObject]:
-            rows: list[JsonObject] = []
-            for source_id in source_ids:
-                row = resolve_source(source_id) if resolve_source is not None else None
-                if row is not None and _row_matches_scope(row, scope):
-                    rows.append(row)
-            return rows
+            by_id = self._sources_by_ids(source_ids)
+            return [
+                row
+                for source_id in source_ids
+                if (row := by_id.get(source_id)) is not None and _row_matches_scope(row, scope)
+            ]
+
+        def _resource_scope_filters(method: object) -> dict[str, object]:
+            if not scope.active or not _supports_resource_scope_predicate(method):
+                return {}
+            return {
+                "scope_projects": tuple(sorted(scope.projects)),
+                "scope_people": tuple(sorted(scope.people)),
+                "scope_window_start": scope.window_start,
+                "scope_window_end": scope.window_end,
+            }
 
         ranked_lists: dict[str, Sequence[JsonObject]] = {}
 
         # (a) Content: sources ranked by their best chunk-FTS hit.
         search_source_chunks = getattr(self.store, "search_source_chunks", None)
         chunk_sources: list[JsonObject] = []
-        if callable(search_source_chunks) and resolve_source is not None:
+        if callable(search_source_chunks) and has_source_resolver:
             chunk_fts_source = str(getattr(self.store, "fts_stage_source", "postgres_fts"))
-            chunk_rows = search_source_chunks(
-                query=query,
-                domains=domains or None,
-                sensitivity_allowed=sensitivity_allowed,
-                limit=min(
-                    SCOPED_ROW_OVERFETCH_LIMIT,
-                    limit * SOURCE_CHUNK_CANDIDATE_MULTIPLIER * (4 if scope.active else 1),
-                ),
-            )
-            if not chunk_rows and len(fts_fallback_tokens(query)) >= 2:
+            chunk_scope_filters = _resource_scope_filters(search_source_chunks)
+            chunk_store_scope_complete = bool(chunk_scope_filters)
+
+            def _chunk_sources_for(rows: Sequence[JsonObject]) -> list[JsonObject]:
+                ordered_source_ids: list[str] = []
+                seen_source_ids: set[str] = set()
+                for row in _stabilize_scored_rows(rows):
+                    source_id = row.get("source_id")
+                    if source_id is None or str(source_id) in seen_source_ids:
+                        continue
+                    seen_source_ids.add(str(source_id))
+                    ordered_source_ids.append(str(source_id))
+                return _resolve_sources(ordered_source_ids)
+
+            def _fetch_chunk_sources(
+                *, match_any: bool,
+            ) -> list[JsonObject]:
+                def _fetch(n: int) -> tuple[list[JsonObject], str]:
+                    kwargs: dict[str, object] = {
+                        "query": query,
+                        "domains": domains or None,
+                        "sensitivity_allowed": sensitivity_allowed,
+                        "limit": n,
+                        **chunk_scope_filters,
+                    }
+                    if match_any:
+                        kwargs["match_any"] = True
+                    return list(search_source_chunks(**kwargs)), chunk_fts_source
+
+                if not scope.active:
+                    rows, _source = _fetch(limit * SOURCE_CHUNK_CANDIDATE_MULTIPLIER)
+                    return _chunk_sources_for(rows)[:limit]
+                if chunk_store_scope_complete:
+                    rows, _source = _fetch(limit * SOURCE_CHUNK_CANDIDATE_MULTIPLIER)
+                    return _chunk_sources_for(rows)[:limit]
+                selected, _source = _fetch_filtered_prefix(
+                    _fetch,
+                    select_rows=_chunk_sources_for,
+                    target=limit,
+                )
+                return selected[:limit]
+
+            chunk_sources = _fetch_chunk_sources(match_any=False)
+            if not chunk_sources and len(fts_fallback_tokens(query)) >= 2:
                 # Same one-shot OR retry as _memory_fts_rows, same honesty
                 # rule: the label reports the relaxed pass.
                 try:
-                    chunk_rows = search_source_chunks(
-                        query=query,
-                        domains=domains or None,
-                        sensitivity_allowed=sensitivity_allowed,
-                        limit=min(
-                            SCOPED_ROW_OVERFETCH_LIMIT,
-                            limit * SOURCE_CHUNK_CANDIDATE_MULTIPLIER * (4 if scope.active else 1),
-                        ),
-                        match_any=True,
-                    )
+                    chunk_sources = _fetch_chunk_sources(match_any=True)
                 except TypeError:
                     # Store predates the match_any kwarg; keep the strict
                     # (empty) result rather than guessing.
-                    chunk_rows = []
+                    chunk_sources = []
                 else:
                     chunk_fts_source = f"{chunk_fts_source}_or_fallback"
-            # Equal-score chunk runs decide WHICH parent source enters the
-            # deduplicated chunk list first; stabilize them content-first so
-            # the list is ingest-invariant (distinct scores keep store order).
-            chunk_rows = _stabilize_scored_rows(chunk_rows)
-            ordered_source_ids: list[str] = []
-            seen_source_ids: set[str] = set()
-            for row in chunk_rows:
-                source_id = row.get("source_id")
-                if source_id is None or str(source_id) in seen_source_ids:
-                    continue
-                seen_source_ids.add(str(source_id))
-                ordered_source_ids.append(str(source_id))
-            chunk_sources = _resolve_sources(ordered_source_ids[:limit])
             ranked_lists[SOURCE_STAGE_CHUNK_FTS] = chunk_sources
         else:
             chunk_fts_source = SOURCE_CHUNK_STAGE_DISABLED_NO_STORE_SUPPORT
 
         # (b) Provenance of the winning memory hits, in fused rank order.
         provenance_sources: list[JsonObject] = []
-        if resolve_source is not None:
+        if has_source_resolver:
             provenance_ids: list[str] = []
             seen_provenance: set[str] = set()
+            links_by_target = self._provenance_by_target(
+                target_type="memory",
+                target_ids=[str(memory.get("id")) for memory in winning_memories],
+            )
             for memory in winning_memories:
-                for link in self.store.list_provenance_links(
-                    target_type="memory", target_id=str(memory.get("id"))
-                ):
+                for link in links_by_target.get(str(memory.get("id")), []):
                     source_id = link.get("source_id")
                     if source_id is None or str(source_id) in seen_provenance:
                         continue
                     seen_provenance.add(str(source_id))
                     provenance_ids.append(str(source_id))
-            provenance_sources = _resolve_sources(provenance_ids[:limit])
+            provenance_sources = _resolve_sources(provenance_ids)[:limit]
             ranked_lists[SOURCE_STAGE_PROVENANCE] = provenance_sources
 
         # (c) Legacy title/recency lexical list.
-        lexical_rows = list(
-            self.store.search_sources(
+        search_sources = cast(Callable[..., list[JsonObject]], self.store.search_sources)
+        source_scope_filters = _resource_scope_filters(search_sources)
+
+        def _fetch_sources(n: int) -> tuple[list[JsonObject], str]:
+            return list(search_sources(
                 query=query,
                 domains=domains or None,
                 sensitivity_allowed=sensitivity_allowed,
-                limit=min(SCOPED_ROW_OVERFETCH_LIMIT, limit * (4 if scope.active else 1)),
-            )
+                limit=n,
+                **source_scope_filters,
+            )), SOURCE_STAGE_TITLE_RECENCY
+
+        lexical_rows, _lexical_source = _fetch_scope_filtered(
+            _fetch_sources,
+            scope=scope,
+            person_linked_memory_ids=frozenset(),
+            target=limit,
+            store_scope_complete=bool(source_scope_filters),
         )
-        lexical_rows = _filter_rows_for_scope(lexical_rows, scope)[:limit]
+        lexical_rows = lexical_rows[:limit]
         ranked_lists[SOURCE_STAGE_TITLE_RECENCY] = lexical_rows
 
         # (d) Temporal-anchor rank boost: re-rank the candidates the lists
@@ -1959,9 +2358,9 @@ class VNextRetrievalService:
         strategy = request.budget_strategy
         depth = request.context_depth
         interpretation = classify_query(request)
-        terms = list(interpretation["terms"])  # type: ignore[arg-type]
-        domains = list(interpretation["domains"])  # type: ignore[arg-type]
-        sensitivity_allowed = list(interpretation["sensitivity_allowed"])  # type: ignore[arg-type]
+        terms = list(interpretation["terms"])
+        domains = list(interpretation["domains"])
+        sensitivity_allowed = list(interpretation["sensitivity_allowed"])
         sources_enabled = bool(interpretation["requires_sources"])
         contradictions_requested = bool(interpretation["requires_contradictions"])
         memory_types = tuple(request.memory_types)
@@ -2006,17 +2405,9 @@ class VNextRetrievalService:
             memory_candidate_limit *= vnext_coverage_query.COVERAGE_POOL_MULTIPLIER
         # ---- coverage mode (aggregation intent) end ----------------------
 
-        # People/time scope filters cannot all be pushed into the store query
-        # (people resolve through link edges + free-form metadata; the event
-        # window spans many row keys), so they run in Python over the store's
-        # ranked candidates (see _filter_rows_for_scope). A fixed over-fetch only
-        # moves the "valid row erased behind a decoy window" cliff to its size
-        # (audit 2 P1 #3). ``scope_target`` is the number of post-filter
-        # survivors we want; the ranked FTS and vector arms deepen their scan
-        # (bounded by SCOPED_ROW_SCAN_CEILING) until that many survive, the store
-        # is exhausted, or the ceiling is hit. The scope-inactive path makes a
-        # single fetch, so unscoped packs stay byte-identical. Non-ranked/graph
-        # arms keep the fixed scoped over-fetch cap below.
+        # Bundled stores apply people/time predicates before ranked LIMIT. The
+        # Python pass remains a fail-closed verifier and an uncapped compatibility
+        # path for adapters that predate the optional scope parameters.
         scope_target = memory_candidate_limit
         if scope.active:
             memory_candidate_limit = min(
@@ -2034,17 +2425,29 @@ class VNextRetrievalService:
                 projects=projects,
                 created_by_agent_ids=created_by_agent_ids,
                 run_id=filter_run_id,
+                scope=scope,
+                person_linked_memory_ids=person_linked_memory_ids,
             ),
             scope=scope,
             person_linked_memory_ids=person_linked_memory_ids,
             target=scope_target,
+            store_scope_complete=_supports_store_scope_predicate(
+                getattr(self.store, "search_memories_fts", None)
+                or getattr(self.store, "search_memories", None)
+            ),
         )
         if depth == CONTEXT_DEPTH_MINIMAL:
             # The cheapest useful call: FTS only. No query embedding, no
             # entity resolution or graph hop; honest tier status instead.
-            vector_rows, vector_stage = [], STAGE_DISABLED_MINIMAL
-            graph_rows, graph_stage, matched_entities = [], STAGE_DISABLED_MINIMAL, []
+            vector_rows: list[JsonObject] = []
+            vector_stage = STAGE_DISABLED_MINIMAL
+            graph_rows: list[JsonObject] = []
+            graph_stage = STAGE_DISABLED_MINIMAL
+            matched_entities: list[JsonObject] = []
         else:
+            query_vector, query_embedding_status = self._query_embedding(
+                str(interpretation["query"])
+            )
             vector_rows, vector_stage = _fetch_scope_filtered(
                 lambda n: self._memory_vector_rows(
                     query=str(interpretation["query"]),
@@ -2055,10 +2458,17 @@ class VNextRetrievalService:
                     projects=projects,
                     created_by_agent_ids=created_by_agent_ids,
                     run_id=filter_run_id,
+                    scope=scope,
+                    person_linked_memory_ids=person_linked_memory_ids,
+                    query_vector=query_vector,
+                    query_embedding_status=query_embedding_status,
                 ),
                 scope=scope,
                 person_linked_memory_ids=person_linked_memory_ids,
                 target=scope_target,
+                store_scope_complete=_supports_store_scope_predicate(
+                    getattr(self.store, "search_memories_vector", None)
+                ),
             )
             graph_rows, graph_stage, matched_entities = self._memory_graph_rows(
                 query=" ".join((request.query, *request.people)),
@@ -2069,6 +2479,10 @@ class VNextRetrievalService:
                 projects=projects,
                 created_by_agent_ids=created_by_agent_ids,
                 run_id=filter_run_id,
+                scope_people=tuple(sorted(scope.people)),
+                scope_person_memory_ids=tuple(sorted(person_linked_memory_ids)),
+                scope_window_start=scope.window_start,
+                scope_window_end=scope.window_end,
             )
             graph_rows = _filter_rows_for_scope(
                 graph_rows,
@@ -2282,13 +2696,37 @@ class VNextRetrievalService:
                 SOURCES_STAGE_DISABLED_BY_FLAG if request.include_sources is False else STAGE_DISABLED_MINIMAL
             )
             sources_stage_record = {"candidate_count": 0, "status": sources_stage_status}
-        open_loop_rows = self.store.list_open_loops(
-            status="open",
-            domains=domains or None,
-            sensitivity_allowed=sensitivity_allowed,
-            limit=(SCOPED_ROW_OVERFETCH_LIMIT if scope.active else DEFAULT_OPEN_LOOP_LIMIT),
+        list_open_loops = cast(Callable[..., list[JsonObject]], self.store.list_open_loops)
+        open_loop_scope_filters = (
+            {
+                "scope_projects": tuple(sorted(scope.projects)),
+                "scope_people": tuple(sorted(scope.people)),
+                "scope_window_start": scope.window_start,
+                "scope_window_end": scope.window_end,
+            }
+            if scope.active and _supports_resource_scope_predicate(list_open_loops)
+            else {}
         )
-        open_loop_rows = _filter_rows_for_scope(open_loop_rows, scope)[:DEFAULT_OPEN_LOOP_LIMIT]
+
+        def _fetch_open_loops(n: int) -> tuple[list[JsonObject], str]:
+            return list(
+                list_open_loops(
+                    status="open",
+                    domains=domains or None,
+                    sensitivity_allowed=sensitivity_allowed,
+                    limit=n,
+                    **open_loop_scope_filters,
+                )
+            ), "listing"
+
+        open_loop_rows, _open_loop_source = _fetch_scope_filtered(
+            _fetch_open_loops,
+            scope=scope,
+            person_linked_memory_ids=frozenset(),
+            target=DEFAULT_OPEN_LOOP_LIMIT,
+            store_scope_complete=bool(open_loop_scope_filters),
+        )
+        open_loop_rows = open_loop_rows[:DEFAULT_OPEN_LOOP_LIMIT]
 
         source_candidates = _fused_candidates(
             source_lists,
@@ -2499,7 +2937,7 @@ class VNextRetrievalService:
                 if source_id not in currency_source_cache:
                     source = currency_get_source(source_id) if callable(currency_get_source) else None
                     currency_source_cache[source_id] = (
-                        source
+                        cast(JsonObject, source)
                         if isinstance(source, Mapping) and _row_matches_scope(source, scope)
                         else None
                     )
@@ -2760,7 +3198,7 @@ class VNextRetrievalService:
             if source_id not in temporal_source_dates:
                 source_row = temporal_get_source(source_id)
                 temporal_source_dates[source_id] = (
-                    _source_event_time(source_row)
+                    _source_event_time(cast(JsonObject, source_row))
                     if isinstance(source_row, Mapping) and _row_matches_scope(source_row, scope)
                     else None
                 )
@@ -3000,13 +3438,28 @@ class VNextRetrievalService:
         scope: _ResolvedRetrievalScope,
     ) -> list[JsonObject]:
         evidence: list[JsonObject] = []
-        get_source = getattr(self.store, "get_source", None)
+        memory_ids = [str(memory.get("id")) for memory in memories]
+        links_by_target = self._provenance_by_target(
+            target_type="memory", target_ids=memory_ids
+        )
+        sources_by_id = (
+            self._sources_by_ids(
+                [
+                    str(link.get("source_id"))
+                    for links in links_by_target.values()
+                    for link in links
+                    if link.get("source_id")
+                ]
+            )
+            if scope.active
+            else {}
+        )
         for memory in memories:
             memory_id = str(memory.get("id"))
-            for link in self.store.list_provenance_links(target_type="memory", target_id=memory_id):
+            for link in links_by_target.get(memory_id, []):
                 if scope.active:
                     source_id = str(link.get("source_id") or "")
-                    source = get_source(source_id) if callable(get_source) and source_id else None
+                    source = sources_by_id.get(source_id)
                     if source is None or not _row_matches_scope(source, scope):
                         continue
                 evidence.append(
@@ -3185,6 +3638,7 @@ __all__ = [
     "GRAPH_STAGE_DISABLED_NO_ENTITY_MATCH",
     "GRAPH_STAGE_DISABLED_NO_STORE_SUPPORT",
     "GRAPH_STAGE_ENABLED",
+    "LEGACY_SCOPED_SCAN_MAX_ROWS",
     "MAX_CONTEXT_PACK_ITEMS",
     "MAX_CONTEXT_PACK_TOKENS",
     "MAX_CONTEXT_SCOPE_VALUES",
@@ -3218,6 +3672,7 @@ __all__ = [
     "VECTOR_STAGE_DISABLED_NO_STORE_SUPPORT",
     "VECTOR_STAGE_ENABLED",
     "VNextRetrievalRequest",
+    "VNextRetrievalCompletenessError",
     "VNextRetrievalService",
     "VNextRetrievalStore",
     "VNextRetrievalValidationError",

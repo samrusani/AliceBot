@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+from typing import cast
 from uuid import UUID
 
 from psycopg.conninfo import make_conninfo
@@ -18,6 +19,7 @@ from alicebot_api.contracts import (
     ContinuityEvidenceLinkRecord,
     ContinuityExplainRecord,
     ContinuityExplainResponse,
+    ContinuityObjectType,
     ContinuityReviewObjectRecord,
     isoformat_or_none,
 )
@@ -117,7 +119,7 @@ def _serialize_review_object(record: ContinuityObjectRow) -> ContinuityReviewObj
     return {
         "id": str(record["id"]),
         "capture_event_id": str(record["capture_event_id"]),
-        "object_type": record["object_type"],
+        "object_type": cast(ContinuityObjectType, record["object_type"]),
         "status": record["status"],
         "lifecycle": serialize_continuity_lifecycle_state_from_record(record),
         "title": record["title"],
@@ -211,7 +213,7 @@ def serialize_continuity_evidence_rows(
             ),
             "created_at": row["artifact_copy_created_at"].isoformat(),
         }
-        artifact_segment = None
+        artifact_segment: ContinuityEvidenceArtifactSegmentRecord | None = None
         if row["artifact_segment_id"] is not None:
             artifact_segment = {
                 "id": str(row["artifact_segment_id"]),

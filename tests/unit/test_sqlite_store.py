@@ -708,6 +708,101 @@ def test_search_memories_fts_applies_domain_and_sensitivity_filters() -> None:
     conn.close()
 
 
+def test_search_memories_fts_applies_people_and_time_scope_before_limit() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    _create_memory(
+        store,
+        canonical_text="scope predicate deployment",
+        metadata_json={"people": ["Alex"]},
+        valid_from="2026-06-01T00:00:00Z",
+    )
+    valid = _create_memory(
+        store,
+        canonical_text="scope predicate deployment",
+        metadata_json={"people": ["Sam"]},
+        valid_from="2026-07-08T00:00:00Z",
+    )
+
+    rows = store.search_memories_fts(
+        query="scope predicate deployment",
+        limit=1,
+        scope_people=("sam",),
+        scope_window_start=datetime(2026, 7, 3, tzinfo=UTC),
+        scope_window_end=datetime(2026, 7, 10, tzinfo=UTC),
+    )
+
+    assert [row["id"] for row in rows] == [valid["id"]]
+    conn.close()
+
+
+def test_search_memories_fts_applies_end_only_scope_window() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    before_end = _create_memory(
+        store,
+        canonical_text="end-only predicate rehearsal",
+        valid_from="2019-06-01T00:00:00Z",
+    )
+    _create_memory(
+        store,
+        canonical_text="end-only predicate rehearsal",
+        valid_from="2022-06-01T00:00:00Z",
+    )
+
+    rows = store.search_memories_fts(
+        query="end-only predicate rehearsal",
+        scope_window_end=datetime(2020, 12, 31, 23, 59, 59, tzinfo=UTC),
+    )
+
+    assert [row["id"] for row in rows] == [before_end["id"]]
+    conn.close()
+
+
+def test_bulk_retrieval_resolvers_return_complete_graph_and_provenance_rows() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memories = [_create_memory(store, canonical_text=f"Bulk memory {index}") for index in range(3)]
+    sources = [_create_source(store, content_hash=f"sha256:bulk-{index}") for index in range(3)]
+    entity = store.create_entity(
+        {"entity_type": "person", "name": "Sam", "normalized_name": "sam"}
+    )
+    for memory, source in zip(memories, sources, strict=True):
+        store.create_graph_edge(
+            {
+                "from_type": "memory",
+                "from_id": memory["id"],
+                "to_type": "entity",
+                "to_id": entity["id"],
+                "edge_type": "mentions",
+            }
+        )
+        store.create_provenance_link(
+            {
+                "target_type": "memory",
+                "target_id": memory["id"],
+                "source_id": source["id"],
+            }
+        )
+
+    assert {row["id"] for row in store.get_memories_by_ids([row["id"] for row in memories])} == {
+        row["id"] for row in memories
+    }
+    assert {row["id"] for row in store.get_sources_by_ids([row["id"] for row in sources])} == {
+        row["id"] for row in sources
+    }
+    assert len(
+        store.list_memory_entity_edges(entity_ids=[str(entity["id"])])
+    ) == 3
+    assert len(
+        store.list_provenance_links_for_targets(
+            target_type="memory",
+            target_ids=[str(memory["id"]) for memory in memories],
+        )
+    ) == 3
+    conn.close()
+
+
 # -- source-chunk FTS search ---------------------------------------------------------
 
 
@@ -1399,7 +1494,7 @@ def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> 
         model="embed-v1",
         endpoint="host-a",
         content_sha256=memory_embedding_content_sha256(memory),
-        signature_version=1,
+        signature_version=2,
     ) is not None
 
     matching = store.search_memories_vector(
@@ -1407,13 +1502,13 @@ def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> 
         embedding_provider="openai_compatible",
         embedding_model="embed-v1",
         embedding_endpoint="host-a",
-        embedding_signature_version=1,
+        embedding_signature_version=2,
     )
     mismatched = store.search_memories_vector(
         query_vector=[1.0, 0.0],
         embedding_provider="openai_compatible",
         embedding_model="embed-v2",
-        embedding_signature_version=1,
+        embedding_signature_version=2,
     )
     # Same provider/model but a different endpoint must not be pooled.
     mismatched_endpoint = store.search_memories_vector(
@@ -1421,7 +1516,7 @@ def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> 
         embedding_provider="openai_compatible",
         embedding_model="embed-v1",
         embedding_endpoint="host-b",
-        embedding_signature_version=1,
+        embedding_signature_version=2,
     )
 
     assert [row["id"] for row in matching] == [memory["id"]]
@@ -1430,12 +1525,12 @@ def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> 
     assert store.list_memories_missing_embeddings(
         embedding_provider="openai_compatible",
         embedding_model="embed-v1",
-        embedding_signature_version=1,
+        embedding_signature_version=2,
     ) == []
     incompatible = store.list_memories_missing_embeddings(
         embedding_provider="openai_compatible",
         embedding_model="embed-v2",
-        embedding_signature_version=1,
+        embedding_signature_version=2,
     )
     assert [row["id"] for row in incompatible] == [memory["id"]]
     assert incompatible[0]["embedding_present"] == 1
@@ -1448,7 +1543,7 @@ def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> 
         "model": "embed-v1",
         "provider": "openai_compatible",
         "endpoint": "host-a",
-        "version": 1,
+        "version": 2,
     }
 
     # Simulate a stale restored snapshot or third-party adapter that puts the
@@ -1469,8 +1564,16 @@ def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> 
         query_vector=[1.0, 0.0],
         embedding_provider="openai_compatible",
         embedding_model="embed-v1",
-        embedding_signature_version=1,
+        embedding_signature_version=2,
     ) == []
+    stale_backfill = store.list_memories_missing_embeddings(
+        embedding_provider="openai_compatible",
+        embedding_model="embed-v1",
+        embedding_endpoint="host-a",
+        embedding_signature_version=2,
+    )
+    assert [row["id"] for row in stale_backfill] == [memory["id"]]
+    assert stale_backfill[0]["embedding_present"] == 1
 
     assert store.clear_memory_embedding(memory_id=str(memory["id"])) is not None
     cleared = conn.execute(

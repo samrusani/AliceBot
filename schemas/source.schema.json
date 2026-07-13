@@ -12,6 +12,7 @@
     "uri": { "type": ["string", "null"] },
     "raw_path": { "type": ["string", "null"] },
     "content_hash": { "type": "string", "minLength": 1 },
+    "dedupe_key": { "type": ["string", "null"], "minLength": 1 },
     "captured_at": { "type": "string", "format": "date-time" },
     "source_created_at": { "type": ["string", "null"], "format": "date-time" },
     "source_modified_at": { "type": ["string", "null"], "format": "date-time" },

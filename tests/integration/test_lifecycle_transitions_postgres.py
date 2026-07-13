@@ -19,11 +19,18 @@ import threading
 from uuid import uuid4
 
 from psycopg import errors as pg_errors
+import pytest
 
+import apps.api.src.alicebot_api.main as main_module
+from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
-from alicebot_api.vnext_memory_commit import VNextMemoryCommitService
+from alicebot_api.vnext_memory_commit import (
+    VNextMemoryCommitService,
+    VNextMemoryCommitValidationError,
+)
 from alicebot_api.vnext_store import PostgresVNextStore
+from alicebot_api.vnext_memory_version import memory_version_snapshot
 import alicebot_api.vnext_memory_commit as vnext_memory_commit_module
 
 
@@ -58,6 +65,39 @@ def _seed_active_memory(app_url: str, user_id) -> str:
             }
         )
         return str(row["id"])
+
+
+def _seed_consolidation_pair(app_url: str, user_id) -> tuple[str, str]:
+    member_id = _seed_active_memory(app_url, user_id)
+    with user_connection(app_url, user_id) as conn:
+        store = PostgresVNextStore(conn)
+        member = store.get_memory(member_id)
+        assert member is not None
+        candidate = store.create_memory(
+            {
+                "memory_key": f"candidate.{uuid4()}",
+                "value": {"text": "Weekly planning cadence every Monday morning."},
+                "status": "candidate",
+                "memory_type": "semantic",
+                "title": "Consolidated planning cadence",
+                "canonical_text": "Weekly planning cadence every Monday morning.",
+                "summary": "Consolidated planning cadence.",
+                "domain": "professional",
+                "sensitivity": "internal",
+                "confirmation_status": "unconfirmed",
+                "metadata_json": {
+                    "candidate_kind": "memory_consolidation",
+                    "review_required": True,
+                    "consolidation": {
+                        "proposal_kind": "merge",
+                        "cluster_member_ids": [member_id],
+                        "member_snapshots": [memory_version_snapshot(member)],
+                        "proposed_supersede": [member_id],
+                    },
+                },
+            }
+        )
+        return member_id, str(candidate["id"])
 
 
 def _run_locking_race(
@@ -206,3 +246,257 @@ def test_unexpire_locks_the_row_against_a_concurrent_correction(migrated_databas
     assert isinstance(outcome["correction_error"], pg_errors.LockNotAvailable)
     assert "error" not in outcome["lifecycle_result"], outcome["lifecycle_result"].get("error")
     assert outcome["lifecycle_result"]["result"]["status"] == "active"
+
+
+def test_inverse_supersession_edges_serialize_before_row_locks(
+    migrated_database_urls, monkeypatch
+) -> None:
+    """Inverse A->B/B->A requests reject one edge without a PG deadlock."""
+    _clear_provider_env(monkeypatch)
+    app_url = migrated_database_urls["app"]
+    user_id = uuid4()
+    first_id = _seed_active_memory(app_url, user_id)
+    with user_connection(app_url, user_id) as conn:
+        second = PostgresVNextStore(conn).create_memory(
+            {
+                "memory_key": f"memory.{uuid4()}",
+                "value": {"text": "Planning cadence moved to Tuesdays."},
+                "status": "active",
+                "memory_type": "semantic",
+                "title": "Replacement planning cadence",
+                "canonical_text": "Planning cadence moved to Tuesdays.",
+                "summary": "Tuesday planning cadence.",
+                "domain": "professional",
+                "sensitivity": "internal",
+                "confirmation_status": "confirmed",
+            }
+        )
+    second_id = str(second["id"])
+    start = threading.Barrier(2)
+    outcomes: list[object] = []
+    outcomes_lock = threading.Lock()
+
+    def supersede(source_id: str, successor_id: str) -> None:
+        try:
+            with user_connection(app_url, user_id) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SET LOCAL lock_timeout = '5s'")
+                start.wait(timeout=10)
+                result = VNextMemoryCommitService(PostgresVNextStore(conn)).undo(
+                    identity=None,
+                    memory_id=source_id,
+                    superseded_by_memory_id=successor_id,
+                    reason="Concurrent inverse-edge regression.",
+                )
+                outcome: object = result
+        except Exception as exc:  # noqa: BLE001 - exact type asserted below
+            outcome = exc
+        with outcomes_lock:
+            outcomes.append(outcome)
+
+    workers = [
+        threading.Thread(target=supersede, args=(first_id, second_id)),
+        threading.Thread(target=supersede, args=(second_id, first_id)),
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=15)
+        assert not worker.is_alive(), "inverse-edge worker did not finish"
+
+    assert len(outcomes) == 2
+    assert sum(isinstance(outcome, dict) for outcome in outcomes) == 1
+    failures = [outcome for outcome in outcomes if isinstance(outcome, Exception)]
+    assert len(failures) == 1
+    assert isinstance(failures[0], VNextMemoryCommitValidationError)
+    assert not isinstance(failures[0], pg_errors.DeadlockDetected)
+
+    with user_connection(app_url, user_id) as conn:
+        store = PostgresVNextStore(conn)
+        first = store.get_memory(first_id)
+        second = store.get_memory(second_id)
+    assert {first["status"], second["status"]} == {"active", "superseded"}
+
+
+def _run_member_mutation(
+    service: VNextMemoryCommitService,
+    *,
+    operation: str,
+    member_id: str,
+) -> dict[str, object]:
+    if operation == "correct":
+        return service.correct(
+            identity=None,
+            memory_id=member_id,
+            canonical_text="Corrected while consolidation acceptance raced.",
+            reason="Adversarial correction.",
+        )
+    if operation == "forget":
+        return service.forget(
+            identity=None,
+            memory_id=member_id,
+            reason="Adversarial forget.",
+        )
+    return service.undo(
+        identity=None,
+        memory_id=member_id,
+        reason="Adversarial lifecycle transition.",
+    )
+
+
+@pytest.mark.parametrize("accept_surface", ["direct", "http"])
+@pytest.mark.parametrize("member_operation", ["correct", "forget", "transition"])
+def test_consolidation_acceptance_serializes_against_member_mutations(
+    migrated_database_urls,
+    monkeypatch,
+    accept_surface: str,
+    member_operation: str,
+) -> None:
+    """Candidate acceptance and member mutation never invert row locks.
+
+    Both the direct service and generic HTTP review adapter race against every
+    member mutation that invalidates derived work. Exactly one decision wins;
+    the loser observes the committed lifecycle state rather than a PostgreSQL
+    deadlock or lock timeout.
+    """
+    _clear_provider_env(monkeypatch)
+    app_url = migrated_database_urls["app"]
+    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=app_url))
+    user_id = uuid4()
+    member_id, candidate_id = _seed_consolidation_pair(app_url, user_id)
+    start = threading.Barrier(2)
+    outcomes: dict[str, object] = {}
+    outcome_lock = threading.Lock()
+
+    def accept_candidate() -> None:
+        try:
+            start.wait(timeout=10)
+            if accept_surface == "http":
+                outcome: object = main_module.review_vnext_memory(
+                    main_module.UUID(candidate_id),
+                    main_module.VNextMemoryReviewRequest(
+                        user_id=user_id,
+                        action="accept",
+                        reason="Adversarial HTTP acceptance.",
+                    ),
+                )
+            else:
+                with user_connection(app_url, user_id) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SET LOCAL lock_timeout = '5s'")
+                    outcome = VNextMemoryCommitService(
+                        PostgresVNextStore(conn)
+                    ).accept_consolidation_candidate(
+                        candidate_id,
+                        reason="Adversarial direct acceptance.",
+                    )
+        except Exception as exc:  # noqa: BLE001 - exact failure classes checked below
+            outcome = exc
+        with outcome_lock:
+            outcomes["accept"] = outcome
+
+    def mutate_member() -> None:
+        try:
+            with user_connection(app_url, user_id) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SET LOCAL lock_timeout = '5s'")
+                start.wait(timeout=10)
+                outcome: object = _run_member_mutation(
+                    VNextMemoryCommitService(PostgresVNextStore(conn)),
+                    operation=member_operation,
+                    member_id=member_id,
+                )
+        except Exception as exc:  # noqa: BLE001 - exact failure classes checked below
+            outcome = exc
+        with outcome_lock:
+            outcomes["member"] = outcome
+
+    workers = [
+        threading.Thread(target=accept_candidate, name=f"{accept_surface}-accept"),
+        threading.Thread(target=mutate_member, name=f"{member_operation}-member"),
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=20)
+        assert not worker.is_alive(), f"{worker.name} did not finish"
+
+    assert set(outcomes) == {"accept", "member"}
+    for outcome in outcomes.values():
+        assert not isinstance(outcome, pg_errors.DeadlockDetected)
+        assert not isinstance(outcome, pg_errors.LockNotAvailable)
+
+    accept_outcome = outcomes["accept"]
+    accept_succeeded = (
+        accept_outcome.status_code == 200
+        if accept_surface == "http" and hasattr(accept_outcome, "status_code")
+        else isinstance(accept_outcome, dict)
+    )
+    member_succeeded = isinstance(outcomes["member"], dict)
+    assert accept_succeeded is not member_succeeded
+
+    with user_connection(app_url, user_id) as conn:
+        store = PostgresVNextStore(conn)
+        member = store.get_memory(member_id)
+        candidate = store.get_memory(candidate_id)
+    assert member is not None and candidate is not None
+    if accept_succeeded:
+        assert member["status"] == "superseded"
+        assert candidate["status"] == "active"
+    else:
+        assert candidate["status"] == "stale"
+
+
+def test_http_review_acquires_graph_lock_before_candidate_row(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    """The HTTP adapter must not restore the reviewed row -> graph inversion."""
+    _clear_provider_env(monkeypatch)
+    app_url = migrated_database_urls["app"]
+    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=app_url))
+    user_id = uuid4()
+    _member_id, candidate_id = _seed_consolidation_pair(app_url, user_id)
+    graph_acquired = threading.Event()
+    release_graph_holder = threading.Event()
+    original_lock = PostgresVNextStore.lock_graph_mutation
+
+    def paused_graph_lock(store: PostgresVNextStore) -> None:
+        original_lock(store)
+        if threading.current_thread().name == "http-review-lock-order":
+            graph_acquired.set()
+            assert release_graph_holder.wait(timeout=10)
+
+    monkeypatch.setattr(PostgresVNextStore, "lock_graph_mutation", paused_graph_lock)
+    outcome: dict[str, object] = {}
+
+    def review_candidate() -> None:
+        try:
+            outcome["response"] = main_module.review_vnext_memory(
+                main_module.UUID(candidate_id),
+                main_module.VNextMemoryReviewRequest(
+                    user_id=user_id,
+                    action="accept",
+                    reason="Lock-order regression.",
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced below
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=review_candidate, name="http-review-lock-order")
+    worker.start()
+    try:
+        assert graph_acquired.wait(timeout=10), "HTTP review never acquired the graph lock"
+        # The HTTP worker is paused immediately after its graph lock. This row
+        # lock succeeds only if the route did not pre-lock the candidate first.
+        with user_connection(app_url, user_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL lock_timeout = '750ms'")
+            assert PostgresVNextStore(conn).get_memory_for_update(candidate_id) is not None
+    finally:
+        release_graph_holder.set()
+        worker.join(timeout=20)
+
+    assert not worker.is_alive(), "HTTP review worker did not finish"
+    assert "error" not in outcome, outcome.get("error")
+    assert outcome["response"].status_code == 200

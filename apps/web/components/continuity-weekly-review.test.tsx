@@ -3,8 +3,9 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ContinuityWeeklyReviewPanel } from "./continuity-weekly-review";
+import type { ContinuityWeeklyReview } from "../lib/api";
 
-const reviewFixture = {
+const reviewFixture: ContinuityWeeklyReview = {
   assembly_version: "continuity_weekly_review_v0",
   scope: {
     since: null,
@@ -15,8 +16,10 @@ const reviewFixture = {
     waiting_for_count: 1,
     blocker_count: 0,
     stale_count: 1,
+    correction_recurrence_count: 0,
+    freshness_drift_count: 0,
     next_action_count: 0,
-    posture_order: ["waiting_for", "blocker", "stale", "next_action"] as const,
+    posture_order: ["waiting_for", "blocker", "stale", "next_action"],
   },
   waiting_for: {
     items: [
@@ -41,6 +44,12 @@ const reviewFixture = {
           scope_match_count: 0,
           query_term_match_count: 0,
           confirmation_rank: 2,
+          freshness_posture: "aging",
+          freshness_rank: 3,
+          provenance_posture: "partial",
+          provenance_rank: 2,
+          supersession_posture: "current",
+          supersession_rank: 3,
           posture_rank: 2,
           lifecycle_rank: 4,
           confidence: 1,
@@ -96,6 +105,12 @@ const reviewFixture = {
           scope_match_count: 0,
           query_term_match_count: 0,
           confirmation_rank: 2,
+          freshness_posture: "stale",
+          freshness_rank: 2,
+          provenance_posture: "partial",
+          provenance_rank: 2,
+          supersession_posture: "historical",
+          supersession_rank: 2,
           posture_rank: 2,
           lifecycle_rank: 3,
           confidence: 1,

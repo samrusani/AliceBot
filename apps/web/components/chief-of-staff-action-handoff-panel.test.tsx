@@ -3,8 +3,9 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ChiefOfStaffActionHandoffPanel } from "./chief-of-staff-action-handoff-panel";
+import { completeChiefOfStaffPriorityBrief } from "../test/fixture-builders";
 
-const briefFixture = {
+const briefFixture = completeChiefOfStaffPriorityBrief({
   assembly_version: "chief_of_staff_priority_brief_v0",
   scope: {
     thread_id: "thread-1",
@@ -468,7 +469,7 @@ const briefFixture = {
     handoff_queue_item_order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
   },
   sources: ["continuity_recall", "memory_trust_dashboard", "chief_of_staff_action_handoff"],
-};
+});
 
 describe("ChiefOfStaffActionHandoffPanel", () => {
   afterEach(() => {

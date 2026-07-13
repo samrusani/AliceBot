@@ -375,6 +375,147 @@ def test_bootstrap_promotes_and_reads_legacy_nested_multi_project_scope() -> Non
     )
 
 
+def test_bootstrap_backfills_legacy_source_dedupe_keys_per_project_scope() -> None:
+    conn = sqlite3.connect(":memory:")
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    user_id = "00000000-0000-0000-0000-000000000271"
+    ensure_sqlite_user(conn, user_id, "legacy-source-scope@example.com")
+    text = "Fact: The same evidence may belong to distinct projects."
+    conn.execute("DROP INDEX sources_user_dedupe_key_unique_idx")
+    for source_id, project in (
+        ("00000000-0000-0000-0000-000000000272", "Alpha"),
+        ("00000000-0000-0000-0000-000000000273", "Beta"),
+    ):
+        conn.execute(
+            """
+            INSERT INTO sources (
+              id, user_id, source_type, content_hash, dedupe_key, metadata_json
+            )
+            VALUES (?, ?, 'manual_text', 'sha256:legacy-unscoped', NULL, ?)
+            """,
+            (
+                source_id,
+                user_id,
+                json.dumps({"raw_text": text, "project_scope": [project]}),
+            ),
+        )
+    conn.commit()
+
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+
+    rows = conn.execute("SELECT dedupe_key FROM sources ORDER BY id").fetchall()
+    assert all(row[0].startswith("capture-md5:") for row in rows)
+    assert rows[0][0] != rows[1][0]
+    index = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'sources_user_dedupe_key_unique_idx'"
+    ).fetchone()[0]
+    assert "UNIQUE INDEX" in index
+    assert "deleted_at IS NULL" in index
+
+
+def test_bootstrap_source_dedupe_fast_path_skips_complete_metadata_scan(monkeypatch) -> None:
+    conn = sqlite3.connect(":memory:")
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    user_id = "00000000-0000-0000-0000-000000000291"
+    ensure_sqlite_user(conn, user_id, "source-fast-path@example.com")
+    conn.executemany(
+        """
+        INSERT INTO sources (
+          id, user_id, source_type, content_hash, dedupe_key, metadata_json
+        )
+        VALUES (?, ?, 'manual_text', ?, ?, ?)
+        """,
+        [
+            (
+                f"00000000-0000-0000-0001-{index:012d}",
+                user_id,
+                f"sha256:source-{index}",
+                f"capture-md5:source-{index}",
+                json.dumps({"raw_text": f"Fact: source {index}"}),
+            )
+            for index in range(128)
+        ],
+    )
+    conn.commit()
+
+    decode_count = 0
+    original_loads = sqlite_schema.json.loads
+
+    def counted_loads(value):
+        nonlocal decode_count
+        decode_count += 1
+        return original_loads(value)
+
+    monkeypatch.setattr(sqlite_schema.json, "loads", counted_loads)
+    traced: list[str] = []
+    conn.set_trace_callback(traced.append)
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    conn.set_trace_callback(None)
+
+    dedupe_probes = [
+        statement
+        for statement in traced
+        if "from sources" in statement.casefold()
+        and "dedupe_key is null" in statement.casefold()
+        and "select id, user_id, content_hash" in statement.casefold()
+    ]
+    assert len(dedupe_probes) == 1
+    assert decode_count == 0
+    assert conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 128
+
+    query_plan = conn.execute(
+        """
+        EXPLAIN QUERY PLAN
+        SELECT id, user_id, content_hash, metadata_json, domain, sensitivity
+        FROM sources
+        WHERE deleted_at IS NULL AND dedupe_key IS NULL
+        ORDER BY captured_at ASC, id ASC
+        """
+    ).fetchall()
+    assert any("sources_missing_dedupe_key_idx" in str(row) for row in query_plan)
+
+
+def test_bootstrap_backfills_historical_agent_and_run_attribution() -> None:
+    conn = sqlite3.connect(":memory:")
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    user_id = "00000000-0000-0000-0000-000000000281"
+    memory_id = "00000000-0000-0000-0000-000000000282"
+    ensure_sqlite_user(conn, user_id, "legacy-agent-attribution@example.com")
+    conn.execute(
+        """
+        INSERT INTO memories (
+          id, user_id, memory_key, value, status, source_event_ids,
+          memory_type, canonical_text, metadata_json,
+          created_by_agent_id, run_id
+        )
+        VALUES (?, ?, 'legacy.agent', '{}', 'candidate', '[]',
+                'semantic', 'Legacy agent output', ?, NULL, NULL)
+        """,
+        (
+            memory_id,
+            user_id,
+            json.dumps(
+                {
+                    "agentic_memory": {
+                        "agent_identity": {
+                            "agent_id": "hermes",
+                            "agent_run_id": "run-historical",
+                        }
+                    }
+                }
+            ),
+        ),
+    )
+    conn.commit()
+
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+
+    assert conn.execute(
+        "SELECT created_by_agent_id, run_id FROM memories WHERE id = ?",
+        (memory_id,),
+    ).fetchone() == ("hermes", "run-historical")
+
+
 def test_content_update_transactionally_expires_only_derived_entity_edges() -> None:
     conn = sqlite3.connect(":memory:")
     sqlite_schema.bootstrap_sqlite_schema(conn)

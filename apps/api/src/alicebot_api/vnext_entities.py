@@ -86,6 +86,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 import re
+from typing import Protocol, TypeGuard, cast
 
 from alicebot_api.vnext_entity_names import normalize_entity_name
 from alicebot_api.vnext_repositories import JsonObject
@@ -508,7 +509,43 @@ _REQUIRED_STORE_METHODS = (
 )
 
 
-def store_supports_entity_linking(store: object) -> bool:
+class EntityLinkingStore(Protocol):
+    def find_entities_by_names(self, names: tuple[str, ...]) -> list[JsonObject]: ...
+
+    def get_entity_by_normalized_name(
+        self,
+        entity_type: str,
+        normalized_name: str,
+    ) -> JsonObject | None: ...
+
+    def create_entity(
+        self,
+        payload: JsonObject,
+        *,
+        actor_type: str,
+    ) -> JsonObject: ...
+
+    def record_entity_mention(
+        self,
+        *,
+        entity_id: str,
+        observed_at: object,
+        source_id: str | None = None,
+        actor_type: str,
+    ) -> JsonObject: ...
+
+    def update_entity(
+        self,
+        *,
+        entity_id: str,
+        patch: JsonObject,
+        actor_type: str,
+    ) -> JsonObject: ...
+
+    def list_edges(self, *, from_id: str) -> list[JsonObject]: ...
+
+
+def store_supports_entity_linking(store: object) -> TypeGuard[EntityLinkingStore]:
     """True when ``store`` exposes the entity + edge surface linking needs.
 
     Mirrors ``attach_memory_embedding``'s callable guard: fakes and
@@ -553,7 +590,7 @@ class EntityLinkingService:
         actor_id: str | None = None,
         trace_id: str | None = None,
     ) -> None:
-        self.store = store
+        self.store = cast(EntityLinkingStore, store)
         self.actor_type = actor_type
         self.actor_id = actor_id
         self.trace_id = trace_id

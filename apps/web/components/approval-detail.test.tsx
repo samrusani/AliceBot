@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApprovalDetail } from "./approval-detail";
+import type { ApprovalItem, ToolExecutionItem } from "../lib/api";
 
 const { admitMemoryMock, refreshMock } = vi.hoisted(() => ({
   admitMemoryMock: vi.fn(),
@@ -23,9 +24,10 @@ vi.mock("../lib/api", async () => {
   };
 });
 
-const approval = {
+const approval: ApprovalItem = {
   id: "approval-1",
   thread_id: "thread-1",
+  task_run_id: null,
   task_step_id: "step-1",
   status: "approved",
   request: {
@@ -80,9 +82,10 @@ const approval = {
   },
 };
 
-const execution = {
+const execution: ToolExecutionItem = {
   id: "execution-1",
   approval_id: "approval-1",
+  task_run_id: null,
   task_step_id: "step-1",
   thread_id: "thread-1",
   tool_id: "tool-1",
@@ -91,6 +94,7 @@ const execution = {
   result_event_id: "event-result-1",
   status: "completed",
   handler_key: "proxy.echo",
+  idempotency_key: null,
   request: approval.request,
   tool: approval.tool,
   result: {

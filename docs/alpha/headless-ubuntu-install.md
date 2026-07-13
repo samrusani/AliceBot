@@ -7,10 +7,12 @@ Supported assumptions for this alpha:
 - Ubuntu 22.04 LTS or 24.04 LTS
 - Python 3.12-compatible system Python or newer venv support
 - Node 20 through NodeSource or an existing Node 20 install
-- local Postgres with `pgvector` on the same host, or an existing Postgres reached through `DATABASE_URL`
+- local Postgres with `pgvector >= 0.8.0` on the same host, or an existing Postgres reached through `DATABASE_URL`
 - services bound to `127.0.0.1` by default
 
-This is the current headless install path for the Alice v0.9.x line. Install from `--branch main` or from the latest published release tag (`v0.9.1`).
+This is the current headless install path for Alice. Install development code
+from `--branch main` or use the latest published release tag (`v0.9.4`) for an
+immutable deployment.
 
 Historical note: `v0.5.1-vnext-preview` and `v0.6.0-alpha-rc.2` are older milestones kept for audit trail and rollback evidence. Do not install them for new setups; they predate the v0.6.0 overhaul (hybrid retrieval, consolidated core MCP surface, per-agent API keys).
 
@@ -38,7 +40,7 @@ less install-alice.sh
 bash install-alice.sh --branch main --install-dir ~/alicebot
 ```
 
-For an immutable install after a release tag is published, replace `--branch main` with `--tag <release-tag>` (currently `--tag v0.9.1`).
+For an immutable install after a release tag is published, replace `--branch main` with `--tag <release-tag>` (currently `--tag v0.9.4`).
 
 Use `--non-interactive` only after you have chosen a safe install directory and know whether the host should install local Postgres.
 
@@ -74,7 +76,9 @@ Default paths:
 - local secret references: `~/.config/alicebot/secrets/`
 
 The installer renders [packaging/ubuntu/alicebot.env.example](../../packaging/ubuntu/alicebot.env.example) into `~/.config/alicebot/.env` if the file does not already exist. Existing config is preserved.
-For local Postgres installs, it detects the server major version, installs the matching `postgresql-<major>-pgvector` package, and creates the `vector` extension before migrations.
+For local Postgres installs, it detects the server major version, installs the
+matching `postgresql-<major>-pgvector` package, requires version 0.8.0 or newer,
+and creates/verifies the `vector` extension before migrations.
 After migrations, it seeds the configured local Alice user row when missing so CLI, scheduler, MCP, and headless doctor checks have a valid continuity owner even when `/vnext` has not been opened yet.
 
 Important config keys:
@@ -162,7 +166,7 @@ SQL
 ./.venv/bin/alicebot vnext alpha check --headless --skip-smokes
 ```
 
-If you use existing Postgres, set `DATABASE_URL` and `DATABASE_ADMIN_URL` before migrations, run the role/database bootstrap block above against that server (a role named exactly `alicebot_app` must exist or migrations fail), and confirm the database has `CREATE EXTENSION IF NOT EXISTS vector;` installed by a superuser. On Ubuntu 22.04, replace `postgresql-16-pgvector` with the package matching the installed server major version.
+If you use existing Postgres, set `DATABASE_URL` and `DATABASE_ADMIN_URL` before migrations, run the role/database bootstrap block above against that server (a role named exactly `alicebot_app` must exist or migrations fail), and confirm the database has `pgvector >= 0.8.0` installed by a superuser (`CREATE EXTENSION IF NOT EXISTS vector; ALTER EXTENSION vector UPDATE;`). On Ubuntu 22.04, replace `postgresql-16-pgvector` with the package matching the installed server major version.
 
 ## Systemd Services
 

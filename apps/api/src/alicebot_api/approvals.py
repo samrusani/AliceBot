@@ -27,11 +27,15 @@ from alicebot_api.contracts import (
     ApprovalRequestCreateResponse,
     ApprovalRequestTraceSummary,
     ApprovalRoutingRecord,
+    ApprovalStatus,
     TaskCreateInput,
     TaskStepCreateInput,
+    TaskStepKind,
+    ToolRecord,
+    ToolRoutingRequestRecord,
     ToolRoutingRequestInput,
 )
-from alicebot_api.store import ApprovalRow, ContinuityStore, JsonObject
+from alicebot_api.store import ApprovalRow, ContinuityStore, JsonObject, JsonValue
 from alicebot_api.tasks import (
     DEFAULT_TASK_STEP_KIND,
     DEFAULT_TASK_STEP_SEQUENCE_NO,
@@ -57,6 +61,16 @@ class ApprovalResolutionConflictError(RuntimeError):
     """Raised when a visible approval record is no longer pending."""
 
 
+def _approval_status(value: str) -> ApprovalStatus:
+    if value == "pending":
+        return "pending"
+    if value == "approved":
+        return "approved"
+    if value == "rejected":
+        return "rejected"
+    raise ValueError(f"unsupported approval status: {value}")
+
+
 def _serialize_resolution(row: ApprovalRow) -> ApprovalResolutionRecord | None:
     if row["resolved_at"] is None or row["resolved_by_user_id"] is None:
         return None
@@ -71,9 +85,9 @@ def serialize_approval_row(row: ApprovalRow) -> ApprovalRecord:
         "id": str(row["id"]),
         "thread_id": str(row["thread_id"]),
         "task_step_id": None if row["task_step_id"] is None else str(row["task_step_id"]),
-        "status": cast(str, row["status"]),
-        "request": cast(dict[str, object], row["request"]),
-        "tool": cast(dict[str, object], row["tool"]),
+        "status": _approval_status(row["status"]),
+        "request": cast(ToolRoutingRequestRecord, row["request"]),
+        "tool": cast(ToolRecord, row["tool"]),
         "routing": cast(ApprovalRoutingRecord, row["routing"]),
         "created_at": row["created_at"].isoformat(),
         "resolution": _serialize_resolution(row),
@@ -117,10 +131,10 @@ def _resume_task_run_after_resolution(
     next_retry_posture = "none" if next_status == "queued" else "terminal"
     transitions = updated_checkpoint.get("transitions")
     if isinstance(transitions, list):
-        history = [entry for entry in transitions if isinstance(entry, dict)]
+        history: list[JsonValue] = [entry for entry in transitions if isinstance(entry, dict)]
     else:
         history = []
-    transition_entry = {
+    transition_entry: JsonObject = {
         "sequence_no": len(history) + 1,
         "source": "approval_resolution",
         "at": datetime.now(UTC).isoformat(),
@@ -170,7 +184,7 @@ def _append_trace_events(
             trace_id=trace_id,
             sequence_no=sequence_no,
             kind=kind,
-            payload=payload,
+            payload=cast(JsonObject, payload),
         )
 
 
@@ -230,8 +244,8 @@ def _resolve_approval(
         task_step_id=cast(UUID | None, approval["task_step_id"]),
     )
 
-    previous_status = cast(str, approval["status"])
-    current = approval
+    previous_status = _approval_status(approval["status"])
+    current: ApprovalRow = approval
     outcome: ApprovalResolutionOutcome
 
     if approval["status"] == "pending":
@@ -240,9 +254,10 @@ def _resolve_approval(
             status=resolved_status,
         )
         if resolved is None:
-            current = store.get_approval_optional(approval_id)
-            if current is None:
+            current_after_race = store.get_approval_optional(approval_id)
+            if current_after_race is None:
                 raise ApprovalNotFoundError(f"approval {approval_id} was not found")
+            current = current_after_race
             outcome = _resolution_outcome(
                 requested_action=requested_action,
                 current_status=cast(str, current["status"]),
@@ -282,7 +297,7 @@ def _resolve_approval(
         "requested_action": requested_action,
         "previous_status": previous_status,
         "outcome": outcome,
-        "current_status": cast(str, current["status"]),
+        "current_status": _approval_status(current["status"]),
         "resolved_at": None if resolution is None else resolution["resolved_at"],
         "resolved_by_user_id": None if resolution is None else resolution["resolved_by_user_id"],
     }
@@ -291,18 +306,18 @@ def _resolve_approval(
         "task_step_id": linked_task_step_id,
         "requested_action": requested_action,
         "outcome": outcome,
-        "final_status": cast(str, current["status"]),
+        "final_status": _approval_status(current["status"]),
     }
     task_transition = sync_task_with_approval(
         store,
         approval_id=current["id"],
-        approval_status=cast(str, current["status"]),
+        approval_status=_approval_status(current["status"]),
     )
     task_step_transition = sync_task_step_with_approval(
         store,
         approval_id=current["id"],
         task_step_id=cast(UUID | None, current["task_step_id"]),
-        approval_status=cast(str, current["status"]),
+        approval_status=_approval_status(current["status"]),
         trace_id=trace["id"],
         trace_kind=TRACE_KIND_APPROVAL_RESOLUTION,
     )
@@ -401,13 +416,13 @@ def submit_approval_request(
                 task_run_id=request.task_run_id,
                 task_step_id=None,
                 status="pending",
-                request=routing["request"],
-                tool=routing["tool"],
-                routing={
+                request=cast(JsonObject, routing["request"]),
+                tool=cast(JsonObject, routing["tool"]),
+                routing=cast(JsonObject, {
                     "decision": routing["decision"],
                     "reasons": routing["reasons"],
                     "trace": routing["trace"],
-                },
+                }),
                 routing_trace_id=UUID(routing["trace"]["trace_id"]),
             )
         except TypeError:
@@ -416,13 +431,13 @@ def submit_approval_request(
                 tool_id=request.tool_id,
                 task_step_id=None,
                 status="pending",
-                request=routing["request"],
-                tool=routing["tool"],
-                routing={
+                request=cast(JsonObject, routing["request"]),
+                tool=cast(JsonObject, routing["tool"]),
+                routing=cast(JsonObject, {
                     "decision": routing["decision"],
                     "reasons": routing["reasons"],
                     "trace": routing["trace"],
-                },
+                }),
                 routing_trace_id=UUID(routing["trace"]["trace_id"]),
             )
         approval = _serialize_approval(approval_row)
@@ -456,7 +471,7 @@ def submit_approval_request(
         request=TaskStepCreateInput(
             task_id=UUID(task["id"]),
             sequence_no=DEFAULT_TASK_STEP_SEQUENCE_NO,
-            kind=DEFAULT_TASK_STEP_KIND,
+            kind=cast(TaskStepKind, DEFAULT_TASK_STEP_KIND),
             status=task_step_status_for_routing_decision(routing["decision"]),
             request=routing["request"],
             outcome=task_step_outcome_snapshot(
@@ -481,7 +496,7 @@ def submit_approval_request(
         approval = _serialize_approval(updated_approval)
 
     trace_events: list[tuple[str, dict[str, object]]] = [
-        ("approval.request.request", request.as_payload()),
+        ("approval.request.request", cast(dict[str, object], request.as_payload())),
         (
             "approval.request.routing",
             {

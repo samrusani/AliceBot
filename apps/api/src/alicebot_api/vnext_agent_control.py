@@ -515,7 +515,13 @@ def _nested_counter_rows(counter: Mapping[str, Counter[str]], *, key_name: str, 
                 nested_key: dict(nested.most_common()),
             }
         )
-    return sorted(rows, key=lambda row: (-int(row["count"]), str(row[key_name])))
+    return sorted(
+        rows,
+        key=lambda row: (
+            -(count if isinstance((count := row.get("count")), int) else 0),
+            str(row[key_name]),
+        ),
+    )
 
 
 def summarize_agent_policy_telemetry(
@@ -529,11 +535,11 @@ def summarize_agent_policy_telemetry(
     blocks_by_agent: defaultdict[str, Counter[str]] = defaultdict(Counter)
     filters_by_agent: defaultdict[str, Counter[str]] = defaultdict(Counter)
     review_by_agent: defaultdict[str, Counter[str]] = defaultdict(Counter)
-    restricted_domains = Counter()
-    workflows = Counter()
+    restricted_domains: Counter[str] = Counter()
+    workflows: Counter[str] = Counter()
     workflow_agents: defaultdict[str, Counter[str]] = defaultdict(Counter)
-    memory_proposals = Counter()
-    artifact_generation = Counter()
+    memory_proposals: Counter[str] = Counter()
+    artifact_generation: Counter[str] = Counter()
     total_policy_decisions = 0
     total_agent_events = 0
     seen_policy_traces: set[str] = set()
@@ -563,13 +569,25 @@ def summarize_agent_policy_telemetry(
             if decision.get("review_required") is True or decision_value == "requires_review":
                 review_by_agent[agent_id][action] += 1
             requested_domains = decision.get("requested_domains")
-            effective_domains = set(decision.get("effective_domains") or []) if isinstance(decision.get("effective_domains"), list) else set()
+            effective_domains_value = decision.get("effective_domains")
+            effective_domains = (
+                {domain for domain in effective_domains_value if isinstance(domain, str)}
+                if isinstance(effective_domains_value, list)
+                else set()
+            )
             if isinstance(requested_domains, list):
                 for domain in requested_domains:
                     if isinstance(domain, str) and domain not in effective_domains:
                         restricted_domains[domain] += 1
-            elif "restricted_domain_filtered" in set(decision.get("reasons") or []):
-                restricted_domains["restricted_domain_filtered"] += 1
+            else:
+                reasons = decision.get("reasons")
+                restricted_domain_filtered = (
+                    any(reason == "restricted_domain_filtered" for reason in reasons)
+                    if isinstance(reasons, list)
+                    else False
+                )
+                if restricted_domain_filtered:
+                    restricted_domains["restricted_domain_filtered"] += 1
             workflow_type = decision.get("workflow_type")
             if action == "scheduler.run_now" and isinstance(workflow_type, str) and workflow_type:
                 workflows[workflow_type] += 1
@@ -603,8 +621,10 @@ def summarize_agent_policy_telemetry(
         metadata = artifact.get("metadata_json")
         artifact_id = str(artifact.get("id")) if artifact.get("id") is not None else ""
         if isinstance(metadata, Mapping) and metadata.get("generated_by") == "agent" and artifact_id not in artifact_generation_ids:
-            agent_id = metadata.get("agent_id")
-            artifact_generation[str(agent_id) if isinstance(agent_id, str) and agent_id else "unknown"] += 1
+            metadata_agent_id = metadata.get("agent_id")
+            artifact_generation[
+                str(metadata_agent_id) if isinstance(metadata_agent_id, str) and metadata_agent_id else "unknown"
+            ] += 1
 
     return {
         "total_agent_events": total_agent_events,
@@ -641,7 +661,7 @@ def append_policy_events(
 ) -> None:
     if identity is None:
         return
-    payload = {
+    payload: JsonObject = {
         "agent_identity": identity.to_record(),
         "policy_decision": decision.to_record(),
     }

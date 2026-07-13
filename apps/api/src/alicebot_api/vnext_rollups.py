@@ -57,21 +57,18 @@ env seam embed-on-write uses) AND the store carries stored vectors, a
 third grouping pass runs over the members the entity/lexical passes left
 unclaimed:
 
-- embedding access reuses the consolidation pass's pattern
-  (``provider_reembed_plus_exact_id_presence_read``): each remaining row's
-  vector is re-derived from ``memory_embedding_text`` and an exact presence
-  read by the selected row IDs (``list_memory_ids_with_embeddings``) is the
-  read surface for which rows actually HAVE stored embeddings — rows without
-  a stored vector never participate;
-- remaining rows are agglomerated by pairwise cosine (single-linkage
-  connected components) at one threshold chosen from a conservative sweep
+- embedding access reads exact presence by selected row ID BEFORE provider
+  work, reuses compact vectors already derived by consolidation, and
+  re-derives only present cache misses from ``memory_embedding_text``;
+- remaining rows are agglomerated by cohesive all-pairs cosine admission at
+  one threshold chosen from a conservative sweep
   (``SEMANTIC_SWEEP_THRESHOLDS``) by a silhouette-style internal
   criterion — deterministic given fixed vectors, ties break toward the
   HIGHER (more conservative) threshold;
 - every semantic cluster passes the SAME group-utility gate as the
   lexical groups (>= 3 members plus an aggregation signal), with one
-  documented substitution: group coherence is a mean-pairwise-similarity
-  floor (``SEMANTIC_MIN_MEAN_SIMILARITY``) instead of the label-stem
+  documented substitution: group coherence requires mean- and
+  minimum-pairwise-similarity floors instead of the label-stem
   majority test, because an anchor-less topical label cannot cover a
   majority of member texts by construction. Values/amounts for the
   aggregation signal are counted across the whole member texts (there is
@@ -227,27 +224,28 @@ LABEL_COHERENCE_MIN_FRACTION = 0.5
 # -- semantic (embedding) tier thresholds ---------------------------------------
 
 # Conservative cosine-similarity sweep for the semantic tier's
-# single-linkage agglomeration. One threshold is chosen per run by the
+# cohesive all-pairs admission. One threshold is chosen per run by the
 # silhouette-style criterion below; ties break toward the HIGHER
 # threshold. The band deliberately stops below near-duplicate territory
 # (the consolidation pass clusters near-duplicates at 0.88).
 SEMANTIC_SWEEP_THRESHOLDS = (0.60, 0.65, 0.70, 0.75, 0.80, 0.85)
 
-# Coherence gate for semantic groups: the mean pairwise cosine similarity
-# of a cluster must reach this floor (single-linkage can chain loosely
-# related rows through a middle row; the mean exposes that). This REPLACES
+# Coherence gate for semantic groups: mean and minimum pairwise cosine
+# similarities must reach these floors. This REPLACES
 # the label-stem majority test, which anchor-less groups cannot pass by
 # construction — every other gate condition is shared with lexical groups.
 SEMANTIC_MIN_MEAN_SIMILARITY = 0.60
+SEMANTIC_MIN_PAIRWISE_SIMILARITY = 0.60
 
 # Clusters whose mean pairwise similarity reaches near-duplicate territory
 # belong to the consolidation dedup/merge pipeline (its default
 # similarity_threshold is 0.88), not to a roll-up card.
 SEMANTIC_NEAR_DUPLICATE_SIMILARITY = 0.88
 
-# The pairwise similarity matrix is quadratic; the semantic tier considers
-# at most this many of the most recently created unclaimed rows.
+# The semantic tier considers at most this many recent unclaimed rows and
+# keeps temporary similarity work to fixed-height float32 blocks.
 MAX_SEMANTIC_TIER_MEMBERS = 2000
+SEMANTIC_SIMILARITY_BLOCK_ROWS = 128
 
 # Frequency-derived generic-anchor detection (store-local, no hardcoded
 # vocabulary): a stem that appears in at least this fraction of the
@@ -404,10 +402,9 @@ class VNextRollupValidationError(ValueError):
 class VNextRollupStore(Protocol):
     """Store surface the roll-up pass needs. ``find_entities_by_names`` is
     optional (checked via ``getattr``); without it entity grouping falls
-    back to the raw extracted names (no alias folding).
-    ``search_memories_vector`` is likewise optional: it is the read probe
-    the semantic tier uses to learn which rows carry stored embeddings;
-    without it the semantic tier discloses a skip and adds nothing."""
+    back to the raw extracted names (no alias folding). Exact embedding
+    presence is discovered through ``list_memory_ids_with_embeddings`` when
+    the semantic tier is active."""
 
     def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
@@ -439,6 +436,14 @@ class VNextRollupStore(Protocol):
         candidate_kind: str,
         limit: int,
     ) -> list[JsonObject]: ...
+
+    def count_rollup_input_memories(
+        self,
+        *,
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        excluded_candidate_kind: str,
+    ) -> int: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -526,6 +531,8 @@ class RollupOutcome:
     skipped: list[str] = field(default_factory=list)
     candidate_ids: list[str] = field(default_factory=list)
     groupable_count: int = 0
+    groupable_total_count: int = 0
+    groupable_total_exact: bool = True
     bounded: bool = False
     quality_gate: JsonObject = field(default_factory=dict)
     # Disclosure record of the semantic embedding tier; None when the tier
@@ -538,6 +545,8 @@ class RollupOutcome:
             "grouping": "deterministic_entity_and_lexical_topic",
             "options": dict(self.options),
             "groupable_memories": self.groupable_count,
+            "groupable_memories_total": self.groupable_total_count,
+            "groupable_memories_total_exact": self.groupable_total_exact,
             "bounded": self.bounded,
             "groups": list(self.groups),
             "proposals": list(self.proposals),
@@ -552,7 +561,9 @@ class RollupOutcome:
     def markdown_lines(self) -> list[str]:
         lines: list[str] = []
         for proposal in self.proposals:
-            supersede = ", ".join(proposal.get("proposed_supersede") or []) or "none"
+            proposed_supersede = proposal.get("proposed_supersede")
+            supersede_items = proposed_supersede if isinstance(proposed_supersede, list) else []
+            supersede = ", ".join(str(item) for item in supersede_items) or "none"
             lines.append(
                 f"- `{proposal['rollup_digest']}` roll-up proposal "
                 f"({proposal['candidate_state']}, candidate: {proposal['candidate_memory_id']}) - "
@@ -675,61 +686,100 @@ def _mean_pairwise_jaccard(token_sets: list[set[str]]) -> float:
 # -- semantic tier: clustering math (deterministic given fixed vectors) ----------
 
 
-def _connected_components(similarities: np.ndarray, threshold: float) -> list[int]:
-    """Single-linkage agglomeration: connected components of the
-    similarity graph at ``threshold``, as one component index per row
-    (the smallest row index in the component). Insertion-order
-    independent: the partition depends only on which pairs clear the
-    threshold."""
-    count = int(similarities.shape[0])
-    parent = list(range(count))
+def _cohesive_labels(
+    normalized: np.ndarray,
+    stable_keys: list[str],
+    threshold: float,
+) -> list[int]:
+    """Complete-link labels with streaming all-pairs admission.
 
-    def _find(index: int) -> int:
-        while parent[index] != index:
-            parent[index] = parent[parent[index]]
-            index = parent[index]
-        return index
+    A row joins a group only when it clears the threshold against every
+    member already admitted, so bridge chains cannot create a loose group.
+    Stable-key ordering makes the deterministic greedy partition independent
+    of input order without materializing an N x N similarity matrix.
+    """
 
-    pair_rows, pair_cols = np.where(np.triu(similarities, k=1) >= threshold)
-    for left, right in zip(pair_rows.tolist(), pair_cols.tolist(), strict=True):
-        root_left, root_right = _find(left), _find(right)
-        if root_left != root_right:
-            parent[max(root_left, root_right)] = min(root_left, root_right)
-    return [_find(index) for index in range(count)]
+    remaining = sorted(range(len(stable_keys)), key=stable_keys.__getitem__)
+    labels = [-1] * len(stable_keys)
+    while remaining:
+        seed, *candidates = remaining
+        group = [seed]
+        rejected: list[int] = []
+        for candidate in candidates:
+            clears_group = True
+            for start in range(0, len(group), SEMANTIC_SIMILARITY_BLOCK_ROWS):
+                block = group[start : start + SEMANTIC_SIMILARITY_BLOCK_ROWS]
+                similarities = normalized[block] @ normalized[candidate]
+                if not bool(np.all(similarities >= threshold)):
+                    clears_group = False
+                    break
+            if clears_group:
+                group.append(candidate)
+            else:
+                rejected.append(candidate)
+        label = min(group)
+        for index in group:
+            labels[index] = label
+        remaining = rejected
+    return labels
 
 
-def _mean_silhouette(similarities: np.ndarray, labels: list[int]) -> float | None:
+def _mean_silhouette(normalized: np.ndarray, labels: list[int]) -> float | None:
     """Silhouette-style internal criterion over cosine distance
     (``1 - similarity``): per point, ``a`` = mean distance to its own
     cluster, ``b`` = smallest mean distance to another cluster,
     ``s = (b - a) / max(a, b)``; singleton clusters contribute 0 (the
     standard convention). Returns the mean over all points, or None when
     the partition has fewer than two clusters (the criterion is undefined
-    there). Deterministic given fixed vectors."""
+    there). Similarities are computed in fixed float32 row blocks, so peak
+    temporary memory is O(block_rows * N)."""
     unique = sorted(set(labels))
     if len(unique) < 2:
         return None
     count = len(labels)
-    index_of = {cluster: position for position, cluster in enumerate(unique)}
-    label_array = np.asarray([index_of[label] for label in labels])
-    distances = 1.0 - similarities
-    sums = np.zeros((count, len(unique)), dtype=np.float64)
-    sizes = np.zeros(len(unique), dtype=np.float64)
-    for position in range(len(unique)):
-        mask = label_array == position
-        sizes[position] = float(mask.sum())
-        sums[:, position] = distances[:, mask].sum(axis=1)
-    rows = np.arange(count)
-    own_sizes = sizes[label_array]
-    a = sums[rows, label_array] / np.maximum(own_sizes - 1.0, 1.0)
-    mean_to_other = sums / sizes[None, :]
-    mean_to_other[rows, label_array] = np.inf
-    b = mean_to_other.min(axis=1)
-    denominator = np.maximum(a, b)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        raw = (b - a) / denominator
-    scores = np.where((own_sizes > 1.0) & (denominator > 0.0), raw, 0.0)
-    return float(scores.sum() / count)
+    members_by_label: dict[int, np.ndarray] = {
+        label: np.asarray([index for index, value in enumerate(labels) if value == label], dtype=np.intp)
+        for label in unique
+    }
+    score_total = 0.0
+    for start in range(0, count, SEMANTIC_SIMILARITY_BLOCK_ROWS):
+        stop = min(count, start + SEMANTIC_SIMILARITY_BLOCK_ROWS)
+        similarities = normalized[start:stop] @ normalized.T
+        distances = 1.0 - similarities
+        for local_index, row_index in enumerate(range(start, stop)):
+            own_label = labels[row_index]
+            own_members = members_by_label[own_label]
+            if len(own_members) == 1:
+                continue
+            a = float(distances[local_index, own_members].sum(dtype=np.float64)) / (
+                len(own_members) - 1
+            )
+            b = min(
+                float(distances[local_index, members].mean(dtype=np.float64))
+                for label, members in members_by_label.items()
+                if label != own_label
+            )
+            denominator = max(a, b)
+            if denominator > 0.0:
+                score_total += (b - a) / denominator
+        del similarities, distances
+    return score_total / count
+
+
+def _semantic_pair_stats(normalized: np.ndarray, indices: list[int]) -> tuple[float, float]:
+    """Return exact (mean, minimum) cosine with O(cluster-size) scratch."""
+
+    pair_count = 0
+    pair_total = 0.0
+    pair_min = float("inf")
+    for position, left in enumerate(indices[:-1]):
+        values = normalized[indices[position + 1 :]] @ normalized[left]
+        if values.size == 0:
+            continue
+        pair_count += int(values.size)
+        pair_total += float(values.sum(dtype=np.float64))
+        pair_min = min(pair_min, float(values.min()))
+    return pair_total / pair_count, pair_min
 
 
 def _member_date(row: JsonObject) -> str | None:
@@ -1097,6 +1147,7 @@ class _GroupUtility:
     # Mean pairwise cosine similarity for SEMANTIC groups; None for
     # lexical/entity groups, whose record shape is unchanged.
     semantic_mean_similarity: float | None = None
+    semantic_min_similarity: float | None = None
 
     def to_record(self) -> JsonObject:
         record: JsonObject = {
@@ -1109,6 +1160,8 @@ class _GroupUtility:
         }
         if self.semantic_mean_similarity is not None:
             record["semantic_mean_similarity"] = round(self.semantic_mean_similarity, 4)
+        if self.semantic_min_similarity is not None:
+            record["semantic_min_similarity"] = round(self.semantic_min_similarity, 4)
         return record
 
 
@@ -1119,6 +1172,7 @@ def _group_utility(
     stats: _CorpusStats,
     *,
     semantic_mean_similarity: float | None = None,
+    semantic_min_similarity: float | None = None,
 ) -> tuple[_GroupUtility, str | None]:
     """(utility, failure_reason). The gate a group must pass to become a
     proposal: an aggregation signal (label-proximate distinct values or
@@ -1132,7 +1186,7 @@ def _group_utility(
     threshold but differ in two documented ways: values/amounts count
     across the whole member texts (an anchor-less group has no shared
     label stem to be proximate to), and the coherence gate is the
-    mean-pairwise-similarity floor (``SEMANTIC_MIN_MEAN_SIMILARITY``)
+    mean- and minimum-pairwise-similarity floors
     instead of the label-stem majority test, which anchor-less groups
     cannot pass by construction. ``label_coherence`` is still measured
     and disclosed for semantic groups; it just does not gate them."""
@@ -1160,6 +1214,7 @@ def _group_utility(
         label_coherence=coherence,
         score=max(1, len(values)) * max(1, len(sessions)) * specificity,
         semantic_mean_similarity=semantic_mean_similarity,
+        semantic_min_similarity=semantic_min_similarity,
     )
     if len(members) < MIN_AGGREGATION_MEMBERS:
         return utility, "below_min_aggregation_members"
@@ -1171,6 +1226,11 @@ def _group_utility(
     if semantic_mean_similarity is not None:
         if semantic_mean_similarity < SEMANTIC_MIN_MEAN_SIMILARITY:
             return utility, "semantic_coherence_below_floor"
+        if (
+            semantic_min_similarity is None
+            or semantic_min_similarity < SEMANTIC_MIN_PAIRWISE_SIMILARITY
+        ):
+            return utility, "semantic_min_pairwise_below_floor"
     elif coherence < LABEL_COHERENCE_MIN_FRACTION:
         return utility, "label_not_coherent_with_members"
     return utility, None
@@ -1553,6 +1613,7 @@ class VNextRollupService:
         *,
         merge_provider: BrainModelProvider | None = None,
         embedding_provider: EmbeddingProvider | None | str = "ambient",
+        precomputed_embeddings: dict[str, np.ndarray] | None = None,
     ) -> None:
         self.store = store
         self.merge_provider = merge_provider
@@ -1564,6 +1625,7 @@ class VNextRollupService:
             self.embedding_provider: EmbeddingProvider | None = get_embedding_provider()
         else:
             self.embedding_provider = embedding_provider  # type: ignore[assignment]
+        self.precomputed_embeddings = precomputed_embeddings or {}
 
     # -- grouping ---------------------------------------------------------------
 
@@ -1573,7 +1635,7 @@ class VNextRollupService:
         domains: list[str] | None,
         sensitivity_allowed: list[str],
         options: RollupOptions,
-    ) -> tuple[list[JsonObject], bool]:
+    ) -> tuple[list[JsonObject], bool, int, bool]:
         # Ask for one sentinel row beyond the configured cap. The store
         # applies status, scope, roll-up-card exclusion, deterministic order,
         # and LIMIT in SQL, so neither a large corpus nor existing cards are
@@ -1584,6 +1646,28 @@ class VNextRollupService:
             excluded_candidate_kind=ROLLUP_CANDIDATE_KIND,
             limit=options.max_groupable_memories + 1,
         )
+        count_inputs = getattr(self.store, "count_rollup_input_memories", None)
+        total_exact = False
+        total_count = len(rows)
+        if callable(count_inputs):
+            try:
+                total_count = int(
+                    count_inputs(
+                        domains=domains,
+                        sensitivity_allowed=sensitivity_allowed,
+                        excluded_candidate_kind=ROLLUP_CANDIDATE_KIND,
+                    )
+                )
+                total_exact = total_count >= len(rows)
+            except Exception:  # noqa: BLE001 - legacy adapters may expose a narrower method
+                pass
+        if len(rows) <= options.max_groupable_memories:
+            # The sentinel read itself proves the total when it did not fill
+            # the cap-plus-one request, even for legacy stores without count.
+            total_count = len(rows)
+            total_exact = True
+        elif not total_exact:
+            total_count = max(total_count, len(rows))
         bounded = len(rows) > options.max_groupable_memories
         rows = rows[: options.max_groupable_memories]
         # Defensive parity for non-SQL protocol implementations. Production
@@ -1592,7 +1676,7 @@ class VNextRollupService:
         rows = [row for row in rows if not _is_rollup_card(row)]
         # Insertion-order independent: grouping sees one canonical order.
         rows.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id"))))
-        return rows, bounded
+        return rows, bounded, total_count, total_exact
 
     def _entity_key_maps(
         self, row_candidates: list[tuple[JsonObject, tuple]]
@@ -1658,6 +1742,7 @@ class VNextRollupService:
             members: list[JsonObject],
             label_variants: tuple[str, ...] = (),
             semantic_similarity: float | None = None,
+            semantic_min_similarity: float | None = None,
         ) -> None:
             if len(members) > MAX_ROLLUP_GROUP_MEMBERS:
                 skipped.append(f"group_too_large: {key} (members={len(members)})")
@@ -1683,7 +1768,12 @@ class VNextRollupService:
             # utility is measured first because the bare-verb label rule
             # needs the group's label-proximate amount count.
             utility, gate_reason = _group_utility(
-                label, members, profiles, stats, semantic_mean_similarity=semantic_similarity
+                label,
+                members,
+                profiles,
+                stats,
+                semantic_mean_similarity=semantic_similarity,
+                semantic_min_similarity=semantic_min_similarity,
             )
             junk_reason = _label_junk_reason(
                 label, stats, label_amount_count=utility.distinct_amounts
@@ -1783,15 +1873,15 @@ class VNextRollupService:
             )
             admitted = 0
             seen_semantic_keys: set[str] = set()
-            for cluster_members, mean_similarity in semantic_clusters:
+            for cluster_members, mean_similarity, min_similarity in semantic_clusters:
                 if mean_similarity >= SEMANTIC_NEAR_DUPLICATE_SIMILARITY:
                     skipped.append(
                         "semantic_near_duplicate_left_to_dedup: "
                         f"mean_similarity={mean_similarity:.2f}, members={len(cluster_members)}"
                     )
                     continue
-                label, label_stems = _dominant_noun_phrase(cluster_members, stats)
-                if label is None:
+                semantic_label, label_stems = _dominant_noun_phrase(cluster_members, stats)
+                if semantic_label is None:
                     # No noun spans even two members: the cluster has no
                     # recognizable topic to put on a card.
                     _drop(
@@ -1800,7 +1890,7 @@ class VNextRollupService:
                         "semantic_no_dominant_label",
                     )
                     continue
-                key = f"semantic:{label.casefold()}"
+                key = f"semantic:{semantic_label.casefold()}"
                 if key in seen_semantic_keys:
                     # Two clusters sharing one dominant label in a single
                     # run would collide on the rollup key; keep the first
@@ -1808,21 +1898,24 @@ class VNextRollupService:
                     skipped.append(f"semantic_label_collision: {key} (members={len(cluster_members)})")
                     continue
                 seen_semantic_keys.add(key)
-                variants = _surface_variants(cluster_members, label_stems, label)
+                variants = _surface_variants(cluster_members, label_stems, semantic_label)
                 groups_before = len(groups)
                 _admit(
                     key,
                     "semantic",
-                    label,
+                    semantic_label,
                     list(cluster_members),
                     label_variants=variants,
                     semantic_similarity=mean_similarity,
+                    semantic_min_similarity=min_similarity,
                 )
                 if len(groups) > groups_before:
                     admitted += 1
             semantic_record["groups_admitted"] = admitted
-            for reason in semantic_record["skipped"]:
-                skipped.append(f"semantic_tier: {reason}")
+            semantic_skipped = semantic_record.get("skipped")
+            if isinstance(semantic_skipped, list):
+                for reason in semantic_skipped:
+                    skipped.append(f"semantic_tier: {reason}")
 
         # Rank by aggregation utility so max_rollups keeps the best groups,
         # not the first-admitted ones. Deterministic tie-breaks.
@@ -1852,48 +1945,53 @@ class VNextRollupService:
         options: RollupOptions,
         domains: list[str] | None,
         sensitivity_allowed: list[str] | None,
-    ) -> tuple[list[tuple[tuple[JsonObject, ...], float]], JsonObject]:
+    ) -> tuple[list[tuple[tuple[JsonObject, ...], float, float]], JsonObject]:
         """Embedding clusters over the rows the lexical/entity passes left
         unclaimed: ``(clusters, disclosure_record)`` where each cluster is
-        ``(members sorted like every group, mean pairwise cosine)``.
+        ``(members sorted like every group, mean cosine, minimum cosine)``.
 
-        Embedding access mirrors the consolidation pass
-        (``provider_reembed_plus_exact_id_presence_read``): vectors are
-        re-derived from ``memory_embedding_text`` through the configured
-        provider, and an exact presence read by the selected row IDs
-        (``list_memory_ids_with_embeddings``) is the read surface for which
-        rows actually carry STORED embeddings — rows absent from that read
-        never join a cluster. Every early exit lands in the record's
-        ``skipped`` list (the caller also mirrors them into the outcome's
-        skip lines)."""
+        Exact presence is resolved before provider work. Compact vectors
+        already derived by consolidation are reused, and the provider sees
+        only present cache misses. Every early exit lands in the record's
+        ``skipped`` list."""
         provider = self.embedding_provider
+        skipped_reasons: list[str] = []
+        threshold_sweep: list[JsonObject] = []
         record: JsonObject = {
-            "embedding_access": "provider_reembed_plus_exact_id_presence_read",
+            "embedding_access": "exact_id_presence_read_then_reuse_or_provider_reembed",
             "provider": getattr(provider, "provider", None),
             "model": getattr(provider, "model", None),
             "ungrouped_rows": len(remaining),
             "embedded_rows": 0,
             "bounded": False,
-            "threshold_sweep": [],
+            "threshold_sweep": threshold_sweep,
             "chosen_threshold": None,
             "mean_silhouette": None,
+            "clustering": "complete_link_all_pairs_at_threshold",
             "min_mean_similarity": SEMANTIC_MIN_MEAN_SIMILARITY,
+            "min_pairwise_similarity": SEMANTIC_MIN_PAIRWISE_SIMILARITY,
+            "matrix_dtype": "float32",
+            "matrix_materialization": False,
+            "similarity_block_rows": SEMANTIC_SIMILARITY_BLOCK_ROWS,
+            "peak_similarity_block_bytes": 0,
+            "reused_embedding_rows": 0,
+            "provider_embedded_rows": 0,
             "clusters_formed": 0,
             "groups_admitted": 0,
-            "skipped": [],
+            "skipped": skipped_reasons,
         }
         if provider is None:  # caller-gated; kept defensive
-            record["skipped"].append("no_embedding_provider_configured")
+            skipped_reasons.append("no_embedding_provider_configured")
             return [], record
         usable_min = max(options.min_members, MIN_AGGREGATION_MEMBERS)
         if len(remaining) < usable_min:
-            record["skipped"].append("fewer_ungrouped_rows_than_min_members")
+            skipped_reasons.append("fewer_ungrouped_rows_than_min_members")
             return [], record
         list_memory_ids_with_embeddings = getattr(
             self.store, "list_memory_ids_with_embeddings", None
         )
         if not callable(list_memory_ids_with_embeddings):
-            record["skipped"].append("store_lacks_embedding_presence_read")
+            skipped_reasons.append("store_lacks_embedding_presence_read")
             return [], record
         embeddable = [(row, memory_embedding_text(row)) for row in remaining]
         embeddable = [(row, text) for row, text in embeddable if text]
@@ -1902,43 +2000,60 @@ class VNextRollupService:
             record["bounded"] = True
             embeddable = embeddable[-MAX_SEMANTIC_TIER_MEMBERS:]
         if len(embeddable) < usable_min:
-            record["skipped"].append("fewer_embeddable_rows_than_min_members")
+            skipped_reasons.append("fewer_embeddable_rows_than_min_members")
             return [], record
-        texts = [text for _, text in embeddable]
-        vectors: list[list[float]] = []
-        try:
-            for start in range(0, len(texts), MAX_EMBEDDINGS_BATCH_SIZE):
-                vectors.extend(provider.embed_batch(texts[start : start + MAX_EMBEDDINGS_BATCH_SIZE]))
-        except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
-            record["skipped"].append(f"embedding_provider_failed: {exc}")
-            return [], record
-        # Exact presence read by the selected IDs, not a global ANN probe: an
-        # ANN query returns nearest neighbors, so embedded selected rows are
-        # missed when unrelated neighbors dominate the top-K (audit 2 P1 #5).
+
+        # Presence comes first: rows without stored vectors never consume a
+        # provider call and cannot participate in semantic grouping.
         selected_ids = [str(row.get("id")) for row, _ in embeddable]
         try:
             embedded_ids = set(list_memory_ids_with_embeddings(selected_ids))
         except Exception as exc:  # noqa: BLE001 - store backends raise driver-specific errors
-            record["skipped"].append(f"embedding_presence_read_failed: {exc}")
+            skipped_reasons.append(f"embedding_presence_read_failed: {exc}")
             return [], record
-        members = [
-            (row, vector)
-            for (row, _), vector in zip(embeddable, vectors, strict=True)
-            if str(row.get("id")) in embedded_ids
-        ]
-        record["embedded_rows"] = len(members)
-        if len(members) < usable_min:
-            record["skipped"].append("fewer_embedded_rows_than_min_members")
+        present = [(row, text) for row, text in embeddable if str(row.get("id")) in embedded_ids]
+        record["embedded_rows"] = len(present)
+        if len(present) < usable_min:
+            skipped_reasons.append("fewer_embedded_rows_than_min_members")
             return [], record
+        vectors_by_id: dict[str, np.ndarray] = {}
+        missing: list[tuple[JsonObject, str]] = []
+        for row, text in present:
+            member_id = str(row.get("id"))
+            cached = self.precomputed_embeddings.get(member_id)
+            if cached is not None and np.asarray(cached).size > 0:
+                vectors_by_id[member_id] = np.asarray(cached, dtype=np.float32)
+            else:
+                missing.append((row, text))
+        record["reused_embedding_rows"] = len(vectors_by_id)
+        try:
+            for start in range(0, len(missing), MAX_EMBEDDINGS_BATCH_SIZE):
+                batch = missing[start : start + MAX_EMBEDDINGS_BATCH_SIZE]
+                batch_vectors = provider.embed_batch([text for _row, text in batch])
+                if len(batch_vectors) != len(batch):
+                    skipped_reasons.append("embedding_provider_returned_wrong_batch_size")
+                    return [], record
+                for (row, _text), vector in zip(batch, batch_vectors, strict=True):
+                    vectors_by_id[str(row.get("id"))] = np.asarray(vector, dtype=np.float32)
+        except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
+            skipped_reasons.append(f"embedding_provider_failed: {exc}")
+            return [], record
+        record["provider_embedded_rows"] = len(missing)
+        members = [(row, vectors_by_id[str(row.get("id"))]) for row, _text in present]
 
         width = max(len(vector) for _, vector in members)
-        matrix = np.zeros((len(members), width), dtype=np.float64)
-        for index, (_, vector) in enumerate(members):
-            matrix[index, : len(vector)] = np.asarray(vector, dtype=np.float64)
+        matrix: np.ndarray = np.zeros((len(members), width), dtype=np.float32)
+        for index, (_, member_vector) in enumerate(members):
+            matrix[index, : len(member_vector)] = member_vector
         norms = np.linalg.norm(matrix, axis=1)
         norms[norms == 0.0] = 1.0
-        normalized = matrix / norms[:, None]
-        similarities = normalized @ normalized.T
+        matrix /= norms[:, None]
+        normalized = matrix
+        record["peak_similarity_block_bytes"] = (
+            min(len(members), SEMANTIC_SIMILARITY_BLOCK_ROWS)
+            * len(members)
+            * np.dtype(np.float32).itemsize
+        )
 
         # Conservative threshold sweep, scored by the silhouette-style
         # criterion; only sweep points that yield at least one usable
@@ -1946,8 +2061,9 @@ class VNextRollupService:
         # keep the HIGHER threshold. Scores are rounded before comparison
         # so insertion order cannot flip a tie through float summation.
         best: tuple[float, float, list[int]] | None = None
+        stable_keys = [str(row.get("id")) for row, _vector in members]
         for threshold in SEMANTIC_SWEEP_THRESHOLDS:
-            labels = _connected_components(similarities, threshold)
+            labels = _cohesive_labels(normalized, stable_keys, threshold)
             component_sizes = Counter(labels)
             usable_components = sum(1 for size in component_sizes.values() if size >= usable_min)
             entry: JsonObject = {
@@ -1957,15 +2073,15 @@ class VNextRollupService:
                 "mean_silhouette": None,
             }
             if usable_components >= 1:
-                score = _mean_silhouette(similarities, labels)
+                score = _mean_silhouette(normalized, labels)
                 if score is not None:
                     rounded = round(score, 6)
                     entry["mean_silhouette"] = rounded
                     if best is None or rounded > best[0] or (rounded == best[0] and threshold > best[1]):
                         best = (rounded, threshold, labels)
-            record["threshold_sweep"].append(entry)
+            threshold_sweep.append(entry)
         if best is None:
-            record["skipped"].append("no_usable_clusters_at_any_threshold")
+            skipped_reasons.append("no_usable_clusters_at_any_threshold")
             return [], record
         score, threshold, labels = best
         record["chosen_threshold"] = threshold
@@ -1979,15 +2095,16 @@ class VNextRollupService:
         clusters.sort(key=lambda indices: (-len(indices), min(str(members[i][0].get("id")) for i in indices)))
         record["clusters_formed"] = len(clusters)
 
-        results: list[tuple[tuple[JsonObject, ...], float]] = []
+        results: list[tuple[tuple[JsonObject, ...], float, float]] = []
         for indices in clusters:
-            pairwise = [
-                float(similarities[i, j])
-                for position, i in enumerate(indices)
-                for j in indices[position + 1 :]
-            ]
-            mean_similarity = sum(pairwise) / len(pairwise)
-            results.append((_sorted_members([members[i][0] for i in indices]), mean_similarity))
+            mean_similarity, min_similarity = _semantic_pair_stats(normalized, indices)
+            results.append(
+                (
+                    _sorted_members([members[i][0] for i in indices]),
+                    mean_similarity,
+                    min_similarity,
+                )
+            )
         return results, record
 
     # -- accepted / pending state -------------------------------------------------
@@ -2052,6 +2169,10 @@ class VNextRollupService:
         group: _RollupGroup,
         instances: list[JsonObject],
         model_summary: str | None,
+        grouping_input_truncated: bool,
+        grouping_input_count: int,
+        grouping_input_total: int,
+        grouping_input_total_exact: bool,
     ) -> tuple[str, str, str]:
         """(title, canonical_text, summary) — deterministic; the optional
         model summary is appended as a clearly-labelled extra sentence.
@@ -2060,15 +2181,52 @@ class VNextRollupService:
         carried by the instances ("hours played — 5 instances, amounts in
         hours"), derived deterministically from the instance amounts."""
         rendered = "; ".join(_render_instance(instance) for instance in instances)
+        total_count = len(group.members)
+        displayed_count = len(instances)
+        truncated = displayed_count < total_count
         unit = _dominant_amount_unit(instances)
-        if unit is not None:
-            title = f"Roll-up: {group.label} — {len(instances)} instances, amounts in {unit}"
+        if grouping_input_truncated:
+            corpus_total = (
+                str(grouping_input_total)
+                if grouping_input_total_exact
+                else f"at least {grouping_input_total}"
+            )
+            display = f"; showing {displayed_count}" if truncated else ""
+            title = (
+                f"Roll-up: {group.label} — {total_count} matched instances in bounded input "
+                f"({grouping_input_count} of {corpus_total} memories scanned{display})"
+            )
+        elif truncated:
+            title = (
+                f"Roll-up: {group.label} — {total_count} instances total "
+                f"(showing {displayed_count})"
+            )
+        elif unit is not None:
+            title = f"Roll-up: {group.label} — {total_count} instances, amounts in {unit}"
         else:
-            title = f"Roll-up: {group.label} ({len(instances)} instances in total)"
+            title = f"Roll-up: {group.label} ({total_count} instances in total)"
         head = group.label
         if group.label_variants:
             head = f"{group.label} (also: {', '.join(group.label_variants)})"
-        canonical_text = f"{head} — {len(instances)} instances in total: {rendered}."
+        if grouping_input_truncated:
+            corpus_total = (
+                str(grouping_input_total)
+                if grouping_input_total_exact
+                else f"at least {grouping_input_total}"
+            )
+            display = f"; showing {displayed_count}" if truncated else ""
+            canonical_text = (
+                f"{head} — {total_count} matched instances in a truncated grouping input "
+                f"({grouping_input_count} of {corpus_total} in-scope memories scanned{display}): "
+                f"{rendered}."
+            )
+        elif truncated:
+            canonical_text = (
+                f"{head} — {total_count} instances in the authoritative group; "
+                f"showing {displayed_count}: {rendered}."
+            )
+        else:
+            canonical_text = f"{head} — {total_count} instances in total: {rendered}."
         if model_summary:
             canonical_text = f"{canonical_text} Summary: {model_summary}"
         summary = canonical_text[:280]
@@ -2087,6 +2245,10 @@ class VNextRollupService:
         proposed_supersede: list[str],
         model_provenance: JsonObject | None,
         merge_refusal: str | None,
+        grouping_input_truncated: bool,
+        grouping_input_count: int,
+        grouping_input_total: int,
+        grouping_input_total_exact: bool,
         generated_by: str,
         trace_id: str | None,
     ) -> JsonObject:
@@ -2141,6 +2303,12 @@ class VNextRollupService:
             "group_kind": group.group_kind,
             "topic_label": group.label,
             "member_count": len(member_ids),
+            "displayed_instance_count": len(instances),
+            "instances_truncated": len(instances) < len(member_ids),
+            "grouping_input_truncated": grouping_input_truncated,
+            "grouping_input_count": grouping_input_count,
+            "grouping_input_total": grouping_input_total,
+            "grouping_input_total_exact": grouping_input_total_exact,
             "member_ids": member_ids,
             "instances": instances,
         }
@@ -2225,12 +2393,20 @@ class VNextRollupService:
         sensitivity = list(sensitivity_allowed or ("public", "internal", "private", "unknown"))
         outcome = RollupOutcome(options=options.to_record())
 
-        rows, bounded = self._collect_rows(domains=domains, sensitivity_allowed=sensitivity, options=options)
+        rows, bounded, total_count, total_exact = self._collect_rows(
+            domains=domains,
+            sensitivity_allowed=sensitivity,
+            options=options,
+        )
         outcome.groupable_count = len(rows)
+        outcome.groupable_total_count = total_count
+        outcome.groupable_total_exact = total_exact
         outcome.bounded = bounded
         if bounded:
+            total_label = str(total_count) if total_exact else f"at least {total_count}"
             outcome.skipped.append(
-                f"grouping bounded to the {options.max_groupable_memories} most recently created memories"
+                f"grouping bounded to the {options.max_groupable_memories} most recently created "
+                f"memories of {total_label} in scope"
             )
         if len(rows) < options.min_members:
             outcome.skipped.append("fewer_memories_than_min_members")
@@ -2304,8 +2480,7 @@ class VNextRollupService:
 
         for prepared in prepared_groups:
             group = prepared.group
-            member_ids = list(prepared.member_ids)
-            current_member_snapshots = list(prepared.current_member_snapshots)
+            current_member_ids = list(prepared.member_ids)
             rollup_digest = prepared.rollup_digest
             group_record = prepared.group_record
 
@@ -2335,11 +2510,11 @@ class VNextRollupService:
                 } if isinstance(accepted_snapshot_rows, list) else {}
                 current_members_by_id = {str(row.get("id")): row for row in group.members}
                 accepted_members_unchanged = (
-                    accepted_members == set(member_ids)
-                    and all(member_id in accepted_snapshots for member_id in member_ids)
+                    accepted_members == set(current_member_ids)
+                    and all(member_id in accepted_snapshots for member_id in current_member_ids)
                     and all(
                         memory_matches_snapshot(current_members_by_id[member_id], accepted_snapshots[member_id])
-                        for member_id in member_ids
+                        for member_id in current_member_ids
                     )
                 )
                 if accepted_members_unchanged:
@@ -2374,27 +2549,44 @@ class VNextRollupService:
             model_provenance: JsonObject | None = None
             merge_refusal: str | None = None
             if generation_mode == "model_backed":
-                model_summary, model_provenance, merge_refusal = _refine_summary_with_model(
-                    group=group,
-                    instances=instances,
-                    route=route,
-                    provider=self.merge_provider,
-                    temperature=model_temperature,
-                    trace_id=trace_id,
-                )
+                if bounded:
+                    merge_refusal = "model_summary_skipped_for_truncated_grouping_input"
+                elif len(instances) < len(group.members):
+                    merge_refusal = "model_summary_skipped_for_truncated_instances"
+                else:
+                    model_summary, model_provenance, merge_refusal = _refine_summary_with_model(
+                        group=group,
+                        instances=instances,
+                        route=route,
+                        provider=self.merge_provider,
+                        temperature=model_temperature,
+                        trace_id=trace_id,
+                    )
 
             title, canonical_text, summary = self._render_card(
-                group=group, instances=instances, model_summary=model_summary
+                group=group,
+                instances=instances,
+                model_summary=model_summary,
+                grouping_input_truncated=bounded,
+                grouping_input_count=len(rows),
+                grouping_input_total=total_count,
+                grouping_input_total_exact=total_exact,
             )
 
             proposal: JsonObject = {
                 **group_record,
-                "instance_count": len(instances),
+                "instance_count": len(group.members),
+                "displayed_instance_count": len(instances),
+                "instances_truncated": len(instances) < len(group.members),
+                "grouping_input_truncated": bounded,
+                "grouping_input_count": len(rows),
+                "grouping_input_total": total_count,
+                "grouping_input_total_exact": total_exact,
                 "revises_memory_id": revises_memory_id,
                 "proposed_supersede": proposed_supersede,
                 "model_refined": model_summary is not None,
                 "merge_refusal": merge_refusal,
-                "source_refs": [f"memory:{member_id}" for member_id in member_ids],
+                "source_refs": [f"memory:{member_id}" for member_id in current_member_ids],
             }
             if create_candidate_memories:
                 candidate = self._create_rollup_candidate(
@@ -2408,6 +2600,10 @@ class VNextRollupService:
                     proposed_supersede=proposed_supersede,
                     model_provenance=model_provenance,
                     merge_refusal=merge_refusal,
+                    grouping_input_truncated=bounded,
+                    grouping_input_count=len(rows),
+                    grouping_input_total=total_count,
+                    grouping_input_total_exact=total_exact,
                     generated_by=generated_by,
                     trace_id=trace_id,
                 )
@@ -2440,7 +2636,9 @@ __all__ = [
     "ROLLUP_CANDIDATE_KIND",
     "ROLLUP_PROPOSAL_KIND",
     "SEMANTIC_MIN_MEAN_SIMILARITY",
+    "SEMANTIC_MIN_PAIRWISE_SIMILARITY",
     "SEMANTIC_NEAR_DUPLICATE_SIMILARITY",
+    "SEMANTIC_SIMILARITY_BLOCK_ROWS",
     "SEMANTIC_SWEEP_THRESHOLDS",
     "RollupOptions",
     "RollupOutcome",

@@ -3,8 +3,9 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ContinuityDailyBriefPanel } from "./continuity-daily-brief";
+import type { ContinuityDailyBrief } from "../lib/api";
 
-const briefFixture = {
+const briefFixture: ContinuityDailyBrief = {
   assembly_version: "continuity_daily_brief_v0",
   scope: {
     since: null,
@@ -33,6 +34,12 @@ const briefFixture = {
           scope_match_count: 0,
           query_term_match_count: 0,
           confirmation_rank: 2,
+          freshness_posture: "aging",
+          freshness_rank: 3,
+          provenance_posture: "partial",
+          provenance_rank: 2,
+          supersession_posture: "current",
+          supersession_rank: 3,
           posture_rank: 2,
           lifecycle_rank: 4,
           confidence: 1,
@@ -100,6 +107,12 @@ const briefFixture = {
         scope_match_count: 0,
         query_term_match_count: 0,
         confirmation_rank: 2,
+        freshness_posture: "aging",
+        freshness_rank: 3,
+        provenance_posture: "partial",
+        provenance_rank: 2,
+        supersession_posture: "current",
+        supersession_rank: 3,
         posture_rank: 2,
         lifecycle_rank: 4,
         confidence: 1,

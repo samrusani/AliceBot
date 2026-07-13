@@ -322,6 +322,120 @@ def test_lifecycle_identifier_repair_corrects_database_mis_upgraded_by_0083(data
     _assert_corrected()
 
 
+def test_released_0084_database_upgrades_through_0085_and_0086(database_urls):
+    """A database already stamped with released 0084 receives the 3+ repair.
+
+    The published 0084 moved the identifiers but left the third row pointing
+    at the deleted former holder. Existing v0.9.4 databases will never rerun
+    0084, so only the new 0086 revision may repair that stale pointer.
+    """
+    config = make_alembic_config(database_urls["admin"])
+    user_id = "00000000-0000-0000-0000-000000000151"
+    tombstone_id = "00000000-0000-0000-0000-000000000152"
+    canonical_live_id = "00000000-0000-0000-0000-000000000153"
+    later_live_id = "00000000-0000-0000-0000-000000000154"
+    command.upgrade(config, "20260707_0082")
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        _seed_tombstone_and_live_duplicate(
+            conn,
+            user_id=user_id,
+            tombstone_id=tombstone_id,
+            live_id=canonical_live_id,
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO memories (
+                  id, user_id, memory_key, value, status, source_event_ids,
+                  memory_type, canonical_text, commit_digest, confirmation_id,
+                  metadata_json, created_at, updated_at
+                )
+                VALUES (
+                  %s, %s, 'retry.third', '{"text":"same retry"}'::jsonb,
+                  'active', '[]'::jsonb, 'semantic', 'Same retry',
+                  'duplicate-digest', 'duplicate-confirmation',
+                  '{"agentic_memory":{"idempotency_key":"duplicate-digest","confirmation":{"confirmation_id":"duplicate-confirmation"}}}'::jsonb,
+                  '2026-01-03T00:00:00Z'::timestamptz,
+                  '2026-01-03T00:00:00Z'::timestamptz
+                )
+                """,
+                (later_live_id, user_id),
+            )
+
+    # Execute the restored published 0084 and stamp the database exactly as an
+    # existing v0.9.4 installation would be before this release upgrade.
+    command.upgrade(config, "20260712_0084")
+
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT version_num FROM alembic_version")
+            assert cur.fetchone()["version_num"] == "20260712_0084"
+            cur.execute(
+                """
+                SELECT id::text AS id, commit_digest, metadata_json
+                FROM memories
+                WHERE id IN (%s, %s, %s)
+                """,
+                (tombstone_id, canonical_live_id, later_live_id),
+            )
+            released_rows = {row["id"]: row for row in cur.fetchall()}
+        assert released_rows[canonical_live_id]["commit_digest"] == "duplicate-digest"
+        assert released_rows[tombstone_id]["commit_digest"] is None
+        assert released_rows[later_live_id]["commit_digest"] is None
+        assert (
+            released_rows[later_live_id]["metadata_json"]["lifecycle_migration"]
+            ["duplicate_commit_digest_canonical_memory_id"]
+            == tombstone_id
+        )
+
+    def _assert_all_pointers_truthful() -> None:
+        with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id::text AS id, commit_digest, confirmation_id, metadata_json
+                    FROM memories
+                    WHERE id IN (%s, %s, %s)
+                    """,
+                    (tombstone_id, canonical_live_id, later_live_id),
+                )
+                rows = {row["id"]: row for row in cur.fetchall()}
+            assert rows[canonical_live_id]["commit_digest"] == "duplicate-digest"
+            assert rows[canonical_live_id]["confirmation_id"] == "duplicate-confirmation"
+            assert rows[tombstone_id]["commit_digest"] is None
+            assert rows[later_live_id]["commit_digest"] is None
+            for duplicate_id in (tombstone_id, later_live_id):
+                migration = rows[duplicate_id]["metadata_json"]["lifecycle_migration"]
+                assert (
+                    migration["duplicate_commit_digest_canonical_memory_id"]
+                    == canonical_live_id
+                )
+                assert (
+                    migration["duplicate_confirmation_id_canonical_memory_id"]
+                    == canonical_live_id
+                )
+            canonical_migration = rows[canonical_live_id]["metadata_json"].get(
+                "lifecycle_migration", {}
+            )
+            assert "duplicate_commit_digest_canonical_memory_id" not in canonical_migration
+            assert "duplicate_confirmation_id_canonical_memory_id" not in canonical_migration
+
+    command.upgrade(config, "head")
+    _assert_all_pointers_truthful()
+
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT version_num FROM alembic_version")
+            assert cur.fetchone()["version_num"] == "20260713_0086"
+
+    # Repeat 0086 through its no-op downgrade boundary. The already repaired
+    # data remains correct and the second upgrade matches nothing.
+    command.downgrade(config, "20260713_0085")
+    _assert_all_pointers_truthful()
+    command.upgrade(config, "head")
+    _assert_all_pointers_truthful()
+
 def test_lifecycle_upgrade_promotes_and_reads_legacy_nested_multi_project_scope(database_urls):
     config = make_alembic_config(database_urls["admin"])
     user_id = "00000000-0000-0000-0000-000000000121"

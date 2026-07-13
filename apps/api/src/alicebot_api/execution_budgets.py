@@ -17,25 +17,28 @@ from alicebot_api.contracts import (
     TRACE_KIND_EXECUTION_BUDGET_LIFECYCLE,
     ExecutionBudgetCreateInput,
     ExecutionBudgetCreateResponse,
+    ExecutionBudgetContextResolution,
     ExecutionBudgetDeactivateInput,
     ExecutionBudgetDeactivateResponse,
     ExecutionBudgetDecisionRecord,
     ExecutionBudgetDetailResponse,
     ExecutionBudgetLifecycleAction,
     ExecutionBudgetLifecycleOutcome,
+    ExecutionBudgetLifecycleTraceSummary,
     ExecutionBudgetLifecycleRequestTracePayload,
     ExecutionBudgetLifecycleStateTracePayload,
     ExecutionBudgetLifecycleSummaryTracePayload,
     ExecutionBudgetListResponse,
     ExecutionBudgetListSummary,
     ExecutionBudgetRecord,
+    ExecutionBudgetStatus,
     ExecutionBudgetSupersedeInput,
     ExecutionBudgetSupersedeResponse,
     ToolExecutionResultRecord,
     ToolRecord,
     ToolRoutingRequestRecord,
 )
-from alicebot_api.store import ContinuityStore, ExecutionBudgetRow, ToolExecutionRow
+from alicebot_api.store import ContinuityStore, ExecutionBudgetRow, JsonObject, ToolExecutionRow
 
 
 class ExecutionBudgetValidationError(ValueError):
@@ -60,7 +63,7 @@ class ExecutionBudgetDecision:
 class _RequestContextResolution:
     request_thread_id: str | None
     active_thread_profile_id: str | None
-    context_resolution: str
+    context_resolution: ExecutionBudgetContextResolution
     context_reason: str | None
 
 
@@ -72,7 +75,7 @@ def serialize_execution_budget_row(row: ExecutionBudgetRow) -> ExecutionBudgetRe
         "domain_hint": row["domain_hint"],
         "max_completed_executions": row["max_completed_executions"],
         "rolling_window_seconds": row["rolling_window_seconds"],
-        "status": cast(str, row["status"]),
+        "status": cast(ExecutionBudgetStatus, row["status"]),
         "deactivated_at": None if row["deactivated_at"] is None else row["deactivated_at"].isoformat(),
         "superseded_by_budget_id": (
             None if row["superseded_by_budget_id"] is None else str(row["superseded_by_budget_id"])
@@ -124,7 +127,7 @@ def _append_trace_events(
     store: ContinuityStore,
     *,
     trace_id: UUID,
-    trace_events: list[tuple[str, dict[str, object]]],
+    trace_events: list[tuple[str, JsonObject]],
 ) -> None:
     for sequence_no, (kind, payload) in enumerate(trace_events, start=1):
         store.append_trace_event(
@@ -135,7 +138,10 @@ def _append_trace_events(
         )
 
 
-def _trace_summary(trace_id: UUID, trace_events: list[tuple[str, dict[str, object]]]) -> dict[str, object]:
+def _trace_summary(
+    trace_id: UUID,
+    trace_events: list[tuple[str, JsonObject]],
+) -> ExecutionBudgetLifecycleTraceSummary:
     return {
         "trace_id": str(trace_id),
         "trace_event_count": len(trace_events),
@@ -212,7 +218,7 @@ def _lifecycle_state_payload(
     *,
     row: ExecutionBudgetRow,
     requested_action: ExecutionBudgetLifecycleAction,
-    previous_status: str,
+    previous_status: ExecutionBudgetStatus,
     replacement_budget: ExecutionBudgetRow | None,
     replacement_max_completed_executions: int | None,
     replacement_rolling_window_seconds: int | None,
@@ -221,8 +227,8 @@ def _lifecycle_state_payload(
     return {
         "execution_budget_id": str(row["id"]),
         "requested_action": requested_action,
-        "previous_status": cast(str, previous_status),
-        "current_status": cast(str, row["status"]),
+        "previous_status": previous_status,
+        "current_status": cast(ExecutionBudgetStatus, row["status"]),
         "tool_key": row["tool_key"],
         "domain_hint": row["domain_hint"],
         "max_completed_executions": row["max_completed_executions"],
@@ -231,7 +237,11 @@ def _lifecycle_state_payload(
         "superseded_by_budget_id": _optional_uuid_string(row["superseded_by_budget_id"]),
         "supersedes_budget_id": _optional_uuid_string(row["supersedes_budget_id"]),
         "replacement_budget_id": None if replacement_budget is None else str(replacement_budget["id"]),
-        "replacement_status": None if replacement_budget is None else cast(str, replacement_budget["status"]),
+        "replacement_status": (
+            None
+            if replacement_budget is None
+            else cast(ExecutionBudgetStatus, replacement_budget["status"])
+        ),
         "replacement_max_completed_executions": replacement_max_completed_executions,
         "replacement_rolling_window_seconds": replacement_rolling_window_seconds,
         "rejection_reason": rejection_reason,
@@ -264,7 +274,7 @@ def _record_lifecycle_trace(
     summary_payload: ExecutionBudgetLifecycleSummaryTracePayload,
     requested_action: ExecutionBudgetLifecycleAction,
     outcome: ExecutionBudgetLifecycleOutcome,
-) -> dict[str, object]:
+) -> ExecutionBudgetLifecycleTraceSummary:
     trace = store.create_trace(
         user_id=cast(UUID, thread["user_id"]),
         thread_id=cast(UUID, thread["id"]),
@@ -279,10 +289,10 @@ def _record_lifecycle_trace(
             "outcome": outcome,
         },
     )
-    trace_events: list[tuple[str, dict[str, object]]] = [
-        ("execution_budget.lifecycle.request", cast(dict[str, object], request_payload)),
-        ("execution_budget.lifecycle.state", cast(dict[str, object], state_payload)),
-        ("execution_budget.lifecycle.summary", cast(dict[str, object], summary_payload)),
+    trace_events: list[tuple[str, JsonObject]] = [
+        ("execution_budget.lifecycle.request", cast(JsonObject, request_payload)),
+        ("execution_budget.lifecycle.state", cast(JsonObject, state_payload)),
+        ("execution_budget.lifecycle.summary", cast(JsonObject, summary_payload)),
     ]
     _append_trace_events(store, trace_id=trace["id"], trace_events=trace_events)
     return _trace_summary(trace["id"], trace_events)
@@ -321,7 +331,7 @@ def _record_rejected_lifecycle_action(
     request_payload: ExecutionBudgetLifecycleRequestTracePayload,
     row: ExecutionBudgetRow,
     requested_action: ExecutionBudgetLifecycleAction,
-    previous_status: str,
+    previous_status: ExecutionBudgetStatus,
     replacement_max_completed_executions: int | None,
     replacement_rolling_window_seconds: int | None,
     rejection_reason: str,
@@ -453,7 +463,7 @@ def deactivate_execution_budget_record(
             request_payload=request_payload,
             requested_action="deactivate",
             row=row,
-            previous_status=cast(str, row["status"]),
+            previous_status=cast(ExecutionBudgetStatus, row["status"]),
             replacement_max_completed_executions=None,
             replacement_rolling_window_seconds=None,
             rejection_reason=str(error),
@@ -492,7 +502,7 @@ def deactivate_execution_budget_record(
     )
     return {
         "execution_budget": serialize_execution_budget_row(updated),
-        "trace": cast(dict[str, object], trace),
+        "trace": trace,
     }
 
 
@@ -514,20 +524,20 @@ def supersede_execution_budget_record(
     )
 
     if cast(str, current["status"]) != "active":
-        error = _invalid_transition_error(row=current, requested_action="supersede")
+        transition_error = _invalid_transition_error(row=current, requested_action="supersede")
         _record_rejected_lifecycle_action(
             store,
             thread=thread,
             request_payload=request_payload,
             requested_action="supersede",
             row=current,
-            previous_status=cast(str, current["status"]),
+            previous_status=cast(ExecutionBudgetStatus, current["status"]),
             replacement_max_completed_executions=request.max_completed_executions,
             replacement_rolling_window_seconds=current["rolling_window_seconds"],
-            rejection_reason=str(error),
+            rejection_reason=str(transition_error),
             active_budget_id=cast(UUID, current["id"]) if cast(str, current["status"]) == "active" else None,
         )
-        raise error
+        raise transition_error
 
     active_scope_rows = _active_budget_rows_for_scope(
         store,
@@ -536,7 +546,7 @@ def supersede_execution_budget_record(
         domain_hint=current["domain_hint"],
     )
     if [row["id"] for row in active_scope_rows] != [current["id"]]:
-        error = ExecutionBudgetLifecycleError(
+        scope_error = ExecutionBudgetLifecycleError(
             "execution budget selector scope must have exactly one active budget to supersede: "
             f"{_scope_label(agent_profile_id=cast(str | None, current['agent_profile_id']), tool_key=current['tool_key'], domain_hint=current['domain_hint'])}"
         )
@@ -549,12 +559,13 @@ def supersede_execution_budget_record(
             previous_status="active",
             replacement_max_completed_executions=request.max_completed_executions,
             replacement_rolling_window_seconds=current["rolling_window_seconds"],
-            rejection_reason=str(error),
+            rejection_reason=str(scope_error),
             active_budget_id=cast(UUID, current["id"]),
         )
-        raise error
+        raise scope_error
 
     replacement_budget_id = uuid4()
+    lifecycle_error: ExecutionBudgetLifecycleError | None = None
     try:
         with store.conn.transaction():
             superseded = store.supersede_execution_budget_optional(
@@ -576,7 +587,7 @@ def supersede_execution_budget_record(
             )
     except psycopg.IntegrityError as exc:
         if _is_active_scope_uniqueness_error(exc):
-            error = ExecutionBudgetLifecycleError(
+            lifecycle_error = ExecutionBudgetLifecycleError(
                 _duplicate_active_scope_message(
                     agent_profile_id=cast(str | None, current["agent_profile_id"]),
                     tool_key=current["tool_key"],
@@ -586,11 +597,9 @@ def supersede_execution_budget_record(
         else:
             raise
     except ExecutionBudgetLifecycleError as exc:
-        error = exc
-    else:
-        error = None
+        lifecycle_error = exc
 
-    if error is not None:
+    if lifecycle_error is not None:
         current_state = _get_execution_budget_or_raise(
             store,
             execution_budget_id=request.execution_budget_id,
@@ -601,17 +610,22 @@ def supersede_execution_budget_record(
             request_payload=request_payload,
             requested_action="supersede",
             row=current_state,
-            previous_status=cast(str, current["status"]),
+            previous_status=cast(ExecutionBudgetStatus, current["status"]),
             replacement_max_completed_executions=request.max_completed_executions,
             replacement_rolling_window_seconds=current["rolling_window_seconds"],
-            rejection_reason=str(error),
+            rejection_reason=str(lifecycle_error),
             active_budget_id=(
                 cast(UUID, current_state["id"])
                 if cast(str, current_state["status"]) == "active"
                 else None
             ),
         )
-        raise error
+        raise lifecycle_error
+
+    if superseded is None:
+        raise ExecutionBudgetLifecycleError(
+            f"execution budget {request.execution_budget_id} could not be superseded"
+        )
 
     trace = _record_lifecycle_trace(
         store,
@@ -639,7 +653,7 @@ def supersede_execution_budget_record(
     return {
         "superseded_budget": serialize_execution_budget_row(superseded),
         "replacement_budget": serialize_execution_budget_row(replacement),
-        "trace": cast(dict[str, object], trace),
+        "trace": trace,
     }
 
 

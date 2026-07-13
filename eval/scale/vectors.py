@@ -81,6 +81,7 @@ class DeterministicEmbeddingProvider:
 
     provider = "deterministic_local"
     model = MODEL_NAME
+    base_url = "deterministic://alice-scale/v1"
 
     def embed_text(self, text: str) -> list[float]:
         return deterministic_vector(text)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import cast
 from uuid import UUID
 
 from alicebot_api.continuity_contradictions import sync_contradiction_state_for_objects
@@ -8,6 +9,7 @@ from alicebot_api.contracts import (
     CONTINUITY_OBJECT_TYPES,
     ContinuityLifecycleStateRecord,
     ContinuityObjectRecord,
+    ContinuityObjectType,
 )
 from alicebot_api.store import ContinuityObjectRow, ContinuityStore, JsonObject
 
@@ -55,7 +57,7 @@ def _serialize_continuity_object(record: ContinuityObjectRow) -> ContinuityObjec
     return {
         "id": str(record["id"]),
         "capture_event_id": str(record["capture_event_id"]),
-        "object_type": record["object_type"],
+        "object_type": cast(ContinuityObjectType, record["object_type"]),
         "status": record["status"],
         "lifecycle": serialize_continuity_lifecycle_state_from_record(record),
         "title": record["title"],

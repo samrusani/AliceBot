@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import re
 import shlex
 from typing import Any, Protocol, cast
 
@@ -17,6 +18,8 @@ LOCAL_VNEXT_FRONTEND_ORIGINS = ("http://127.0.0.1:3000", "http://localhost:3000"
 LOCAL_VNEXT_CORS_RECOMMENDED_FIX = (
     "CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000"
 )
+PGVECTOR_MINIMUM_VERSION = (0, 8, 0)
+PGVECTOR_MINIMUM_VERSION_TEXT = ".".join(str(part) for part in PGVECTOR_MINIMUM_VERSION)
 
 
 class VNextDoctorStore(Protocol):
@@ -25,6 +28,19 @@ class VNextDoctorStore(Protocol):
     def list_connector_settings(self) -> list[JsonObject]: ...
 
     def list_connector_states(self) -> list[JsonObject]: ...
+
+
+def _pgvector_version_at_least(
+    value: object,
+    minimum: tuple[int, int, int] = PGVECTOR_MINIMUM_VERSION,
+) -> bool:
+    if not isinstance(value, str):
+        return False
+    match = re.fullmatch(r"\s*(\d+)\.(\d+)(?:\.(\d+))?\s*", value)
+    if match is None:
+        return False
+    installed = tuple(int(part or 0) for part in match.groups())
+    return installed >= minimum
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +115,7 @@ class VNextDoctorService:
             "migration_revision": status.get("migration_revision"),
             "required_tables": required_tables,
             "missing_tables": missing,
+            "pgvector_version": status.get("pgvector_version"),
         }
 
     def local_live_cors_status(self, settings: Settings | None = None) -> JsonObject:
@@ -119,6 +136,35 @@ class VNextDoctorService:
             message_fail="Database schema is missing required vNext dogfood hardening tables.",
             recommended_fix="./scripts/migrate.sh",
             details=cast(JsonObject, migration_status),
+        )
+
+        pgvector_version = migration_status.get("pgvector_version")
+        pgvector_ok = _pgvector_version_at_least(
+            pgvector_version,
+            PGVECTOR_MINIMUM_VERSION,
+        )
+        self._check(
+            checks,
+            name="pgvector_version",
+            ok=pgvector_ok,
+            severity="blocking",
+            message_ok=(
+                f"pgvector {pgvector_version} satisfies the required "
+                f">= {PGVECTOR_MINIMUM_VERSION_TEXT} runtime contract."
+            ),
+            message_fail=(
+                "pgvector is missing, unparseable, or older than "
+                f"{PGVECTOR_MINIMUM_VERSION_TEXT}."
+            ),
+            recommended_fix=(
+                "Install pgvector >= "
+                f"{PGVECTOR_MINIMUM_VERSION_TEXT}, run ALTER EXTENSION vector UPDATE, "
+                "then rerun migrations."
+            ),
+            details={
+                "installed_version": pgvector_version,
+                "minimum_version": PGVECTOR_MINIMUM_VERSION_TEXT,
+            },
         )
 
         try:
@@ -194,11 +240,12 @@ class VNextDoctorService:
         )
 
         health = VNextConnectorService(cast(Any, self.store), secret_provider=self.secret_provider).connector_health_all()
-        failing_connectors = [
-            item
-            for item in cast(list[JsonObject], health.get("items", []))
-            if int(item.get("items_failed", 0) or 0) > 0 or item.get("last_error")
-        ]
+        failing_connectors = []
+        for item in cast(list[JsonObject], health.get("items", [])):
+            failed_value = item.get("items_failed", 0)
+            failed_count = failed_value if isinstance(failed_value, int) else 0
+            if failed_count > 0 or item.get("last_error"):
+                failing_connectors.append(item)
         self._check(
             checks,
             name="capture_pipeline",

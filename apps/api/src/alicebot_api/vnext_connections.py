@@ -300,6 +300,8 @@ def _report_markdown(connections: list[JsonObject], edge_ids: list[str]) -> str:
     if not connections:
         lines.append("- No high-value candidate connection was detected from the selected inputs.")
     for index, connection in enumerate(connections, start=1):
+        provenance = connection["provenance"]
+        provenance_items = provenance if isinstance(provenance, list) else []
         lines.extend(
             [
                 f"### {index}. {connection['connection_type']}",
@@ -308,7 +310,7 @@ def _report_markdown(connections: list[JsonObject], edge_ids: list[str]) -> str:
                 f"- Confidence: {connection['confidence']}",
                 f"- Explanation: {connection['explanation']}",
                 f"- Why it matters: {connection['why_it_matters']}",
-                f"- Provenance: {', '.join(str(item) for item in connection['provenance'])}",
+                f"- Provenance: {', '.join(str(item) for item in provenance_items)}",
                 "",
             ]
         )

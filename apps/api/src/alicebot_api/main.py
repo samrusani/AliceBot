@@ -11,7 +11,7 @@ import logging
 import re
 import threading
 import time
-from typing import Annotated, Awaitable, Callable, Literal, TypedDict
+from typing import TYPE_CHECKING, Annotated, Awaitable, Callable, Literal, TypedDict, cast
 from uuid import UUID, uuid4
 from fastapi import FastAPI, Header, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
@@ -21,14 +21,18 @@ import psycopg
 from psycopg.rows import dict_row
 from starlette.routing import Match
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-try:
+if TYPE_CHECKING:
     import redis
-    from redis.exceptions import RedisError
-except Exception:  # pragma: no cover - optional dependency for local-only test environments
-    redis = None
+    from redis.exceptions import RedisError as _RedisError
+else:
+    try:
+        import redis
+        from redis.exceptions import RedisError as _RedisError
+    except Exception:  # pragma: no cover - optional dependency for local-only test environments
+        redis = None
 
-    class RedisError(Exception):
-        """Fallback Redis error used when redis package is unavailable."""
+        class _RedisError(Exception):
+            """Fallback Redis error used when redis package is unavailable."""
 
 from alicebot_api import __version__
 from alicebot_api.compiler import compile_and_persist_trace, compile_resumption_brief
@@ -117,6 +121,7 @@ from alicebot_api.contracts import (
     ContinuityCaptureCandidatesInput,
     ContinuityCaptureCommitInput,
     ContinuityCaptureCreateInput,
+    ContinuityCaptureExplicitSignal,
     ContradictionCaseDetailResponse,
     ContradictionCaseListQueryInput,
     ContradictionCaseListResponse,
@@ -236,6 +241,7 @@ from alicebot_api.contracts import (
     TaskStepKind,
     TaskStepLineageInput,
     TaskStepNextCreateInput,
+    TaskStepOutcomeSnapshot,
     TaskStepStatus,
     TaskStepTransitionInput,
     TaskRunCancelInput,
@@ -246,6 +252,7 @@ from alicebot_api.contracts import (
     TaskWorkspaceCreateInput,
     ToolRoutingDecision,
     ToolRoutingRequestInput,
+    ToolRoutingRequestRecord,
     ToolCreateInput,
     ThreadCreateInput,
     ThreadCreateResponse,
@@ -493,7 +500,12 @@ from alicebot_api.vnext_connectors import (
     VNextConnectorValidationError,
     list_connector_definitions,
 )
-from alicebot_api.vnext_context_tree import ContextTreeRequest, VNextContextTreeService, VNextContextTreeValidationError
+from alicebot_api.vnext_context_tree import (
+    ContextTreeRequest,
+    VNextContextTreeService,
+    VNextContextTreeStore,
+    VNextContextTreeValidationError,
+)
 from alicebot_api.vnext_contradictions import (
     ContradictionFinderRequest,
     VNextContradictionService,
@@ -553,6 +565,7 @@ from alicebot_api.hosted_auth import (
     AuthSessionRevokedDeviceError,
     MagicLinkTokenExpiredError,
     MagicLinkTokenInvalidError,
+    UserAccountRow,
     ensure_user_preferences_row,
     list_feature_flags_for_user,
     logout_auth_session,
@@ -597,6 +610,7 @@ from alicebot_api.hosted_rollout import (
     resolve_rollout_flag,
 )
 from alicebot_api.hosted_telemetry import (
+    HostedTelemetryStatus,
     aggregate_chat_telemetry,
     record_chat_telemetry,
 )
@@ -772,6 +786,7 @@ from alicebot_api.provider_runtime import (
     OPENAI_RESPONSES_PROVIDER,
     ProviderAdapter,
     ProviderAdapterNotFoundError,
+    ProviderCapabilitySnapshot,
     RuntimeProviderConfig,
     build_provider_test_model_request,
     make_provider_adapter_registry,
@@ -819,6 +834,8 @@ from alicebot_api.store import (
     ContinuityStore,
     ContinuityStoreInvariantError,
     EventRow,
+    JsonObject,
+    JsonValue,
     ModelPackRow,
     ModelProviderRow,
     ProviderCapabilityRow,
@@ -840,6 +857,39 @@ app = FastAPI(title="AliceBot API", version=__version__)
 provider_adapter_registry = make_provider_adapter_registry()
 HealthStatus = Literal["ok", "degraded"]
 ServiceStatus = Literal["ok", "unreachable", "not_checked"]
+
+
+def _json_value(value: object) -> JsonValue:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_json_value(item) for item in value]
+    if isinstance(value, dict):
+        output: JsonObject = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError("JSON object keys must be strings")
+            output[key] = _json_value(item)
+        return output
+    raise ValueError(f"value of type {type(value).__name__} is not JSON-compatible")
+
+
+def _json_object(value: object) -> JsonObject:
+    normalized = _json_value(value)
+    if not isinstance(normalized, dict):
+        raise ValueError("expected a JSON object")
+    return normalized
+
+
+def _object_dict(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise TypeError("expected a mapping row")
+    output: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise TypeError("row keys must be strings")
+        output[key] = item
+    return output
 
 
 class DatabaseServicePayload(TypedDict):
@@ -958,7 +1008,7 @@ class EntrypointRateLimiter:
             if count > max_requests:
                 return False, max(1, ttl if ttl > 0 else window_seconds)
             return True, 0
-        except (RedisError, EntrypointRateLimiterUnavailableError) as exc:
+        except (_RedisError, EntrypointRateLimiterUnavailableError) as exc:
             # Local and test workflows can continue deterministically with in-memory fallback.
             if settings.app_env in {"development", "test"}:
                 return self._memory_fallback.allow(
@@ -1209,7 +1259,34 @@ class CaptureExplicitSignalsRequest(BaseModel):
 class ContinuityCaptureRequest(BaseModel):
     user_id: UUID
     raw_content: str = Field(min_length=1, max_length=4000)
-    explicit_signal: str | None = Field(default=None, min_length=1, max_length=100)
+    explicit_signal: ContinuityCaptureExplicitSignal | None = None
+
+
+VNextDomain = Literal[
+    "professional",
+    "personal",
+    "family",
+    "health",
+    "spiritual",
+    "financial",
+    "legal",
+    "learning",
+    "relationship",
+    "project",
+    "agent_run",
+    "system",
+    "unknown",
+]
+VNextSensitivity = Literal[
+    "public",
+    "internal",
+    "private",
+    "confidential",
+    "highly_sensitive",
+    "sacred",
+    "regulated",
+    "unknown",
+]
 
 
 class VNextAgentIdentityRequest(BaseModel):
@@ -1237,16 +1314,16 @@ class VNextSourceCaptureRequest(VNextAgentRequest):
     user_id: UUID
     raw_text: str = Field(min_length=1, max_length=200_000)
     title: str | None = Field(default=None, min_length=1, max_length=280)
-    domain: str = Field(default="unknown", min_length=1, max_length=80)
-    sensitivity: str = Field(default="unknown", min_length=1, max_length=80)
+    domain: VNextDomain = "unknown"
+    sensitivity: VNextSensitivity = "unknown"
 
 
 class VNextSourceReviewRequest(VNextAgentRequest):
     user_id: UUID
     action: str = Field(min_length=1, max_length=40)
     title: str | None = Field(default=None, min_length=1, max_length=280)
-    domain: str | None = Field(default=None, min_length=1, max_length=80)
-    sensitivity: str | None = Field(default=None, min_length=1, max_length=80)
+    domain: VNextDomain | None = None
+    sensitivity: VNextSensitivity | None = None
     project_id: str | None = Field(default=None, min_length=1, max_length=120)
     review_note: str | None = Field(default=None, min_length=1, max_length=4000)
 
@@ -1254,15 +1331,15 @@ class VNextSourceReviewRequest(VNextAgentRequest):
 class VNextConnectorSyncRequest(VNextAgentRequest):
     user_id: UUID
     items: list[dict[str, object]] = Field(default_factory=list)
-    default_domain: str | None = Field(default=None, min_length=1, max_length=80)
-    default_sensitivity: str | None = Field(default=None, min_length=1, max_length=80)
+    default_domain: VNextDomain | None = None
+    default_sensitivity: VNextSensitivity | None = None
 
 
 class VNextConnectorConfigRequest(VNextAgentRequest):
     user_id: UUID
     enabled: bool | None = None
-    default_domain: str | None = Field(default=None, min_length=1, max_length=80)
-    default_sensitivity: str | None = Field(default=None, min_length=1, max_length=80)
+    default_domain: VNextDomain | None = None
+    default_sensitivity: VNextSensitivity | None = None
     secret_ref: str | None = Field(default=None, min_length=1, max_length=240)
     sync_mode: str | None = Field(default=None, min_length=1, max_length=40)
     poll_interval_seconds: int | None = Field(default=None, ge=1, le=86_400)
@@ -1273,8 +1350,8 @@ class VNextTelegramSyncRequest(VNextAgentRequest):
     user_id: UUID
     updates: list[dict[str, object]] = Field(default_factory=list)
     allowed_chat_ids: list[str] = Field(default_factory=list)
-    default_domain: str | None = Field(default=None, min_length=1, max_length=80)
-    default_sensitivity: str | None = Field(default=None, min_length=1, max_length=80)
+    default_domain: VNextDomain | None = None
+    default_sensitivity: VNextSensitivity | None = None
 
 
 class VNextLocalFolderSyncRequest(VNextAgentRequest):
@@ -1283,8 +1360,8 @@ class VNextLocalFolderSyncRequest(VNextAgentRequest):
     recursive: bool = True
     extensions: list[str] = Field(default_factory=lambda: [".md", ".txt"])
     ignore_patterns: list[str] = Field(default_factory=list)
-    default_domain: str | None = Field(default=None, min_length=1, max_length=80)
-    default_sensitivity: str | None = Field(default=None, min_length=1, max_length=80)
+    default_domain: VNextDomain | None = None
+    default_sensitivity: VNextSensitivity | None = None
 
 
 class VNextBrowserClipperCaptureRequest(VNextAgentRequest):
@@ -1296,8 +1373,8 @@ class VNextBrowserClipperCaptureRequest(VNextAgentRequest):
     user_note: str | None = Field(default=None, min_length=1, max_length=20_000)
     capture_token: str | None = Field(default=None, min_length=1, max_length=500)
     captured_at: str | None = Field(default=None, min_length=1, max_length=120)
-    domain: str = Field(default="professional", min_length=1, max_length=80)
-    sensitivity: str = Field(default="private", min_length=1, max_length=80)
+    domain: VNextDomain = "professional"
+    sensitivity: VNextSensitivity = "private"
 
 
 class VNextAgentOutputIngestRequest(VNextAgentRequest):
@@ -1310,8 +1387,8 @@ class VNextAgentOutputIngestRequest(VNextAgentRequest):
     title: str = Field(min_length=1, max_length=500)
     content: str = Field(min_length=1, max_length=500_000)
     output_type: str = Field(default="general", min_length=1, max_length=80)
-    domain: str = Field(default="project", min_length=1, max_length=80)
-    sensitivity: str = Field(default="private", min_length=1, max_length=80)
+    domain: VNextDomain = "project"
+    sensitivity: VNextSensitivity = "private"
     source_refs: list[object] = Field(default_factory=list)
     rationale: str | None = Field(default=None, min_length=1, max_length=4000)
     propose_memory: bool = False
@@ -1364,8 +1441,8 @@ class VNextProjectCreateRequest(VNextAgentRequest):
     status: str = Field(default="active", min_length=1, max_length=40)
     description: str | None = Field(default=None, min_length=1, max_length=4000)
     current_state: str | None = Field(default=None, min_length=1, max_length=4000)
-    domain: str = Field(default="project", min_length=1, max_length=80)
-    sensitivity: str = Field(default="private", min_length=1, max_length=80)
+    domain: VNextDomain = "project"
+    sensitivity: VNextSensitivity = "private"
 
 
 class VNextProjectUpdateReviewRequest(VNextAgentRequest):
@@ -1393,8 +1470,8 @@ class VNextOpenLoopCreateRequest(VNextAgentRequest):
     memory_id: str | None = Field(default=None, min_length=1, max_length=120)
     project_id: str | None = Field(default=None, min_length=1, max_length=120)
     source_id: str | None = Field(default=None, min_length=1, max_length=120)
-    domain: str = Field(default="unknown", min_length=1, max_length=80)
-    sensitivity: str = Field(default="unknown", min_length=1, max_length=80)
+    domain: VNextDomain = "unknown"
+    sensitivity: VNextSensitivity = "unknown"
 
 
 class VNextMemoryReviewRequest(VNextAgentRequest):
@@ -1403,8 +1480,8 @@ class VNextMemoryReviewRequest(VNextAgentRequest):
     title: str | None = Field(default=None, min_length=1, max_length=280)
     canonical_text: str | None = Field(default=None, min_length=1, max_length=4000)
     summary: str | None = Field(default=None, min_length=1, max_length=4000)
-    domain: str | None = Field(default=None, min_length=1, max_length=80)
-    sensitivity: str | None = Field(default=None, min_length=1, max_length=80)
+    domain: VNextDomain | None = None
+    sensitivity: VNextSensitivity | None = None
     project_id: str | None = Field(default=None, min_length=1, max_length=120)
     reason: str | None = Field(default=None, min_length=1, max_length=4000)
 
@@ -1414,8 +1491,8 @@ class VNextQueueTaskCreateRequest(VNextAgentRequest):
     title: str = Field(min_length=1, max_length=280)
     task_type: str = Field(min_length=1, max_length=80)
     instructions: str = Field(min_length=1, max_length=20_000)
-    domain: str = Field(default="unknown", min_length=1, max_length=80)
-    sensitivity: str = Field(default="unknown", min_length=1, max_length=80)
+    domain: VNextDomain = "unknown"
+    sensitivity: VNextSensitivity = "unknown"
     write_policy: str = Field(default="proposal_only", min_length=1, max_length=80)
     scope_json: dict[str, object] = Field(default_factory=dict)
     allowed_sources_json: list[object] = Field(default_factory=list)
@@ -1473,7 +1550,7 @@ class VNextBrainCharterUpsertRequest(VNextAgentRequest):
     priorities_json: dict[str, object] = Field(default_factory=dict)
     autonomous_rules_json: list[object] = Field(default_factory=list)
     quality_standard_json: list[object] = Field(default_factory=list)
-    sensitivity: str = Field(default="private", min_length=1, max_length=80)
+    sensitivity: VNextSensitivity = "private"
 
 
 class VNextMemoryProposalRequest(VNextAgentRequest):
@@ -1482,8 +1559,8 @@ class VNextMemoryProposalRequest(VNextAgentRequest):
     title: str = Field(min_length=1, max_length=280)
     canonical_text: str = Field(min_length=1, max_length=20_000)
     source_refs: list[object] = Field(default_factory=list)
-    domain: str = Field(default="unknown", min_length=1, max_length=80)
-    sensitivity: str = Field(default="unknown", min_length=1, max_length=80)
+    domain: VNextDomain = "unknown"
+    sensitivity: VNextSensitivity = "unknown"
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     rationale: str | None = Field(default=None, min_length=1, max_length=4000)
     review_required: bool = True
@@ -1495,8 +1572,8 @@ class VNextMemoryCommitRequest(VNextAgentRequest):
     title: str = Field(min_length=1, max_length=280)
     canonical_text: str = Field(min_length=1, max_length=20_000)
     memory_type: str = Field(default="semantic", min_length=1, max_length=80)
-    domain: str = Field(default="unknown", min_length=1, max_length=80)
-    sensitivity: str = Field(default="unknown", min_length=1, max_length=80)
+    domain: VNextDomain = "unknown"
+    sensitivity: VNextSensitivity = "unknown"
     confidence: float = Field(default=0.9, ge=0.0, le=1.0)
     source_type: str = Field(default="direct_user_instruction", min_length=1, max_length=120)
     source_refs: list[object] = Field(default_factory=list)
@@ -1606,6 +1683,7 @@ def _link_reviewed_memory_entities(store: PostgresVNextStore, memory: dict[str, 
         store_supports_entity_linking,
     )
 
+    event_store = store
     if not store_supports_entity_linking(store):
         return
     observed_at = memory.get("last_reviewed_at") or memory.get("updated_at") or memory.get("created_at")
@@ -1624,7 +1702,7 @@ def _link_reviewed_memory_entities(store: PostgresVNextStore, memory: dict[str, 
                 )
     except Exception:
         try:
-            store.append_event(
+            event_store.append_event(
                 {
                     "event_type": "entity.extraction_failed",
                     "actor_type": "user",
@@ -1633,6 +1711,50 @@ def _link_reviewed_memory_entities(store: PostgresVNextStore, memory: dict[str, 
             )
         except Exception:
             pass
+
+
+def _vnext_terminal_review_metadata(
+    existing_metadata: dict[str, object],
+    *,
+    outcome: Literal["confirmed", "rejected"],
+    terminal_at: str,
+) -> dict[str, object]:
+    """Close nested review/confirmation state with the outer row decision."""
+    metadata: dict[str, object] = {**existing_metadata, "review_required": False}
+    agentic_raw = metadata.get("agentic_memory")
+    if not isinstance(agentic_raw, dict):
+        return metadata
+
+    agentic: dict[str, object] = {**agentic_raw}
+    confirmation_raw = agentic.get("confirmation")
+    if isinstance(confirmation_raw, dict) and confirmation_raw.get("status") == "pending":
+        timestamp_key = "confirmed_at" if outcome == "confirmed" else "rejected_at"
+        agentic["confirmation"] = {
+            **confirmation_raw,
+            "status": outcome,
+            timestamp_key: terminal_at,
+        }
+
+    if outcome == "confirmed":
+        agentic.update(
+            {
+                "status": "committed",
+                "write_mode": "commit",
+                "lifecycle_status": "dashboard_review_accepted",
+                "confirmed_at": terminal_at,
+                "requires_dashboard_review": False,
+            }
+        )
+    else:
+        agentic.update(
+            {
+                "status": "rejected",
+                "lifecycle_status": "review_rejected",
+                "requires_dashboard_review": False,
+            }
+        )
+    metadata["agentic_memory"] = agentic
+    return metadata
 
 
 def _vnext_string_list(mapping: dict[str, object], key: str) -> tuple[str, ...]:
@@ -1689,7 +1811,16 @@ def _vnext_float(mapping: dict[str, object], key: str) -> float | None:
     return None
 
 
-def _vnext_model_generation_options(options: dict[str, object]) -> dict[str, object]:
+class _VNextModelGenerationOptions(TypedDict):
+    generation_mode: str
+    model_route_mode: str | None
+    model_provider: str | None
+    model: str | None
+    model_temperature: float
+    allow_cloud_private: bool
+
+
+def _vnext_model_generation_options(options: dict[str, object]) -> _VNextModelGenerationOptions:
     generation_mode = options.get("generation_mode")
     route_mode = options.get("model_route_mode")
     provider = options.get("model_provider")
@@ -2308,7 +2439,7 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
             "project_count": len(projects),
             "event_count": len(recent_events),
             "agent_count": len(agent_identities),
-            "scheduler_enabled_count": int(scheduler_status["enabled_count"]),
+            "scheduler_enabled_count": _vnext_int(scheduler_status, "enabled_count", 0),
             "memory_status_counts": _vnext_status_counts(memories),
             "artifact_status_counts": _vnext_status_counts(artifacts),
             "quality_eval_count": len(quality_evals),
@@ -2344,14 +2475,14 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
             "generated_artifacts": [
                 artifact
                 for artifact in artifacts
-                if isinstance(artifact.get("metadata_json"), dict)
-                and artifact["metadata_json"].get("generated_by") == "agent"
+                if isinstance((artifact_metadata := artifact.get("metadata_json")), dict)
+                and artifact_metadata.get("generated_by") == "agent"
             ],
             "pending_review_items": [
                 memory
                 for memory in review_memories
-                if isinstance(memory.get("metadata_json"), dict)
-                and memory["metadata_json"].get("agent_id") is not None
+                if isinstance((memory_metadata := memory.get("metadata_json")), dict)
+                and memory_metadata.get("agent_id") is not None
             ],
             "recent_commits": recent_memory_commits,
             "inline_confirmations": inline_confirmations,
@@ -2754,7 +2885,7 @@ class CreateToolRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1, max_length=500)
     version: str = Field(min_length=1, max_length=100)
-    metadata_version: str = Field(default=TOOL_METADATA_VERSION_V0, pattern=f"^{TOOL_METADATA_VERSION_V0}$")
+    metadata_version: Literal["tool_metadata_v0"] = TOOL_METADATA_VERSION_V0
     active: bool = True
     tags: list[str] = Field(default_factory=list)
     action_hints: list[str] = Field(default_factory=list, min_length=1)
@@ -2811,7 +2942,9 @@ class ConnectGmailAccountRequest(BaseModel):
     provider_account_id: str = Field(min_length=1, max_length=320)
     email_address: str = Field(min_length=1, max_length=320)
     display_name: str | None = Field(default=None, min_length=1, max_length=200)
-    scope: Literal["https://www.googleapis.com/auth/gmail.readonly"] = GMAIL_READONLY_SCOPE
+    scope: Literal["https://www.googleapis.com/auth/gmail.readonly"] = (
+        "https://www.googleapis.com/auth/gmail.readonly"
+    )
     access_token: str = Field(min_length=1, max_length=8000)
     refresh_token: str | None = Field(default=None, min_length=1, max_length=8000)
     client_id: str | None = Field(default=None, min_length=1, max_length=2000)
@@ -2846,7 +2979,9 @@ class ConnectCalendarAccountRequest(BaseModel):
     provider_account_id: str = Field(min_length=1, max_length=320)
     email_address: str = Field(min_length=1, max_length=320)
     display_name: str | None = Field(default=None, min_length=1, max_length=200)
-    scope: Literal["https://www.googleapis.com/auth/calendar.readonly"] = CALENDAR_READONLY_SCOPE
+    scope: Literal["https://www.googleapis.com/auth/calendar.readonly"] = (
+        "https://www.googleapis.com/auth/calendar.readonly"
+    )
     access_token: str = Field(min_length=1, max_length=8000)
 
 
@@ -2912,6 +3047,33 @@ class TransitionTaskStepRequest(BaseModel):
     user_id: UUID
     status: TaskStepStatus
     outcome: TaskStepOutcomeRequest
+
+
+def _task_step_request_record(
+    request: TaskStepRequestSnapshot,
+) -> ToolRoutingRequestRecord:
+    return {
+        "thread_id": str(request.thread_id),
+        "tool_id": str(request.tool_id),
+        "action": request.action,
+        "scope": request.scope,
+        "domain_hint": request.domain_hint,
+        "risk_hint": request.risk_hint,
+        "attributes": _json_object(request.attributes),
+    }
+
+
+def _task_step_outcome_snapshot(
+    outcome: TaskStepOutcomeRequest,
+) -> TaskStepOutcomeSnapshot:
+    return {
+        "routing_decision": outcome.routing_decision,
+        "approval_id": str(outcome.approval_id) if outcome.approval_id is not None else None,
+        "approval_status": outcome.approval_status,
+        "execution_id": str(outcome.execution_id) if outcome.execution_id is not None else None,
+        "execution_status": outcome.execution_status,
+        "blocked_reason": outcome.blocked_reason,
+    }
 
 
 class CreateTaskRunRequest(BaseModel):
@@ -3089,7 +3251,7 @@ def _runtime_provider_config_or_none(
         return None
     validate_provider_base_url(row["base_url"])
     return resolve_runtime_provider_config_secrets(
-        config=RuntimeProviderConfig.from_row(row),
+        config=RuntimeProviderConfig.from_row(_object_dict(row)),
         settings=settings,
     )
 
@@ -3108,8 +3270,8 @@ def _fallback_provider_capability_snapshot(
     model_list_path: str,
     healthcheck_path: str,
     invoke_path: str,
-    extra_snapshot_fields: dict[str, object] | None = None,
-) -> dict[str, object]:
+    extra_snapshot_fields: dict[str, str] | None = None,
+) -> ProviderCapabilitySnapshot:
     snapshot = normalized_capability_snapshot(
         adapter_key=adapter_key,
         runtime_provider=runtime_provider,
@@ -3120,18 +3282,19 @@ def _fallback_provider_capability_snapshot(
         supports_vision_input=False,
         supports_audio_input=False,
     )
-    snapshot.update(
-        {
-            "health_status": "unreachable",
-            "health_endpoint": healthcheck_path,
-            "models_endpoint": model_list_path,
-            "invoke_endpoint": invoke_path,
-            "model_count": 0,
-            "models": [],
-        }
-    )
+    snapshot["health_status"] = "unreachable"
+    snapshot["health_endpoint"] = healthcheck_path
+    snapshot["models_endpoint"] = model_list_path
+    snapshot["invoke_endpoint"] = invoke_path
+    snapshot["model_count"] = 0
+    snapshot["models"] = []
     if extra_snapshot_fields:
-        snapshot.update(extra_snapshot_fields)
+        azure_api_version = extra_snapshot_fields.get("azure_api_version")
+        azure_auth_mode = extra_snapshot_fields.get("azure_auth_mode")
+        if azure_api_version is not None:
+            snapshot["azure_api_version"] = azure_api_version
+        if azure_auth_mode is not None:
+            snapshot["azure_auth_mode"] = azure_auth_mode
     return snapshot
 
 
@@ -3206,7 +3369,7 @@ def _invoke_runtime_provider_model(
         response_id=model_response.response_id,
         status="succeeded",
         latency_ms=max(0, int((time.monotonic() - started_at) * 1000)),
-        usage=dict(model_response.usage),
+        usage=_json_object(model_response.usage),
         error_detail=None,
     )
     return model_response
@@ -3319,7 +3482,7 @@ def _register_workspace_provider(
         api_key=encoded_api_key,
         default_model=normalized_default_model,
         status="active",
-        metadata=metadata,
+        metadata=_json_object(metadata),
         auth_mode=normalized_auth_mode,
         model_list_path=normalized_model_list_path,
         healthcheck_path=normalized_healthcheck_path,
@@ -3330,7 +3493,7 @@ def _register_workspace_provider(
     )
 
     runtime_provider = resolve_runtime_provider_config_secrets(
-        config=RuntimeProviderConfig.from_row(provider),
+        config=RuntimeProviderConfig.from_row(_object_dict(provider)),
         settings=settings,
     )
     adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
@@ -3360,7 +3523,7 @@ def _register_workspace_provider(
         discovered_by_user_account_id=created_by_user_account_id,
         adapter_key=adapter.adapter_key,
         discovery_status=discovery_status,
-        capability_snapshot=capability_snapshot,
+        capability_snapshot=_json_object(capability_snapshot),
         discovery_error=discovery_error,
     )
     return provider, capability
@@ -3440,7 +3603,7 @@ def _register_workspace_azure_provider(
         api_key="auth_mode_azure_secret_ref",
         default_model=normalized_default_model,
         status="active",
-        metadata=metadata,
+        metadata=_json_object(metadata),
         auth_mode=normalized_auth_mode,
         model_list_path=normalized_model_list_path,
         healthcheck_path=normalized_healthcheck_path,
@@ -3450,7 +3613,7 @@ def _register_workspace_azure_provider(
     )
 
     runtime_provider = resolve_runtime_provider_config_secrets(
-        config=RuntimeProviderConfig.from_row(provider),
+        config=RuntimeProviderConfig.from_row(_object_dict(provider)),
         settings=settings,
     )
     adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
@@ -3484,7 +3647,7 @@ def _register_workspace_azure_provider(
         discovered_by_user_account_id=created_by_user_account_id,
         adapter_key=adapter.adapter_key,
         discovery_status=discovery_status,
-        capability_snapshot=capability_snapshot,
+        capability_snapshot=_json_object(capability_snapshot),
         discovery_error=discovery_error,
     )
     return provider, capability
@@ -3531,8 +3694,8 @@ def _update_workspace_provider(
         if invoke_path is None
         else _normalize_provider_path(field_name="invoke_path", value=invoke_path)
     )
-    normalized_metadata = (
-        existing_provider["metadata"] if metadata is None else metadata
+    normalized_metadata: JsonObject = (
+        existing_provider["metadata"] if metadata is None else _json_object(metadata)
     )
 
     if normalized_display_name == "":
@@ -3607,7 +3770,7 @@ def _update_workspace_provider(
     )
 
     runtime_provider = resolve_runtime_provider_config_secrets(
-        config=RuntimeProviderConfig.from_row(provider),
+        config=RuntimeProviderConfig.from_row(_object_dict(provider)),
         settings=settings,
     )
     adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
@@ -3644,7 +3807,7 @@ def _update_workspace_provider(
         discovered_by_user_account_id=updated_by_user_account_id,
         adapter_key=adapter.adapter_key,
         discovery_status=discovery_status,
-        capability_snapshot=capability_snapshot,
+        capability_snapshot=_json_object(capability_snapshot),
         discovery_error=discovery_error,
     )
     return provider, capability
@@ -3898,6 +4061,7 @@ async def apply_http_security_posture(
         request.method.upper() == "OPTIONS"
         and request.headers.get("access-control-request-method", "").strip() != ""
     )
+    response: Response
 
     if is_preflight:
         if origin == "" or not _cors_origin_allowed(origin, settings.cors_allowed_origins):
@@ -4142,7 +4306,7 @@ class DesignPartnerFeedbackCreateRequest(BaseModel):
 class RegisterProviderRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    provider_key: Literal["openai_compatible"] = OPENAI_COMPATIBLE_ADAPTER_KEY
+    provider_key: Literal["openai_compatible"] = "openai_compatible"
     display_name: str = Field(min_length=1, max_length=120)
     base_url: str = Field(min_length=1, max_length=500)
     api_key: str = Field(min_length=1, max_length=8000)
@@ -4201,7 +4365,7 @@ class RegisterAzureProviderRequest(BaseModel):
 
     display_name: str = Field(min_length=1, max_length=120)
     base_url: str = Field(min_length=1, max_length=500)
-    auth_mode: Literal["azure_api_key", "azure_ad_token"] = AZURE_AUTH_MODE_API_KEY
+    auth_mode: Literal["azure_api_key", "azure_ad_token"] = "azure_api_key"
     api_key: str | None = Field(default=None, max_length=8000)
     ad_token: str | None = Field(default=None, max_length=16000)
     api_version: str = Field(default=DEFAULT_AZURE_API_VERSION, min_length=1, max_length=40)
@@ -4567,8 +4731,16 @@ def list_agent_profiles() -> JSONResponse:
 @app.post("/v0/context/compile")
 def compile_context(request: CompileContextRequest) -> JSONResponse:
     settings = get_settings()
-    artifact_retrieval = None
-    semantic_artifact_retrieval = None
+    artifact_retrieval: (
+        CompileContextTaskScopedArtifactRetrievalInput
+        | CompileContextArtifactScopedArtifactRetrievalInput
+        | None
+    ) = None
+    semantic_artifact_retrieval: (
+        CompileContextTaskScopedSemanticArtifactRetrievalInput
+        | CompileContextArtifactScopedSemanticArtifactRetrievalInput
+        | None
+    ) = None
     if isinstance(request.artifact_retrieval, CompileContextTaskScopedArtifactRetrievalRequest):
         artifact_retrieval = CompileContextTaskScopedArtifactRetrievalInput(
             task_id=request.artifact_retrieval.task_id,
@@ -4970,7 +5142,7 @@ def admit_memory(request: AdmitMemoryRequest) -> JSONResponse:
                 user_id=request.user_id,
                 candidate=MemoryCandidateInput(
                     memory_key=request.memory_key,
-                    value=request.value,
+                    value=_json_value(request.value),
                     source_event_ids=tuple(request.source_event_ids),
                     agent_profile_id=request.agent_profile_id,
                     delete_requested=request.delete_requested,
@@ -5000,7 +5172,7 @@ def admit_memory(request: AdmitMemoryRequest) -> JSONResponse:
     except MemoryAdmissionValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
-    payload = {
+    payload: dict[str, object] = {
         "decision": decision.action,
         "reason": decision.reason,
         "memory": decision.memory,
@@ -5125,7 +5297,7 @@ def upsert_consent(request: UpsertConsentRequest) -> JSONResponse:
                 consent=ConsentUpsertInput(
                     consent_key=request.consent_key,
                     status=request.status,
-                    metadata=request.metadata,
+                    metadata=_json_object(request.metadata),
                 ),
             )
     except PolicyValidationError as exc:
@@ -5190,7 +5362,7 @@ def create_policy(request: CreatePolicyRequest) -> JSONResponse:
                     effect=request.effect,
                     priority=request.priority,
                     active=request.active,
-                    conditions=request.conditions,
+                    conditions=_json_object(request.conditions),
                     required_consents=tuple(request.required_consents),
                     agent_profile_id=request.agent_profile_id,
                 ),
@@ -5253,7 +5425,7 @@ def evaluate_policy(request: EvaluatePolicyRequest) -> JSONResponse:
                     thread_id=request.thread_id,
                     action=request.action,
                     scope=request.scope,
-                    attributes=request.attributes,
+                    attributes=_json_object(request.attributes),
                 ),
             )
     except PolicyEvaluationValidationError as exc:
@@ -5286,7 +5458,7 @@ def create_tool(request: CreateToolRequest) -> JSONResponse:
                     scope_hints=tuple(request.scope_hints),
                     domain_hints=tuple(request.domain_hints),
                     risk_hints=tuple(request.risk_hints),
-                    metadata=request.metadata,
+                    metadata=_json_object(request.metadata),
                 ),
             )
     except ToolValidationError as exc:
@@ -5329,7 +5501,7 @@ def evaluate_tools_allowlist(request: EvaluateToolAllowlistRequest) -> JSONRespo
                     scope=request.scope,
                     domain_hint=request.domain_hint,
                     risk_hint=request.risk_hint,
-                    attributes=request.attributes,
+                    attributes=_json_object(request.attributes),
                 ),
             )
     except ToolAllowlistValidationError as exc:
@@ -5357,7 +5529,7 @@ def route_tool(request: RouteToolRequest) -> JSONResponse:
                     scope=request.scope,
                     domain_hint=request.domain_hint,
                     risk_hint=request.risk_hint,
-                    attributes=request.attributes,
+                    attributes=_json_object(request.attributes),
                 ),
             )
     except ToolRoutingValidationError as exc:
@@ -5386,7 +5558,7 @@ def create_approval_request(request: CreateApprovalRequest) -> JSONResponse:
                     scope=request.scope,
                     domain_hint=request.domain_hint,
                     risk_hint=request.risk_hint,
-                    attributes=request.attributes,
+                    attributes=_json_object(request.attributes),
                 ),
             )
     except ToolRoutingValidationError as exc:
@@ -5595,7 +5767,7 @@ def create_task_run(task_id: UUID, request: CreateTaskRunRequest) -> JSONRespons
                     task_id=task_id,
                     max_ticks=request.max_ticks,
                     retry_cap=request.retry_cap,
-                    checkpoint=request.checkpoint,
+                    checkpoint=_json_object(request.checkpoint),
                 ),
             )
     except TaskNotFoundError as exc:
@@ -6345,8 +6517,8 @@ def create_next_task_step(task_id: UUID, request: CreateNextTaskStepRequest) -> 
                     task_id=task_id,
                     kind=request.kind,
                     status=request.status,
-                    request=request.request.model_dump(mode="json"),
-                    outcome=request.outcome.model_dump(mode="json"),
+                    request=_task_step_request_record(request.request),
+                    outcome=_task_step_outcome_snapshot(request.outcome),
                     lineage=TaskStepLineageInput(
                         parent_step_id=request.lineage.parent_step_id,
                         source_approval_id=request.lineage.source_approval_id,
@@ -6377,7 +6549,7 @@ def transition_task_step(task_step_id: UUID, request: TransitionTaskStepRequest)
                 request=TaskStepTransitionInput(
                     task_step_id=task_step_id,
                     status=request.status,
-                    outcome=request.outcome.model_dump(mode="json"),
+                    outcome=_task_step_outcome_snapshot(request.outcome),
                 ),
             )
     except TaskStepNotFoundError as exc:
@@ -6889,8 +7061,10 @@ def sync_vnext_telegram_connector(request: VNextTelegramSyncRequest) -> JSONResp
             store = PostgresVNextStore(conn)
             service = VNextConnectorService(store)
             config = service.get_config("telegram")
-            config_json = config.get("config_json") if isinstance(config.get("config_json"), dict) else {}
-            configured_allowed = config_json.get("allowed_chat_ids") if isinstance(config_json, dict) else []
+            config_json_value = config.get("config_json")
+            config_json: dict[str, object] = config_json_value if isinstance(config_json_value, dict) else {}
+            configured_allowed_value = config_json.get("allowed_chat_ids")
+            configured_allowed = configured_allowed_value if isinstance(configured_allowed_value, list) else []
             allowed_chat_ids = request.allowed_chat_ids or [
                 str(value) for value in configured_allowed if isinstance(value, (str, int))
             ]
@@ -6916,8 +7090,10 @@ def sync_vnext_local_folder_connector(request: VNextLocalFolderSyncRequest) -> J
             paths = list(request.paths)
             if not paths:
                 config = service.get_config("local_folder")
-                config_json = config.get("config_json") if isinstance(config.get("config_json"), dict) else {}
-                configured_paths = config_json.get("paths") if isinstance(config_json, dict) else []
+                config_json_value = config.get("config_json")
+                config_json: dict[str, object] = config_json_value if isinstance(config_json_value, dict) else {}
+                configured_paths_value = config_json.get("paths")
+                configured_paths = configured_paths_value if isinstance(configured_paths_value, list) else []
                 paths = [str(path) for path in configured_paths if isinstance(path, str)]
             payload = service.sync_local_folder(
                 paths,
@@ -7370,7 +7546,8 @@ def get_vnext_context_tree(
     settings = get_settings()
     try:
         with user_connection(settings.database_url, user_id) as conn:
-            payload = VNextContextTreeService(PostgresVNextStore(conn)).build_tree(
+            store = PostgresVNextStore(conn)
+            payload = VNextContextTreeService(cast(VNextContextTreeStore, store)).build_tree(
                 ContextTreeRequest(
                     query=query,
                     domains=tuple(domains or ()),
@@ -7435,6 +7612,57 @@ def review_vnext_memory(
 
     with user_connection(settings.database_url, request.user_id) as conn:
         store = PostgresVNextStore(conn)
+        memory_service = VNextMemoryCommitService(store)
+        # Review can promote a consolidation candidate or mutate a member
+        # referenced by pending derived work. Establish the shared per-user
+        # graph boundary before the route takes any candidate/member row lock;
+        # delegated service calls may safely reacquire the transaction lock.
+        memory_service.lock_supersession_graph()
+        preview = store.get_memory(str(memory_id))
+        if preview is None:
+            return _vnext_public_error_response(status_code=404, detail="vNext memory was not found")
+        # Delegate consolidation approval before this adapter takes a row lock.
+        # The service reacquires the already-held transaction advisory lock
+        # (non-blocking/re-entrant) and then owns all candidate/member locks.
+        if is_pending_consolidation_candidate(preview):
+            if action == "edit" or any(
+                value is not None
+                for value in (
+                    request.title,
+                    request.canonical_text,
+                    request.summary,
+                    request.domain,
+                    request.sensitivity,
+                    request.project_id,
+                )
+            ):
+                return _vnext_public_error_response(
+                    status_code=400,
+                    detail=(
+                        "pending consolidation candidates cannot be edited during approval; "
+                        "regenerate the candidate or accept it unchanged"
+                    ),
+                )
+            if action in {"accept", "promote"}:
+                try:
+                    acceptance = memory_service.accept_consolidation_candidate(
+                        str(memory_id),
+                        reason=request.reason or "Approved through vNext memory review.",
+                        identity=identity,
+                    )
+                except AgentPolicyBlockedError as exc:
+                    return _vnext_permission_response(exc.decision)
+                except VNextMemoryCommitValidationError as exc:
+                    return _vnext_public_error_response(status_code=400, detail=str(exc))
+                return JSONResponse(
+                    status_code=200,
+                    content=jsonable_encoder(
+                        {
+                            "memory": acceptance["memory"],
+                            "consolidation_acceptance": acceptance,
+                        }
+                    ),
+                )
         get_memory_for_update = getattr(store, "get_memory_for_update", None)
         existing = (
             get_memory_for_update(str(memory_id))
@@ -7488,7 +7716,7 @@ def review_vnext_memory(
                 )
             if action in {"accept", "promote"}:
                 try:
-                    acceptance = VNextMemoryCommitService(store).accept_consolidation_candidate(
+                    acceptance = memory_service.accept_consolidation_candidate(
                         str(memory_id),
                         reason=request.reason or "Approved through vNext memory review.",
                         identity=identity,
@@ -7507,7 +7735,10 @@ def review_vnext_memory(
                     ),
                 )
 
-        existing_metadata = existing.get("metadata_json") if isinstance(existing.get("metadata_json"), dict) else {}
+        existing_metadata_value = existing.get("metadata_json")
+        existing_metadata: dict[str, object] = (
+            existing_metadata_value if isinstance(existing_metadata_value, dict) else {}
+        )
         reviewed_at = datetime.now(UTC).isoformat()
         patch: dict[str, object] = {
             "last_reviewed_at": reviewed_at,
@@ -7518,6 +7749,11 @@ def review_vnext_memory(
             revision_type = "promoted"
         elif action == "reject":
             patch["status"] = "rejected"
+            patch["metadata_json"] = _vnext_terminal_review_metadata(
+                existing_metadata,
+                outcome="rejected",
+                terminal_at=reviewed_at,
+            )
             revision_type = "rejected"
         elif action == "private":
             patch["status"] = "private_only"
@@ -7544,22 +7780,15 @@ def review_vnext_memory(
             patch["status"] = "active"
 
         if action in {"accept", "edit", "promote"}:
-            accepted_metadata = {**existing_metadata, "review_required": False}
-            agentic_raw = accepted_metadata.get("agentic_memory")
-            if isinstance(agentic_raw, dict):
-                accepted_metadata["agentic_memory"] = {
-                    **agentic_raw,
-                    "status": "committed",
-                    "write_mode": "commit",
-                    "lifecycle_status": "dashboard_review_accepted",
-                    "confirmed_at": reviewed_at,
-                    "requires_dashboard_review": False,
-                }
             patch.update(
                 {
                     "confirmation_status": "confirmed",
                     "last_confirmed_at": reviewed_at,
-                    "metadata_json": accepted_metadata,
+                    "metadata_json": _vnext_terminal_review_metadata(
+                        existing_metadata,
+                        outcome="confirmed",
+                        terminal_at=reviewed_at,
+                    ),
                 }
             )
 
@@ -7567,10 +7796,26 @@ def review_vnext_memory(
             patch["title"] = request.title
         if request.canonical_text is not None:
             patch["canonical_text"] = request.canonical_text
+            existing_value = existing.get("value")
             patch["value"] = {
-                **(existing.get("value") if isinstance(existing.get("value"), dict) else {}),
+                **(existing_value if isinstance(existing_value, dict) else {}),
                 "text": request.canonical_text,
             }
+            # Capture-generated title/summary are denormalized views of the
+            # canonical text.  Editing only the body must not leave those
+            # user-visible fields describing the pre-edit value.
+            if request.title is None:
+                patch["title"] = (
+                    request.canonical_text
+                    if len(request.canonical_text) <= 120
+                    else request.canonical_text[:117].rstrip() + "..."
+                )
+            if request.summary is None:
+                patch["summary"] = (
+                    request.canonical_text
+                    if len(request.canonical_text) <= 280
+                    else request.canonical_text[:277].rstrip() + "..."
+                )
         if request.summary is not None:
             patch["summary"] = request.summary
         if request.domain is not None:
@@ -8489,6 +8734,7 @@ def rate_vnext_artifact_quality(
                 for_update=True,
             )
             actor_type, actor_id = _vnext_agent_actor(identity, fallback="user")
+            existing_metadata = existing.get("metadata_json")
             payload = store.create_artifact_quality_rating(
                 {
                     "artifact_id": str(artifact_id),
@@ -8505,8 +8751,8 @@ def rate_vnext_artifact_quality(
                     "metadata_json": {
                         **request.metadata_json,
                         "artifact_type": existing.get("artifact_type"),
-                        "generation_mode": (existing.get("metadata_json") or {}).get("generation_mode")
-                        if isinstance(existing.get("metadata_json"), dict)
+                        "generation_mode": existing_metadata.get("generation_mode")
+                        if isinstance(existing_metadata, dict)
                         else None,
                         "agent_identity": identity.to_record() if identity is not None else None,
                         "policy_decision": decision.to_record(),
@@ -9213,7 +9459,7 @@ def commit_continuity_capture_candidates(request: ContinuityCaptureCommitRequest
                 user_id=request.user_id,
                 request=ContinuityCaptureCommitInput(
                     mode=request.mode,  # type: ignore[arg-type]
-                    candidates=request.candidates,
+                    candidates=[_json_object(candidate) for candidate in request.candidates],
                     sync_fingerprint=request.sync_fingerprint,
                     source_kind=request.source_kind,
                 ),
@@ -10918,7 +11164,7 @@ def create_embedding_config(request: CreateEmbeddingConfigRequest) -> JSONRespon
                     version=request.version,
                     dimensions=request.dimensions,
                     status=request.status,
-                    metadata=request.metadata,
+                    metadata=_json_object(request.metadata),
                 ),
             )
     except EmbeddingConfigValidationError as exc:
@@ -12121,7 +12367,7 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                     )
 
                 runtime_provider = resolve_runtime_provider_config_secrets(
-                    config=RuntimeProviderConfig.from_row(provider),
+                    config=RuntimeProviderConfig.from_row(_object_dict(provider)),
                     settings=settings,
                 )
                 adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
@@ -12149,13 +12395,15 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                         discovered_by_user_account_id=resolution["user_account"]["id"],
                         adapter_key=adapter.adapter_key,
                         discovery_status="failed",
-                        capability_snapshot=_fallback_provider_capability_snapshot(
-                            adapter_key=adapter.adapter_key,
-                            runtime_provider=adapter.runtime_provider,
-                            model_list_path=runtime_provider.model_list_path,
-                            healthcheck_path=runtime_provider.healthcheck_path,
-                            invoke_path=runtime_provider.invoke_path,
-                            extra_snapshot_fields=extra_snapshot_fields,
+                        capability_snapshot=_json_object(
+                            _fallback_provider_capability_snapshot(
+                                adapter_key=adapter.adapter_key,
+                                runtime_provider=adapter.runtime_provider,
+                                model_list_path=runtime_provider.model_list_path,
+                                healthcheck_path=runtime_provider.healthcheck_path,
+                                invoke_path=runtime_provider.invoke_path,
+                                extra_snapshot_fields=extra_snapshot_fields,
+                            )
                         ),
                         discovery_error=sanitized_discovery_error,
                     )
@@ -12195,7 +12443,7 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                         discovered_by_user_account_id=resolution["user_account"]["id"],
                         adapter_key=adapter.adapter_key,
                         discovery_status="failed",
-                        capability_snapshot=capability_snapshot,
+                        capability_snapshot=_json_object(capability_snapshot),
                         discovery_error=sanitized_invoke_error,
                     )
                     return JSONResponse(
@@ -12215,7 +12463,7 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                     discovered_by_user_account_id=resolution["user_account"]["id"],
                     adapter_key=adapter.adapter_key,
                     discovery_status="ready",
-                    capability_snapshot=capability_snapshot,
+                    capability_snapshot=_json_object(capability_snapshot),
                     discovery_error=None,
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
@@ -12394,7 +12642,7 @@ def create_v1_model_pack(request: Request, body: CreateModelPackRequest) -> JSON
                     briefing_strategy=normalized_briefing_strategy,
                     briefing_max_tokens=normalized_briefing_max_tokens,
                     contract=normalized_contract,
-                    metadata=body.metadata,
+                    metadata=_json_object(body.metadata),
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
@@ -12478,7 +12726,7 @@ def bind_v1_model_pack(pack_id: str, request: Request, body: BindModelPackReques
                     model_pack_id=pack["id"],
                     bound_by_user_account_id=resolution["user_account"]["id"],
                     binding_source=MODEL_PACK_BINDING_SOURCE_MANUAL,
-                    metadata=body.metadata,
+                    metadata=_json_object(body.metadata),
                 )
                 if provider is None:
                     binding = store.get_latest_workspace_model_pack_binding_optional(
@@ -12563,7 +12811,7 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
     settings = get_settings()
 
     workspace_id: UUID | None = None
-    user_account: dict[str, object] | None = None
+    user_account: UserAccountRow | None = None
     runtime_provider: RuntimeProviderConfig | None = None
     model_pack: ModelPackRow | None = None
     model_pack_source: str = "none"
@@ -14127,22 +14375,25 @@ def post_v1_telegram_daily_brief_deliver(
                 if isinstance(delivery_receipt, dict) and isinstance(delivery_receipt.get("id"), str):
                     delivery_receipt_id = UUID(delivery_receipt["id"])
 
-                status_value: str = "ok"
-                if isinstance(payload.get("job"), dict):
-                    job_status = str(payload["job"].get("status", "ok"))
+                status_value: HostedTelemetryStatus = "ok"
+                job = payload.get("job")
+                if isinstance(job, dict):
+                    job_status = str(job.get("status", "ok"))
                     if job_status in {"failed"}:
                         status_value = "failed"
                     elif job_status.startswith("suppressed"):
                         status_value = "suppressed"
-                    elif job_status in {"simulated", "delivered"}:
-                        status_value = job_status
+                    elif job_status == "simulated":
+                        status_value = "simulated"
+                    elif job_status == "delivered":
+                        status_value = "delivered"
                 record_chat_telemetry(
                     conn,
                     user_account_id=user_account_id,
                     workspace_id=workspace["id"],
                     flow_kind="scheduler_daily_brief",
                     event_kind="result",
-                    status=status_value,  # type: ignore[arg-type]
+                    status=status_value,
                     route_path="/v1/channels/telegram/daily-brief/deliver",
                     rollout_flag_key=rollout_resolution["flag_key"],
                     rollout_flag_state="enabled",
@@ -14344,22 +14595,25 @@ def post_v1_telegram_open_loop_prompt_deliver(
                 if isinstance(delivery_receipt, dict) and isinstance(delivery_receipt.get("id"), str):
                     delivery_receipt_id = UUID(delivery_receipt["id"])
 
-                status_value: str = "ok"
-                if isinstance(payload.get("job"), dict):
-                    job_status = str(payload["job"].get("status", "ok"))
+                status_value: HostedTelemetryStatus = "ok"
+                job = payload.get("job")
+                if isinstance(job, dict):
+                    job_status = str(job.get("status", "ok"))
                     if job_status in {"failed"}:
                         status_value = "failed"
                     elif job_status.startswith("suppressed"):
                         status_value = "suppressed"
-                    elif job_status in {"simulated", "delivered"}:
-                        status_value = job_status
+                    elif job_status == "simulated":
+                        status_value = "simulated"
+                    elif job_status == "delivered":
+                        status_value = "delivered"
                 record_chat_telemetry(
                     conn,
                     user_account_id=user_account_id,
                     workspace_id=workspace["id"],
                     flow_kind="scheduler_open_loop_prompt",
                     event_kind="result",
-                    status=status_value,  # type: ignore[arg-type]
+                    status=status_value,
                     route_path=f"/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver",
                     rollout_flag_key=rollout_resolution["flag_key"],
                     rollout_flag_state="enabled",
@@ -14550,8 +14804,9 @@ def handle_v1_telegram_message(
                     bot_token=settings.telegram_bot_token,
                     intent_hint=body.intent_hint,
                 )
-                intent_status = str(payload["intent"].get("status", "handled"))
-                telemetry_status = "ok" if intent_status == "handled" else "failed"
+                intent = payload.get("intent")
+                intent_status = str(intent.get("status", "handled")) if isinstance(intent, dict) else "handled"
+                telemetry_status: HostedTelemetryStatus = "ok" if intent_status == "handled" else "failed"
                 delivery_receipt = payload.get("delivery_receipt")
                 delivery_receipt_id: UUID | None = None
                 if isinstance(delivery_receipt, dict) and isinstance(delivery_receipt.get("id"), str):
@@ -14562,7 +14817,7 @@ def handle_v1_telegram_message(
                     workspace_id=workspace["id"],
                     flow_kind="chat_handle",
                     event_kind="result",
-                    status=telemetry_status,  # type: ignore[arg-type]
+                    status=telemetry_status,
                     route_path="/v1/channels/telegram/messages/{message_id}/handle",
                     channel_message_id=message_id,
                     delivery_receipt_id=delivery_receipt_id,
@@ -14570,7 +14825,7 @@ def handle_v1_telegram_message(
                     rollout_flag_state="enabled",
                     evidence={
                         "intent_status": intent_status,
-                        "intent_kind": payload["intent"].get("intent_kind"),
+                        "intent_kind": intent.get("intent_kind") if isinstance(intent, dict) else None,
                     },
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:

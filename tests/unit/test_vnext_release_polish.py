@@ -234,6 +234,9 @@ def test_installation_issue_regressions_are_guarded() -> None:
     assert 'sudo "${npm_bin}" install -g "pnpm@${PNPM_VERSION}"' in installer
     assert "postgresql-${pg_major}-pgvector" in installer
     assert "CREATE EXTENSION IF NOT EXISTS vector" in installer
+    assert 'PGVECTOR_MINIMUM_VERSION="0.8.0"' in installer
+    assert 'dpkg --compare-versions "${installed_version}" ge "${PGVECTOR_MINIMUM_VERSION}"' in installer
+    assert "ALTER EXTENSION vector UPDATE" in installer
     assert '"${ALICE_RUNTIME_DIR}/vnext-scheduler"' in installer
     assert "run_in_install_dir" in installer
     assert "-c apps/api/alembic.ini" in installer
@@ -265,6 +268,109 @@ def test_installation_issue_regressions_are_guarded() -> None:
     assert "docker compose down -v" in install_doc
     assert "Cannot find module './316.js'" in troubleshooting
     assert "pnpm --dir apps/web dev:clean" in troubleshooting
+
+
+def test_publish_requires_independent_release_control_and_semantic_attestations() -> None:
+    semantic_gate = _read(".github/workflows/semantic-release-gate.yml")
+    publish = _read(".github/workflows/publish-pypi.yml")
+    required_checks = _read("scripts/check_github_release_checks.py")
+
+    early_control_gate = publish.split("- name: Require repository release-control attestation variable", 1)[1].split(
+        "- name: Reject non-stable release events", 1
+    )[0]
+    structured_control_gate = publish.split("- name: Validate release-specific repository controls", 1)[1].split(
+        "- name: Fetch the protected main head", 1
+    )[0]
+    semantic_attestation_gate = publish.split("- name: Verify credential-free semantic eval attestation", 1)[1].split(
+        "- name: Install release dependencies", 1
+    )[0]
+
+    assert "${{ vars.ALICE_RELEASE_CONTROLS_ATTESTATION }}" in early_control_gate
+    assert publish.count("${{ vars.ALICE_RELEASE_CONTROLS_ATTESTATION }}") == 2
+    assert 'test -n "$RELEASE_CONTROLS_ATTESTATION"' in early_control_gate
+    for marker in (
+        "python scripts/check_release_controls_attestation.py",
+        '--repository "$GITHUB_REPOSITORY"',
+        '--release-sha "$GITHUB_SHA"',
+        '--release-tag "$RELEASE_TAG"',
+        "--attestation-env RELEASE_CONTROLS_ATTESTATION",
+    ):
+        assert marker in structured_control_gate
+    assert "--semantic-eval-attestation" not in structured_control_gate
+
+    assert "Semantic eval attestation (exact SHA)" in semantic_gate
+    assert "--release-gate" in semantic_gate
+    assert "--write-semantic-eval-attestation" in semantic_gate
+    assert "semantic-eval-attestation-${{ github.sha }}" in semantic_gate
+    assert "head_sha=${GITHUB_SHA}" in publish
+    assert "--semantic-eval-attestation" in semantic_attestation_gate
+    assert "check_release_controls_attestation.py" not in semantic_attestation_gate
+    assert "Semantic eval attestation (exact SHA)" in required_checks
+
+    assert publish.index("Require repository release-control attestation variable") < publish.index(
+        "Reject non-stable release events"
+    )
+    assert publish.index("Validate release-specific repository controls") < publish.index(
+        "Fetch the protected main head"
+    )
+    assert publish.index("Fetch the protected main head") < publish.index(
+        "Verify tag, version, SHA, main head, and PyPI uniqueness"
+    )
+    assert publish.index("Verify tag, version, SHA, main head, and PyPI uniqueness") < publish.index(
+        "Resolve successful exact-SHA semantic gate run"
+    )
+    assert publish.index("Verify credential-free semantic eval attestation") < publish.index(
+        "Build wheel and sdist once"
+    )
+
+
+def test_release_gates_run_normal_cross_module_mypy() -> None:
+    makefile = " ".join(_read("Makefile").split())
+    tests_workflow = " ".join(_read(".github/workflows/tests.yml").split())
+    expected = (
+        "python -m mypy --ignore-missing-imports apps/api/src/alicebot_api "
+        "scripts/release_check.py scripts/test_distribution_artifact.py "
+        "scripts/check_control_doc_truth.py scripts/check_github_release_checks.py "
+        "scripts/check_release_controls_attestation.py"
+    )
+
+    assert "--follow-imports=skip" not in makefile
+    assert "--follow-imports=skip" not in tests_workflow
+    assert expected in tests_workflow
+    assert expected.replace("python", "$(PYTHON)", 1) in makefile
+    assert "Normal cross-module first-party type check" in tests_workflow
+
+
+def test_local_playwright_setup_is_explicit_idempotent_and_platform_safe() -> None:
+    makefile = _read("Makefile")
+    releasing = _read("RELEASING.md")
+    web_package = json.loads(_read("apps/web/package.json"))
+    tests_workflow = _read(".github/workflows/tests.yml")
+
+    local_install = web_package["scripts"]["setup:browser"]
+    linux_install = web_package["scripts"]["setup:browser:linux"]
+    assert local_install == "playwright install chromium"
+    assert "--with-deps" not in local_install
+    assert linux_install == "playwright install --with-deps chromium"
+
+    setup_target = makefile.split("setup-browser:", 1)[1].split("\n\n", 1)[0]
+    assert "$(PNPM) --dir $(WEB_DIR) run setup:browser" in setup_target
+    assert "--with-deps" not in setup_target
+    linux_target = makefile.split("setup-browser-linux:", 1)[1].split("\n\n", 1)[0]
+    assert 'test "$$(uname -s)" = "Linux"' in linux_target
+    assert "$(PNPM) --dir $(WEB_DIR) run setup:browser:linux" in linux_target
+    assert "test-web: setup-browser" in makefile
+
+    candidate_commands = releasing.split("## Candidate Gate", 1)[1].split("```bash", 1)[1].split("```", 1)[0]
+    assert candidate_commands.index("make setup\n") < candidate_commands.index("make setup-browser\n")
+    assert candidate_commands.index("make setup-browser\n") < candidate_commands.index("make release-check")
+    normalized_releasing = " ".join(releasing.split())
+    assert "idempotent local prerequisite" in normalized_releasing
+    assert "not appropriate on macOS" in normalized_releasing
+    assert "make setup-browser-linux" in normalized_releasing
+    assert "refuses to run on macOS" in normalized_releasing
+
+    assert "pnpm run setup:browser:linux" in tests_workflow
 
 
 def test_env_validator_rejects_unquoted_values_with_spaces(tmp_path: Path) -> None:

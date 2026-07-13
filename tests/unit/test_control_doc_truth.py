@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import scripts.check_control_doc_truth as control_doc_truth
 
 
@@ -119,4 +121,62 @@ def test_control_doc_truth_fails_when_release_version_is_stale(tmp_path: Path) -
     assert any(
         issue.startswith("CURRENT_STATE.md: missing current-version candidate marker")
         for issue in issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "contradiction"),
+    (
+        (
+            "CURRENT_STATE.md",
+            "The cycle resumes feature work and clears the second audit's P2 backlog.",
+        ),
+        (
+            "ARCHITECTURE.md",
+            "The candidate resumes feature work and clears the second audit's P2 backlog.",
+        ),
+        (
+            "docs/release/v0.9.4-release-notes.md",
+            'The checker rejects present-tense "published to PyPI" claims.',
+        ),
+        (
+            "RELEASING.md",
+            "The semantic attestation replaces the repository-control attestation.",
+        ),
+    ),
+)
+def test_control_doc_truth_rejects_known_release_contradictions(
+    tmp_path: Path,
+    relative_path: str,
+    contradiction: str,
+) -> None:
+    _seed_truth_docs(tmp_path)
+    target = tmp_path / relative_path
+    target.write_text(
+        target.read_text(encoding="utf-8") + f"\n{contradiction}\n",
+        encoding="utf-8",
+    )
+
+    issues = control_doc_truth.run_control_doc_truth_check(root_dir=tmp_path)
+
+    assert any(issue.startswith(f"{relative_path}: contains disallowed marker") for issue in issues)
+
+
+def test_control_doc_truth_requires_repository_control_attestation_contract(
+    tmp_path: Path,
+) -> None:
+    _seed_truth_docs(tmp_path)
+    target_rule = next(
+        rule for rule in control_doc_truth.CONTROL_DOC_TRUTH_RULES if rule.relative_path == "RELEASING.md"
+    )
+    target = tmp_path / target_rule.relative_path
+    target.write_text(
+        target.read_text(encoding="utf-8").replace("ALICE_RELEASE_CONTROLS_ATTESTATION", "removed-control-variable"),
+        encoding="utf-8",
+    )
+
+    issues = control_doc_truth.run_control_doc_truth_check(root_dir=tmp_path)
+
+    assert any(
+        issue == ("RELEASING.md: missing required marker 'ALICE_RELEASE_CONTROLS_ATTESTATION'") for issue in issues
     )

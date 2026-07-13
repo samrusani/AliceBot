@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 from pathlib import Path
-from typing import Callable
+from typing import Callable, cast
 from uuid import UUID
 
 from alicebot_api.continuity_resumption import compile_continuity_resumption_brief
@@ -28,6 +28,7 @@ from alicebot_api.store import (
     EntityEdgeRow,
     EntityRow,
     JsonObject,
+    JsonValue,
 )
 
 RETRIEVAL_EVALUATION_PRECISION_TARGET = 0.8
@@ -77,8 +78,8 @@ def _candidate(
     object_id: str,
     capture_event_id: str,
     title: str,
-    body: dict[str, object],
-    provenance: dict[str, object],
+    body: JsonObject,
+    provenance: JsonObject,
     confidence: float,
     status: str = "active",
     admission_posture: str = "DERIVED",
@@ -95,6 +96,9 @@ def _candidate(
         "capture_event_id": UUID(capture_event_id),
         "object_type": "Decision",
         "status": status,
+        "is_preserved": True,
+        "is_searchable": True,
+        "is_promotable": True,
         "title": title,
         "body": body,
         "provenance": provenance,
@@ -998,9 +1002,9 @@ def run_phase9_evaluation(
             "correction_effectiveness_rate": correction_effectiveness_rate,
             "pass_threshold": threshold,
         },
-        "importer_runs": importer_runs,
-        "recall_precision_checks": recall_checks,
-        "resumption_usefulness_checks": resumption_checks,
+        "importer_runs": cast(JsonValue, importer_runs),
+        "recall_precision_checks": cast(JsonValue, recall_checks),
+        "resumption_usefulness_checks": cast(JsonValue, resumption_checks),
         "correction_effectiveness": correction_check,
     }
 

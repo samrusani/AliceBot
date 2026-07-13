@@ -1,8 +1,27 @@
 from __future__ import annotations
 
+from copy import deepcopy
+import json
+from hashlib import sha256
+import math
 from pathlib import Path
 import subprocess
 
+import pytest
+
+import alicebot_api.vnext_evals as vnext_evals
+from alicebot_api.vnext_evals import (
+    VNEXT_ACCEPTANCE_TARGETS,
+    VNEXT_EVAL_DATABASE_URL_ENV,
+    VNEXT_EVAL_SUITE_ORDER,
+    generate_correction_suppression_corpus,
+    generate_decision_recovery_corpus,
+    generate_entity_resolution_corpus,
+    generate_graph_hop_corpus,
+    generate_provenance_explanation_corpus,
+    generate_vnext_benchmark_corpus,
+    run_vnext_evals,
+)
 import scripts.release_check as release_check
 
 
@@ -143,7 +162,10 @@ def test_finalized_release_docs_require_dated_changelog_and_final_title(tmp_path
         encoding="utf-8",
     )
     (release_dir / "v1.2.3-release-notes.md").write_text(
-        "# Alice v1.2.3 Release Notes\n\nReady for publication.\n",
+        "# Alice v1.2.3 Release Notes\n"
+        '<!-- alice-release-state: {"schema_version":"alice_release_document_state_v1",'
+        '"version":"1.2.3","publication_status":"pending",'
+        '"checksums_status":"pending"} -->\n\nReady for publication.\n',
         encoding="utf-8",
     )
 
@@ -161,7 +183,7 @@ def test_finalized_release_docs_require_dated_changelog_and_final_title(tmp_path
     )
     assert any("finalized dated heading" in issue for issue in issues)
     assert any("finalized title" in issue for issue in issues)
-    assert any("release-candidate status language" in issue for issue in issues)
+    assert any("alice-release-state" in issue for issue in issues)
 
 
 def _seed_finalized_docs(tmp_path: Path, notes_verify_section: str) -> Path:
@@ -173,61 +195,116 @@ def _seed_finalized_docs(tmp_path: Path, notes_verify_section: str) -> Path:
     )
     notes = release_dir / "v1.2.3-release-notes.md"
     notes.write_text(
-        "# Alice v1.2.3 Release Notes\n\nReady.\n\n"
+        "# Alice v1.2.3 Release Notes\n"
+        '<!-- alice-release-state: {"schema_version":"alice_release_document_state_v1",'
+        '"version":"1.2.3","publication_status":"pending",'
+        '"checksums_status":"pending"} -->\n\nReady.\n\n'
         "## Verifying this release\n\n" + notes_verify_section + "\n",
         encoding="utf-8",
     )
     return notes
 
 
-def test_finalized_release_docs_reject_premature_publication_claim(tmp_path: Path) -> None:
-    # The finalized notes are committed BEFORE the tag and publication, so a
-    # present-tense assertion that artifacts are already on PyPI is false at
-    # tag time and must be rejected by the gate.
-    _seed_finalized_docs(
+def test_finalized_release_docs_reject_structured_published_state(tmp_path: Path) -> None:
+    notes = _seed_finalized_docs(
         tmp_path,
-        "The wheel and source distribution are published to PyPI through GitHub "
-        "Trusted Publishing and carry PyPI's integrity attestations.",
+        "Publication prose is not parsed for keywords.",
+    )
+    notes.write_text(
+        notes.read_text(encoding="utf-8").replace(
+            '"publication_status":"pending"',
+            '"publication_status":"published"',
+        ),
+        encoding="utf-8",
     )
 
     issues = release_check.validate_release_document_state(
         tmp_path, version="1.2.3", require_finalized=True
     )
 
-    assert any("publication" in issue.lower() for issue in issues), issues
+    assert any("publication_status" in issue for issue in issues), issues
 
 
-def test_finalized_release_docs_reject_claiming_absent_checksums_recorded(tmp_path: Path) -> None:
-    # The per-release checksums file is written only in the post-publication
-    # commit. Claiming digests "are recorded" in it while it does not exist is
-    # a premature/false reference and must be rejected.
-    _seed_finalized_docs(
+def test_finalized_release_docs_reject_structured_recorded_checksums_state(
+    tmp_path: Path,
+) -> None:
+    notes = _seed_finalized_docs(
         tmp_path,
-        "The exact SHA-256 digests of the published artifacts are recorded in "
-        "`docs/release/v1.2.3-checksums.txt` in this repository.",
+        "Checksum prose is not parsed for keyword variants.",
+    )
+    notes.write_text(
+        notes.read_text(encoding="utf-8").replace(
+            '"checksums_status":"pending"',
+            '"checksums_status":"recorded"',
+        ),
+        encoding="utf-8",
     )
 
     issues = release_check.validate_release_document_state(
         tmp_path, version="1.2.3", require_finalized=True
     )
 
-    assert any("checksums" in issue.lower() for issue in issues), issues
+    assert any("checksums_status" in issue for issue in issues), issues
 
 
-def test_finalized_release_docs_accept_forward_looking_verification(tmp_path: Path) -> None:
-    # Honest forward-looking wording (publication described as forthcoming, and
-    # the checksums file as something that WILL be recorded) must pass.
+def test_finalized_release_docs_ignore_quoted_or_synonymous_publication_prose(
+    tmp_path: Path,
+) -> None:
     _seed_finalized_docs(
         tmp_path,
-        "Alice publishes to PyPI through GitHub Trusted Publishing. "
-        "Once published, the artifacts carry PyPI's integrity attestations. "
-        "Their exact SHA-256 digests will be recorded in "
-        "`docs/release/v1.2.3-checksums.txt` as part of the post-publication commit.",
+        "The migration guide quotes ‘are published to PyPI’, while another "
+        "example says artifacts were uploaded to PyPI. The structured state "
+        "above is authoritative and remains pending.",
     )
 
     assert release_check.validate_release_document_state(
         tmp_path, version="1.2.3", require_finalized=True
     ) == []
+
+
+@pytest.mark.parametrize(
+    "case",
+    ("duplicate_fenced", "fenced_bypass", "misplaced", "malformed"),
+)
+def test_finalized_release_docs_reject_noncanonical_state_declarations(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    notes = _seed_finalized_docs(tmp_path, "Verify.")
+    content = notes.read_text(encoding="utf-8")
+    valid_line = content.splitlines()[1]
+    if case == "duplicate_fenced":
+        content += (
+            "\n```markdown\n"
+            '<!-- alice-release-state: {"schema_version":"alice_release_document_state_v1",'
+            '"version":"1.2.3","publication_status":"published",'
+            '"checksums_status":"recorded"} -->\n'
+            "```\n"
+        )
+    elif case == "fenced_bypass":
+        published_line = valid_line.replace(
+            '"publication_status":"pending","checksums_status":"pending"',
+            '"publication_status":"published","checksums_status":"recorded"',
+        )
+        content = (
+            "# Alice v1.2.3 Release Notes\n"
+            "```markdown\n"
+            f"{valid_line}\n"
+            "```\n"
+            f"{published_line}\n"
+            "Ready.\n"
+        )
+    elif case == "misplaced":
+        content = content.replace(valid_line + "\n", "\n" + valid_line + "\n", 1)
+    else:
+        content = content.replace(valid_line, "<!-- alice-release-state: not-json -->", 1)
+    notes.write_text(content, encoding="utf-8")
+
+    issues = release_check.validate_release_document_state(
+        tmp_path, version="1.2.3", require_finalized=True
+    )
+
+    assert any("alice-release-state" in issue for issue in issues), issues
 
 
 def test_finalized_release_docs_require_empty_unreleased_section(tmp_path: Path) -> None:
@@ -239,7 +316,10 @@ def test_finalized_release_docs_require_empty_unreleased_section(tmp_path: Path)
         encoding="utf-8",
     )
     (release_dir / "v1.2.3-release-notes.md").write_text(
-        "# Alice v1.2.3 Release Notes\n\nReady for publication.\n",
+        "# Alice v1.2.3 Release Notes\n"
+        '<!-- alice-release-state: {"schema_version":"alice_release_document_state_v1",'
+        '"version":"1.2.3","publication_status":"pending",'
+        '"checksums_status":"pending"} -->\n\nReady for publication.\n',
         encoding="utf-8",
     )
 
@@ -248,3 +328,968 @@ def test_finalized_release_docs_require_empty_unreleased_section(tmp_path: Path)
     )
 
     assert any("Unreleased section must be empty" in issue for issue in issues)
+
+
+def _embedding_signature() -> dict[str, object]:
+    provider = "openai_compatible"
+    model = "release-embedding-v1"
+    return {
+        "schema_version": "alice_embedding_signature_identity_v1",
+        "signature_version": 2,
+        "provider": provider,
+        "provider_fingerprint": sha256(provider.encode("utf-8")).hexdigest(),
+        "model": model,
+        "model_fingerprint": sha256(model.encode("utf-8")).hexdigest(),
+        "endpoint_fingerprint": "0123456789abcdef",
+    }
+
+
+@pytest.fixture(scope="module")
+def canonical_semantic_eval_report() -> dict[str, object]:
+    """A realistic 78-case report assembled by the production generator.
+
+    The store-backed suites run through their real SQLite-compatible service
+    paths in isolated transactions. The protected-job-only boundaries are
+    injected: deterministic perfect retrieval rankings, the Postgres backend
+    label, and the non-secret embedding identity/seeding record.
+    """
+    corpus = generate_vnext_benchmark_corpus()
+    expected_by_query = {
+        str(query["query"]): str(query["expected_memory_key"])
+        for query in corpus["queries"]
+    }
+
+    def perfect_retrieval(query: str, *, limit: int) -> dict[str, object]:
+        del limit
+        return {
+            "ranked_memory_keys": [expected_by_query[query]],
+            "vector_stage": "enabled",
+            "vector_candidate_count": 1,
+        }
+
+    signature = _embedding_signature()
+    original_retrieval_runner = vnext_evals.run_retrieval_quality_eval
+
+    def release_retrieval_runner(*args: object, **kwargs: object) -> dict[str, object]:
+        suite = original_retrieval_runner(*args, **kwargs)
+        suite["metrics"]["seeding"] = {
+            "seeded_memory_count": 216,
+            "embedded_memory_count": 216,
+            "embedding_signature": deepcopy(signature),
+            "embedding_note": "embedded via openai_compatible/release-embedding-v1",
+        }
+        return suite
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setenv(VNEXT_EVAL_DATABASE_URL_ENV, "sqlite:///:memory:")
+        monkeypatch.setattr(vnext_evals, "_eval_backend_label", lambda *_args, **_kwargs: "postgres")
+        monkeypatch.setattr(vnext_evals, "run_retrieval_quality_eval", release_retrieval_runner)
+        report = run_vnext_evals(
+            suite="all",
+            retrieval_fn=perfect_retrieval,
+            release_gate=True,
+        )
+
+    assert report["status"] == "pass"
+    assert report["summary"]["case_count"] == 78
+    assert release_check.validate_semantic_eval_report(report) == []
+    return report
+
+
+def _refresh_semantic_report_digest(report: dict[str, object]) -> None:
+    report["report_digest"] = release_check._semantic_eval_report_digest(report)
+
+
+def _write_semantic_eval_artifact_pair(
+    *,
+    tmp_path: Path,
+    report: dict[str, object],
+    source_sha: str = "a" * 40,
+) -> tuple[Path, Path]:
+    report_path = tmp_path / "semantic-eval-report.json"
+    attestation_path = tmp_path / "semantic-eval-attestation.json"
+    report_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    release_check.write_semantic_eval_attestation(
+        report_path=report_path,
+        attestation_path=attestation_path,
+        source_sha=source_sha,
+    )
+    return report_path, attestation_path
+
+
+def _json_nodes(
+    value: object,
+    *,
+    path: tuple[str | int, ...] = (),
+) -> list[tuple[tuple[str | int, ...], object]]:
+    nodes = [(path, value)]
+    if isinstance(value, dict):
+        for key, child in value.items():
+            nodes.extend(_json_nodes(child, path=(*path, key)))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            nodes.extend(_json_nodes(child, path=(*path, index)))
+    return nodes
+
+
+def _replace_json_node(
+    value: object,
+    *,
+    path: tuple[str | int, ...],
+    replacement: object,
+) -> object:
+    if not path:
+        return replacement
+    updated = deepcopy(value)
+    parent = updated
+    for segment in path[:-1]:
+        assert isinstance(parent, (dict, list))
+        parent = parent[segment]  # type: ignore[index]
+    assert isinstance(parent, (dict, list))
+    parent[path[-1]] = replacement  # type: ignore[index]
+    return updated
+
+
+def test_release_verifier_canonical_contract_tracks_generator_definitions(
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    generated_corpora = {
+        "retrieval_quality": generate_vnext_benchmark_corpus(),
+        "correction_suppression": generate_correction_suppression_corpus(),
+        "decision_recovery": generate_decision_recovery_corpus(),
+        "provenance_explanation": generate_provenance_explanation_corpus(),
+        "entity_resolution": generate_entity_resolution_corpus(),
+        "graph_hop_retrieval": generate_graph_hop_corpus(),
+    }
+    generated_case_keys = {
+        "retrieval_quality": tuple(
+            str(row["query_key"])
+            for row in generated_corpora["retrieval_quality"]["queries"]
+        ),
+        "correction_suppression": tuple(
+            str(row["case_key"])
+            for row in generated_corpora["correction_suppression"]["cases"]
+        ),
+        "decision_recovery": tuple(
+            str(row["query_key"])
+            for row in generated_corpora["decision_recovery"]["queries"]
+        ),
+        "provenance_explanation": tuple(
+            str(row["case_key"])
+            for row in generated_corpora["provenance_explanation"]["memories"]
+        ),
+        "entity_resolution": tuple(
+            str(row["group_key"])
+            for row in generated_corpora["entity_resolution"]["groups"]
+        ),
+        "graph_hop_retrieval": tuple(
+            str(row["group_key"])
+            for row in generated_corpora["graph_hop_retrieval"]["groups"]
+        ),
+    }
+    generated_corpus_digests = {
+        suite_key: corpus["corpus_digest"]
+        for suite_key, corpus in generated_corpora.items()
+    }
+
+    assert tuple(release_check.SEMANTIC_EVAL_CANONICAL_TARGETS) == VNEXT_EVAL_SUITE_ORDER
+    assert release_check.SEMANTIC_EVAL_CANONICAL_TARGETS == VNEXT_ACCEPTANCE_TARGETS
+    assert release_check.SEMANTIC_EVAL_CANONICAL_CASE_KEYS == generated_case_keys
+    assert release_check.SEMANTIC_EVAL_CANONICAL_CORPUS_DIGESTS == generated_corpus_digests
+
+    generator_contract = vnext_evals.canonical_semantic_eval_release_contract()
+    assert release_check._generator_release_contract() == generator_contract
+    for suite in canonical_semantic_eval_report["suites"]:
+        suite_key = suite["suite_key"]
+        assert suite["title"] == generator_contract[suite_key]["title"]
+        assert set(suite["metrics"]) == release_check._SUITE_METRIC_KEYS[suite_key]
+        canonical_cases = generator_contract[suite_key]["cases"]
+        for case, canonical_case in zip(suite["cases"], canonical_cases, strict=True):
+            assert set(case) == release_check._CASE_KEYS[suite_key]
+            assert set(case["metrics"]) == release_check._CASE_METRIC_KEYS[suite_key]
+            assert set(case["evidence"]) == release_check._CASE_EVIDENCE_KEYS[suite_key]
+            if "query" in canonical_case:
+                assert case["evidence"]["query"] == canonical_case["query"]
+    retrieval_metrics = canonical_semantic_eval_report["suites"][0]["metrics"]
+    assert set(retrieval_metrics["latency_ms"]) == {"p50", "p95", "max"}
+    assert set(retrieval_metrics["subsets"]) == {"lexical_overlap", "paraphrase"}
+    assert all(
+        set(subset) == {"query_count", "recall_at_1", "recall_at_5", "mrr"}
+        for subset in retrieval_metrics["subsets"].values()
+    )
+    assert set(retrieval_metrics["seeding"]) == {
+        "seeded_memory_count",
+        "embedded_memory_count",
+        "embedding_signature",
+        "embedding_note",
+    }
+    assert set(canonical_semantic_eval_report["suites"][2]["metrics"]["memory_types_filter"]) == {
+        "available",
+        "note",
+    }
+    for case in canonical_semantic_eval_report["suites"][5]["cases"]:
+        assert set(case["evidence"]["winner_stage_ranks"]) == {"graph"}
+        assert set(case["evidence"]["control_graph_stage"]) == {
+            "status",
+            "matched_entities",
+            "candidate_count",
+        }
+
+
+def test_semantic_eval_digest_binds_nested_targets_metrics_cases_and_evidence(
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    mutations = (
+        lambda report: report["targets"]["graph_hop_retrieval"]["graph_lift"].update(
+            {"minimum": 0.0}
+        ),
+        lambda report: report["suites"][0]["metrics"].update({"mrr": 0.0}),
+        lambda report: report["suites"][0]["cases"][0]["metrics"].update(
+            {"recall_at_5": 0.0}
+        ),
+        lambda report: report["suites"][0]["cases"][0]["evidence"][
+            "top_memory_keys"
+        ].append("fabricated-memory"),
+    )
+    for mutate in mutations:
+        report = deepcopy(canonical_semantic_eval_report)
+        mutate(report)
+        issues = release_check.validate_semantic_eval_report(report)
+        assert any("report_digest does not match" in issue for issue in issues), issues
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_issue"),
+    (
+        pytest.param(
+            lambda report: report["suites"][0]["metrics"].update(
+                {"latency_ms": {"anything": ["goes"]}}
+            ),
+            "latency_ms",
+            id="latency-object-shape",
+        ),
+        pytest.param(
+            lambda report: report["suites"][0]["metrics"]["latency_ms"].update(
+                {"invented": 1}
+            ),
+            "latency_ms",
+            id="latency-extra-key",
+        ),
+        pytest.param(
+            lambda report: report["suites"][0]["metrics"].update({"mrr": "anything"}),
+            "mrr",
+            id="suite-mrr-string",
+        ),
+        pytest.param(
+            lambda report: report["suites"][0]["cases"][0]["metrics"].update(
+                {"recall_at_1": "anything"}
+            ),
+            "recall_at_1",
+            id="case-recall-string",
+        ),
+        pytest.param(
+            lambda report: report["suites"][5]["cases"][0]["evidence"][
+                "winner_stage_ranks"
+            ].update({"invented": 99}),
+            "winner_stage_ranks",
+            id="graph-rank-extra-key",
+        ),
+        pytest.param(
+            lambda report: report["suites"][0]["cases"][0]["evidence"].update(
+                {"query": "invented query"}
+            ),
+            "canonical case",
+            id="substituted-query",
+        ),
+        pytest.param(
+            lambda report: report["suites"][0].update({"title": "Anything"}),
+            "canonical suite title",
+            id="substituted-title",
+        ),
+    ),
+)
+def test_semantic_eval_rejects_reviewer_nested_reproductions_with_fresh_digest(
+    canonical_semantic_eval_report: dict[str, object],
+    mutate,
+    expected_issue: str,
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    mutate(report)
+    _refresh_semantic_report_digest(report)
+
+    issues = release_check.validate_semantic_eval_report(report)
+
+    assert issues
+    assert any(expected_issue in issue for issue in issues), issues
+    assert not any("report_digest does not match" in issue for issue in issues), issues
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_issue"),
+    (
+        pytest.param(
+            lambda report: report["targets"]["correction_suppression"][
+                "pre_correction_visibility"
+            ].update({"minimum": True}),
+            "report targets",
+            id="report-minimum-bool",
+        ),
+        pytest.param(
+            lambda report: report["suites"][1]["targets"][
+                "pre_correction_visibility"
+            ].update({"minimum": True}),
+            "suite 'correction_suppression' targets",
+            id="suite-minimum-bool",
+        ),
+        pytest.param(
+            lambda report: report["targets"]["provenance_explanation"][
+                "orphan_provenance_count"
+            ].update({"maximum": False}),
+            "report targets",
+            id="report-maximum-bool",
+        ),
+        pytest.param(
+            lambda report: report["suites"][3]["targets"][
+                "orphan_provenance_count"
+            ].update({"maximum": False}),
+            "suite 'provenance_explanation' targets",
+            id="suite-maximum-bool",
+        ),
+    ),
+)
+def test_semantic_eval_rejects_boolean_canonical_targets_with_fresh_digest(
+    canonical_semantic_eval_report: dict[str, object],
+    mutate,
+    expected_issue: str,
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    mutate(report)
+    _refresh_semantic_report_digest(report)
+
+    issues = release_check.validate_semantic_eval_report(report)
+
+    assert any(expected_issue in issue for issue in issues), issues
+    assert not any("report_digest does not match" in issue for issue in issues), issues
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    (
+        pytest.param(("generated_at",), "anything", id="invalid-generated-at"),
+        pytest.param(("suites", 0, "metrics", "mrr"), True, id="suite-bool"),
+        pytest.param(("suites", 0, "metrics", "mrr"), math.nan, id="suite-nan"),
+        pytest.param(("suites", 0, "metrics", "mrr"), math.inf, id="suite-pos-inf"),
+        pytest.param(("suites", 0, "metrics", "mrr"), -math.inf, id="suite-neg-inf"),
+        pytest.param(
+            ("suites", 0, "metrics", "latency_ms", "p50"),
+            math.nan,
+            id="nested-latency-nan",
+        ),
+        pytest.param(
+            ("suites", 0, "cases", 0, "metrics", "recall_at_5"),
+            True,
+            id="retrieval-case-bool",
+        ),
+        pytest.param(
+            ("suites", 0, "cases", 0, "metrics", "recall_at_1"),
+            {},
+            id="retrieval-case-unhashable-recall",
+        ),
+        pytest.param(
+            ("suites", 0, "cases", 0, "evidence", "top_memory_keys"),
+            [[]],
+            id="unhashable-ranked-item",
+        ),
+        pytest.param(
+            ("suites", 1, "cases", 0, "evidence", "original_memory_key"),
+            {},
+            id="unhashable-correction-key",
+        ),
+        pytest.param(
+            ("suites", 3, "cases", 0, "metrics", "explain_complete"),
+            True,
+            id="provenance-case-bool",
+        ),
+        pytest.param(
+            ("suites", 2, "cases", 0, "metrics", "recall_at_1"),
+            [],
+            id="decision-unhashable-recall-at-1",
+        ),
+        pytest.param(
+            ("suites", 2, "cases", 0, "metrics", "recall_at_5"),
+            {},
+            id="decision-unhashable-recall-at-5",
+        ),
+        pytest.param(
+            ("suites", 2, "cases", 0, "metrics", "filtered_recall_at_5"),
+            [],
+            id="decision-unhashable-filtered-recall",
+        ),
+        pytest.param(
+            ("suites", 4, "cases", 0, "metrics", "resolved"),
+            True,
+            id="entity-case-bool",
+        ),
+        pytest.param(
+            ("suites", 4, "cases", 0, "evidence", "aliases"),
+            [{}],
+            id="unhashable-alias-item",
+        ),
+        pytest.param(
+            (
+                "suites",
+                5,
+                "cases",
+                0,
+                "evidence",
+                "control_graph_stage",
+                "candidate_count",
+            ),
+            False,
+            id="graph-control-bool",
+        ),
+        pytest.param(
+            (
+                "suites",
+                5,
+                "cases",
+                0,
+                "evidence",
+                "control_graph_stage",
+                "status",
+            ),
+            "disabled: fabricated",
+            id="graph-control-status",
+        ),
+        pytest.param(
+            ("suites", 5, "cases", 0, "metrics", "graph_recall_at_5"),
+            {},
+            id="graph-unhashable-recall",
+        ),
+        pytest.param(
+            ("suites", 5, "cases", 0, "metrics", "fts_recall_at_5"),
+            [],
+            id="graph-unhashable-fts-recall",
+        ),
+        pytest.param(
+            ("suites", 5, "cases", 0, "metrics", "winner_has_graph_rank"),
+            {},
+            id="graph-unhashable-winner-rank",
+        ),
+    ),
+)
+def test_semantic_eval_nested_types_fail_closed_with_fresh_digest(
+    canonical_semantic_eval_report: dict[str, object],
+    path: tuple[object, ...],
+    value: object,
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    target = report
+    for part in path[:-1]:
+        target = target[part]
+    target[path[-1]] = value
+    _refresh_semantic_report_digest(report)
+
+    issues = release_check.validate_semantic_eval_report(report)
+
+    assert issues
+    assert not any("report_digest does not match" in issue for issue in issues), issues
+
+
+@pytest.mark.parametrize(
+    ("suite_index", "id_field"),
+    (
+        pytest.param(3, "memory_id", id="repeated-provenance-memory-id"),
+        pytest.param(4, "entity_id", id="repeated-entity-id"),
+    ),
+)
+def test_semantic_eval_rejects_repeated_evidence_ids(
+    canonical_semantic_eval_report: dict[str, object],
+    suite_index: int,
+    id_field: str,
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    cases = report["suites"][suite_index]["cases"]
+    cases[1]["evidence"][id_field] = cases[0]["evidence"][id_field]
+    _refresh_semantic_report_digest(report)
+
+    issues = release_check.validate_semantic_eval_report(report)
+
+    assert any("IDs must be present and distinct" in issue for issue in issues), issues
+
+
+def test_semantic_eval_report_rejects_structurally_fabricated_evidence(
+    tmp_path: Path,
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    report["targets"] = {}
+    for suite in report["suites"]:
+        suite["cases"] = [{"status": "pass"}]
+        suite["metrics"]["target_checks"] = {"fabricated_check": "pass"}
+    report["summary"].update(
+        {
+            "case_count": 6,
+            "passed_case_count": 6,
+            "failed_case_count": 0,
+            "pass_rate": 1.0,
+        }
+    )
+    report["provider_token"] = "hf_examplecredential123456789"
+    _refresh_semantic_report_digest(report)
+
+    issues = release_check.validate_semantic_eval_report(report)
+
+    assert any("canonical acceptance targets" in issue for issue in issues), issues
+    assert any("canonical case identities" in issue for issue in issues), issues
+    assert any("canonical pass checks" in issue for issue in issues), issues
+    assert any("credential-like material" in issue for issue in issues), issues
+    assert any("unexpected provider_token" in issue for issue in issues), issues
+
+    report_path = tmp_path / "semantic-eval-report.json"
+    report_path.write_text(json.dumps(report, sort_keys=True) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid semantic eval report"):
+        release_check.write_semantic_eval_attestation(
+            report_path=report_path,
+            attestation_path=tmp_path / "semantic-eval-attestation.json",
+            source_sha="a" * 40,
+        )
+
+
+def test_semantic_eval_report_rejects_substituted_case_and_check_even_with_fresh_digest(
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    report["suites"][2]["cases"][0]["case_key"] = "decision-query-fabricated"
+    report["suites"][5]["metrics"]["target_checks"] = {
+        "fabricated_check": "pass"
+    }
+    _refresh_semantic_report_digest(report)
+
+    issues = release_check.validate_semantic_eval_report(report)
+
+    assert any("canonical case identities" in issue for issue in issues), issues
+    assert any("canonical pass checks" in issue for issue in issues), issues
+
+
+def test_semantic_artifacts_recursively_reject_secret_values_under_benign_keys(
+    tmp_path: Path,
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    report["suites"][0]["cases"][0]["evidence"]["query"] = (
+        "hf_examplecredential123456789"
+    )
+    _refresh_semantic_report_digest(report)
+    report_issues = release_check.validate_semantic_eval_report(report)
+    assert any("credential-like material" in issue for issue in report_issues), report_issues
+
+    report_path = tmp_path / "semantic-eval-report.json"
+    attestation_path = tmp_path / "semantic-eval-attestation.json"
+    report_path.write_text(
+        json.dumps(canonical_semantic_eval_report, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    release_check.write_semantic_eval_attestation(
+        report_path=report_path,
+        attestation_path=attestation_path,
+        source_sha="a" * 40,
+    )
+    attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+    attestation["backend"] = "hf_examplecredential123456789"
+    attestation_path.write_text(json.dumps(attestation, sort_keys=True) + "\n", encoding="utf-8")
+    attestation_issues = release_check.validate_semantic_eval_attestation(
+        attestation_path=attestation_path,
+        expected_sha="a" * 40,
+    )
+    assert any(
+        "credential-like material" in issue for issue in attestation_issues
+    ), attestation_issues
+
+
+def test_semantic_eval_attestation_binds_passing_report_to_exact_sha(
+    tmp_path: Path,
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    report_path = tmp_path / "semantic-eval-report.json"
+    attestation_path = tmp_path / "semantic-eval-attestation.json"
+    report_path.write_text(
+        json.dumps(canonical_semantic_eval_report, indent=2, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    source_sha = "a" * 40
+
+    assert len(canonical_semantic_eval_report["suites"]) == 6
+    assert canonical_semantic_eval_report["summary"]["case_count"] == 78
+    assert release_check.validate_semantic_eval_report(
+        canonical_semantic_eval_report
+    ) == []
+    release_check.write_semantic_eval_attestation(
+        report_path=report_path,
+        attestation_path=attestation_path,
+        source_sha=source_sha,
+    )
+    attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+    assert attestation["embedding_signature"] == canonical_semantic_eval_report["embedding_signature"]
+    assert str(attestation["report_digest"]).startswith("sha256:")
+
+    assert release_check.validate_semantic_eval_attestation(
+        attestation_path=attestation_path,
+        expected_sha=source_sha,
+    ) == []
+    assert any("exact release SHA" in issue for issue in release_check.validate_semantic_eval_attestation(
+        attestation_path=attestation_path,
+        expected_sha="b" * 40,
+    ))
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("vector_candidate_count", 48.0),
+        ("vector_stage_participated", 1),
+        ("vector_stage_participated", 1.0),
+        ("paraphrase_recall_at_5", 1),
+        ("paraphrase_recall_at_5", True),
+    ),
+    ids=(
+        "candidate-int-to-float",
+        "participated-bool-to-int",
+        "participated-bool-to-float",
+        "paraphrase-float-to-int",
+        "paraphrase-float-to-bool",
+    ),
+)
+def test_semantic_eval_attestation_rejects_reviewer_type_substitutions(
+    tmp_path: Path,
+    canonical_semantic_eval_report: dict[str, object],
+    field: str,
+    replacement: object,
+) -> None:
+    _report_path, attestation_path = _write_semantic_eval_artifact_pair(
+        tmp_path=tmp_path,
+        report=canonical_semantic_eval_report,
+    )
+    attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+    attestation[field] = replacement
+    attestation_path.write_text(
+        json.dumps(attestation, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    issues = release_check.validate_semantic_eval_attestation(
+        attestation_path=attestation_path,
+        expected_sha="a" * 40,
+    )
+
+    assert any(field in issue for issue in issues), issues
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement", "message"),
+    (
+        ("vector_candidate_count", 0, "must be >= 1"),
+        ("vector_candidate_count", -1, "must be >= 1"),
+        ("vector_candidate_count", True, "must be an integer"),
+        ("vector_stage_participated", "true", "must be a boolean"),
+        ("vector_stage_participated", False, "must be true"),
+        ("paraphrase_recall_at_5", 1, "must be a finite float"),
+        ("paraphrase_recall_at_5", True, "must be a finite float"),
+        ("paraphrase_recall_at_5", math.nan, "must be a finite float"),
+        ("paraphrase_recall_at_5", math.inf, "must be a finite float"),
+        ("paraphrase_recall_at_5", -math.inf, "must be a finite float"),
+        ("paraphrase_recall_at_5", -0.1, "must be between 0.0 and 1.0"),
+        ("paraphrase_recall_at_5", 1.1, "must be between 0.0 and 1.0"),
+    ),
+)
+def test_semantic_eval_attestation_validates_copied_summary_scalar_shapes(
+    tmp_path: Path,
+    canonical_semantic_eval_report: dict[str, object],
+    field: str,
+    replacement: object,
+    message: str,
+) -> None:
+    _report_path, attestation_path = _write_semantic_eval_artifact_pair(
+        tmp_path=tmp_path,
+        report=canonical_semantic_eval_report,
+    )
+    attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+    attestation[field] = replacement
+    attestation_path.write_text(
+        json.dumps(attestation, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    issues = release_check.validate_semantic_eval_attestation(
+        attestation_path=attestation_path,
+        expected_sha="a" * 40,
+    )
+
+    assert any(message in issue for issue in issues), issues
+
+
+def test_semantic_eval_attestation_recursively_rejects_all_copied_field_type_drift(
+    tmp_path: Path,
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    _report_path, attestation_path = _write_semantic_eval_artifact_pair(
+        tmp_path=tmp_path,
+        report=canonical_semantic_eval_report,
+    )
+    canonical_attestation = json.loads(
+        attestation_path.read_text(encoding="utf-8")
+    )
+    copied_fields = (
+        "report_digest",
+        "generated_at",
+        "suite",
+        "status",
+        "embedding_signature",
+        "backend",
+        "retrieval_mode",
+        "vector_candidate_count",
+        "vector_stage_participated",
+        "paraphrase_recall_at_5",
+    )
+    type_representatives: tuple[object, ...] = (
+        None,
+        False,
+        0,
+        0.0,
+        "type-drift",
+        [],
+        {"type": "drift"},
+    )
+    checked = 0
+
+    for field in copied_fields:
+        canonical_value = canonical_attestation[field]
+        for path, node in _json_nodes(canonical_value):
+            for replacement in type_representatives:
+                if type(replacement) is type(node):
+                    continue
+                mutated = deepcopy(canonical_attestation)
+                mutated[field] = _replace_json_node(
+                    canonical_value,
+                    path=path,
+                    replacement=replacement,
+                )
+                attestation_path.write_text(
+                    json.dumps(mutated, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+
+                issues = release_check.validate_semantic_eval_attestation(
+                    attestation_path=attestation_path,
+                    expected_sha="a" * 40,
+                )
+
+                assert any(field in issue for issue in issues), (
+                    field,
+                    path,
+                    node,
+                    replacement,
+                    issues,
+                )
+                checked += 1
+
+    assert checked == 102
+
+
+def test_real_no_provider_release_report_fails_closed_without_digest_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(VNEXT_EVAL_DATABASE_URL_ENV, "sqlite:///:memory:")
+    for key in (
+        "ALICE_EMBEDDINGS_BASE_URL",
+        "ALICE_EMBEDDINGS_MODEL",
+        "ALICE_EMBEDDINGS_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    report = run_vnext_evals(suite="all", release_gate=True)
+    issues = release_check.validate_semantic_eval_report(report)
+
+    assert report["status"] == "fail"
+    assert report["report_digest"] == release_check._semantic_eval_report_digest(report)
+    assert issues
+    assert not any("report_digest does not match" in issue for issue in issues), issues
+
+
+def test_generator_release_contract_does_not_resolve_embedding_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_provider_lookup() -> None:
+        raise AssertionError("canonical release contract must be provider-free")
+
+    monkeypatch.setattr(vnext_evals, "get_embedding_provider", unexpected_provider_lookup)
+
+    contract = vnext_evals.canonical_semantic_eval_release_contract()
+
+    assert tuple(contract) == VNEXT_EVAL_SUITE_ORDER
+
+
+def test_semantic_eval_report_rejects_no_vector_participation_skips_and_credentials(
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    retrieval = report["suites"][0]
+    retrieval["metrics"]["vector_candidate_count"] = 0
+    retrieval["metrics"]["vector_stage_participated"] = False
+    report["suites"][-1]["status"] = "skipped"
+    report["suites"][-1]["cases"] = []
+    report["summary"]["executed_suite_count"] = 5
+    report["summary"]["skipped_suite_count"] = 1
+    report["skipped_suites"] = [
+        {"suite_key": "graph_hop_retrieval", "reason": "provider unavailable"}
+    ]
+    report["provider_api_key"] = "sk-not-safe-to-attest"
+    _refresh_semantic_report_digest(report)
+
+    issues = release_check.validate_semantic_eval_report(report)
+
+    assert any("without skips" in issue for issue in issues)
+    assert any("vector_candidate_count" in issue for issue in issues)
+    assert any("credential-like" in issue for issue in issues)
+
+
+def test_semantic_eval_report_rejects_empty_cases(
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    report["suites"][0]["cases"] = []
+    _refresh_semantic_report_digest(report)
+
+    issues = release_check.validate_semantic_eval_report(report)
+
+    assert any("nonempty cases" in issue for issue in issues), issues
+    assert any("case_count" in issue for issue in issues), issues
+
+
+def test_semantic_eval_report_reconciles_all_summary_fields(
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    summary = report["summary"]
+    summary.update(
+        {
+            "status": "fail",
+            "suite_count": 99,
+            "executed_suite_count": 5,
+            "skipped_suite_count": 1,
+            "case_count": 99,
+            "passed_case_count": 98,
+            "failed_case_count": 1,
+            "pass_rate": 0.5,
+            "suite_order": list(reversed(summary["suite_order"])),
+        }
+    )
+    _refresh_semantic_report_digest(report)
+
+    issues = release_check.validate_semantic_eval_report(report)
+
+    for field in (
+        "suite_count",
+        "executed_suite_count",
+        "skipped_suite_count",
+        "case_count",
+        "passed_case_count",
+        "failed_case_count",
+        "pass_rate",
+        "suite_order",
+        "summary status",
+    ):
+        assert any(field in issue for issue in issues), (field, issues)
+
+
+def test_semantic_eval_report_rejects_failed_cases_and_target_checks(
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    report["suites"][0]["cases"][0]["status"] = "fail"
+    report["suites"][1]["metrics"]["target_checks"]["suppression_rate"] = "fail"
+    _refresh_semantic_report_digest(report)
+
+    issues = release_check.validate_semantic_eval_report(report)
+
+    assert any("case did not pass" in issue for issue in issues), issues
+    assert any("failed target check" in issue for issue in issues), issues
+    assert any("derived" in issue for issue in issues), issues
+
+
+def test_semantic_eval_report_rejects_missing_fingerprint_and_raw_url(
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    missing = deepcopy(canonical_semantic_eval_report)
+    del missing["embedding_signature"]["endpoint_fingerprint"]
+    _refresh_semantic_report_digest(missing)
+    missing_issues = release_check.validate_semantic_eval_report(missing)
+    assert any("contain exactly" in issue for issue in missing_issues), missing_issues
+    assert any("endpoint_fingerprint" in issue for issue in missing_issues), missing_issues
+
+    raw_url = deepcopy(canonical_semantic_eval_report)
+    raw_url["embedding_signature"]["model"] = "https://models.example.invalid/private"
+    raw_url["embedding_signature"]["model_fingerprint"] = sha256(
+        raw_url["embedding_signature"]["model"].encode("utf-8")
+    ).hexdigest()
+    _refresh_semantic_report_digest(raw_url)
+    raw_url_issues = release_check.validate_semantic_eval_report(raw_url)
+    assert any("raw URL" in issue for issue in raw_url_issues), raw_url_issues
+
+
+def test_semantic_eval_attestation_rejects_fingerprint_drift(
+    tmp_path: Path,
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    report_path = tmp_path / "semantic-eval-report.json"
+    attestation_path = tmp_path / "semantic-eval-attestation.json"
+    report = deepcopy(canonical_semantic_eval_report)
+    report_path.write_text(json.dumps(report, sort_keys=True) + "\n", encoding="utf-8")
+    release_check.write_semantic_eval_attestation(
+        report_path=report_path,
+        attestation_path=attestation_path,
+        source_sha="a" * 40,
+    )
+
+    attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+    attestation["embedding_signature"]["endpoint_fingerprint"] = "fedcba9876543210"
+    attestation_path.write_text(json.dumps(attestation, sort_keys=True) + "\n", encoding="utf-8")
+    issues = release_check.validate_semantic_eval_attestation(
+        attestation_path=attestation_path,
+        expected_sha="a" * 40,
+    )
+    assert any("embedding_signature does not match" in issue for issue in issues), issues
+
+    report["embedding_signature"]["endpoint_fingerprint"] = "0011223344556677"
+    _refresh_semantic_report_digest(report)
+    report_path.write_text(json.dumps(report, sort_keys=True) + "\n", encoding="utf-8")
+    report_drift_issues = release_check.validate_semantic_eval_attestation(
+        attestation_path=attestation_path,
+        expected_sha="a" * 40,
+    )
+    assert any("report SHA-256" in issue for issue in report_drift_issues), report_drift_issues
+    assert any(
+        "embedding_signature does not match" in issue for issue in report_drift_issues
+    ), report_drift_issues
+
+
+def test_semantic_artifact_validation_rejects_malformed_report_and_attestation(
+    tmp_path: Path,
+) -> None:
+    malformed_report = {"schema_version": "unknown", "status": "pass"}
+    report_issues = release_check.validate_semantic_eval_report(malformed_report)
+    assert any("unsupported schema_version" in issue for issue in report_issues)
+    assert any("missing summary" in issue for issue in report_issues)
+    assert any("missing suites" in issue for issue in report_issues)
+
+    attestation_path = tmp_path / "semantic-eval-attestation.json"
+    attestation_path.write_text("{not-json}\n", encoding="utf-8")
+    attestation_issues = release_check.validate_semantic_eval_attestation(
+        attestation_path=attestation_path,
+        expected_sha="a" * 40,
+    )
+    assert any("could not read semantic eval attestation" in issue for issue in attestation_issues)

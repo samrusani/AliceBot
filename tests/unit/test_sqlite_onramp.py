@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import threading
+import tracemalloc
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -1603,6 +1604,110 @@ def test_memory_correct_reject_edit_and_supersede(sqlite_context) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "action,field,invalid_confidence,error_detail",
+    [
+        pytest.param(
+            "edit-and-approve", "confidence", True, "type number", id="edit-boolean"
+        ),
+        pytest.param(
+            "edit-and-approve",
+            "confidence",
+            float("nan"),
+            "type number",
+            id="edit-nan",
+        ),
+        pytest.param(
+            "edit-and-approve",
+            "confidence",
+            float("inf"),
+            "type number",
+            id="edit-positive-infinity",
+        ),
+        pytest.param(
+            "edit-and-approve",
+            "confidence",
+            float("-inf"),
+            "type number",
+            id="edit-negative-infinity",
+        ),
+        pytest.param(
+            "supersede-existing",
+            "replacement_confidence",
+            True,
+            "type number",
+            id="supersede-boolean",
+        ),
+        pytest.param(
+            "supersede-existing",
+            "replacement_confidence",
+            float("nan"),
+            "type number",
+            id="supersede-nan",
+        ),
+        pytest.param(
+            "supersede-existing",
+            "replacement_confidence",
+            float("inf"),
+            "type number",
+            id="supersede-positive-infinity",
+        ),
+        pytest.param(
+            "supersede-existing",
+            "replacement_confidence",
+            float("-inf"),
+            "type number",
+            id="supersede-negative-infinity",
+        ),
+    ],
+)
+def test_memory_correct_invalid_confidence_is_durable_sqlite_rollback(
+    sqlite_context,
+    action: str,
+    field: str,
+    invalid_confidence: object,
+    error_detail: str,
+) -> None:
+    memory_id = _capture_decision(
+        sqlite_context, f"Preserve SQLite rollback for {action} {field}"
+    )
+    before_detail = call_mcp_tool(
+        sqlite_context,
+        name="alice_memory_review",
+        arguments={"review_item_id": memory_id},
+    )["review"]
+    before_queue = call_mcp_tool(
+        sqlite_context, name="alice_memory_review", arguments={"status": "all"}
+    )
+    arguments: dict[str, object] = {
+        "review_item_id": memory_id,
+        "action": action,
+        field: invalid_confidence,
+    }
+    if action == "supersede-existing":
+        arguments["replacement_title"] = "Must not be written"
+
+    with pytest.raises(MCPToolError, match=rf"{field}.*{error_detail}"):
+        call_mcp_tool(
+            sqlite_context,
+            name="alice_memory_correct",
+            arguments=arguments,
+        )
+
+    after_detail = call_mcp_tool(
+        sqlite_context,
+        name="alice_memory_review",
+        arguments={"review_item_id": memory_id},
+    )["review"]
+    after_queue = call_mcp_tool(
+        sqlite_context, name="alice_memory_review", arguments={"status": "all"}
+    )
+    assert after_detail["memory"] == before_detail["memory"]
+    assert after_detail["revisions"] == before_detail["revisions"]
+    assert after_detail["provenance_links"] == before_detail["provenance_links"]
+    assert after_queue["count"] == before_queue["count"] == 1
+
+
 def test_memory_correct_validation_errors(sqlite_context) -> None:
     missing = "99999999-9999-4999-8999-999999999999"
     with pytest.raises(MCPToolError, match="was not found"):
@@ -1619,13 +1724,13 @@ def test_memory_correct_validation_errors(sqlite_context) -> None:
             name="alice_memory_correct",
             arguments={"review_item_id": memory_id, "action": "supersede-existing"},
         )
-    with pytest.raises(MCPToolError, match="at least one of title, body, or confidence"):
+    with pytest.raises(MCPToolError, match="at least one of title, body, provenance, or confidence"):
         call_mcp_tool(
             sqlite_context,
             name="alice_memory_correct",
             arguments={"review_item_id": memory_id, "action": "edit-and-approve"},
         )
-    with pytest.raises(MCPToolError, match="not supported by canonical vNext review"):
+    with pytest.raises(MCPToolError, match=r"arguments\.action: action must be one of"):
         call_mcp_tool(
             sqlite_context,
             name="alice_memory_correct",
@@ -1648,11 +1753,11 @@ def test_explain_entity_and_continuity_branches_require_postgres(sqlite_context)
         )
 
 
-def test_sqlite_constraint_violation_maps_to_mcp_tool_error(sqlite_context) -> None:
-    # 'not-a-domain' passes tool-level parsing but violates the persisted
-    # sources.domain CHECK constraint, raising sqlite3.IntegrityError inside
-    # the store; call_mcp_tool must translate it like psycopg CheckViolation.
-    with pytest.raises(MCPToolError, match="persisted schema constraint"):
+def test_sqlite_capture_rejects_invalid_domain_before_store(sqlite_context) -> None:
+    # The advertised enum is now enforced before a handler can reach SQLite's
+    # matching CHECK constraint. Generic SQLite IntegrityError translation is
+    # covered separately in test_mcp.py for failures raised inside handlers.
+    with pytest.raises(MCPToolError, match=r"arguments\.domain: domain must be one of"):
         call_mcp_tool(
             sqlite_context,
             name="alice_capture",
@@ -1708,6 +1813,7 @@ def test_reindex_embeddings_rebuilds_unsigned_sqlite_vectors(tmp_path, monkeypat
     class StubProvider:
         provider = "stub"
         model = "embed-v2"
+        base_url = "https://Embed.Example:443/Case/V1"
 
         def embed_batch(self, texts):
             return [[0.5, 0.25] for _text in texts]
@@ -1724,7 +1830,10 @@ def test_reindex_embeddings_rebuilds_unsigned_sqlite_vectors(tmp_path, monkeypat
         row = conn.execute(
             "SELECT metadata_json FROM memories WHERE id = ?", (str(memory["id"]),)
         ).fetchone()
-        assert json.loads(row["metadata_json"])["_alice_embedding"]["model"] == "embed-v2"
+        signature = json.loads(row["metadata_json"])["_alice_embedding"]
+        assert signature["model"] == "embed-v2"
+        assert signature["version"] == 2
+        assert signature["endpoint"]
 
 
 def test_export_writes_jsonl_records(sqlite_context, tmp_path) -> None:
@@ -2247,6 +2356,70 @@ def test_export_rejects_unknown_newer_portable_columns_without_data_loss(
         ).fetchone() == ("SECRET FUTURE STATE",)
 
 
+def test_export_rejects_unknown_future_application_table(tmp_path, capsys) -> None:
+    db_path = tmp_path / "future-table.db"
+    bootstrap_database(db_path, user_id=USER_ID, user_email="local@alice")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE future_user_records (id TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO future_user_records (id, payload) VALUES (?, ?)",
+            ("future-1", "must not disappear"),
+        )
+        conn.commit()
+
+    out_path = tmp_path / "lossy.jsonl"
+    assert (
+        onramp_main(
+            [
+                "export",
+                "--db",
+                str(db_path),
+                "--user-id",
+                str(USER_ID),
+                "--out",
+                str(out_path),
+            ]
+        )
+        == 1
+    )
+    err = capsys.readouterr().err
+    assert "unknown application tables" in err
+    assert "future_user_records" in err
+    assert not out_path.exists()
+
+
+def test_export_allows_sqlite_analyze_statistics_tables(tmp_path, capsys) -> None:
+    db_path = tmp_path / "analyzed.db"
+    bootstrap_database(db_path, user_id=USER_ID, user_email="local@alice")
+    _seed_full_graph(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ANALYZE")
+        conn.commit()
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1'"
+        ).fetchone() == (1,)
+
+    out_path = tmp_path / "analyzed.jsonl"
+    assert (
+        onramp_main(
+            [
+                "export",
+                "--db",
+                str(db_path),
+                "--user-id",
+                str(USER_ID),
+                "--out",
+                str(out_path),
+            ]
+        )
+        == 0
+    )
+    assert out_path.exists()
+    assert "unknown application tables" not in capsys.readouterr().err
+
+
 def test_import_normalizes_input_filesystem_errors_without_traceback(tmp_path, capsys) -> None:
     input_directory = tmp_path / "not-a-jsonl-file"
     input_directory.mkdir()
@@ -2619,6 +2792,182 @@ def test_import_round_trip_reproduces_equivalent_export(tmp_path, capsys) -> Non
 
     second = _export_to(fresh_db, tmp_path / "second.jsonl")
     _assert_equivalent_exports(first, second)
+
+
+def test_import_decodes_each_jsonl_envelope_exactly_once(tmp_path, monkeypatch) -> None:
+    origin_db = tmp_path / "origin.db"
+    bootstrap_database(origin_db, user_id=USER_ID, user_email="local@alice")
+    _seed_full_graph(origin_db)
+    dump = tmp_path / "backup.jsonl"
+    _export_to(origin_db, dump)
+    expected_decode_count = sum(
+        1 for line in dump.read_text(encoding="utf-8").splitlines() if line.strip()
+    )
+    original_decode = onramp_module._decode_import_envelope
+    decode_count = 0
+
+    def counted_decode(text: str, *, line_no: int):
+        nonlocal decode_count
+        decode_count += 1
+        return original_decode(text, line_no=line_no)
+
+    monkeypatch.setattr(onramp_module, "_decode_import_envelope", counted_decode)
+    restored_db = tmp_path / "restored.db"
+    assert (
+        onramp_main(
+            ["import", "--in", str(dump), "--db", str(restored_db), "--user-id", str(USER_ID)]
+        )
+        == 0
+    )
+    assert decode_count == expected_decode_count
+
+
+def test_import_validation_spools_large_record_sets_with_bounded_memory(tmp_path) -> None:
+    record_count = 50_000
+    dump = tmp_path / "large-legacy.jsonl"
+    with dump.open("w", encoding="utf-8") as stream:
+        for index in range(record_count):
+            stream.write(
+                json.dumps(
+                    {
+                        "record_type": "source",
+                        "record": {"id": f"source-{index}"},
+                    },
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+
+    tracemalloc.start()
+    validated = onramp_module._validate_import_file(dump)
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    try:
+        assert validated.record_count == record_count
+        assert peak < 8 * 1024 * 1024
+        assert validated.spool_path.stat().st_size > 0
+    finally:
+        onramp_module._remove_sqlite_files(validated.spool_path)
+
+
+def test_import_spool_commit_failure_is_normalized_and_cleaned(
+    tmp_path, monkeypatch
+) -> None:
+    dump = tmp_path / "one-record.jsonl"
+    dump.write_text(
+        json.dumps({"record_type": "source", "record": {"id": "source-1"}}) + "\n",
+        encoding="utf-8",
+    )
+    original_create = onramp_module._create_import_spool
+    created_path: Path | None = None
+    closed = False
+
+    class CommitFailingSpool:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self.connection = connection
+
+        def execute(self, *args, **kwargs):
+            return self.connection.execute(*args, **kwargs)
+
+        def commit(self) -> None:
+            raise sqlite3.OperationalError("simulated spool disk failure")
+
+        def close(self) -> None:
+            nonlocal closed
+            self.connection.close()
+            closed = True
+
+    def create_failing_spool(path: Path):
+        nonlocal created_path
+        created_path, connection = original_create(path)
+        return created_path, CommitFailingSpool(connection)
+
+    monkeypatch.setattr(onramp_module, "_create_import_spool", create_failing_spool)
+
+    with pytest.raises(
+        onramp_module._ImportError,
+        match="could not write validated import spool: simulated spool disk failure",
+    ):
+        onramp_module._validate_import_file(dump)
+
+    assert closed is True
+    assert created_path is not None
+    assert not created_path.exists()
+
+
+def test_import_rejects_a_corrupted_validated_spool_record(tmp_path) -> None:
+    dump = tmp_path / "one-record.jsonl"
+    dump.write_text(
+        json.dumps({"record_type": "source", "record": {"id": "source-1"}}) + "\n",
+        encoding="utf-8",
+    )
+    validated = onramp_module._validate_import_file(dump)
+    try:
+        with sqlite3.connect(validated.spool_path) as spool:
+            spool.execute(
+                "UPDATE validated_records SET payload = ? WHERE record_type = 'source'",
+                (sqlite3.Binary(b"not-a-marshal-record"),),
+            )
+            spool.commit()
+
+        with pytest.raises(
+            onramp_module._ImportError,
+            match="line 1: validated import spool record is unreadable",
+        ):
+            list(onramp_module._iter_spooled_records(validated, "source"))
+    finally:
+        onramp_module._remove_sqlite_files(validated.spool_path)
+
+
+def test_import_consumes_snapshot_when_selected_path_is_substituted(
+    tmp_path, monkeypatch
+) -> None:
+    first_db = tmp_path / "first.db"
+    second_db = tmp_path / "second.db"
+    for db_path in (first_db, second_db):
+        bootstrap_database(db_path, user_id=USER_ID, user_email="local@alice")
+        _seed_full_graph(db_path)
+    with sqlite3.connect(second_db) as conn:
+        conn.execute(
+            "UPDATE memories SET title = ?, canonical_text = ?",
+            ("Transient B", "The substituted backup must not be imported."),
+        )
+        conn.commit()
+    selected = tmp_path / "selected.jsonl"
+    replacement = tmp_path / "replacement.jsonl"
+    _export_to(first_db, selected)
+    _export_to(second_db, replacement)
+    original_snapshot_runner = onramp_module._run_import_snapshot
+
+    def substitute_after_snapshot(args, *, in_path, display_path, db_path):
+        display_path.write_bytes(replacement.read_bytes())
+        return original_snapshot_runner(
+            args,
+            in_path=in_path,
+            display_path=display_path,
+            db_path=db_path,
+        )
+
+    monkeypatch.setattr(onramp_module, "_run_import_snapshot", substitute_after_snapshot)
+    restored_db = tmp_path / "restored.db"
+    assert (
+        onramp_main(
+            [
+                "import",
+                "--in",
+                str(selected),
+                "--db",
+                str(restored_db),
+                "--user-id",
+                str(USER_ID),
+            ]
+        )
+        == 0
+    )
+    with sqlite3.connect(restored_db) as conn:
+        titles = {str(row[0]) for row in conn.execute("SELECT title FROM memories")}
+    assert "Round-trip decision" in titles
+    assert "Transient B" not in titles
 
 
 def test_historical_event_fields_and_v2_integrity_digest_are_round_trip_stable(tmp_path) -> None:
@@ -3207,7 +3556,12 @@ def test_import_mode_fail_aborts_on_collision_and_writes_nothing(tmp_path, capsy
 
     # A novel source followed by a colliding memory: fail mode must abort
     # the whole import, including the already-inserted novel row.
-    novel_source = {**first["source"][0], "id": str(uuid4()), "content_hash": "hash-novel"}
+    novel_source = {
+        **first["source"][0],
+        "id": str(uuid4()),
+        "content_hash": "hash-novel",
+        "dedupe_key": "dedupe-novel",
+    }
     colliding_memory = first["memory"][0]
     partial = tmp_path / "partial.jsonl"
     partial.write_text(

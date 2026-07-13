@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import uuid4
 
 from alicebot_api.vnext_event_log import append_event
@@ -14,6 +14,7 @@ from alicebot_api.vnext_model_intelligence import (
     resolve_model_route,
 )
 from alicebot_api.vnext_repositories import JsonObject
+from alicebot_api.vnext_store import PostgresVNextStore
 
 
 DEFAULT_PROJECT_LIMIT = 8
@@ -28,6 +29,8 @@ class VNextProjectValidationError(ValueError):
 
 class VNextProjectStore(Protocol):
     def append_event(self, event: JsonObject) -> JsonObject: ...
+
+    def list_events(self, *, target_type: str | None = None, target_id: str | None = None) -> list[JsonObject]: ...
 
     def create_artifact(self, artifact: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
@@ -469,7 +472,8 @@ class VNextProjectService:
                     candidate["project_id"] = request.project_id
                 if request.person_id is not None:
                     candidate["person_id"] = request.person_id
-                metadata = candidate.get("metadata_json") if isinstance(candidate.get("metadata_json"), dict) else {}
+                metadata_value = candidate.get("metadata_json")
+                metadata: JsonObject = metadata_value if isinstance(metadata_value, dict) else {}
                 candidate["metadata_json"] = {
                     **metadata,
                     "generated_by": request.generated_by,
@@ -528,7 +532,7 @@ class VNextProjectService:
             memory_id=candidate_memory_id,
             patch={"status": "active", "canonical_text": current_state},
         )
-        VNextMemoryCommitService(self.store).refresh_memory_derived_state(
+        VNextMemoryCommitService(cast(PostgresVNextStore, self.store)).refresh_memory_derived_state(
             updated_memory,
             stage="project_update_review",
         )

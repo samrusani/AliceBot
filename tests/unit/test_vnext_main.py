@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 from uuid import uuid4
 
 import anyio
+import pytest
 
 import apps.api.src.alicebot_api.main as main_module
 from alicebot_api.config import Settings
@@ -482,6 +483,7 @@ class FakeVNextStore:
             "artifact_quality_ratings_exists": True,
             "scheduler_workflows_exists": True,
             "scheduler_runs_exists": True,
+            "pgvector_version": "0.8.0",
             "migration_revision": "test",
         }
 
@@ -577,6 +579,34 @@ def _invoke_vnext_request(
         if message["type"] == "http.response.body"
     )
     return int(start["status"]), json.loads(response_body)
+
+
+def test_vnext_source_http_rejects_invalid_domain_and_sensitivity_enums(monkeypatch) -> None:
+    _install_fake_vnext_store(monkeypatch, FakeVNextStore(None))
+    user_id = str(uuid4())
+    invalid_domain_status, invalid_domain_payload = _invoke_vnext_request(
+        "POST",
+        "/v0/vnext/sources",
+        payload={
+            "user_id": user_id,
+            "raw_text": "Fact: Invalid enum values never reach persistence.",
+            "domain": "not-a-domain",
+        },
+    )
+    invalid_sensitivity_status, invalid_sensitivity_payload = _invoke_vnext_request(
+        "POST",
+        "/v0/vnext/sources",
+        payload={
+            "user_id": user_id,
+            "raw_text": "Fact: Invalid enum values never reach persistence.",
+            "sensitivity": "top-secret-ish",
+        },
+    )
+
+    assert invalid_domain_status == 422
+    assert invalid_sensitivity_status == 422
+    assert invalid_domain_payload["detail"][0]["loc"][-1] == "domain"
+    assert invalid_sensitivity_payload["detail"][0]["loc"][-1] == "sensitivity"
 
 
 def test_vnext_http_auth_gate_covers_query_and_json_routes(monkeypatch) -> None:
@@ -1677,6 +1707,102 @@ def _seed_active_memory(store: FakeVNextStore, *, text: str = "The quarterly pla
     return memory_id
 
 
+def _seed_pending_confirmation(store: FakeVNextStore, *, label: str) -> str:
+    memory_id = _seed_active_memory(store, text=f"Pending confirmation for {label}.")
+    memory = store.get_memory(memory_id)
+    assert memory is not None
+    memory.update(
+        {
+            "status": "needs_review",
+            "confirmation_status": "unconfirmed",
+            "last_confirmed_at": None,
+            "last_reviewed_at": None,
+            "metadata_json": {
+                "review_required": True,
+                "agentic_memory": {
+                    "status": "confirmation_required",
+                    "write_mode": "confirm_inline",
+                    "lifecycle_status": "pending_inline_confirmation",
+                    "requires_dashboard_review": True,
+                    "confirmation": {
+                        "confirmation_id": f"confirmation-{label}",
+                        "status": "pending",
+                    },
+                },
+            },
+        }
+    )
+    return memory_id
+
+
+def test_http_review_edit_synchronizes_title_and_summary(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    memory_id = _seed_active_memory(store, text="The old review text is stale.")
+    corrected = "The reviewed memory now carries the corrected canonical text."
+
+    response = main_module.review_vnext_memory(
+        main_module.UUID(memory_id),
+        main_module.VNextMemoryReviewRequest(
+            user_id=uuid4(),
+            action="edit",
+            canonical_text=corrected,
+        ),
+    )
+
+    assert response.status_code == 200
+    memory = store.get_memory(memory_id)
+    assert memory is not None
+    assert memory["canonical_text"] == corrected
+    assert memory["title"] == corrected
+    assert memory["summary"] == corrected
+
+
+@pytest.mark.parametrize("action", ["accept", "edit", "promote", "reject"])
+def test_http_terminal_reviews_close_nested_confirmation_metadata(
+    monkeypatch,
+    action: str,
+) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    memory_id = _seed_pending_confirmation(store, label=action)
+    response = main_module.review_vnext_memory(
+        main_module.UUID(memory_id),
+        main_module.VNextMemoryReviewRequest(
+            user_id=user_id,
+            action=action,
+            canonical_text="Edited and confirmed text." if action == "edit" else None,
+            reason=f"Exercise HTTP {action} terminal metadata.",
+        ),
+    )
+
+    assert response.status_code == 200
+    memory = store.get_memory(memory_id)
+    assert memory is not None
+    assert memory["last_reviewed_at"]
+    metadata = memory["metadata_json"]
+    assert metadata["review_required"] is False
+    agentic = metadata["agentic_memory"]
+    confirmation = agentic["confirmation"]
+    if action == "reject":
+        assert memory["status"] == "rejected"
+        assert memory["confirmation_status"] == "unconfirmed"
+        assert memory["last_confirmed_at"] is None
+        assert agentic["status"] == "rejected"
+        assert agentic["lifecycle_status"] == "review_rejected"
+        assert confirmation["status"] == "rejected"
+        assert confirmation["rejected_at"] == memory["last_reviewed_at"]
+    else:
+        assert memory["status"] == "active"
+        assert memory["confirmation_status"] == "confirmed"
+        assert memory["last_confirmed_at"]
+        assert agentic["status"] == "committed"
+        assert agentic["lifecycle_status"] == "dashboard_review_accepted"
+        assert confirmation["status"] == "confirmed"
+        assert confirmation["confirmed_at"] == memory["last_confirmed_at"]
+
+
 def test_assign_project_replaces_canonical_memory_scope_used_by_retrieval(monkeypatch) -> None:
     store = FakeVNextStore(None)
     _install_fake_vnext_store(monkeypatch, store)
@@ -1792,7 +1918,19 @@ def test_vnext_memory_accept_consolidation_endpoint_supersedes_members(monkeypat
 def test_generic_http_review_delegates_consolidation_acceptance_and_rejects_stale_input(
     monkeypatch,
 ) -> None:
-    store = FakeVNextStore(None)
+    class OrderedReviewStore(FakeVNextStore):
+        def __init__(self) -> None:
+            super().__init__(None)
+            self.lock_order: list[str] = []
+
+        def lock_graph_mutation(self) -> None:
+            self.lock_order.append("graph")
+
+        def get_memory_for_update(self, memory_id: str) -> dict[str, object] | None:
+            self.lock_order.append(f"row:{memory_id}")
+            return self.get_memory(memory_id)
+
+    store = OrderedReviewStore()
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
     first_id = _seed_active_memory(store, text="First duplicate fact.")
@@ -1830,6 +1968,7 @@ def test_generic_http_review_delegates_consolidation_acceptance_and_rejects_stal
     assert store.get_memory(candidate_id)["status"] == "candidate"
     assert store.get_memory(first_id)["status"] == "active"
 
+    store.lock_order.clear()
     accepted = main_module.review_vnext_memory(
         main_module.UUID(candidate_id),
         main_module.VNextMemoryReviewRequest(
@@ -1847,6 +1986,14 @@ def test_generic_http_review_delegates_consolidation_acceptance_and_rejects_stal
     ]
     assert store.get_memory(candidate_id)["metadata_json"]["consolidation"]["accepted"]
     assert store.get_memory(first_id)["superseded_by"] == candidate_id
+    assert store.lock_order[0] == "graph"
+    assert store.lock_order.count("graph") == 2
+    first_row_index = next(
+        index for index, item in enumerate(store.lock_order) if item.startswith("row:")
+    )
+    assert max(
+        index for index, item in enumerate(store.lock_order) if item == "graph"
+    ) < first_row_index
 
     # A stale generic approval must not partially supersede any member.
     fresh_first = _seed_active_memory(store, text="Fresh first fact.")

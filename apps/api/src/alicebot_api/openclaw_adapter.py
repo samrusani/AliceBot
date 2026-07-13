@@ -3,6 +3,7 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 from pathlib import Path
+from typing import cast
 
 from alicebot_api.openclaw_models import (
     OpenClawAdapterValidationError,
@@ -19,7 +20,7 @@ from alicebot_api.openclaw_models import (
     pick_first_text,
     to_string_list,
 )
-from alicebot_api.store import JsonObject
+from alicebot_api.store import JsonObject, JsonValue
 
 
 _OPENCLAW_TYPE_TO_OBJECT_TYPE: dict[str, str] = {
@@ -123,8 +124,8 @@ def _read_json(path: Path) -> object:
 
 def _extract_workspace_payloads(payload: object) -> tuple[JsonObject | None, list[JsonObject]]:
     if isinstance(payload, list):
-        entries = [ensure_json_object(item, field_name="entry") for item in payload]
-        return None, entries
+        array_entries = [ensure_json_object(item, field_name="entry") for item in payload]
+        return None, array_entries
 
     if not isinstance(payload, dict):
         raise OpenClawAdapterValidationError("OpenClaw source root must be a JSON object or array")
@@ -212,11 +213,11 @@ def _extract_scope_provenance(entry: JsonObject, *, raw_provenance: JsonObject) 
     if confirmation_status is not None:
         payload["confirmation_status"] = confirmation_status.casefold()
     if source_event_ids:
-        payload["source_event_ids"] = source_event_ids
+        payload["source_event_ids"] = cast(JsonValue, source_event_ids)
 
     tags = to_string_list(entry.get("tags"))
     if tags:
-        payload["openclaw_tags"] = tags
+        payload["openclaw_tags"] = cast(JsonValue, tags)
 
     return payload
 

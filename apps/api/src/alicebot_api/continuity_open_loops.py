@@ -9,8 +9,6 @@ from alicebot_api.continuity_recall import query_continuity_recall
 from alicebot_api.contracts import (
     CONTINUITY_DAILY_BRIEF_ASSEMBLY_VERSION_V0,
     CONTINUITY_OPEN_LOOP_ITEM_ORDER,
-    CONTINUITY_OPEN_LOOP_POSTURE_ORDER,
-    CONTINUITY_OPEN_LOOP_POSTURES,
     CONTINUITY_OPEN_LOOP_REVIEW_ACTIONS,
     CONTINUITY_WEEKLY_REVIEW_ASSEMBLY_VERSION_V0,
     MAX_CONTINUITY_DAILY_BRIEF_LIMIT,
@@ -29,6 +27,7 @@ from alicebot_api.contracts import (
     ContinuityOpenLoopSection,
     ContinuityRecallQueryInput,
     ContinuityRecallResultRecord,
+    ContinuityRecallScopeFilters,
     ContinuityResumptionEmptyState,
     ContinuityResumptionSingleSection,
     ContinuityReviewObjectRecord,
@@ -60,6 +59,12 @@ class _LifecycleTransition:
 
 
 _OPEN_LOOP_OBJECT_TYPES = {"WaitingFor", "Blocker", "NextAction"}
+_OPEN_LOOP_POSTURES: tuple[ContinuityOpenLoopPosture, ...] = (
+    "waiting_for",
+    "blocker",
+    "stale",
+    "next_action",
+)
 _EMPTY_MESSAGES: dict[ContinuityOpenLoopPosture, str] = {
     "waiting_for": "No waiting-for items in the requested scope.",
     "blocker": "No blocker items in the requested scope.",
@@ -241,12 +246,12 @@ def _group_open_loops(
     }
 
     for item in recall_items:
-        posture = _open_loop_posture(item)
-        if posture is None:
+        item_posture = _open_loop_posture(item)
+        if item_posture is None:
             continue
-        grouped[posture].append(item)
+        grouped[item_posture].append(item)
 
-    for posture in CONTINUITY_OPEN_LOOP_POSTURES:
+    for posture in _OPEN_LOOP_POSTURES:
         grouped[posture].sort(key=_recency_sort_key, reverse=True)
 
     return grouped
@@ -258,7 +263,7 @@ def _correction_recurrence_count(
     grouped: dict[ContinuityOpenLoopPosture, list[ContinuityRecallResultRecord]],
 ) -> int:
     object_ids: set[UUID] = set()
-    for posture in CONTINUITY_OPEN_LOOP_POSTURES:
+    for posture in _OPEN_LOOP_POSTURES:
         for item in grouped[posture]:
             try:
                 object_ids.add(UUID(item["id"]))
@@ -288,7 +293,10 @@ def _load_grouped_open_loop_candidates(
     person: str | None,
     since: datetime | None,
     until: datetime | None,
-) -> tuple[dict[str, str | None], dict[ContinuityOpenLoopPosture, list[ContinuityRecallResultRecord]]]:
+) -> tuple[
+    ContinuityRecallScopeFilters,
+    dict[ContinuityOpenLoopPosture, list[ContinuityRecallResultRecord]],
+]:
     recall_payload = query_continuity_recall(
         store,
         user_id=user_id,
@@ -353,8 +361,8 @@ def compile_continuity_open_loop_dashboard(
         ),
         "summary": {
             "limit": request.limit,
-            "total_count": sum(len(grouped[posture]) for posture in CONTINUITY_OPEN_LOOP_POSTURES),
-            "posture_order": list(CONTINUITY_OPEN_LOOP_POSTURE_ORDER),
+            "total_count": sum(len(grouped[posture]) for posture in _OPEN_LOOP_POSTURES),
+            "posture_order": list(_OPEN_LOOP_POSTURES),
             "item_order": list(CONTINUITY_OPEN_LOOP_ITEM_ORDER),
         },
         "sources": ["continuity_capture_events", "continuity_objects", "continuity_correction_events"],
@@ -448,14 +456,14 @@ def compile_continuity_weekly_review(
         "assembly_version": CONTINUITY_WEEKLY_REVIEW_ASSEMBLY_VERSION_V0,
         "scope": scope,
         "rollup": {
-            "total_count": sum(len(grouped[posture]) for posture in CONTINUITY_OPEN_LOOP_POSTURES),
+            "total_count": sum(len(grouped[posture]) for posture in _OPEN_LOOP_POSTURES),
             "waiting_for_count": len(grouped["waiting_for"]),
             "blocker_count": len(grouped["blocker"]),
             "stale_count": len(grouped["stale"]),
             "correction_recurrence_count": correction_recurrence_count,
             "freshness_drift_count": freshness_drift_count,
             "next_action_count": len(grouped["next_action"]),
-            "posture_order": list(CONTINUITY_OPEN_LOOP_POSTURE_ORDER),
+            "posture_order": list(_OPEN_LOOP_POSTURES),
         },
         "waiting_for": _build_section(
             all_items=grouped["waiting_for"],
