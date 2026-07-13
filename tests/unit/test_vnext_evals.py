@@ -45,7 +45,11 @@ from alicebot_api.vnext_evals import (
     write_vnext_benchmark_corpus,
     write_vnext_eval_report,
 )
-from alicebot_api.vnext_retrieval import reciprocal_rank_fusion
+from alicebot_api.vnext_retrieval import (
+    VNextRetrievalRequest,
+    classify_query,
+    reciprocal_rank_fusion,
+)
 
 MEMORY_QUALITY_SUITE_KEYS = (
     CORRECTION_SUPPRESSION_SUITE_KEY,
@@ -135,6 +139,21 @@ def test_benchmark_corpus_is_deterministic_and_meets_size_floor() -> None:
     query_count = len(corpus["queries"])
     paraphrase_count = sum(1 for query in corpus["queries"] if query["subset"] == SUBSET_PARAPHRASE)
     assert 0.20 <= paraphrase_count / query_count <= 0.40
+
+
+def test_benchmark_queries_do_not_infer_a_domain_that_excludes_their_target() -> None:
+    corpus = generate_vnext_benchmark_corpus()
+    memories = _memory_lookup(corpus)
+
+    for query in corpus["queries"]:
+        target = memories[str(query["expected_memory_key"])]
+        inferred_domains = classify_query(
+            VNextRetrievalRequest(query=str(query["query"]))
+        )["domains"]
+        assert not inferred_domains or str(target["domain"]) in inferred_domains, (
+            f"{query['query_key']} inferred {inferred_domains}, excluding "
+            f"its {target['domain']} target"
+        )
 
 
 def test_queries_are_phrased_differently_from_their_target_memories() -> None:

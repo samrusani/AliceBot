@@ -612,7 +612,11 @@ def _infer_domains(lowered_query: str) -> list[str]:
     domains: list[str] = []
     if _contains_any(lowered_query, ("alice", "project", "roadmap", "sprint", "build")):
         domains.extend(["project", "professional"])
-    if _contains_any(lowered_query, ("family", "health", "spiritual", "money", "legal")):
+    # Inferred domains are applied as hard store predicates.  Keep the
+    # ambiguous ``money`` cue out of that path: business queries such as
+    # "advertising money" and "campaign budget" must remain unscoped unless
+    # the caller supplies an explicit domain.
+    if _contains_any(lowered_query, ("family", "health", "spiritual", "legal")):
         domains.append("personal")
     return domains
 

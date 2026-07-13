@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fixed semantic retrieval for business budget queries: the ambiguous word
+  `money` no longer creates an implicit hard `personal`-domain filter, restoring
+  signed-vector participation while explicit caller-supplied domains remain
+  strict.
+
 ## v0.10.0 — 2026-07-13
 
 Security, reliability, and quality release. Remediates every finding from the

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from uuid import uuid4
 
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
+from alicebot_api.vnext_embeddings import signed_memory_embedding_update
 from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService
 from alicebot_api.vnext_store import PostgresVNextStore
 
@@ -18,6 +20,99 @@ def _create_user(app_url: str, user_id) -> None:
             f"retrieval-{user_id}@example.invalid",
             "Retrieval scope",
         )
+
+
+class _TextEmbedding3SmallStub:
+    """1536-dim provider double with the production release-gate identity."""
+
+    provider = "openai_compatible"
+    model = "text-embedding-3-small"
+    base_url = "https://api.openai.com/v1"
+
+    def embed_text(self, text: str) -> list[float]:
+        del text
+        return [1.0, *([0.0] * 1535)]
+
+    def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
+        return [self.embed_text(text) for text in texts]
+
+
+def test_ambiguous_business_money_query_keeps_signed_professional_vector_candidates(
+    migrated_database_urls,
+) -> None:
+    """Regression for v0.10.0 semantic gate run 29235844891.
+
+    The exact paraphrase-015 query used to infer the hard ``personal`` domain
+    from the word ``money``.  The benchmark fact is professional, so both FTS
+    and vector SQL correctly returned no rows before HNSW ranking.  Exercise
+    the production classifier, signed-vector contract, endpoint match, and
+    PostgreSQL/pgvector path together at the real 1536-column width.
+    """
+    app_url = migrated_database_urls["app"]
+    user_id = uuid4()
+    _create_user(app_url, user_id)
+    provider = _TextEmbedding3SmallStub()
+    query = "where did the advertising money move away from adwords"
+
+    with user_connection(app_url, user_id) as conn:
+        store = PostgresVNextStore(conn)
+        memory = store.create_memory(
+            {
+                "memory_key": "vnext-eval/retrieval/paraphrase-015",
+                "value": {
+                    "text": (
+                        "Marketing shifted the campaign budget from paid search "
+                        "to podcast sponsorships."
+                    )
+                },
+                "status": "active",
+                "memory_type": "semantic",
+                "title": "Campaign budget shift",
+                "canonical_text": (
+                    "Marketing shifted the campaign budget from paid search "
+                    "to podcast sponsorships."
+                ),
+                "domain": "professional",
+                "sensitivity": "internal",
+            }
+        )
+        store.update_memory_embedding(
+            **signed_memory_embedding_update(
+                memory,
+                provider.embed_text(str(memory["canonical_text"])),
+                provider=provider,
+            )
+        )
+        service = VNextRetrievalService(store, embedding_provider=provider)
+
+        pack = service.compile_context_pack(
+            VNextRetrievalRequest(
+                query=query,
+                max_items=10,
+                include_sources=False,
+                include_contradictions=False,
+                actor_type="system",
+            )
+        )
+        explicitly_personal = service.compile_context_pack(
+            VNextRetrievalRequest(
+                query=query,
+                domains=("personal",),
+                max_items=10,
+                include_sources=False,
+                include_contradictions=False,
+                actor_type="system",
+            )
+        )
+
+    assert pack["query_interpretation"]["domains"] == []
+    assert pack["trace"]["vector_stage"] == "enabled"
+    assert pack["trace"]["stages"]["vector"]["candidate_count"] >= 1
+    assert [row["memory_key"] for row in pack["relevant_memories"]] == [
+        "vnext-eval/retrieval/paraphrase-015"
+    ]
+    assert explicitly_personal["query_interpretation"]["domains"] == ["personal"]
+    assert explicitly_personal["trace"]["stages"]["vector"]["candidate_count"] == 0
 
 
 def test_people_and_time_predicates_apply_before_limit_beyond_rank_4000(

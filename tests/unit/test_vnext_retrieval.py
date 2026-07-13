@@ -423,6 +423,16 @@ def test_query_classifier_identifies_sprint3_query_shapes() -> None:
     assert "alice" in query_terms("What should Alice retrieve about Alice?")
 
 
+def test_query_classifier_does_not_hard_scope_ambiguous_business_money_query() -> None:
+    query = "where did the advertising money move away from adwords"
+
+    inferred = classify_query(VNextRetrievalRequest(query=query))
+    explicit = classify_query(VNextRetrievalRequest(query=query, domains=("personal",)))
+
+    assert inferred["domains"] == []
+    assert explicit["domains"] == ["personal"]
+
+
 def test_reciprocal_rank_fusion_scores_and_orders_candidates() -> None:
     row_a = {"id": "a"}
     row_b = {"id": "b"}
