@@ -2,12 +2,30 @@
 
 ## Unreleased
 
-- v0.10.0 audit remediation is in progress: complete hard filters and bulk
-  retrieval, production-signed vector writers/evals, exact-SHA semantic
-  attestations, atomic scoped capture dedupe, fail-closed lifecycle graphs,
-  cohesive bounded-memory rollups, hardened backup restore, web correctness,
-  typing, packaging, and documentation truth. Nothing in this section is
-  published yet.
+## v0.10.0 — 2026-07-13
+
+Security, reliability, and quality release. Remediates every finding from the
+third external audit of `v0.9.4` — fixed at the class level — and clears the P2
+backlog.
+
+- Correctness: one signed-vector write contract across the eval seeder and both
+  backfill paths (fixes the v0.9.4 backfill regression); scope/status/domain/
+  sensitivity-aware atomic capture dedupe (migration `0085`); people/time
+  predicates pushed into the store with bulk entity-edge resolution and one
+  query embed per request; supersession cycle guard fails closed on pre-existing
+  cycles and dangling pointers (migration `0086` repairs 3+ duplicate pointers;
+  `0084` unchanged); roll-up cards report authoritative totals with disclosed
+  truncation; release eval measures signed vector participation and fails closed
+  on skipped suites; supersession advisory lock acquired before row locks.
+- Hardening: `pgvector 0.8+` enforced at install/migration/doctor; import/backup
+  validate-race closed with bounded memory; web decomposition with real-browser,
+  accessibility, coverage, and bundle-budget gates and zero TypeScript errors;
+  clean first-party Python mypy; portable packaged-README links; structured
+  exact-SHA release-control attestation plus a protected signed-vector semantic
+  report required for publication.
+- Upgrade: `alembic upgrade head` applies `0085`/`0086`; run `alicebot vnext
+  memories backfill-embeddings` after upgrade to re-embed under the
+  correctly-signed v2 signature (now retrievable).
 - Published migration `20260712_0084` remains immutable; new idempotent
   migration `20260713_0086` carries the 3+ duplicate retry/confirmation
   pointer repair for databases already stamped at the released 0084 state.
