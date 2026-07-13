@@ -412,6 +412,19 @@ def _refresh_semantic_report_digest(report: dict[str, object]) -> None:
     report["report_digest"] = release_check._semantic_eval_report_digest(report)
 
 
+def _reconcile_retrieval_mrr(report: dict[str, object]) -> None:
+    retrieval = report["suites"][0]
+    cases = retrieval["cases"]
+    retrieval["metrics"]["mrr"] = sum(
+        case["metrics"]["reciprocal_rank"] for case in cases
+    ) / len(cases)
+    for subset_key in ("lexical_overlap", "paraphrase"):
+        subset_cases = [case for case in cases if case["subset"] == subset_key]
+        retrieval["metrics"]["subsets"][subset_key]["mrr"] = sum(
+            case["metrics"]["reciprocal_rank"] for case in subset_cases
+        ) / len(subset_cases)
+
+
 def _write_semantic_eval_artifact_pair(
     *,
     tmp_path: Path,
@@ -957,6 +970,98 @@ def test_semantic_eval_attestation_binds_passing_report_to_exact_sha(
         attestation_path=attestation_path,
         expected_sha="b" * 40,
     ))
+
+
+def test_semantic_eval_report_accepts_live_off_window_reciprocal_ranks(
+    canonical_semantic_eval_report: dict[str, object],
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    retrieval = report["suites"][0]
+    cases_by_key = {case["case_key"]: case for case in retrieval["cases"]}
+
+    for case_key, reciprocal_rank in (
+        ("paraphrase-004", 1 / 9),
+        ("paraphrase-016", 1 / 10),
+    ):
+        case = cases_by_key[case_key]
+        assert case["status"] == "fail"
+        assert case["metrics"]["recall_at_1"] == 0.0
+        assert case["metrics"]["recall_at_5"] == 0.0
+        assert case["evidence"]["expected_memory_key"] not in case["evidence"][
+            "top_memory_keys"
+        ]
+        case["metrics"]["reciprocal_rank"] = reciprocal_rank
+
+    _reconcile_retrieval_mrr(report)
+    _refresh_semantic_report_digest(report)
+
+    assert release_check.validate_semantic_eval_report(report) == []
+
+
+@pytest.mark.parametrize(
+    "reciprocal_rank",
+    (
+        pytest.param(0.2, id="rank-above-off-window-maximum"),
+        pytest.param(0.15, id="not-an-exact-reciprocal-rank"),
+    ),
+)
+def test_semantic_eval_report_rejects_invalid_off_window_reciprocal_rank(
+    canonical_semantic_eval_report: dict[str, object],
+    reciprocal_rank: float,
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    retrieval = report["suites"][0]
+    missed_case = next(
+        case for case in retrieval["cases"] if case["case_key"] == "paraphrase-004"
+    )
+    missed_case["metrics"]["reciprocal_rank"] = reciprocal_rank
+    _reconcile_retrieval_mrr(report)
+    _refresh_semantic_report_digest(report)
+
+    issues = release_check.validate_semantic_eval_report(report)
+
+    assert any("reciprocal of a rank from 6 through 10" in issue for issue in issues), issues
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_issue"),
+    (
+        pytest.param(
+            "recall_at_5",
+            1.0,
+            "recall_at_5 does not match the target rank",
+            id="inconsistent-recall",
+        ),
+        pytest.param(
+            "status",
+            "pass",
+            "status does not match recall_at_5",
+            id="inconsistent-status",
+        ),
+    ),
+)
+def test_semantic_eval_report_rejects_off_window_recall_or_status_mismatch(
+    canonical_semantic_eval_report: dict[str, object],
+    field: str,
+    value: object,
+    expected_issue: str,
+) -> None:
+    report = deepcopy(canonical_semantic_eval_report)
+    retrieval = report["suites"][0]
+    missed_case = next(
+        case for case in retrieval["cases"] if case["case_key"] == "paraphrase-004"
+    )
+    missed_case["metrics"]["reciprocal_rank"] = 1 / 9
+    if field == "status":
+        missed_case["status"] = value
+    else:
+        missed_case["metrics"][field] = value
+    _reconcile_retrieval_mrr(report)
+    _refresh_semantic_report_digest(report)
+
+    issues = release_check.validate_semantic_eval_report(report)
+
+    assert any(expected_issue in issue for issue in issues), issues
 
 
 def test_semantic_eval_report_accepts_honest_case_misses_with_passing_suite_targets(

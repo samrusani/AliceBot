@@ -77,6 +77,18 @@ _UUID_PATTERN = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 )
 _GRAPH_WINNER_STAGE_KEYS = frozenset({"fts", "vector", "graph", "temporal_anchor"})
+_RETRIEVAL_EVIDENCE_LIMIT = 5
+_RETRIEVAL_RECALL_LIMIT = 10
+# Cases display five keys, but reciprocal rank is computed over all ten retrieved keys.
+_OFF_WINDOW_RECIPROCAL_RANKS = frozenset(
+    (
+        0.0,
+        *(
+            1.0 / rank
+            for rank in range(_RETRIEVAL_EVIDENCE_LIMIT + 1, _RETRIEVAL_RECALL_LIMIT + 1)
+        ),
+    )
+)
 
 SEMANTIC_EVAL_CANONICAL_TARGETS: dict[str, dict[str, dict[str, object]]] = {
     "retrieval_quality": {
@@ -779,7 +791,7 @@ def _case_contract_issues(
                 top_keys,
                 context=f"{context} top_memory_keys",
                 allow_empty=False,
-                maximum_items=5,
+                maximum_items=_RETRIEVAL_EVIDENCE_LIMIT,
             )
         )
         target_rank = (
@@ -789,14 +801,26 @@ def _case_contract_issues(
         )
         expected_recall_at_5 = 1.0 if target_rank is not None else 0.0
         expected_recall_at_1 = 1.0 if target_rank == 1 else 0.0
-        expected_reciprocal_rank = 1.0 / target_rank if target_rank is not None else 0.0
         expected_status = "pass" if target_rank is not None else "fail"
         if metrics.get("recall_at_5") != expected_recall_at_5:
             issues.append(f"{context} recall_at_5 does not match the target rank")
         if metrics.get("recall_at_1") != expected_recall_at_1:
             issues.append(f"{context} recall_at_1 does not match the target rank")
-        if metrics.get("reciprocal_rank") != expected_reciprocal_rank:
-            issues.append(f"{context} reciprocal_rank does not match the target rank")
+        if target_rank is not None:
+            expected_reciprocal_rank = 1.0 / target_rank
+            if reciprocal_rank != expected_reciprocal_rank:
+                issues.append(f"{context} reciprocal_rank does not match the target rank")
+        elif _is_finite_number(reciprocal_rank):
+            assert isinstance(reciprocal_rank, (int, float)) and not isinstance(
+                reciprocal_rank, bool
+            )
+            if float(reciprocal_rank) not in _OFF_WINDOW_RECIPROCAL_RANKS:
+                issues.append(
+                    f"{context} reciprocal_rank must be 0 or the reciprocal of a rank "
+                    f"from {_RETRIEVAL_EVIDENCE_LIMIT + 1} through "
+                    f"{_RETRIEVAL_RECALL_LIMIT} when the target is absent from "
+                    "top_memory_keys"
+                )
         if case_status != expected_status:
             issues.append(f"{context} status does not match recall_at_5")
         if evidence.get("vector_stage") != "enabled":
