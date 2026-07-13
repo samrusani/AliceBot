@@ -3,11 +3,12 @@ ALICEBOT ?= ./.venv/bin/alicebot
 PNPM ?= pnpm
 WEB_DIR ?= apps/web
 DIST_DIR ?= dist
+REPRO_DIST_DIR ?= $(DIST_DIR)-reproducibility-check
 PROJECT_VERSION = $(shell $(PYTHON) -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
 ALICE_WEB_HOST ?= 127.0.0.1
 ALICE_WEB_PORT ?= 3000
 
-.PHONY: setup setup-browser setup-browser-linux migrate api dev runtime web-build doctor vnext scheduler alpha-check test-web test-python test-longmemeval release-static release-identity release-finalization-check release-artifacts release-semantic-attestation release-check
+.PHONY: setup setup-browser setup-browser-linux migrate api dev runtime web-build doctor vnext scheduler alpha-check test-web test-python check-python-coverage test-longmemeval release-static release-identity release-finalization-check release-artifacts release-semantic-attestation release-check
 
 setup:
 	@python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' || \
@@ -76,8 +77,15 @@ scheduler:
 alpha-check:
 	$(ALICEBOT) vnext alpha check
 
+PYTHON_COVERAGE_JSON ?= /tmp/alicebot-python-coverage.json
+PYTHON_MAIN_COVERAGE_MIN ?= 45
+
+check-python-coverage:
+	$(PYTHON) scripts/check_python_coverage.py --coverage-json $(PYTHON_COVERAGE_JSON) --path apps/api/src/alicebot_api/main.py --min-percent $(PYTHON_MAIN_COVERAGE_MIN)
+
 test-python:
-	$(PYTHON) -m pytest tests/unit -q --cov=alicebot_api --cov-report=term --cov-fail-under=50
+	$(PYTHON) -m pytest tests/unit -q --cov=alicebot_api --cov-report=term --cov-report=json:$(PYTHON_COVERAGE_JSON) --cov-fail-under=50
+	$(MAKE) check-python-coverage PYTHON_COVERAGE_JSON=$(PYTHON_COVERAGE_JSON) PYTHON_MAIN_COVERAGE_MIN=$(PYTHON_MAIN_COVERAGE_MIN)
 	$(PYTHON) -m pytest tests/integration -q
 
 test-web: setup-browser
@@ -98,7 +106,7 @@ release-static:
 	$(PYTHON) scripts/check_control_doc_truth.py
 	$(PYTHON) scripts/release_check.py
 	$(PYTHON) -m ruff check apps/api/src/alicebot_api scripts tests eval/longmemeval
-	$(PYTHON) -m mypy --ignore-missing-imports apps/api/src/alicebot_api scripts/release_check.py scripts/test_distribution_artifact.py scripts/check_control_doc_truth.py scripts/check_github_release_checks.py scripts/check_release_controls_attestation.py
+	$(PYTHON) -m mypy --ignore-missing-imports apps/api/src/alicebot_api scripts/release_check.py scripts/test_distribution_artifact.py scripts/normalize_sdist.py scripts/render_release_body.py scripts/prepare_mainprotect_update.py scripts/check_python_coverage.py scripts/check_control_doc_truth.py scripts/check_github_release_checks.py scripts/check_release_controls_attestation.py
 
 release-identity:
 	git fetch --no-tags origin main
@@ -108,7 +116,13 @@ release-finalization-check: release-identity
 	$(PYTHON) scripts/release_check.py --require-clean --require-main-head --require-finalized-release-docs
 
 release-artifacts:
-	$(PYTHON) -m build --outdir $(DIST_DIR)
+	SOURCE_DATE_EPOCH="$$(git show -s --format=%ct HEAD)" $(PYTHON) -m build --outdir $(DIST_DIR)
+	$(PYTHON) scripts/normalize_sdist.py --source-date-epoch "$$(git show -s --format=%ct HEAD)" $(DIST_DIR)/*.tar.gz
+	SOURCE_DATE_EPOCH="$$(git show -s --format=%ct HEAD)" $(PYTHON) -m build --outdir $(REPRO_DIST_DIR)
+	$(PYTHON) scripts/normalize_sdist.py --source-date-epoch "$$(git show -s --format=%ct HEAD)" $(REPRO_DIST_DIR)/*.tar.gz
+	@for artifact in $(DIST_DIR)/*.whl $(DIST_DIR)/*.tar.gz; do \
+		cmp "$$artifact" "$(REPRO_DIST_DIR)/$$(basename "$$artifact")"; \
+	done
 	$(PYTHON) -m twine check $(DIST_DIR)/*
 	$(PYTHON) scripts/release_check.py --dist-dir $(DIST_DIR) --write-checksums
 	$(PYTHON) scripts/test_distribution_artifact.py $(DIST_DIR)/*.whl $(DIST_DIR)/*.tar.gz --expected-version $(PROJECT_VERSION)

@@ -4,8 +4,8 @@ import json
 
 import anyio
 
-import apps.api.src.alicebot_api.main as main_module
-from apps.api.src.alicebot_api.config import Settings
+import alicebot_api.main as main_module
+from alicebot_api.config import Settings
 
 
 def invoke_request(

@@ -28,3 +28,32 @@ def test_canonical_top_level_scope_cannot_be_widened_by_stale_nested_scope() -> 
     }
 
     assert memory_project_scope(memory) == ("alicebot",)
+
+
+def test_explicit_empty_canonical_scope_suppresses_all_legacy_fallbacks() -> None:
+    memory = {
+        "project_scope": [],
+        "project_id": "stale-singular-project",
+        "metadata_json": {
+            "project_scope": ["stale-metadata-project"],
+            "project_id": "stale-metadata-project",
+            "agentic_memory": {"project_scope": ["stale-nested-project"]},
+        },
+    }
+
+    assert memory_project_scope(memory) == ()
+    assert canonical_memory_metadata(memory)["project_scope"] == []
+
+
+def test_explicit_empty_metadata_scope_suppresses_singular_and_nested_fallbacks() -> None:
+    memory = {
+        "project_id": "stale-singular-project",
+        "metadata_json": {
+            "project_scope": [],
+            "project_id": "stale-metadata-project",
+            "agentic_memory": {"project_scope": ["stale-nested-project"]},
+        },
+    }
+
+    assert memory_project_scope(memory) == ()
+    assert canonical_memory_metadata(memory)["project_scope"] == []

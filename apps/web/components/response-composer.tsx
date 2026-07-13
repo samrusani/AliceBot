@@ -1,8 +1,9 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
+import { ApiError, isAssistantResponseAccepted } from "../lib/api";
 import type {
   AssistantResponsePayload,
   ResponseHistoryEntry,
@@ -14,6 +15,14 @@ import { ResponseHistory } from "./response-history";
 import { StatusBadge } from "./status-badge";
 
 type ContinuitySource = "live" | "fixture" | "unavailable";
+
+const RESPONSE_JOB_POLL_DELAY_MS = 2_000;
+const MAX_RESPONSE_JOB_POLLS = 60;
+
+type PendingAssistantSubmission = {
+  fingerprint: string;
+  idempotencyKey: string;
+};
 
 type ResponseComposerProps = {
   initialEntries: ResponseHistoryEntry[];
@@ -47,6 +56,7 @@ export function ResponseComposer({
   );
   const [statusTone, setStatusTone] = useState<"info" | "success" | "danger">("info");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const pendingSubmission = useRef<PendingAssistantSubmission | null>(null);
 
   const liveModeReady = Boolean(apiBaseUrl && userId && source === "live");
   const interactionAvailable = source !== "unavailable";
@@ -77,6 +87,12 @@ export function ResponseComposer({
       thread_id: activeThreadId,
       message: nextMessage,
     };
+    const fingerprint = JSON.stringify(payload);
+    const submission =
+      pendingSubmission.current?.fingerprint === fingerprint
+        ? pendingSubmission.current
+        : { fingerprint, idempotencyKey: crypto.randomUUID() };
+    pendingSubmission.current = submission;
 
     setStatusTone("info");
     setStatusText(
@@ -102,7 +118,29 @@ export function ResponseComposer({
     }
 
     try {
-      const response = await submitAssistantResponse(apiBaseUrl!, payload);
+      let response = await submitAssistantResponse(
+        apiBaseUrl!,
+        payload,
+        submission.idempotencyKey,
+      );
+      let pollCount = 0;
+      while (isAssistantResponseAccepted(response)) {
+        setStatusText("Assistant response is still running. Checking the same response job...");
+        pollCount += 1;
+        if (pollCount >= MAX_RESPONSE_JOB_POLLS) {
+          throw new ApiError(
+            "Assistant response is still running; retry to check the same response job.",
+            0,
+            "response_generation_in_progress",
+          );
+        }
+        await new Promise((resolve) => setTimeout(resolve, RESPONSE_JOB_POLL_DELAY_MS));
+        response = await submitAssistantResponse(
+          apiBaseUrl!,
+          payload,
+          submission.idempotencyKey,
+        );
+      }
       const entry: ResponseHistoryEntry = {
         id: response.trace.response_trace_id,
         submittedAt: new Date().toISOString(),
@@ -125,10 +163,20 @@ export function ResponseComposer({
       };
 
       setEntries((current) => [entry, ...current]);
-      setMessage("");
+      setMessage((current) => (current.trim() === nextMessage ? "" : current));
+      if (pendingSubmission.current?.idempotencyKey === submission.idempotencyKey) {
+        pendingSubmission.current = null;
+      }
       setStatusTone("success");
       setStatusText("Assistant reply added successfully. Linked trace summaries are visible alongside the response.");
     } catch (error) {
+      if (
+        error instanceof ApiError &&
+        error.status > 0 &&
+        pendingSubmission.current?.idempotencyKey === submission.idempotencyKey
+      ) {
+        pendingSubmission.current = null;
+      }
       const detail = error instanceof Error ? error.message : "Request failed";
       setStatusTone("danger");
       setStatusText(`Unable to submit assistant message: ${detail}`);
@@ -188,7 +236,10 @@ export function ResponseComposer({
               name="assistant-message"
               placeholder="Summarize the current thread state, explain the last approval, or answer a normal operator question."
               value={message}
-              onChange={(event) => setMessage(event.target.value)}
+              onChange={(event) => {
+                setMessage(event.target.value);
+                pendingSubmission.current = null;
+              }}
             />
           </div>
 

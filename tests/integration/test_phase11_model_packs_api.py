@@ -11,8 +11,8 @@ import anyio
 import psycopg
 import pytest
 
-import apps.api.src.alicebot_api.main as main_module
-from apps.api.src.alicebot_api.config import Settings
+import alicebot_api.main as main_module
+from alicebot_api.config import Settings
 
 TEST_PROVIDER_SECRET_MANAGER_URL = (
     f"file://{(Path('/tmp').resolve() / 'alicebot-phase11-model-pack-secrets').as_posix()}"
@@ -46,6 +46,8 @@ def invoke_request(
     request_headers = [(b"content-type", b"application/json")]
     for key, value in (headers or {}).items():
         request_headers.append((key.lower().encode(), value.encode()))
+    if path == "/v1/runtime/invoke" and not any(key == b"idempotency-key" for key, _value in request_headers):
+        request_headers.append((b"idempotency-key", f"model-pack-runtime-{uuid4()}".encode()))
 
     scope = {
         "type": "http",

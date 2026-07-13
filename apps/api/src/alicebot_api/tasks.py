@@ -60,6 +60,7 @@ from alicebot_api.store import (
     TaskStepRow,
     ToolExecutionRow,
 )
+from alicebot_api.trace_events import append_trace_events as _append_trace_events
 
 TASK_LIFECYCLE_STATE_EVENT_KIND = "task.lifecycle.state"
 TASK_LIFECYCLE_SUMMARY_EVENT_KIND = "task.lifecycle.summary"
@@ -126,21 +127,6 @@ class TaskTransitionResult:
 class TaskStepTransitionResult:
     task_step: TaskStepRecord
     previous_status: TaskStepStatus | None
-
-
-def _append_trace_events(
-    store: ContinuityStore,
-    *,
-    trace_id: UUID,
-    trace_events: list[tuple[str, dict[str, object]]],
-) -> None:
-    for sequence_no, (kind, payload) in enumerate(trace_events, start=1):
-        store.append_trace_event(
-            trace_id=trace_id,
-            sequence_no=sequence_no,
-            kind=kind,
-            payload=cast(JsonObject, payload),
-        )
 
 
 def _trace_summary(

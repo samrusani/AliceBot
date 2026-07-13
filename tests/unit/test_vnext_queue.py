@@ -11,12 +11,32 @@ class InMemoryVNextQueueStore:
     def __init__(self, *, fail_artifact_create: bool = False) -> None:
         self.tasks: list[dict[str, object]] = []
         self.artifacts: dict[str, dict[str, object]] = {}
+        self.memories: dict[str, dict[str, object]] = {}
         self.events: list[dict[str, object]] = []
+        self.artifact_lock_calls: list[str] = []
         self.fail_artifact_create = fail_artifact_create
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
         return event
+
+    def list_events(
+        self,
+        *,
+        target_type: str | None = None,
+        target_id: str | None = None,
+    ) -> list[dict[str, object]]:
+        return [
+            event
+            for event in self.events
+            if (target_type is None or event.get("target_type") == target_type)
+            and (target_id is None or event.get("target_id") == target_id)
+        ]
+
+    def create_memory(self, memory: dict[str, object], **_kwargs) -> dict[str, object]:
+        row = {**memory, "id": f"memory-{len(self.memories) + 1}"}
+        self.memories[str(row["id"])] = row
+        return row
 
     def create_task(self, task: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {
@@ -64,8 +84,21 @@ class InMemoryVNextQueueStore:
     def get_artifact(self, artifact_id: str) -> dict[str, object] | None:
         return self.artifacts.get(artifact_id)
 
-    def update_artifact_status(self, *, artifact_id: str, status: str, **_kwargs) -> dict[str, object]:
+    def get_artifact_for_update(self, artifact_id: str) -> dict[str, object] | None:
+        self.artifact_lock_calls.append(artifact_id)
+        return self.artifacts.get(artifact_id)
+
+    def update_artifact_status(
+        self,
+        *,
+        artifact_id: str,
+        status: str,
+        expected_status: str | None = None,
+        **_kwargs,
+    ) -> dict[str, object] | None:
         artifact = self.artifacts[artifact_id]
+        if expected_status is not None and str(artifact.get("status") or "draft") != expected_status:
+            return None
         artifact["status"] = status
         return artifact
 
@@ -154,6 +187,70 @@ def test_artifact_review_actions_map_to_expected_statuses() -> None:
         service.review_artifact(artifact_id="artifact-1", action="invalid")
 
 
+def test_artifact_promote_creates_and_returns_a_real_memory_target_idempotently() -> None:
+    store = InMemoryVNextQueueStore()
+    service = VNextQueueService(store)
+    store.artifacts["artifact-1"] = {
+        "id": "artifact-1",
+        "title": "Release findings",
+        "content_markdown": "# Release findings\n\nShip the scoped fix.",
+        "status": "accepted",
+        "domain": "project",
+        "sensitivity": "internal",
+        "metadata_json": {"project_scope": ["project-a"]},
+    }
+
+    promoted = service.review_artifact(artifact_id="artifact-1", action="promote")
+    replay = service.review_artifact(artifact_id="artifact-1", action="promote")
+
+    assert promoted["status"] == "promoted_to_memory"
+    assert promoted["promoted_memory_id"] == "memory-1"
+    assert replay["promoted_memory_id"] == "memory-1"
+    assert len(store.memories) == 1
+    assert store.artifact_lock_calls == ["artifact-1", "artifact-1"]
+    assert store.memories["memory-1"]["status"] == "active"
+    assert store.memories["memory-1"]["metadata_json"]["project_scope"] == ["project-a"]
+
+
+@pytest.mark.parametrize("action", ["reject", "archive"])
+def test_promoted_artifact_cannot_be_rejected_or_archived(action: str) -> None:
+    store = InMemoryVNextQueueStore()
+    service = VNextQueueService(store)
+    store.artifacts["artifact-1"] = {
+        "id": "artifact-1",
+        "title": "Promoted artifact",
+        "content_markdown": "# Promoted artifact",
+        "status": "promoted_to_memory",
+    }
+
+    with pytest.raises(VNextQueueValidationError, match="not allowed"):
+        service.review_artifact(artifact_id="artifact-1", action=action)
+
+    assert store.artifacts["artifact-1"]["status"] == "promoted_to_memory"
+    assert store.artifact_lock_calls == ["artifact-1"]
+
+
+@pytest.mark.parametrize("status", ["rejected", "superseded", "archived"])
+def test_artifact_promote_rejects_terminal_statuses_without_creating_memory(
+    status: str,
+) -> None:
+    store = InMemoryVNextQueueStore()
+    service = VNextQueueService(store)
+    store.artifacts["artifact-1"] = {
+        "id": "artifact-1",
+        "title": "Closed artifact",
+        "content_markdown": "# Closed artifact",
+        "status": status,
+    }
+
+    with pytest.raises(VNextQueueValidationError, match="terminal status"):
+        service.review_artifact(artifact_id="artifact-1", action="promote")
+
+    assert store.artifact_lock_calls == ["artifact-1"]
+    assert store.memories == {}
+    assert store.artifacts["artifact-1"]["status"] == status
+
+
 def test_export_artifact_markdown_writes_file_and_logs_event(tmp_path: Path) -> None:
     store = InMemoryVNextQueueStore()
     service = VNextQueueService(store)
@@ -165,6 +262,7 @@ def test_export_artifact_markdown_writes_file_and_logs_event(tmp_path: Path) -> 
 
     output_path = service.export_artifact_markdown(artifact_id="artifact-1", output_dir=tmp_path)
 
+    assert output_path.parent == tmp_path.resolve()
     assert output_path.name.startswith("artifact-")
     assert output_path.suffix == ".md"
     assert output_path.read_text(encoding="utf-8") == "# Alice Queue Result\n\nDone."

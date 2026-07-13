@@ -5,9 +5,9 @@ import os
 from typing import Any
 from uuid import UUID, uuid4
 
-import apps.api.src.alicebot_api.main as main_module
+import alicebot_api.main as main_module
 import alicebot_api.response_generation as response_generation_module
-from apps.api.src.alicebot_api.config import Settings
+from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
 import tests.integration.test_continuity_api as continuity_api

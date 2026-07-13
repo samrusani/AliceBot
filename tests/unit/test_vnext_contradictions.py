@@ -27,10 +27,66 @@ class InMemoryVNextContradictionStore:
         self.artifacts[str(row["id"])] = row
         return row
 
+    def find_artifact_by_workflow_digest(
+        self,
+        *,
+        artifact_type: str,
+        workflow: str,
+        digest: str,
+        scope_projects=None,
+    ) -> dict[str, object] | None:
+        del scope_projects
+        for row in self.artifacts.values():
+            metadata = row.get("metadata_json")
+            if (
+                row.get("artifact_type") == artifact_type
+                and isinstance(metadata, dict)
+                and metadata.get("workflow") == workflow
+                and metadata.get("idempotency_digest") == digest
+            ):
+                return row
+        return None
+
+    def upsert_artifact_by_workflow_digest(
+        self,
+        artifact: dict[str, object],
+        *,
+        workflow: str,
+        digest: str,
+        actor_type: str = "system",
+    ) -> dict[str, object]:
+        del actor_type
+        existing = self.find_artifact_by_workflow_digest(
+            artifact_type=str(artifact["artifact_type"]),
+            workflow=workflow,
+            digest=digest,
+        )
+        if existing is not None:
+            return existing
+        metadata = dict(artifact.get("metadata_json") or {})
+        metadata.update({"workflow": workflow, "idempotency_digest": digest})
+        return self.create_artifact({**artifact, "metadata_json": metadata})
+
     def create_edge(self, edge: dict[str, object]) -> dict[str, object]:
         row = {**edge, "id": f"edge-{len(self.edges) + 1}"}
         self.edges[str(row["id"])] = row
         return row
+
+    def upsert_edge_by_idempotency_digest(
+        self,
+        edge: dict[str, object],
+        *,
+        digest: str,
+        actor_type: str = "system",
+    ) -> dict[str, object]:
+        del actor_type
+        for row in self.edges.values():
+            metadata = row.get("metadata_json")
+            if isinstance(metadata, dict) and metadata.get("idempotency_digest") == digest:
+                return row
+        metadata = dict(edge.get("metadata_json") or {})
+        metadata["idempotency_digest"] = digest
+        return self.create_edge({**edge, "metadata_json": metadata})
 
     def search_sources(
         self,
@@ -64,6 +120,10 @@ class InMemoryVNextContradictionStore:
     ) -> list[dict[str, object]]:
         rows = [row for row in self.beliefs.values() if status is None or row.get("status") == status]
         return _filter_rows(rows, domains=domains, sensitivity_allowed=sensitivity_allowed)[:limit]
+
+    def get_memories_by_ids(self, memory_ids: tuple[str, ...]) -> list[dict[str, object]]:
+        wanted = set(memory_ids)
+        return [row for row in self.memories if str(row.get("id")) in wanted]
 
     def get_belief(self, belief_id: str) -> dict[str, object] | None:
         return self.beliefs.get(belief_id)
@@ -213,6 +273,70 @@ def test_contradiction_report_filters_sensitivity_and_distinguishes_nuance() -> 
     assert nuanced[0]["recommended_action"] == "request more info"
 
 
+def test_contradiction_report_enforces_project_scope_for_inputs_and_beliefs() -> None:
+    store = InMemoryVNextContradictionStore()
+    for project in ("project-a", "project-b"):
+        store.sources.append(
+            {
+                "id": f"source-{project}",
+                "source_type": "manual_text",
+                "title": "Artifact policy note",
+                "content_hash": f"sha256:{project}",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {
+                    "project_scope": [project],
+                    "raw_text": "Alice should not auto-promote generated artifacts into memory.",
+                },
+            }
+        )
+        store.memories.extend(
+            [
+                {
+                    "id": f"memory-{project}",
+                    "memory_type": "decision",
+                    "canonical_text": "Alice should not auto-promote generated artifacts into memory.",
+                    "status": "active",
+                    "domain": "project",
+                    "sensitivity": "private",
+                    "project_id": project,
+                },
+                {
+                    "id": f"belief-memory-{project}",
+                    "memory_type": "belief",
+                    "canonical_text": "Alice should auto-promote generated artifacts into memory.",
+                    "status": "active",
+                    "domain": "project",
+                    "sensitivity": "private",
+                    "project_id": project,
+                },
+            ]
+        )
+        store.beliefs[f"belief-{project}"] = {
+            "id": f"belief-{project}",
+            "memory_id": f"belief-memory-{project}",
+            "claim": "Alice should auto-promote generated artifacts into memory.",
+            "status": "active",
+            "domain": "project",
+            "sensitivity": "private",
+            "memory_type": "belief",
+        }
+
+    artifact = VNextContradictionService(store).generate_contradiction_report(
+        ContradictionFinderRequest(
+            domains=("project",),
+            projects=("project-a",),
+            max_contradictions=4,
+        )
+    )
+
+    records = artifact["metadata_json"]["contradictions"]
+    assert records
+    assert {record["belief_id"] for record in records} == {"belief-project-a"}
+    assert all("project-b" not in record["source_item"] for record in records)
+    assert artifact["metadata_json"]["project_scope"] == ["project-a"]
+
+
 def test_contradiction_report_model_backed_mode_records_source_grounded_metadata() -> None:
     store = _seed_store()
 
@@ -233,6 +357,34 @@ def test_contradiction_report_model_backed_mode_records_source_grounded_metadata
     assert "## Facts" in artifact["content_markdown"]
     assert "## Contradictions Considered" in artifact["content_markdown"]
     assert "source:source-1" in artifact["content_markdown"]
+
+
+def test_contradiction_report_logical_retry_replays_artifact_and_edges() -> None:
+    store = _seed_store()
+    service = VNextContradictionService(store)
+
+    results = [
+        service.generate_contradiction_report(
+            ContradictionFinderRequest(
+                domains=("project",),
+                max_contradictions=2,
+                generated_by="agent",
+                actor_id="hermes",
+                trace_id=f"trace-{attempt}",
+                run_id=f"run-{attempt}",
+                agent_identity={
+                    "agent_id": "hermes",
+                    "agent_run_id": f"agent-run-{attempt}",
+                },
+            )
+        )
+        for attempt in ("a", "b")
+    ]
+
+    assert results[0]["id"] == results[1]["id"]
+    assert len(store.artifacts) == 1
+    assert len(store.edges) == 2
+    assert results[0]["metadata_json"]["workflow_digest"] == results[1]["metadata_json"]["workflow_digest"]
 
 
 def test_belief_review_and_state_history() -> None:

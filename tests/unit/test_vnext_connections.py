@@ -26,10 +26,66 @@ class InMemoryVNextConnectionStore:
         self.artifacts[str(row["id"])] = row
         return row
 
+    def find_artifact_by_workflow_digest(
+        self,
+        *,
+        artifact_type: str,
+        workflow: str,
+        digest: str,
+        scope_projects=None,
+    ) -> dict[str, object] | None:
+        del scope_projects
+        for row in self.artifacts.values():
+            metadata = row.get("metadata_json")
+            if (
+                row.get("artifact_type") == artifact_type
+                and isinstance(metadata, dict)
+                and metadata.get("workflow") == workflow
+                and metadata.get("idempotency_digest") == digest
+            ):
+                return row
+        return None
+
+    def upsert_artifact_by_workflow_digest(
+        self,
+        artifact: dict[str, object],
+        *,
+        workflow: str,
+        digest: str,
+        actor_type: str = "system",
+    ) -> dict[str, object]:
+        del actor_type
+        existing = self.find_artifact_by_workflow_digest(
+            artifact_type=str(artifact["artifact_type"]),
+            workflow=workflow,
+            digest=digest,
+        )
+        if existing is not None:
+            return existing
+        metadata = dict(artifact.get("metadata_json") or {})
+        metadata.update({"workflow": workflow, "idempotency_digest": digest})
+        return self.create_artifact({**artifact, "metadata_json": metadata})
+
     def create_edge(self, edge: dict[str, object]) -> dict[str, object]:
         row = {**edge, "id": f"edge-{len(self.edges) + 1}"}
         self.edges[str(row["id"])] = row
         return row
+
+    def upsert_edge_by_idempotency_digest(
+        self,
+        edge: dict[str, object],
+        *,
+        digest: str,
+        actor_type: str = "system",
+    ) -> dict[str, object]:
+        del actor_type
+        for row in self.edges.values():
+            metadata = row.get("metadata_json")
+            if isinstance(metadata, dict) and metadata.get("idempotency_digest") == digest:
+                return row
+        metadata = dict(edge.get("metadata_json") or {})
+        metadata["idempotency_digest"] = digest
+        return self.create_edge({**edge, "metadata_json": metadata})
 
     def update_edge_status(self, *, edge_id: str, status: str) -> dict[str, object]:
         edge = self.edges[edge_id]
@@ -177,6 +233,48 @@ def test_connection_report_filters_sensitivity_and_can_auto_accept_high_confiden
     assert store.edges["edge-1"]["metadata_json"]["candidate"] is False
 
 
+def test_connection_report_enforces_project_scope_before_candidate_limits() -> None:
+    store = InMemoryVNextConnectionStore()
+    for project in ("project-a", "project-b"):
+        store.sources.append(
+            {
+                "id": f"source-{project}",
+                "source_type": "manual_text",
+                "title": "Queue retrieval pattern note",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {
+                    "project_scope": [project],
+                    "raw_text": "Queue retrieval provenance trace review.",
+                },
+            }
+        )
+        store.memories.append(
+            {
+                "id": f"memory-{project}",
+                "memory_type": "semantic",
+                "canonical_text": "Queue retrieval provenance trace review.",
+                "domain": "project",
+                "sensitivity": "private",
+                "project_id": project,
+            }
+        )
+
+    artifact = VNextConnectionService(store).generate_connection_report(
+        ConnectionFinderRequest(
+            domains=("project",),
+            projects=("project-a",),
+            max_connections=2,
+        )
+    )
+
+    assert artifact["metadata_json"]["source_ids"] == ["source-project-a"]
+    assert artifact["metadata_json"]["memory_ids"] == ["memory-project-a"]
+    assert artifact["metadata_json"]["project_scope"] == ["project-a"]
+    assert all(edge["from_id"] == "source-project-a" for edge in store.edges.values())
+    assert all(edge["to_id"] == "memory-project-a" for edge in store.edges.values())
+
+
 def test_connection_report_model_backed_mode_preserves_candidate_edges_and_metadata() -> None:
     store = _seed_store()
 
@@ -197,6 +295,34 @@ def test_connection_report_model_backed_mode_preserves_candidate_edges_and_metad
     assert "## Inferences" in artifact["content_markdown"]
     assert "## Source References" in artifact["content_markdown"]
     assert "source:source-1" in artifact["content_markdown"]
+
+
+def test_connection_report_logical_retry_replays_artifact_and_edges() -> None:
+    store = _seed_store()
+    service = VNextConnectionService(store)
+
+    results = [
+        service.generate_connection_report(
+            ConnectionFinderRequest(
+                domains=("project",),
+                max_connections=2,
+                generated_by="agent",
+                actor_id="hermes",
+                trace_id=f"trace-{attempt}",
+                run_id=f"run-{attempt}",
+                agent_identity={
+                    "agent_id": "hermes",
+                    "agent_run_id": f"agent-run-{attempt}",
+                },
+            )
+        )
+        for attempt in ("a", "b")
+    ]
+
+    assert results[0]["id"] == results[1]["id"]
+    assert len(store.artifacts) == 1
+    assert len(store.edges) == 2
+    assert results[0]["metadata_json"]["workflow_digest"] == results[1]["metadata_json"]["workflow_digest"]
 
 
 def test_connection_edge_review_and_graph_neighborhood() -> None:

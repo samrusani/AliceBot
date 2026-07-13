@@ -2142,19 +2142,46 @@ def test_stage1_selection_deterministic_and_dedupes_abstention() -> None:
 
 
 def test_checked_in_stage1_slice_matches_dataset() -> None:
-    """Regenerating from the real dataset reproduces the checked-in slice exactly."""
+    """The checked-in dataset manifest reproduces the slice in clean CI."""
     stage1 = _load_stage1_module()
-    dataset_path = resolve_dataset_path("s")
-    if dataset_path is None:
-        pytest.skip("LongMemEval s dataset not fetched")
-    records = json.loads(dataset_path.read_text(encoding="utf-8"))
-    expected = stage1.render_slice_file(records, dataset_name=dataset_path.name)
+    manifest_path = stage1.SLICE_PATH.parent / "dataset-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == "longmemeval_slice_manifest_v1"
+    assert manifest["dataset_file"] == "longmemeval_s_cleaned.json"
+    assert manifest["dataset_sha256"] == "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442"
+    assert manifest["question_count"] == 500
+    manifest_pairs = [tuple(item) for item in manifest["questions"]]
+    assert len(manifest_pairs) == len(set(manifest_pairs)) == 500
+    records = [
+        {"question_id": question_id, "question_type": question_type}
+        for question_id, question_type in manifest_pairs
+    ]
+    expected = stage1.render_slice_file(
+        records, dataset_name=str(manifest["dataset_file"])
+    )
     checked_in = stage1.SLICE_PATH.read_text(encoding="utf-8")
     assert checked_in == expected
     ids = runner.load_question_ids(stage1.SLICE_PATH)
     assert len(ids) == len(set(ids))
-    abstention_ids = {record["question_id"] for record in records if str(record["question_id"]).endswith("_abs")}
-    assert abstention_ids <= set(ids)  # every abstention question is in the slice
+    abstention_ids = {
+        question_id
+        for question_id, _question_type in manifest_pairs
+        if question_id.endswith("_abs")
+    }
+    assert abstention_ids <= set(ids)
+
+    # A developer with the ignored full dataset gets an additional proof that
+    # the compact checked-in manifest still represents those exact source rows.
+    dataset_path = resolve_dataset_path("s")
+    if dataset_path is None:
+        return
+    assert hashlib.sha256(dataset_path.read_bytes()).hexdigest() == manifest["dataset_sha256"]
+    full_records = json.loads(dataset_path.read_text(encoding="utf-8"))
+    full_pairs = sorted(
+        (str(record["question_id"]), str(record["question_type"]))
+        for record in full_records
+    )
+    assert full_pairs == manifest_pairs
 
 
 # -- grounding verification gate (--verify-grounding) --------------------------------

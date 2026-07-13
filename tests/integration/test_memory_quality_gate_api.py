@@ -8,9 +8,9 @@ from uuid import UUID, uuid4
 
 import anyio
 
-import apps.api.src.alicebot_api.main as main_module
+import alicebot_api.main as main_module
 import scripts.run_phase6_quality_evidence as quality_evidence
-from apps.api.src.alicebot_api.config import Settings
+from alicebot_api.config import Settings
 from alicebot_api.contracts import MemoryCandidateInput
 from alicebot_api.db import user_connection
 from alicebot_api.memory import admit_memory_candidate

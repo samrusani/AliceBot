@@ -401,12 +401,8 @@ def test_review_provenance_schema_rejects_values_without_mutation(
 def test_requested_review_confidence_schemas_advertise_closed_unit_interval(
     legacy_tools_enabled,
 ) -> None:
-    core_properties = mcp_tools_module._TOOL_DEFINITIONS_BY_NAME["alice_memory_correct"][
-        "inputSchema"
-    ]["properties"]
-    legacy_properties = mcp_tools_module._TOOL_DEFINITIONS_BY_NAME["alice_review_apply"][
-        "inputSchema"
-    ]["properties"]
+    core_properties = mcp_tools_module._TOOL_DEFINITIONS_BY_NAME["alice_memory_correct"]["inputSchema"]["properties"]
+    legacy_properties = mcp_tools_module._TOOL_DEFINITIONS_BY_NAME["alice_review_apply"]["inputSchema"]["properties"]
 
     assert core_properties["confidence"] == {
         "type": "number",
@@ -418,9 +414,7 @@ def test_requested_review_confidence_schemas_advertise_closed_unit_interval(
         "type": "number",
         "minimum": 0.0,
         "maximum": 1.0,
-        "description": (
-            "For supersede-existing: confidence of the replacement memory, between 0 and 1."
-        ),
+        "description": ("For supersede-existing: confidence of the replacement memory, between 0 and 1."),
     }
     assert legacy_properties["confidence"] == {
         "type": "number",
@@ -741,12 +735,8 @@ def test_advertised_schema_rejects_array_bound_format_pattern_and_enum_values(
     [
         pytest.param("alice_generate_daily_brief", "not-a-date", id="daily-malformed"),
         pytest.param("alice_generate_daily_brief", "2026-02-30", id="daily-impossible"),
-        pytest.param(
-            "alice_generate_weekly_synthesis", "not-a-date", id="weekly-malformed"
-        ),
-        pytest.param(
-            "alice_generate_weekly_synthesis", "2026-02-30", id="weekly-impossible"
-        ),
+        pytest.param("alice_generate_weekly_synthesis", "not-a-date", id="weekly-malformed"),
+        pytest.param("alice_generate_weekly_synthesis", "2026-02-30", id="weekly-impossible"),
     ],
 )
 def test_generated_for_date_format_rejects_before_handler(
@@ -779,18 +769,10 @@ def test_generated_for_date_format_rejects_before_handler(
         pytest.param("alice_generate_daily_brief", "2024-02-29", id="daily-leap-day"),
         pytest.param("alice_generate_daily_brief", "2026-07-13", id="daily-ordinary"),
         pytest.param("alice_generate_daily_brief", "9999-12-31", id="daily-maximum"),
-        pytest.param(
-            "alice_generate_weekly_synthesis", "0001-01-01", id="weekly-minimum"
-        ),
-        pytest.param(
-            "alice_generate_weekly_synthesis", "2024-02-29", id="weekly-leap-day"
-        ),
-        pytest.param(
-            "alice_generate_weekly_synthesis", "2026-07-13", id="weekly-ordinary"
-        ),
-        pytest.param(
-            "alice_generate_weekly_synthesis", "9999-12-31", id="weekly-maximum"
-        ),
+        pytest.param("alice_generate_weekly_synthesis", "0001-01-01", id="weekly-minimum"),
+        pytest.param("alice_generate_weekly_synthesis", "2024-02-29", id="weekly-leap-day"),
+        pytest.param("alice_generate_weekly_synthesis", "2026-07-13", id="weekly-ordinary"),
+        pytest.param("alice_generate_weekly_synthesis", "9999-12-31", id="weekly-maximum"),
     ],
 )
 def test_generated_for_date_format_accepts_leap_and_boundary_dates(
@@ -815,9 +797,7 @@ def test_generated_for_date_format_accepts_leap_and_boundary_dates(
     assert handler_calls == 1
 
 
-def test_advertised_schema_formats_are_known_and_unknown_formats_fail_closed(
-    monkeypatch, legacy_tools_enabled
-) -> None:
+def test_advertised_schema_formats_are_known_and_unknown_formats_fail_closed(monkeypatch, legacy_tools_enabled) -> None:
     formats: set[str] = set()
 
     def collect(schema: object) -> None:
@@ -834,9 +814,9 @@ def test_advertised_schema_formats_are_known_and_unknown_formats_fail_closed(
         collect(definition["inputSchema"])
     assert formats == {"date", "date-time", "uuid"}
 
-    generated_for_schema = mcp_tools_module._TOOL_DEFINITIONS_BY_NAME[
-        "alice_generate_daily_brief"
-    ]["inputSchema"]["properties"]["generated_for"]
+    generated_for_schema = mcp_tools_module._TOOL_DEFINITIONS_BY_NAME["alice_generate_daily_brief"]["inputSchema"][
+        "properties"
+    ]["generated_for"]
     monkeypatch.setitem(generated_for_schema, "format", "future-unsupported-format")
     handler_calls = 0
 
@@ -845,9 +825,7 @@ def test_advertised_schema_formats_are_known_and_unknown_formats_fail_closed(
         handler_calls += 1
         raise AssertionError("unsupported advertised formats must fail closed")
 
-    monkeypatch.setitem(
-        mcp_tools_module._TOOL_HANDLERS, "alice_generate_daily_brief", should_not_run
-    )
+    monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, "alice_generate_daily_brief", should_not_run)
     with pytest.raises(MCPToolError, match=r"unsupported advertised format"):
         call_mcp_tool(
             _mcp_context(),
@@ -857,9 +835,7 @@ def test_advertised_schema_formats_are_known_and_unknown_formats_fail_closed(
     assert handler_calls == 0
 
 
-def test_schema_enforces_min_items_and_max_properties_before_handler(
-    monkeypatch, core_surface
-) -> None:
+def test_schema_enforces_min_items_and_max_properties_before_handler(monkeypatch, core_surface) -> None:
     recall_schema = mcp_tools_module._TOOL_DEFINITIONS_BY_NAME["alice_recall"]["inputSchema"]
     projects_schema = recall_schema["properties"]["projects"]
     monkeypatch.setitem(projects_schema, "minItems", 1)
@@ -870,9 +846,7 @@ def test_schema_enforces_min_items_and_max_properties_before_handler(
             arguments={"query": "schema", "projects": []},
         )
 
-    correction_schema = mcp_tools_module._TOOL_DEFINITIONS_BY_NAME["alice_memory_correct"][
-        "inputSchema"
-    ]
+    correction_schema = mcp_tools_module._TOOL_DEFINITIONS_BY_NAME["alice_memory_correct"]["inputSchema"]
     body_schema = correction_schema["properties"]["body"]
     monkeypatch.setitem(body_schema, "maxProperties", 1)
     with pytest.raises(MCPToolError, match=r"body.*at most 1 properties"):
@@ -887,9 +861,7 @@ def test_schema_enforces_min_items_and_max_properties_before_handler(
         )
 
 
-def test_schema_rejects_legacy_nested_array_item_types_before_handler(
-    monkeypatch, legacy_tools_enabled
-) -> None:
+def test_schema_rejects_legacy_nested_array_item_types_before_handler(monkeypatch, legacy_tools_enabled) -> None:
     handler_calls = 0
 
     def should_not_run(_context, _arguments):
@@ -911,9 +883,7 @@ def test_schema_rejects_legacy_nested_array_item_types_before_handler(
     assert handler_calls == 0
 
 
-def test_schema_value_validation_preserves_valid_nested_calls(
-    monkeypatch, legacy_tools_enabled
-) -> None:
+def test_schema_value_validation_preserves_valid_nested_calls(monkeypatch, legacy_tools_enabled) -> None:
     def validated(_context, arguments):
         return {"validated": True, "arguments": arguments}
 
@@ -1099,6 +1069,9 @@ class FakeVNextMCPStore:
     def get_memory(self, memory_id: str) -> dict[str, object] | None:
         return next((memory for memory in self.memories if memory["id"] == memory_id), None)
 
+    def get_memory_for_update(self, memory_id: str) -> dict[str, object] | None:
+        return self.get_memory(memory_id)
+
     def list_memories(self, *, status: str | None = None) -> list[dict[str, object]]:
         return [memory for memory in self.memories if status is None or memory.get("status") == status]
 
@@ -1168,6 +1141,7 @@ class FakeVNextMCPStore:
                 "status": "active",
                 "confidence": 0.9,
                 "domain": "project",
+                "project_id": "project-1",
                 "sensitivity": "private",
                 "first_seen_at": "2026-05-10T00:00:00Z",
                 "last_seen_at": "2026-05-10T00:00:00Z",
@@ -1183,6 +1157,7 @@ class FakeVNextMCPStore:
                 "content_hash": "sha256:abc",
                 "captured_at": "2026-05-10T00:00:00Z",
                 "domain": "project",
+                "project_id": "project-1",
                 "sensitivity": "private",
                 "metadata_json": {
                     "raw_text": (
@@ -1234,6 +1209,9 @@ class FakeVNextMCPStore:
 
     def get_project(self, project_id: str) -> dict[str, object] | None:
         return self.projects.get(project_id)
+
+    def get_project_for_update(self, project_id: str) -> dict[str, object] | None:
+        return self.get_project(project_id)
 
     def list_projects(self, **kwargs) -> list[dict[str, object]]:
         status = kwargs.get("status", "active")
@@ -1316,7 +1294,9 @@ class FakeVNextMCPStore:
         self.workflows[workflow_type] = row
         return row
 
-    def update_scheduler_workflow(self, *, workflow_type: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
+    def update_scheduler_workflow(
+        self, *, workflow_type: str, patch: dict[str, object], **_kwargs
+    ) -> dict[str, object]:
         workflow = self.workflows[workflow_type]
         workflow.update(patch)
         return workflow
@@ -1341,9 +1321,7 @@ class FakeVNextMCPStore:
 
     def list_scheduler_runs(self, *, workflow_type: str | None = None, limit: int = 20) -> list[dict[str, object]]:
         return [
-            row
-            for row in self.runs.values()
-            if workflow_type is None or row.get("workflow_type") == workflow_type
+            row for row in self.runs.values() if workflow_type is None or row.get("workflow_type") == workflow_type
         ][:limit]
 
     def try_scheduler_workflow_lock(self, _workflow_type: str) -> bool:
@@ -1526,9 +1504,7 @@ def test_alice_vnext_agentic_memory_commit_mcp_tools(monkeypatch, legacy_tools_e
     assert audit_payload["revisions"][0]["action"] == "agentic_memory_commit"
 
 
-def test_alice_vnext_agentic_memory_commit_accepts_documented_quote_shape(
-    monkeypatch, legacy_tools_enabled
-) -> None:
+def test_alice_vnext_agentic_memory_commit_accepts_documented_quote_shape(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
 
     @contextmanager
@@ -1666,9 +1642,7 @@ def test_alice_vnext_agentic_memory_confirm_mcp_tool(monkeypatch, legacy_tools_e
     assert confirmed_payload["memory"]["status"] == "active"
 
 
-def test_postgres_core_review_and_correct_round_trip_the_canonical_vnext_memory(
-    monkeypatch, core_surface
-) -> None:
+def test_postgres_core_review_and_correct_round_trip_the_canonical_vnext_memory(monkeypatch, core_surface) -> None:
     store = FakeVNextMCPStore()
     memory_id = str(uuid4())
     store.memories.append(
@@ -1758,6 +1732,47 @@ def test_alice_generate_daily_and_weekly_brief_mcp_tools(monkeypatch, legacy_too
     assert store.events[-1]["event_type"] == "artifact.generated"
 
 
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "alice_generate_daily_brief",
+        "alice_generate_weekly_synthesis",
+        "alice_generate_connections",
+        "alice_generate_contradictions",
+    ],
+)
+def test_report_tool_schemas_expose_both_project_scope_aliases(
+    monkeypatch,
+    legacy_tools_enabled,
+    tool_name: str,
+) -> None:
+    schema = mcp_tools_module._TOOL_DEFINITIONS_BY_NAME[tool_name]["inputSchema"]
+    properties = schema["properties"]
+    assert properties["project_scope"] == {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+    assert properties["projects"] == {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+
+    monkeypatch.setitem(
+        mcp_tools_module._TOOL_HANDLERS,
+        tool_name,
+        lambda _context, arguments: dict(arguments),
+    )
+    payload = call_mcp_tool(
+        _mcp_context(),
+        name=tool_name,
+        arguments={"project_scope": ["project-a"], "projects": ["project-b"]},
+    )
+    assert payload == {
+        "project_scope": ["project-a"],
+        "projects": ["project-b"],
+    }
+
+
 def test_alice_vnext_generate_artifact_supports_model_backed_agent_options(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
 
@@ -1805,6 +1820,11 @@ def test_alice_vnext_generate_artifact_supports_memory_consolidation(monkeypatch
         yield store
 
     monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(
+        mcp_tools_module,
+        "run_now_durable",
+        lambda **kwargs: mcp_tools_module.VNextSchedulerService(store).run_now(kwargs["request"]),
+    )
     context = MCPRuntimeContext(
         database_url="postgresql://localhost/alicebot",
         user_id=UUID("11111111-1111-4111-8111-111111111111"),
@@ -1986,7 +2006,11 @@ def test_alice_project_and_open_loop_mcp_tools(monkeypatch, legacy_tools_enabled
     review_loop_payload = call_mcp_tool(
         context,
         name="alice_open_loop_review",
-        arguments={"loop_id": "loop-1", "action": "snooze", "due_at": "2026-05-12T09:00:00Z"},
+        arguments={
+            "loop_id": extract_payload["open_loops"][0]["id"],
+            "action": "snooze",
+            "due_at": "2026-05-12T09:00:00Z",
+        },
     )
     dashboard_payload = call_mcp_tool(
         context,
@@ -2009,6 +2033,125 @@ def _mcp_context() -> MCPRuntimeContext:
         database_url="postgresql://localhost/alicebot",
         user_id=UUID("11111111-1111-4111-8111-111111111111"),
     )
+
+
+@pytest.mark.parametrize(
+    ("handler", "arguments"),
+    (
+        (mcp_tools_module._handle_alice_vnext_scheduler_status, {}),
+        (
+            mcp_tools_module._handle_alice_vnext_scheduler_run_now,
+            {"workflow_type": "daily_brief"},
+        ),
+        (mcp_tools_module._handle_alice_vnext_scheduler_run_due, {}),
+        (mcp_tools_module._handle_alice_vnext_scheduler_pause, {}),
+        (mcp_tools_module._handle_alice_vnext_scheduler_resume, {}),
+    ),
+)
+def test_scheduler_mcp_tools_fail_closed_on_sqlite(handler, arguments) -> None:
+    context = MCPRuntimeContext(
+        database_url="sqlite:///tmp/alice.db",
+        user_id=uuid4(),
+    )
+
+    with pytest.raises(MCPToolError, match="require the Postgres backend"):
+        handler(context, arguments)
+
+
+def test_scheduler_mcp_due_execution_starts_after_policy_transaction(monkeypatch) -> None:
+    transaction_open = False
+    calls: list[str] = []
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        nonlocal transaction_open
+        transaction_open = True
+        calls.append("policy_open")
+        try:
+            yield object()
+        finally:
+            transaction_open = False
+            calls.append("policy_closed")
+
+    class Decision:
+        decision = "allowed"
+
+        def to_record(self):
+            return {"decision": "allowed"}
+
+    def fake_policy_checked(*_args, **_kwargs):
+        assert transaction_open is True
+        return "scheduler", None, Decision()
+
+    def fake_run_due(**_kwargs):
+        assert transaction_open is False
+        calls.append("durable_execute")
+        return {"due_count": 0, "failed_count": 0, "runs": []}
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(mcp_tools_module, "_policy_checked", fake_policy_checked)
+    monkeypatch.setattr(
+        mcp_tools_module,
+        "run_due_workflows_durable",
+        fake_run_due,
+    )
+
+    payload = mcp_tools_module._handle_alice_vnext_scheduler_run_due(
+        _mcp_context(),
+        {"limit": 1},
+    )
+
+    assert payload["due_count"] == 0
+    assert calls == ["policy_open", "policy_closed", "durable_execute"]
+
+
+def test_scheduler_mcp_run_now_starts_after_policy_transaction(monkeypatch) -> None:
+    transaction_open = False
+    calls: list[str] = []
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        nonlocal transaction_open
+        transaction_open = True
+        calls.append("policy_open")
+        try:
+            yield object()
+        finally:
+            transaction_open = False
+            calls.append("policy_closed")
+
+    class Decision:
+        decision = "allowed"
+        effective_domains = ("project",)
+        effective_project_scope = ("alice",)
+        effective_sensitivity_allowed = ("private",)
+
+        def to_record(self):
+            return {"decision": "allowed"}
+
+    def fake_policy_checked(*_args, **_kwargs):
+        assert transaction_open is True
+        return "user", None, Decision()
+
+    def fake_run_now(**kwargs):
+        assert transaction_open is False
+        calls.append("durable_execute")
+        request = kwargs["request"]
+        assert request.workflow_type == "daily_brief"
+        assert request.projects == ("alice",)
+        return {"run": {"status": "succeeded"}, "artifact": {"id": "artifact-1"}}
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(mcp_tools_module, "_policy_checked", fake_policy_checked)
+    monkeypatch.setattr(mcp_tools_module, "run_now_durable", fake_run_now)
+
+    payload = mcp_tools_module._handle_alice_vnext_scheduler_run_now(
+        _mcp_context(),
+        {"workflow_type": "daily_brief"},
+    )
+
+    assert payload["run"]["status"] == "succeeded"
+    assert calls == ["policy_open", "policy_closed", "durable_execute"]
 
 
 def _resolved_scoped_agent_context(*, profile: str, project: str) -> MCPRuntimeContext:
@@ -2034,9 +2177,7 @@ def _patch_vnext_store(monkeypatch, store: FakeVNextMCPStore) -> None:
     monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
 
 
-def test_vnext_artifact_get_authorizes_persisted_scope_and_sensitivity(
-    monkeypatch, legacy_tools_enabled
-) -> None:
+def test_vnext_artifact_get_authorizes_persisted_scope_and_sensitivity(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
     artifact = store.create_artifact(
         {
@@ -2054,9 +2195,7 @@ def test_vnext_artifact_get_authorizes_persisted_scope_and_sensitivity(
 
     with pytest.raises(MCPToolError, match="project_scope_binding_violation") as excinfo:
         call_mcp_tool(
-            _resolved_scoped_agent_context(
-                profile="trusted_local_agent", project="project-a"
-            ),
+            _resolved_scoped_agent_context(profile="trusted_local_agent", project="project-a"),
             name="alice_vnext_artifact_get",
             arguments={"artifact_id": artifact_id},
         )
@@ -2064,17 +2203,13 @@ def test_vnext_artifact_get_authorizes_persisted_scope_and_sensitivity(
 
     with pytest.raises(MCPToolError, match="artifact_target_filtering_not_permitted"):
         call_mcp_tool(
-            _resolved_scoped_agent_context(
-                profile="read_only_agent", project="project-b"
-            ),
+            _resolved_scoped_agent_context(profile="read_only_agent", project="project-b"),
             name="alice_vnext_artifact_get",
             arguments={"artifact_id": artifact_id},
         )
 
     payload = call_mcp_tool(
-        _resolved_scoped_agent_context(
-            profile="trusted_local_agent", project="project-b"
-        ),
+        _resolved_scoped_agent_context(profile="trusted_local_agent", project="project-b"),
         name="alice_vnext_artifact_get",
         arguments={"artifact_id": artifact_id},
     )
@@ -2082,9 +2217,7 @@ def test_vnext_artifact_get_authorizes_persisted_scope_and_sensitivity(
     assert payload["content_markdown"].endswith("Sensitive body.")
 
 
-def test_vnext_artifact_review_locks_and_authorizes_persisted_scope(
-    monkeypatch, legacy_tools_enabled
-) -> None:
+def test_vnext_artifact_review_locks_and_authorizes_persisted_scope(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
     artifact = store.create_artifact(
         {
@@ -2102,9 +2235,7 @@ def test_vnext_artifact_review_locks_and_authorizes_persisted_scope(
 
     with pytest.raises(MCPToolError, match="project_scope_binding_violation"):
         call_mcp_tool(
-            _resolved_scoped_agent_context(
-                profile="admin_agent", project="project-a"
-            ),
+            _resolved_scoped_agent_context(profile="admin_agent", project="project-a"),
             name="alice_vnext_artifact_review",
             arguments={"artifact_id": artifact_id, "action": "accept"},
         )
@@ -2117,6 +2248,40 @@ def test_vnext_artifact_review_locks_and_authorizes_persisted_scope(
     )
     assert payload["status"] == "accepted"
     assert store.artifacts[artifact_id]["status"] == "accepted"
+
+
+def test_generic_mcp_artifact_review_preserves_applied_project_update_state(
+    monkeypatch, legacy_tools_enabled
+) -> None:
+    store = FakeVNextMCPStore()
+    artifact = mcp_tools_module.VNextProjectService(store).generate_project_update_candidate(
+        mcp_tools_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact_id = str(artifact["id"])
+    metadata = artifact["metadata_json"]
+    assert isinstance(metadata, dict)
+    candidate_memory_id = str(metadata["candidate_memory_id"])
+    expected_state = str(metadata["suggested_current_state"])
+    _patch_vnext_store(monkeypatch, store)
+    context = _resolved_scoped_agent_context(profile="admin_agent", project="project-1")
+
+    accepted = call_mcp_tool(
+        context,
+        name="alice_vnext_artifact_review",
+        arguments={"artifact_id": artifact_id, "action": "accept"},
+    )
+    with pytest.raises(MCPToolError, match="cannot be rejected"):
+        call_mcp_tool(
+            context,
+            name="alice_vnext_artifact_review",
+            arguments={"artifact_id": artifact_id, "action": "reject"},
+        )
+
+    assert accepted["status"] == "accepted"
+    assert store.artifacts[artifact_id]["status"] == "accepted"
+    assert store.projects["project-1"]["current_state"] == expected_state
+    assert store.get_memory(candidate_memory_id)["status"] == "active"
+    assert not any(event.get("event_type") == "project.update_candidate_rejected" for event in store.events)
 
 
 class FakeEmbeddingProvider:
@@ -2271,9 +2436,7 @@ def test_alice_context_pack_is_compact_and_gates_trace_behind_debug(
     )
     assert debug["trace"]["trace_id"] == debug["trace_id"]
     assert debug["query_interpretation"]["query_type"]
-    assert debug["token_report"]["serialized_token_estimate"] == (
-        vnext_retrieval_module.estimate_item_tokens(debug)
-    )
+    assert debug["token_report"]["serialized_token_estimate"] == (vnext_retrieval_module.estimate_item_tokens(debug))
 
 
 class EntityGraphRetrievalStore(FakeVNextMCPStore):
@@ -2290,8 +2453,7 @@ class EntityGraphRetrievalStore(FakeVNextMCPStore):
         matched = [
             entity
             for entity in self.entities.values()
-            if entity.get("normalized_name") in names
-            or any(alias in names for alias in entity.get("aliases", []))
+            if entity.get("normalized_name") in names or any(alias in names for alias in entity.get("aliases", []))
         ]
         return sorted(matched, key=lambda entity: -int(entity.get("mention_count", 0) or 0))
 
@@ -2395,9 +2557,7 @@ def test_alice_context_pack_lists_the_entities_the_query_resolved_to(
     assert "entities" not in no_match
 
 
-def test_alice_explain_timeline_and_chain_entity_links(
-    monkeypatch, core_surface, no_embedding_provider
-) -> None:
+def test_alice_explain_timeline_and_chain_entity_links(monkeypatch, core_surface, no_embedding_provider) -> None:
     store = EntityGraphRetrievalStore()
     _patch_vnext_store(monkeypatch, store)
 
@@ -2629,9 +2789,7 @@ def test_alice_context_pack_surfaces_the_token_report(monkeypatch, core_surface)
         }
 
     monkeypatch.setattr(mcp_tools_module, "_vnext_context_pack_payload", fake_pack_payload)
-    nested = call_mcp_tool(
-        _mcp_context(), name="alice_context_pack", arguments={"query": "budget", "max_tokens": 900}
-    )
+    nested = call_mcp_tool(_mcp_context(), name="alice_context_pack", arguments={"query": "budget", "max_tokens": 900})
     assert nested["derived_values"] == derived_values
     assert nested["token_report"] == {
         "token_budget": 900,
@@ -2657,9 +2815,7 @@ def test_alice_context_pack_surfaces_the_token_report(monkeypatch, core_surface)
 
     monkeypatch.setattr(mcp_tools_module, "_vnext_context_pack_payload", fake_pack_payload_flat)
     flat = call_mcp_tool(_mcp_context(), name="alice_context_pack", arguments={"query": "budget"})
-    assert flat["token_report"]["serialized_token_estimate"] == (
-        vnext_retrieval_module.estimate_item_tokens(flat)
-    )
+    assert flat["token_report"]["serialized_token_estimate"] == (vnext_retrieval_module.estimate_item_tokens(flat))
     assert flat["token_report"]["full_pack_serialized_token_estimate"] == 1_400
     assert flat["token_report"]["full_pack_excluded_token_estimate"] == 558
     assert "excluded_token_estimate" not in flat["token_report"]
@@ -2685,17 +2841,11 @@ def test_alice_context_pack_forwards_the_grounding_statistic(monkeypatch, core_s
         }
 
     monkeypatch.setattr(mcp_tools_module, "_vnext_context_pack_payload", gated_pack)
-    gated = call_mcp_tool(
-        _mcp_context(), name="alice_context_pack", arguments={"query": "Did Zorblatt Nine ship?"}
-    )
+    gated = call_mcp_tool(_mcp_context(), name="alice_context_pack", arguments={"query": "Did Zorblatt Nine ship?"})
     assert gated["grounding"] == {"unsupported_entities": ["Zorblatt Nine"], "checked": 1}
 
-    monkeypatch.setattr(
-        mcp_tools_module, "_vnext_context_pack_payload", lambda _c, _a: dict(base_pack)
-    )
-    ungated = call_mcp_tool(
-        _mcp_context(), name="alice_context_pack", arguments={"query": "Did Zorblatt Nine ship?"}
-    )
+    monkeypatch.setattr(mcp_tools_module, "_vnext_context_pack_payload", lambda _c, _a: dict(base_pack))
+    ungated = call_mcp_tool(_mcp_context(), name="alice_context_pack", arguments={"query": "Did Zorblatt Nine ship?"})
     assert "grounding" not in ungated
 
 
@@ -2734,6 +2884,181 @@ def test_alice_memory_commit_is_a_core_tool_and_commits(monkeypatch, core_surfac
     assert audit["memory"]["id"] == memory_id
     assert audit["revisions"][0]["action"] == "agentic_memory_commit"
     assert any(event["event_type"] == "agent.memory_committed" for event in store.events)
+
+
+def test_alice_memory_commit_defers_embedding_until_after_primary_transaction(monkeypatch) -> None:
+    transaction_open = False
+    calls: list[str] = []
+    deferred_input = object()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        nonlocal transaction_open
+        transaction_open = True
+        calls.append("primary_open")
+        try:
+            yield object()
+        finally:
+            transaction_open = False
+            calls.append("primary_closed")
+
+    class FakeMemoryCommitService:
+        def __init__(self, _store, *, defer_embeddings: bool = False) -> None:
+            assert transaction_open is True
+            assert defer_embeddings is True
+            self.deferred_embedding_inputs = (deferred_input,)
+
+        def commit(self, *, identity, request):
+            assert transaction_open is True
+            assert identity is None
+            assert request.canonical_text == "Embedding work happens after commit."
+            calls.append("commit")
+            return {"status": "committed"}
+
+    def fake_persist(_context, inputs, **_kwargs) -> None:
+        assert transaction_open is False
+        assert inputs == (deferred_input,)
+        calls.append("embedding")
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(mcp_tools_module, "VNextMemoryCommitService", FakeMemoryCommitService)
+    monkeypatch.setattr(
+        mcp_tools_module,
+        "_persist_vnext_deferred_embedding_inputs",
+        fake_persist,
+    )
+
+    payload = mcp_tools_module._handle_alice_vnext_commit_memory(
+        _mcp_context(),
+        {
+            "title": "Transaction boundary",
+            "canonical_text": "Embedding work happens after commit.",
+        },
+    )
+
+    assert payload == {"status": "committed"}
+    assert calls == ["primary_open", "commit", "primary_closed", "embedding"]
+
+
+def test_alice_memory_review_defers_embedding_until_primary_transaction_closes(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    store = FakeVNextMCPStore()
+    memory_id, _confirmation_id = _seed_pending_inline_confirmation(store)
+    transaction_depth = 0
+    calls: list[str] = []
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        nonlocal transaction_depth
+        transaction_depth += 1
+        try:
+            yield store
+        finally:
+            transaction_depth -= 1
+
+    def fake_persist(_context, deferred_inputs, **_kwargs) -> None:
+        assert transaction_depth == 0
+        assert len(deferred_inputs) == 1
+        calls.append("embedding")
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(mcp_tools_module, "_persist_vnext_deferred_embedding_inputs", fake_persist)
+
+    payload = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_correct",
+        arguments={"review_item_id": memory_id, "action": "approve"},
+    )
+
+    assert payload["memory"]["status"] == "active"
+    assert calls == ["embedding"]
+
+
+def test_alice_consolidation_defers_embedding_until_primary_transaction_closes(monkeypatch) -> None:
+    transaction_depth = 0
+    calls: list[str] = []
+    deferred_input = object()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        nonlocal transaction_depth
+        transaction_depth += 1
+        try:
+            yield object()
+        finally:
+            transaction_depth -= 1
+
+    class FakeMemoryService:
+        def __init__(self, _store, *, defer_embeddings: bool = False) -> None:
+            assert transaction_depth == 1
+            assert defer_embeddings is True
+            self.deferred_embedding_inputs = (deferred_input,)
+
+        def accept_consolidation_candidate(self, memory_id: str, **_kwargs):
+            assert transaction_depth == 1
+            calls.append("accept")
+            return {"memory": {"id": memory_id, "status": "active"}}
+
+    def fake_persist(_context, deferred_inputs, **_kwargs) -> None:
+        assert transaction_depth == 0
+        assert deferred_inputs == (deferred_input,)
+        calls.append("embedding")
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(mcp_tools_module, "VNextMemoryCommitService", FakeMemoryService)
+    monkeypatch.setattr(mcp_tools_module, "_persist_vnext_deferred_embedding_inputs", fake_persist)
+
+    payload = mcp_tools_module._handle_alice_vnext_accept_consolidation(
+        _mcp_context(),
+        {"memory_id": "memory-1", "reason": "Merge duplicates."},
+    )
+
+    assert payload["memory"]["status"] == "active"
+    assert calls == ["accept", "embedding"]
+
+
+def test_alice_project_review_defers_embedding_until_primary_transaction_closes(monkeypatch) -> None:
+    transaction_depth = 0
+    calls: list[str] = []
+    deferred_input = object()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        nonlocal transaction_depth
+        transaction_depth += 1
+        try:
+            yield object()
+        finally:
+            transaction_depth -= 1
+
+    class FakeProjectService:
+        def __init__(self, _store, *, defer_embeddings: bool = False) -> None:
+            assert transaction_depth == 1
+            assert defer_embeddings is True
+            self.deferred_embedding_inputs = (deferred_input,)
+
+        def review_project_update(self, **_kwargs):
+            assert transaction_depth == 1
+            calls.append("review")
+            return {"id": "artifact-1", "status": "accepted"}
+
+    def fake_persist(_context, deferred_inputs, **_kwargs) -> None:
+        assert transaction_depth == 0
+        assert deferred_inputs == (deferred_input,)
+        calls.append("embedding")
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(mcp_tools_module, "VNextProjectService", FakeProjectService)
+    monkeypatch.setattr(mcp_tools_module, "_persist_vnext_deferred_embedding_inputs", fake_persist)
+
+    payload = mcp_tools_module._handle_alice_project_update_review(
+        _mcp_context(),
+        {"artifact_id": "artifact-1", "action": "accept"},
+    )
+
+    assert payload["status"] == "accepted"
+    assert calls == ["review", "embedding"]
 
 
 def test_alice_memory_commit_outcome_vocabulary(monkeypatch, core_surface, no_embedding_provider) -> None:
@@ -3109,9 +3434,7 @@ def test_review_provenance_validates_chunk_ownership_before_activation(
     ]
 
 
-def test_review_supersession_locks_graph_before_target_row(
-    monkeypatch, core_surface, no_embedding_provider
-) -> None:
+def test_review_supersession_locks_graph_before_target_row(monkeypatch, core_surface, no_embedding_provider) -> None:
     class OrderedLockStore(FakeVNextMCPStore):
         def __init__(self) -> None:
             super().__init__()
@@ -3306,16 +3629,12 @@ def test_alice_memory_manage_undo_and_forget_keep_the_audit_trail(
     assert forgotten["memory"]["status"] == "superseded"
 
     # Forget is a soft retirement: revisions and events survive for audit.
-    audit = call_mcp_tool(
-        _mcp_context(), name="alice_explain", arguments={"memory_id": second["memory"]["id"]}
-    )
+    audit = call_mcp_tool(_mcp_context(), name="alice_explain", arguments={"memory_id": second["memory"]["id"]})
     assert [revision["revision_type"] for revision in audit["revisions"]] == ["created", "archived"]
     assert any(event["event_type"] == "agent.memory_forgotten" for event in store.events)
 
 
-def test_alice_memory_manage_undo_links_the_replacing_memory(
-    monkeypatch, core_surface, no_embedding_provider
-) -> None:
+def test_alice_memory_manage_undo_links_the_replacing_memory(monkeypatch, core_surface, no_embedding_provider) -> None:
     store = FakeVNextMCPStore()
     _patch_vnext_store(monkeypatch, store)
 
@@ -3491,12 +3810,8 @@ def test_alice_capture_threads_project_scoped_agent_scope_into_recall(
     for memory in candidates:
         store.update_memory(memory_id=str(memory["id"]), patch={"status": "active"}, actor_type="system")
 
-    owning = store.search_memories_fts(
-        query="Helios staged rollout", projects=("project-helios",), limit=10
-    )
-    other = store.search_memories_fts(
-        query="Helios staged rollout", projects=("project-decoy",), limit=10
-    )
+    owning = store.search_memories_fts(query="Helios staged rollout", projects=("project-helios",), limit=10)
+    other = store.search_memories_fts(query="Helios staged rollout", projects=("project-decoy",), limit=10)
     unscoped = store.search_memories_fts(query="Helios staged rollout", limit=10)
 
     assert len(owning) == 1, "the owning project's filtered recall must retrieve the captured memory"
@@ -3529,13 +3844,9 @@ def test_alice_open_loops_lists_and_manages_loops(monkeypatch, core_surface) -> 
 
 
 @pytest.mark.parametrize("profile", ["read_only_agent", "memory_proposal_agent"])
-def test_non_mutating_agent_profiles_cannot_change_open_loops(
-    monkeypatch, core_surface, profile: str
-) -> None:
+def test_non_mutating_agent_profiles_cannot_change_open_loops(monkeypatch, core_surface, profile: str) -> None:
     store = FakeVNextMCPStore()
-    store.create_open_loop(
-        {"title": "Protected follow-up", "status": "open", "domain": "project"}
-    )
+    store.create_open_loop({"title": "Protected follow-up", "status": "open", "domain": "project"})
     _patch_vnext_store(monkeypatch, store)
 
     with pytest.raises(MCPToolError, match="cannot_(?:write|mutate)"):
@@ -3570,9 +3881,7 @@ def test_alice_explain_routes_memory_id_to_memory_audit(monkeypatch, core_surfac
     for section in ("supersession_chain", "revisions", "events", "provenance_links"):
         assert section in payload
     # No supersession happened, so the chain is just the memory itself.
-    assert [(entry["id"], entry["relation"]) for entry in payload["supersession_chain"]] == [
-        (memory_id, "self")
-    ]
+    assert [(entry["id"], entry["relation"]) for entry in payload["supersession_chain"]] == [(memory_id, "self")]
 
     with pytest.raises(MCPToolError, match="exactly one"):
         call_mcp_tool(
@@ -3630,6 +3939,55 @@ def test_mcp_server_initialize_and_tools_list(monkeypatch) -> None:
     assert list_response["result"]["tools"] == [
         {"name": "alice_recall", "description": "Recall", "inputSchema": {"type": "object"}}
     ]
+
+
+def test_mcp_runtime_flags_precede_scoped_production_validation(monkeypatch) -> None:
+    user_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setattr(
+        mcp_server,
+        "get_settings",
+        lambda: (_ for _ in ()).throw(AssertionError("cached full settings must not load")),
+    )
+    args = mcp_server.build_parser().parse_args(
+        [
+            "--database-url",
+            "postgresql://runtime:secret@db/alice",
+            "--user-id",
+            user_id,
+        ]
+    )
+
+    context = mcp_server._build_runtime_context(args)
+
+    assert context.database_url == "postgresql://runtime:secret@db/alice"
+    assert context.user_id == UUID(user_id)
+
+
+def test_mcp_runtime_accepts_environment_only_production_configuration(
+    monkeypatch,
+) -> None:
+    user_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://runtime:secret@db/alice")
+    monkeypatch.setenv("ALICEBOT_AUTH_USER_ID", user_id)
+    for key in (
+        "DATABASE_ADMIN_URL",
+        "S3_ACCESS_KEY",
+        "S3_SECRET_KEY",
+        "TELEGRAM_WEBHOOK_SECRET",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        mcp_server,
+        "get_settings",
+        lambda: (_ for _ in ()).throw(AssertionError("hosted settings must not load")),
+    )
+
+    context = mcp_server._build_runtime_context(mcp_server.build_parser().parse_args([]))
+
+    assert context.database_url == "postgresql://runtime:secret@db/alice"
+    assert context.user_id == UUID(user_id)
 
 
 def test_mcp_server_tools_call_success_and_error_paths(monkeypatch) -> None:
@@ -3767,9 +4125,7 @@ def test_agent_identity_with_key_env_binds_to_key_record(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("tool_name", CORE_TOOL_NAMES)
-def test_every_core_mcp_tool_authenticates_the_configured_agent_key(
-    monkeypatch, tool_name: str
-) -> None:
+def test_every_core_mcp_tool_authenticates_the_configured_agent_key(monkeypatch, tool_name: str) -> None:
     context, _store = _key_bound_context_and_store(monkeypatch)
     captured: dict[str, object] = {}
 
@@ -3847,6 +4203,5 @@ def test_alice_memory_correct_invalid_action_error_matches_schema_enum(core_surf
 
     expected = ", ".join(json.dumps(item) for item in schema_enum)
     assert str(excinfo.value) == (
-        "tool 'alice_memory_correct' has invalid value at arguments.action: "
-        f"action must be one of: {expected}"
+        f"tool 'alice_memory_correct' has invalid value at arguments.action: action must be one of: {expected}"
     )

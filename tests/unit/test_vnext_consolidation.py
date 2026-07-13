@@ -66,6 +66,7 @@ class FakeConsolidationStore:
         status: str | None = None,
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
+        projects=None,
         limit: int | None = None,
     ) -> list[JsonObject]:
         self.list_memory_calls.append(
@@ -73,6 +74,7 @@ class FakeConsolidationStore:
                 "status": status,
                 "domains": domains,
                 "sensitivity_allowed": sensitivity_allowed,
+                "projects": projects,
                 "limit": limit,
             }
         )
@@ -81,6 +83,8 @@ class FakeConsolidationStore:
             rows = [row for row in rows if row.get("domain") in {*domains, "unknown"}]
         if sensitivity_allowed is not None:
             rows = [row for row in rows if row.get("sensitivity", "unknown") in sensitivity_allowed]
+        if projects:
+            rows = [row for row in rows if row.get("project_id") in set(projects)]
         if limit is not None:
             rows = rows[:limit]
         return [dict(row) for row in rows]
@@ -91,12 +95,15 @@ class FakeConsolidationStore:
         status: str | None = None,
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
+        projects=None,
     ) -> int:
         rows = [row for row in self.memories if status is None or row.get("status") == status]
         if domains:
             rows = [row for row in rows if row.get("domain") in {*domains, "unknown"}]
         if sensitivity_allowed is not None:
             rows = [row for row in rows if row.get("sensitivity", "unknown") in sensitivity_allowed]
+        if projects:
+            rows = [row for row in rows if row.get("project_id") in set(projects)]
         return len(rows)
 
     def list_rollup_input_memories(
@@ -106,6 +113,7 @@ class FakeConsolidationStore:
         sensitivity_allowed: list[str],
         excluded_candidate_kind: str,
         limit: int,
+        projects=(),
     ) -> list[JsonObject]:
         rows = [
             row
@@ -117,6 +125,7 @@ class FakeConsolidationStore:
                 isinstance(row.get("metadata_json"), dict)
                 and row["metadata_json"].get("candidate_kind") == excluded_candidate_kind
             )
+            and (not projects or row.get("project_id") in set(projects))
         ]
         rows.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id"))), reverse=True)
         return [dict(row) for row in rows[:limit]]
@@ -129,6 +138,7 @@ class FakeConsolidationStore:
         sensitivity_allowed: list[str],
         candidate_kind: str,
         limit: int,
+        projects=(),
     ) -> list[JsonObject]:
         selected: list[JsonObject] = []
         for digest in sorted(set(rollup_digests)):
@@ -141,6 +151,7 @@ class FakeConsolidationStore:
                 and isinstance(row.get("metadata_json"), dict)
                 and row["metadata_json"].get("candidate_kind") == candidate_kind
                 and row["metadata_json"].get("rollup_digest") == digest
+                and (not projects or row.get("project_id") in set(projects))
             ]
             if matches:
                 selected.append(
@@ -165,6 +176,7 @@ class FakeConsolidationStore:
         sensitivity_allowed: list[str],
         candidate_kind: str,
         limit: int,
+        projects=(),
     ) -> list[JsonObject]:
         selected: list[JsonObject] = []
         for rollup_key in sorted(set(rollup_keys)):
@@ -177,6 +189,7 @@ class FakeConsolidationStore:
                 and isinstance(row.get("metadata_json"), dict)
                 and row["metadata_json"].get("candidate_kind") == candidate_kind
                 and row["metadata_json"].get("rollup_key") == rollup_key
+                and (not projects or row.get("project_id") in set(projects))
             ]
             if matches:
                 active = [row for row in matches if row.get("status") == "active"]
@@ -300,6 +313,8 @@ def _seed_memory(
     canonical_text: str,
     memory_type: str = "semantic",
     source_event_ids: list[str] | None = None,
+    source_id: str | None = None,
+    project_scope: tuple[str, ...] = (),
     with_embedding: bool = True,
 ) -> JsonObject:
     row = store.create_memory(
@@ -314,6 +329,11 @@ def _seed_memory(
             "domain": "project",
             "sensitivity": "internal",
             "source_event_ids": source_event_ids or [],
+            "project_id": project_scope[0] if len(project_scope) == 1 else None,
+            "metadata_json": {
+                "source_refs": [f"source:{source_id}"] if source_id is not None else [],
+                "project_scope": list(project_scope),
+            },
         }
     )
     mapping[memory_embedding_text(row)] = list(vector)
@@ -436,9 +456,7 @@ def test_near_duplicates_produce_one_dedup_candidate_with_correct_members() -> N
     survivor = max(near_dups, key=lambda row: (len(row["canonical_text"]), str(row["id"])))
     assert consolidation["survivor_memory_id"] == str(survivor["id"])
     assert candidate["canonical_text"] == survivor["canonical_text"]
-    assert sorted(consolidation["proposed_supersede"]) == sorted(
-        member_id for member_id in expected_member_ids if member_id != str(survivor["id"])
-    )
+    assert sorted(consolidation["proposed_supersede"]) == expected_member_ids
     assert consolidation["similarity_stats"]["min"] >= 0.88
     assert consolidation["reviewer_instructions"]
 
@@ -558,6 +576,65 @@ def test_rerun_with_same_input_set_creates_no_duplicate_candidate() -> None:
     proposals = second["metadata_json"]["consolidation"]["proposals"]
     assert proposals[0]["candidate_state"] == "existing"
     assert second["metadata_json"]["consolidation_digest"] == first["metadata_json"]["consolidation_digest"]
+
+
+def test_exact_report_idempotency_survives_decoys_and_tracks_behavior_config() -> None:
+    class ExactArtifactStore(FakeConsolidationStore):
+        def list_artifacts(self, **kwargs) -> list[JsonObject]:
+            rows = list(self.artifacts)
+            artifact_type = kwargs.get("artifact_type")
+            if artifact_type is not None:
+                rows = [row for row in rows if row.get("artifact_type") == artifact_type]
+            return [dict(row) for row in rows[: int(kwargs.get("limit", 8))]]
+
+        def find_artifact_by_workflow_digest(
+            self,
+            *,
+            artifact_type: str,
+            workflow: str,
+            digest: str,
+            scope_projects=None,
+        ) -> JsonObject | None:
+            del scope_projects
+            for row in self.artifacts:
+                metadata = row.get("metadata_json")
+                if (
+                    row.get("artifact_type") == artifact_type
+                    and isinstance(metadata, dict)
+                    and metadata.get("workflow") == workflow
+                    and metadata.get("consolidation_digest") == digest
+                ):
+                    return dict(row)
+            return None
+
+    store = ExactArtifactStore()
+    mapping: dict[str, list[float]] = {}
+    _seed_six_memories(store, mapping)
+    for index in range(150):
+        store.artifacts.append(
+            {
+                "id": f"decoy-{index}",
+                "artifact_type": "memory_consolidation",
+                "metadata_json": {
+                    "workflow": "memory_consolidation",
+                    "consolidation_digest": f"decoy-{index}",
+                },
+            }
+        )
+    service = _service(store, mapping)
+    request = MemoryConsolidationRequest(propose_rollups=False, max_clusters=20)
+
+    first = service.generate_memory_consolidation(request)
+    candidate_count = len(_consolidation_candidates(store))
+    second = service.generate_memory_consolidation(request)
+    changed = service.generate_memory_consolidation(
+        MemoryConsolidationRequest(propose_rollups=False, max_clusters=19)
+    )
+
+    assert second["id"] == first["id"]
+    assert len(_consolidation_candidates(store)) == candidate_count
+    assert changed["id"] != first["id"]
+    assert changed["metadata_json"]["consolidation_digest"] != first["metadata_json"]["consolidation_digest"]
 
 
 def test_without_embedding_provider_clustering_is_skipped_review_only() -> None:
@@ -681,6 +758,85 @@ def test_threshold_override_via_metadata_json_options() -> None:
     assert artifact["metadata_json"]["consolidation"]["similarity_threshold"] == 0.9999
 
 
+def test_near_duplicate_clusters_are_partitioned_by_exact_project_scope() -> None:
+    store = FakeConsolidationStore()
+    mapping: dict[str, list[float]] = {}
+    for project_scope in (("project-a",), ("project-b",)):
+        for index in range(2):
+            _seed_memory(
+                store,
+                mapping,
+                vector=NEAR_DUP_VECTORS[index],
+                title=f"{project_scope[0]} note {index}",
+                canonical_text=f"Shared release wording variant {index}",
+                project_scope=project_scope,
+            )
+
+    VNextConsolidationService(
+        store,
+        embedding_provider=MappedEmbeddingProvider(mapping),
+    ).generate_memory_consolidation(
+        MemoryConsolidationRequest(min_cluster_size=2, propose_rollups=False)
+    )
+
+    candidates = _consolidation_candidates(store)
+    assert len(candidates) == 2
+    assert {tuple(row["metadata_json"]["project_scope"]) for row in candidates} == {
+        ("project-a",),
+        ("project-b",),
+    }
+    for candidate in candidates:
+        member_ids = candidate["metadata_json"]["consolidation"]["cluster_member_ids"]
+        member_scopes = {
+            tuple(row["metadata_json"]["project_scope"])
+            for row in store.memories
+            if str(row["id"]) in member_ids
+        }
+        assert member_scopes == {tuple(candidate["metadata_json"]["project_scope"])}
+
+
+def test_project_scoped_consolidation_filters_decoys_before_corpus_limit() -> None:
+    store = FakeConsolidationStore()
+    mapping: dict[str, list[float]] = {}
+    for index in range(25):
+        _seed_memory(
+            store,
+            mapping,
+            vector=DISTINCT_VECTORS[index % len(DISTINCT_VECTORS)],
+            title=f"Project B decoy {index}",
+            canonical_text=f"Unrelated project B state {index}",
+            project_scope=("project-b",),
+        )
+    target_ids = {
+        str(
+            _seed_memory(
+                store,
+                mapping,
+                vector=NEAR_DUP_VECTORS[index],
+                title=f"Project A target {index}",
+                canonical_text=f"Project A release readiness wording {index}",
+                project_scope=("project-a",),
+            )["id"]
+        )
+        for index in range(2)
+    }
+
+    artifact = _service(store, mapping).generate_memory_consolidation(
+        MemoryConsolidationRequest(
+            projects=("project-a",),
+            max_embedded_memories=2,
+            min_cluster_size=2,
+            propose_rollups=False,
+        )
+    )
+
+    candidates = _consolidation_candidates(store)
+    assert len(candidates) == 1
+    assert set(candidates[0]["metadata_json"]["consolidation"]["cluster_member_ids"]) == target_ids
+    assert candidates[0]["metadata_json"]["project_scope"] == ["project-a"]
+    assert artifact["metadata_json"]["project_scope"] == ["project-a"]
+
+
 # -- reinforced preferences --------------------------------------------------------
 
 
@@ -702,6 +858,7 @@ def test_preference_cluster_spanning_three_sources_is_reported_review_only() -> 
             canonical_text=text,
             memory_type="preference",
             source_event_ids=[f"event-{index}"],
+            source_id=f"source-{index}",
         )
     artifact = _service(store, mapping).generate_memory_consolidation(MemoryConsolidationRequest())
     reinforced = artifact["metadata_json"]["consolidation"]["reinforced_preferences"]
@@ -713,6 +870,27 @@ def test_preference_cluster_spanning_three_sources_is_reported_review_only() -> 
     assert len(_consolidation_candidates(store)) == 1
     for row in store.list_memories(status="active"):
         assert row.get("confidence") is None or row["memory_type"] == "preference"
+
+
+def test_distinct_event_ids_do_not_count_as_independent_sources() -> None:
+    store = FakeConsolidationStore()
+    mapping: dict[str, list[float]] = {}
+    for index in range(3):
+        _seed_memory(
+            store,
+            mapping,
+            vector=NEAR_DUP_VECTORS[index],
+            title=f"Preference {index}",
+            canonical_text="Sam prefers oat milk lattes every morning",
+            memory_type="preference",
+            source_event_ids=[f"event-{index}"],
+        )
+
+    artifact = _service(store, mapping).generate_memory_consolidation(
+        MemoryConsolidationRequest(propose_rollups=False)
+    )
+
+    assert artifact["metadata_json"]["consolidation"]["reinforced_preferences"] == []
 
 
 def test_non_preference_cluster_is_not_reported_as_reinforced() -> None:
@@ -1088,8 +1266,9 @@ def test_accepting_the_dedup_candidate_executes_supersessions_on_live_sqlite(mon
         member = sqlite_store.get_memory(member_id)
         assert member["status"] == "superseded"
         assert str(member["superseded_by"]) == candidate_id
-    # The survivor was never proposed and stays active.
-    assert sqlite_store.get_memory(survivor_id)["status"] == "active"
+    # The accepted candidate is now the single active representative,
+    # including for the member whose text it canonically descends from.
+    assert sqlite_store.get_memory(survivor_id)["status"] == "superseded"
     # Replay is a no-op.
     replay = commit_service.accept_consolidation_candidate(candidate_id, reason="Accept again.")
     assert replay["idempotent_replay"] is True

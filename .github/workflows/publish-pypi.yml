@@ -1,8 +1,21 @@
 name: Publish to PyPI
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing annotated stable tag to publish (dispatch this workflow from the same tag)"
+        required: true
+        type: string
+      publication_mode:
+        description: "Publish verified artifacts, or recover/finalize an already staged draft after PyPI succeeded"
+        required: true
+        default: publish
+        type: choice
+        options:
+          - publish
+          - finalize-existing-draft
+          - resume-pypi-and-finalize
 
 permissions:
   actions: read
@@ -10,36 +23,49 @@ permissions:
   contents: read
 
 concurrency:
-  group: publish-pypi-${{ github.event.release.tag_name }}
+  group: publish-pypi-${{ inputs.release_tag }}
   cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag }}
 
 jobs:
   build-and-verify:
     name: Verify release identity and exact artifacts
+    if: inputs.publication_mode == 'publish'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      RELEASE_TAG: ${{ github.event.release.tag_name }}
-      RELEASE_TARGET: ${{ github.event.release.target_commitish }}
-      RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
-      RELEASE_DRAFT: ${{ github.event.release.draft }}
+    timeout-minutes: 35
     steps:
       - name: Require repository release-control attestation variable
         env:
           RELEASE_CONTROLS_ATTESTATION: ${{ vars.ALICE_RELEASE_CONTROLS_ATTESTATION }}
         run: test -n "$RELEASE_CONTROLS_ATTESTATION"
 
-      - name: Reject non-stable release events
-        run: |
-          test "$RELEASE_PRERELEASE" = "false"
-          test "$RELEASE_DRAFT" = "false"
-          test "$RELEASE_TARGET" = "main"
-
-      - name: Checkout the exact release tag
+      - name: Checkout the requested exact release tag
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.release_tag }}
           fetch-depth: 0
+
+      - name: Require an exact annotated-tag dispatch
+        run: |
+          test "$GITHUB_REF_TYPE" = "tag"
+          test "$GITHUB_REF_NAME" = "$RELEASE_TAG"
+          test "$(git cat-file -t "$RELEASE_TAG")" = "tag"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$GITHUB_SHA"
+          case "$RELEASE_TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "release_tag is not a stable vX.Y.Z tag"; exit 1 ;;
+          esac
+
+      - name: Require any existing GitHub Release to remain a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,tagName --jq '[.isDraft,.isPrerelease,.tagName] | @tsv')" = $'true\tfalse\t'"$RELEASE_TAG"
+            echo "A recoverable draft exists and will be refreshed with this run's verified artifacts."
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -48,7 +74,9 @@ jobs:
           cache: pip
 
       - name: Install release dependencies
-        run: python -m pip install -e '.[dev]'
+        run: |
+          python -m pip install -e '.[dev]'
+          python -m pip install build==1.5.0
 
       - name: Validate release-specific repository controls
         env:
@@ -63,7 +91,7 @@ jobs:
       - name: Fetch the protected main head
         run: git fetch --no-tags origin main
 
-      - name: Verify tag, version, SHA, main head, and PyPI uniqueness
+      - name: Verify tag, version, SHA, main head, docs, and PyPI uniqueness
         run: >-
           python scripts/release_check.py
           --tag "$RELEASE_TAG"
@@ -73,13 +101,14 @@ jobs:
           --require-finalized-release-docs
           --check-pypi
 
-      - name: Require successful checks on the exact release SHA
+      - name: Require current live branch rules and successful exact-SHA checks
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: >-
           python scripts/check_github_release_checks.py
           --repo "$GITHUB_REPOSITORY"
           --sha "$GITHUB_SHA"
+          --check-rulesets
 
       - name: Resolve successful exact-SHA semantic gate run
         id: semantic-gate
@@ -104,14 +133,27 @@ jobs:
           --expected-sha "$GITHUB_SHA"
           --semantic-eval-attestation semantic-eval-evidence/semantic-eval-attestation.json
 
-      - name: Recheck release-critical source tests
+      - name: Recheck release-critical source tests and coverage
         run: |
-          python -m pytest tests/unit -q
+          python -m pytest tests/unit -q --cov=alicebot_api --cov-report=term --cov-report=json:/tmp/alicebot-python-coverage.json --cov-fail-under=50
+          python scripts/check_python_coverage.py --coverage-json /tmp/alicebot-python-coverage.json --path apps/api/src/alicebot_api/main.py --min-percent 45
           python -m pytest eval/longmemeval -q
           python scripts/check_longmemeval_evidence.py
 
-      - name: Build wheel and sdist once
+      - name: Set deterministic build timestamp
+        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+
+      - name: Build canonical wheel and sdist
         run: python -m build --outdir dist
+
+      - name: Require byte-reproducible rebuild
+        run: |
+          python scripts/normalize_sdist.py --source-date-epoch "$SOURCE_DATE_EPOCH" dist/*.tar.gz
+          python -m build --outdir reproducibility-check
+          python scripts/normalize_sdist.py --source-date-epoch "$SOURCE_DATE_EPOCH" reproducibility-check/*.tar.gz
+          for artifact in dist/*.whl dist/*.tar.gz; do
+            cmp "$artifact" "reproducibility-check/$(basename "$artifact")"
+          done
 
       - name: Validate and hash exact artifacts
         run: |
@@ -134,11 +176,76 @@ jobs:
           name: verified-pypi-dist-${{ github.sha }}
           path: dist/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14
+
+  stage-github-draft:
+    name: Stage verified recoverable GitHub draft
+    if: inputs.publication_mode == 'publish'
+    needs: build-and-verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Download verified artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: verified-pypi-dist-${{ github.sha }}
+          path: verified
+
+      - name: Verify bytes and render a structured publication-neutral body
+        run: |
+          cd verified
+          sha256sum -c SHA256SUMS
+          cd ..
+          python scripts/render_release_body.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --commit-sha "$GITHUB_SHA" \
+            --checksums verified/SHA256SUMS \
+            --output /tmp/alice-release-body.md
+
+      - name: Create or refresh the exact verified draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,tagName --jq '[.isDraft,.isPrerelease,.tagName] | @tsv')" = $'true\tfalse\t'"$RELEASE_TAG"
+            gh release upload "$RELEASE_TAG" verified/*.whl verified/*.tar.gz verified/SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --target "$GITHUB_SHA" --title "Alice $RELEASE_TAG" --notes-file /tmp/alice-release-body.md --draft
+          else
+            gh release create "$RELEASE_TAG" verified/*.whl verified/*.tar.gz verified/SHA256SUMS --repo "$GITHUB_REPOSITORY" --verify-tag --target "$GITHUB_SHA" --title "Alice $RELEASE_TAG" --notes-file /tmp/alice-release-body.md --draft
+          fi
+
+      - name: Read back and byte-verify the staged draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,tagName --jq '[.isDraft,.isPrerelease,.tagName] | @tsv')" = $'true\tfalse\t'"$RELEASE_TAG"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body > /tmp/alice-current-release.json
+          python scripts/decode_github_release_body.py --input /tmp/alice-current-release.json --output /tmp/alice-current-release-body.md
+          cmp /tmp/alice-release-body.md /tmp/alice-current-release-body.md
+          mkdir draft-readback
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir draft-readback
+          cd draft-readback
+          sha256sum -c SHA256SUMS
+          cd ..
+          for artifact in verified/*.whl verified/*.tar.gz verified/SHA256SUMS; do
+            cmp "$artifact" "draft-readback/$(basename "$artifact")"
+          done
+          python scripts/release_check.py --dist-dir draft-readback --verify-release-assets
 
   publish:
     name: Publish verified bytes (trusted publishing)
-    needs: build-and-verify
+    if: inputs.publication_mode == 'publish'
+    needs: stage-github-draft
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -146,7 +253,6 @@ jobs:
       url: https://pypi.org/p/alice-memory
     permissions:
       actions: read
-      checks: read
       contents: read
       id-token: write
     steps:
@@ -171,3 +277,186 @@ jobs:
         with:
           packages-dir: packages/
           print-hash: true
+
+  finalize-github-release:
+    name: Finalize staged GitHub Release after PyPI
+    if: inputs.publication_mode == 'publish'
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Download and verify the staged bytes against PyPI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_state="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,tagName --jq '[.isDraft,.isPrerelease,.tagName] | @tsv')"
+          test "$release_state" = $'true\tfalse\t'"$RELEASE_TAG" || test "$release_state" = $'false\tfalse\t'"$RELEASE_TAG"
+          mkdir verified
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir verified
+          cd verified
+          sha256sum -c SHA256SUMS
+          cd ..
+          python scripts/release_check.py --tag "$RELEASE_TAG" --dist-dir verified --verify-release-assets --verify-pypi-artifacts
+          python scripts/render_release_body.py --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --commit-sha "$GITHUB_SHA" --checksums verified/SHA256SUMS --output /tmp/alice-release-body.md
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body > /tmp/alice-current-release.json
+          python scripts/decode_github_release_body.py --input /tmp/alice-current-release.json --output /tmp/alice-current-release-body.md
+          cmp /tmp/alice-release-body.md /tmp/alice-current-release-body.md
+
+      - name: Finalize the verified draft idempotently
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = "true"; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --target "$GITHUB_SHA" --title "Alice $RELEASE_TAG" --notes-file /tmp/alice-release-body.md --draft=false
+          fi
+
+      - name: Read back stable release state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,tagName --jq '[.isDraft,.isPrerelease,.tagName] | @tsv')" = $'false\tfalse\t'"$RELEASE_TAG"
+
+  verify-resume-artifacts:
+    name: Rebuild and verify partial-upload recovery bytes
+    if: inputs.publication_mode == 'resume-pypi-and-finalize'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the requested exact release tag
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Set up deterministic build tooling
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pinned build frontend
+        run: python -m pip install build==1.5.0
+
+      - name: Require exact tag and recoverable draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF_TYPE" = "tag"
+          test "$GITHUB_REF_NAME" = "$RELEASE_TAG"
+          test "$(git cat-file -t "$RELEASE_TAG")" = "tag"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$GITHUB_SHA"
+          test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,tagName --jq '[.isDraft,.isPrerelease,.tagName] | @tsv')" = $'true\tfalse\t'"$RELEASE_TAG"
+
+      - name: Verify body, PyPI subset, and deterministic rebuild before upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir verified
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir verified
+          python scripts/release_check.py --tag "$RELEASE_TAG" --dist-dir verified --verify-release-assets --verify-pypi-artifact-subset
+          python scripts/render_release_body.py --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --commit-sha "$GITHUB_SHA" --checksums verified/SHA256SUMS --output /tmp/alice-release-body.md
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body > /tmp/alice-current-release.json
+          python scripts/decode_github_release_body.py --input /tmp/alice-current-release.json --output /tmp/alice-current-release-body.md
+          cmp /tmp/alice-release-body.md /tmp/alice-current-release-body.md
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          python -m build --outdir deterministic-rebuild
+          python scripts/normalize_sdist.py --source-date-epoch "$SOURCE_DATE_EPOCH" deterministic-rebuild/*.tar.gz
+          python scripts/release_check.py --tag "$RELEASE_TAG" --dist-dir verified --compare-dist-dir deterministic-rebuild --verify-release-assets --verify-pypi-artifact-subset
+
+      - name: Transfer only the source-bound verified bytes to the protected publisher
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: verified-resume-pypi-dist-${{ github.sha }}
+          path: verified/
+          if-no-files-found: error
+          retention-days: 1
+
+  resume-pypi:
+    name: Resume an exact partial PyPI upload
+    if: inputs.publication_mode == 'resume-pypi-and-finalize'
+    needs: verify-resume-artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/alice-memory
+    permissions:
+      actions: read
+      id-token: write
+    steps:
+      - name: Download source-bound verified recovery artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: verified-resume-pypi-dist-${{ github.sha }}
+          path: verified
+
+      - name: Reverify transferred manifest and isolate distributions
+        run: |
+          cd verified
+          sha256sum -c SHA256SUMS
+          cd ..
+          mkdir packages
+          cp verified/*.whl verified/*.tar.gz packages/
+
+      - name: Resume only missing exact files through trusted publishing
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        with:
+          packages-dir: packages/
+          print-hash: true
+          skip-existing: true
+
+  recover-github-release:
+    name: Recover exact staged release after PyPI success
+    needs: resume-pypi
+    if: ${{ always() && inputs.publication_mode != 'publish' && (needs.resume-pypi.result == 'success' || needs.resume-pypi.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout the requested exact release tag
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Require exact annotated tag and verified release identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF_TYPE" = "tag"
+          test "$GITHUB_REF_NAME" = "$RELEASE_TAG"
+          test "$(git cat-file -t "$RELEASE_TAG")" = "tag"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$GITHUB_SHA"
+          release_state="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,tagName --jq '[.isDraft,.isPrerelease,.tagName] | @tsv')"
+          test "$release_state" = $'true\tfalse\t'"$RELEASE_TAG" || test "$release_state" = $'false\tfalse\t'"$RELEASE_TAG"
+
+      - name: Recover, verify, and finalize only the staged exact bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir verified
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir verified
+          cd verified
+          sha256sum -c SHA256SUMS
+          cd ..
+          python scripts/release_check.py --tag "$RELEASE_TAG" --dist-dir verified --verify-release-assets --verify-pypi-artifacts
+          python scripts/render_release_body.py --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --commit-sha "$GITHUB_SHA" --checksums verified/SHA256SUMS --output /tmp/alice-release-body.md
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body > /tmp/alice-current-release.json
+          python scripts/decode_github_release_body.py --input /tmp/alice-current-release.json --output /tmp/alice-current-release-body.md
+          cmp /tmp/alice-release-body.md /tmp/alice-current-release-body.md
+          if test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = "true"; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --target "$GITHUB_SHA" --title "Alice $RELEASE_TAG" --notes-file /tmp/alice-release-body.md --draft=false
+          fi
+          test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,tagName --jq '[.isDraft,.isPrerelease,.tagName] | @tsv')" = $'false\tfalse\t'"$RELEASE_TAG"

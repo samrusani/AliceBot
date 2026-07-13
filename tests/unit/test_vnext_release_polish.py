@@ -276,13 +276,13 @@ def test_publish_requires_independent_release_control_and_semantic_attestations(
     required_checks = _read("scripts/check_github_release_checks.py")
 
     early_control_gate = publish.split("- name: Require repository release-control attestation variable", 1)[1].split(
-        "- name: Reject non-stable release events", 1
+        "- name: Checkout the requested exact release tag", 1
     )[0]
     structured_control_gate = publish.split("- name: Validate release-specific repository controls", 1)[1].split(
         "- name: Fetch the protected main head", 1
     )[0]
     semantic_attestation_gate = publish.split("- name: Verify credential-free semantic eval attestation", 1)[1].split(
-        "- name: Install release dependencies", 1
+        "- name: Recheck release-critical source tests and coverage", 1
     )[0]
 
     assert "${{ vars.ALICE_RELEASE_CONTROLS_ATTESTATION }}" in early_control_gate
@@ -308,20 +308,67 @@ def test_publish_requires_independent_release_control_and_semantic_attestations(
     assert "Semantic eval attestation (exact SHA)" in required_checks
 
     assert publish.index("Require repository release-control attestation variable") < publish.index(
-        "Reject non-stable release events"
+        "Require an exact annotated-tag dispatch"
     )
     assert publish.index("Validate release-specific repository controls") < publish.index(
         "Fetch the protected main head"
     )
     assert publish.index("Fetch the protected main head") < publish.index(
-        "Verify tag, version, SHA, main head, and PyPI uniqueness"
+        "Verify tag, version, SHA, main head, docs, and PyPI uniqueness"
     )
-    assert publish.index("Verify tag, version, SHA, main head, and PyPI uniqueness") < publish.index(
+    assert publish.index("Verify tag, version, SHA, main head, docs, and PyPI uniqueness") < publish.index(
         "Resolve successful exact-SHA semantic gate run"
     )
     assert publish.index("Verify credential-free semantic eval attestation") < publish.index(
-        "Build wheel and sdist once"
+        "Build canonical wheel and sdist"
     )
+
+
+def test_publish_stages_recoverable_exact_draft_before_pypi() -> None:
+    publish = _read(".github/workflows/publish-pypi.yml")
+
+    assert "finalize-existing-draft" in publish
+    assert "resume-pypi-and-finalize" in publish
+    assert "Stage verified recoverable GitHub draft" in publish
+    assert "needs: stage-github-draft" in publish
+    assert publish.index("stage-github-draft:") < publish.index("publish:")
+    assert publish.index("publish:") < publish.index("finalize-github-release:")
+    assert "--verify-pypi-artifacts" in publish
+    assert "--verify-pypi-artifact-subset" in publish
+    assert "--verify-release-assets" in publish
+    assert "scripts/render_release_body.py" in publish
+    assert "tail -n +3" not in publish
+    assert "gh release download" in publish
+    assert "--draft=false" in publish
+    assert "skip-existing: true" in publish
+    assert "release_state" in publish
+    resume_verification = publish.split("verify-resume-artifacts:", 1)[1].split(
+        "resume-pypi:", 1
+    )[0]
+    assert "deterministic-rebuild" in resume_verification
+    assert "--compare-dist-dir deterministic-rebuild" in resume_verification
+    assert resume_verification.index("--compare-dist-dir") < publish.index(
+        "Resume only missing exact files through trusted publishing"
+    )
+    assert "cmp /tmp/alice-release-body.md" in resume_verification
+
+
+def test_python_compatibility_inputs_are_pinned_and_subprocess_stays_installed() -> None:
+    tests_workflow = _read(".github/workflows/tests.yml")
+    compatibility = tests_workflow.split("python-compatibility:", 1)[1].split(
+        "python-integration:", 1
+    )[0]
+    sqlite_onramp = _read("tests/unit/test_sqlite_onramp.py")
+
+    assert "python -m pip install build==1.5.0" in compatibility
+    assert "python -m pip install pytest==8.4.2" in compatibility
+    assert 'ALICE_TEST_INSTALLED_WHEEL: "1"' in compatibility
+    assert 'env.get("ALICE_TEST_INSTALLED_WHEEL") == "1"' in sqlite_onramp
+    installed_branch = sqlite_onramp.split(
+        'if env.get("ALICE_TEST_INSTALLED_WHEEL") == "1":', 1
+    )[1].split("else:", 1)[0]
+    assert 'env.pop("PYTHONPATH", None)' in installed_branch
+    assert 'REPO_ROOT / "apps" / "api" / "src"' not in installed_branch
 
 
 def test_release_gates_run_normal_cross_module_mypy() -> None:
@@ -330,6 +377,9 @@ def test_release_gates_run_normal_cross_module_mypy() -> None:
     expected = (
         "python -m mypy --ignore-missing-imports apps/api/src/alicebot_api "
         "scripts/release_check.py scripts/test_distribution_artifact.py "
+        "scripts/normalize_sdist.py scripts/render_release_body.py "
+        "scripts/prepare_mainprotect_update.py "
+        "scripts/check_python_coverage.py "
         "scripts/check_control_doc_truth.py scripts/check_github_release_checks.py "
         "scripts/check_release_controls_attestation.py"
     )
@@ -339,6 +389,18 @@ def test_release_gates_run_normal_cross_module_mypy() -> None:
     assert expected in tests_workflow
     assert expected.replace("python", "$(PYTHON)", 1) in makefile
     assert "Normal cross-module first-party type check" in tests_workflow
+
+
+def test_python_compatibility_functional_tests_do_not_shadow_installed_wheel() -> None:
+    tests_workflow = _read(".github/workflows/tests.yml")
+    compatibility = tests_workflow.split("python-compatibility:", 1)[1].split(
+        "python-integration:", 1
+    )[0]
+
+    assert 'PYTHONPATH: ""' in compatibility
+    assert "python -m pytest -o pythonpath=" in " ".join(compatibility.split())
+    assert "resolved to checkout source instead of the installed wheel" in compatibility
+    assert "Representative installed-wheel functional tests" in compatibility
 
 
 def test_local_playwright_setup_is_explicit_idempotent_and_platform_safe() -> None:

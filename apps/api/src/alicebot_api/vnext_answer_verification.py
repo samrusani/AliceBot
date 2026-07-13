@@ -215,10 +215,13 @@ def parse_verifier_reply(text: str) -> tuple[bool, tuple[UngroundedClaim, ...], 
     grounded, with a ``parse_note`` recorded for transparency.
     """
     claims: list[UngroundedClaim] = []
+    grounded_marker = False
     for line in str(text).splitlines():
         stripped = line.strip().lstrip("-*").strip()
         lowered = stripped.casefold()
-        if lowered.startswith(_LOAD_BEARING_PREFIX):
+        if lowered == GROUNDED_TOKEN.casefold():
+            grounded_marker = True
+        elif lowered.startswith(_LOAD_BEARING_PREFIX):
             claim_text = stripped[len(_LOAD_BEARING_PREFIX) :].strip()
             if claim_text:
                 claims.append(UngroundedClaim(text=claim_text, load_bearing=True))
@@ -227,7 +230,7 @@ def parse_verifier_reply(text: str) -> tuple[bool, tuple[UngroundedClaim, ...], 
             if claim_text:
                 claims.append(UngroundedClaim(text=claim_text, load_bearing=False))
     parse_note = None
-    if not claims and GROUNDED_TOKEN.casefold() not in str(text).casefold():
+    if not claims and not grounded_marker:
         parse_note = "unrecognized verifier reply; failing open as grounded"
     grounded = not any(claim.load_bearing for claim in claims)
     return grounded, tuple(claims), parse_note

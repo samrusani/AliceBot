@@ -277,14 +277,41 @@ def _filtered_sensitivity(profile: str, sensitivity_allowed: tuple[str, ...]) ->
 def resource_project_scope(resource: Mapping[str, object] | None) -> tuple[str, ...]:
     """Return the persisted project identifiers carried by one resource.
 
-    Current rows use first-class ``project_id`` where available, while older
-    memories and connector rows may retain ``project_scope`` in metadata.  A
-    lifecycle authorization check must inspect all of these persisted forms;
-    caller-provided scope is never a substitute for the target's scope.
+    Current rows use ``project_scope`` as the canonical, overlap-aware scope.
+    Older rows may retain singular project fields or nested agent scope.  Once
+    a canonical scope is present it is authoritative: stale compatibility
+    metadata must never widen the resource into another project.
     """
 
     if resource is None:
         return ()
+
+    def _normalized(value: object) -> tuple[str, ...]:
+        values: list[str] = []
+
+        def _add(item: object) -> None:
+            if isinstance(item, (str, int)):
+                normalized = " ".join(str(item).split()).strip()
+                if normalized:
+                    values.append(normalized)
+            elif isinstance(item, (list, tuple)):
+                for nested in item:
+                    _add(nested)
+
+        _add(value)
+        return tuple(dict.fromkeys(values))
+
+    containers = tuple(
+        container
+        for container_key in ("metadata_json", "scope_json")
+        if isinstance((container := resource.get(container_key)), Mapping)
+    )
+    if "project_scope" in resource:
+        return _normalized(resource.get("project_scope"))
+    for container in containers:
+        if "project_scope" in container:
+            return _normalized(container.get("project_scope"))
+
     values: list[str] = []
 
     def _add(value: object) -> None:
@@ -296,13 +323,10 @@ def resource_project_scope(resource: Mapping[str, object] | None) -> tuple[str, 
             for item in value:
                 _add(item)
 
-    for key in ("project_id", "project", "project_scope"):
+    for key in ("project_id", "project"):
         _add(resource.get(key))
-    for container_key in ("metadata_json", "scope_json"):
-        container = resource.get(container_key)
-        if not isinstance(container, Mapping):
-            continue
-        for key in ("project_id", "project", "projects", "project_scope"):
+    for container in containers:
+        for key in ("project_id", "project", "projects"):
             _add(container.get(key))
         agentic = container.get("agentic_memory")
         if isinstance(agentic, Mapping):

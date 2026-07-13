@@ -297,6 +297,17 @@ def test_calculate_precision_helpers_are_deterministic() -> None:
     assert calculate_mean_precision([1.0, 0.5, 1.0]) == pytest.approx(0.8333333333)
     assert calculate_mean_precision([]) == 0.0
 
+    assert calculate_precision_at_k(
+        returned_ids=["a"],
+        relevant_ids={"a"},
+        top_k=5,
+    ) == 0.2
+    assert calculate_precision_at_k(
+        returned_ids=[],
+        relevant_ids={"a"},
+        top_k=5,
+    ) == 0.0
+
     with pytest.raises(
         SemanticMemoryRetrievalValidationError,
         match="top_k must be greater than or equal to 1",

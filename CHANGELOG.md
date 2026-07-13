@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+## v0.10.3 — 2026-07-14
+
+Remediates the fourth external audit's confirmed findings on the published
+`v0.10.2` baseline: 13 release-blocking correctness, reliability, scale, and
+release-process defects, their independent-review correction passes, and the
+final punch-list. `v0.10.2` remains sound and published; this release carries
+the fixes forward. Migrations `0087`–`0089` apply online-safe persistence
+indexes, durable response jobs with provider revision/fingerprint CAS, and
+graph-edge workflow idempotency.
+
+- **Project isolation.** Agent project scope now flows through brain,
+  connection, contradiction, and project-automation requests, scheduler
+  workflows, and store queries; consolidation clusters partition by project
+  scope (accepting a cross-project proposal is rejected), and an explicitly
+  empty `project_scope: []` suppresses every legacy fallback.
+- **Consolidation dedup.** Accepting a dedup proposal now retires every
+  cluster member — including the survivor — into exactly one active
+  representative; legacy proposals are repaired on acceptance, so no
+  `supersedes` edge points at an active row.
+- **Review coherence.** Artifact promotion creates its memory target
+  atomically or fails; a locked transition table makes terminal states
+  final; accepted project updates cannot later be rejected (enforced on the
+  dedicated, generic HTTP, and MCP review surfaces); resolved confirmations
+  leave the pending queue.
+- **Retrieval fidelity.** Inferred query domains are disclosure-only ranking
+  hints (word-boundary matched) and can no longer filter out correctly
+  tagged results; caller-supplied domains remain authoritative. Scoped
+  contradiction, recent-change, and temporal stages push predicates into the
+  store or deepen fail-closed instead of truncating at 200 rows; chunk
+  ranking dedupes by parent source before limiting.
+- **ChatGPT import.** A real conversation parser preserves message order via
+  the mapping graph, roles, timestamps (branch-aware), and one source per
+  conversation with stable identity.
+- **Reliability.** Best-effort embedding persistence and read-only grounding
+  probes contain store failures instead of failing the enclosing operation;
+  scheduler claims are per-user with fenced durable leases, stable process
+  ownership identity, nonzero failure exits, and `--once` propagation;
+  response generation uses durable jobs with mandatory idempotency keys so
+  retries cannot duplicate provider charges; provider, embedding, Telegram,
+  and import work no longer holds open database transactions.
+- **Scale.** Workspace and trace reads are bounded with authoritative
+  counts; content-hash capture dedupe is indexed; embeddings run outside
+  transactions; PostgreSQL access uses a connection pool.
+- **Release and gate integrity.** Publication is draft-first and
+  transactional across GitHub and PyPI with exact-byte recovery modes that
+  verify tag/version consistency; the publish gate audits live branch
+  protection; control-document truth distinguishes published from candidate
+  versions against structured release records; Python coverage is attributed
+  to the canonical package with a per-file floor for `main.py`, and web
+  coverage floors rose with per-file minimums; OpenAPI success contracts are
+  per-operation and source-verified.
+
 ## v0.10.2 — 2026-07-13
 
 Supersedes the tagged-but-unpublished `v0.10.1` candidate, whose publish
@@ -62,8 +114,9 @@ backlog.
 `v0.9.3` was an internal security-hotfix candidate; a follow-up external audit
 returned NO-GO, so it was withdrawn and never published. `v0.9.4` supersedes
 it and attempted the original five fixes plus all nine P1 remediations from the
-second audit. A post-publication third audit found partial fixes and regressions;
-the v0.10.0 matrix is the current closure record.
+second audit. A post-publication third audit found partial fixes and regressions.
+The later published v0.10.2 corrective record superseded the historical
+v0.10.0 remediation matrix.
 
 - Lifecycle correctness: all memory lifecycle mutations (confirm, review, correct, undo, forget, expire/unexpire, supersession) route through one central transition table (`vnext_lifecycle`) that rejects invalid transitions — a rejected or superseded row can no longer be confirmed back to active, `correct()` no longer promotes rows while leaving them unconfirmed/review-required, supersession `A → B → A` cycles are blocked, and `unexpire` cannot report active while the row stays stale.
 - Supersession graph mutation is serialized per user with a transaction-scoped advisory lock, and the cycle guard now fails closed when it cannot verify acyclicity within its hop bound — so concurrent supersessions on disjoint row pairs can no longer each pass an unlocked check and together close a cycle (audit 2 P1 #1).

@@ -208,6 +208,20 @@ def test_telegram_sync_preserves_raw_evidence_defaults_and_uses_cursor_for_dupli
     assert [event["event_type"] for event in store.events].count("connector.sync_completed") == 2
 
 
+def test_connector_sync_can_defer_embeddings_without_changing_public_payload() -> None:
+    store = InMemoryVNextConnectorStore()
+
+    result = VNextConnectorService(store, defer_embeddings=True).sync_items(
+        "telegram",
+        [_telegram_payload(43)],
+    )
+
+    assert result.imported_count == 1
+    assert len(result.deferred_embedding_inputs) == 1
+    assert result.deferred_embedding_inputs[0].memory_id == "memory-1"
+    assert "deferred_embedding_inputs" not in result.to_record()
+
+
 def test_telegram_live_sync_requires_allowlist_and_rejects_unknown_chats() -> None:
     store = InMemoryVNextConnectorStore()
     service = VNextConnectorService(store)

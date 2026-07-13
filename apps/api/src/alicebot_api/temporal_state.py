@@ -251,7 +251,9 @@ def _is_effective_at(*, valid_from: datetime | None, valid_to: datetime | None, 
     normalized_valid_to = None if valid_to is None else _normalize_datetime(valid_to)
     if normalized_valid_from is not None and at < normalized_valid_from:
         return False
-    if normalized_valid_to is not None and at > normalized_valid_to:
+    # Validity is half-open: [valid_from, valid_to). At the exact closing
+    # instant the fact/edge is no longer effective.
+    if normalized_valid_to is not None and at >= normalized_valid_to:
         return False
     return True
 
@@ -267,6 +269,13 @@ def _load_entity(store: ContinuityStore, *, entity_id: UUID) -> EntityRow:
     if entity is None:
         raise TemporalStateNotFoundError(f"entity {entity_id} was not found")
     return entity
+
+
+def _require_entity_exists_at(entity: EntityRow, *, at: datetime) -> None:
+    if _normalize_datetime(entity["created_at"]) > _normalize_datetime(at):
+        raise TemporalStateNotFoundError(
+            f"entity {entity['id']} did not exist at {at.isoformat()}"
+        )
 
 
 def _load_entity_memories(store: ContinuityStore, *, entity: EntityRow) -> list[MemoryRow]:
@@ -326,6 +335,7 @@ def get_temporal_state_at(
 
     as_of = _resolve_as_of(request.at)
     entity = _load_entity(store, entity_id=request.entity_id)
+    _require_entity_exists_at(entity, at=as_of)
     facts, _, _ = _effective_fact_snapshots(store, entity=entity, at=as_of)
     edges = sorted(
         _effective_edges(store, entity_id=request.entity_id, at=as_of),
@@ -457,6 +467,7 @@ def get_temporal_timeline(
 
     entity = _load_entity(store, entity_id=request.entity_id)
     now = _resolve_as_of(until)
+    _require_entity_exists_at(entity, at=now)
     memories = _load_entity_memories(store, entity=entity)
     edges = store.list_entity_edges_for_entity(request.entity_id)
 
@@ -685,6 +696,7 @@ def get_temporal_explain(
 
     as_of = _resolve_as_of(request.at)
     entity = _load_entity(store, entity_id=request.entity_id)
+    _require_entity_exists_at(entity, at=as_of)
     active_facts, snapshots_by_memory_id, revisions_by_memory_id = _effective_fact_snapshots(
         store,
         entity=entity,

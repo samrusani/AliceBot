@@ -20,7 +20,7 @@ from alicebot_api.vnext_agent_control import (
 # retired row's valid_to with the replacement's event time — see the marked
 # block in _transition_memory.
 from alicebot_api.vnext_currency import supersession_event_time
-from alicebot_api.vnext_embeddings import attach_memory_embedding
+from alicebot_api.vnext_embeddings import DeferredMemoryEmbedding, attach_memory_embedding
 from alicebot_api.vnext_entities import (
     ENTITY_MENTION_EDGE_TYPE,
     PERSON_ABOUT_EDGE_TYPE,
@@ -333,6 +333,27 @@ def _is_unbounded_valid_to(value: object | None) -> bool:
     return isinstance(value, str) and value.startswith("9999-")
 
 
+def _earliest_valid_to(existing: object | None, replacement_event_time: object | None) -> str:
+    """Close a retired row at the earliest already-reviewed boundary.
+
+    Supersession cannot extend a validity window. This also replaces the
+    far-future sentinel written by ``unexpire`` with the real replacement
+    event time.
+    """
+
+    replacement_iso = _valid_to_iso(replacement_event_time)
+    if existing is None:
+        return replacement_iso
+    try:
+        existing_iso = _valid_to_iso(existing)
+        existing_at = datetime.fromisoformat(existing_iso.replace("Z", "+00:00"))
+        replacement_at = datetime.fromisoformat(replacement_iso.replace("Z", "+00:00"))
+    except (TypeError, ValueError, VNextMemoryCommitValidationError):
+        # A malformed legacy value must not make a superseded row immortal.
+        return replacement_iso
+    return existing_iso if existing_at <= replacement_at else replacement_iso
+
+
 def _normalized_text(value: object, *, field_name: str) -> str:
     if not isinstance(value, str):
         raise VNextMemoryCommitValidationError(f"{field_name} must be a string")
@@ -612,8 +633,42 @@ def evaluate_memory_commit_policy(
 
 
 class VNextMemoryCommitService:
-    def __init__(self, store: PostgresVNextStore):
+    def __init__(
+        self,
+        store: PostgresVNextStore,
+        *,
+        defer_embeddings: bool = False,
+    ):
         self.store = store
+        self._defer_embeddings = defer_embeddings
+        self._deferred_embedding_inputs: list[DeferredMemoryEmbedding] = []
+
+    @property
+    def deferred_embedding_inputs(self) -> tuple[DeferredMemoryEmbedding, ...]:
+        """Immutable embedding snapshots collected for post-commit processing."""
+
+        return tuple(self._deferred_embedding_inputs)
+
+    def _attach_or_defer_memory_embedding(
+        self,
+        memory: Mapping[str, object],
+        *,
+        actor_type: str,
+        actor_id: str | None,
+        trace_id: str | None,
+    ) -> None:
+        if self._defer_embeddings:
+            self._deferred_embedding_inputs.append(
+                DeferredMemoryEmbedding.from_memory(memory)
+            )
+            return
+        attach_memory_embedding(
+            self.store,
+            memory,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            trace_id=trace_id,
+        )
 
     def _require_transition(self, operation: str, current_status: str) -> str:
         """Route a lifecycle mutation through the central transition table.
@@ -1268,11 +1323,10 @@ class VNextMemoryCommitService:
 
         Pointer semantics (``supersedes`` is a single-valued column):
 
-        - ``dedup`` proposals copy the survivor's text verbatim, so the
-          accepted row's ``supersedes`` points at ``survivor_memory_id`` --
-          the one member the accepted row canonically descends from. The
-          survivor itself is not in ``proposed_supersede`` and stays active;
-          the pointer records content lineage, not the survivor's retirement.
+        - ``dedup`` proposals copy the survivor's text verbatim. The accepted
+          candidate becomes the one active representative, supersedes every
+          original member, and points its single-valued ``supersedes`` column
+          at ``survivor_memory_id`` as the canonical content lineage.
         - ``merge`` proposals synthesize new text from every member, so no
           single-member pointer is honest: ``supersedes`` stays NULL and the
           full member list is recorded in ``metadata_json.merged_from``.
@@ -1343,6 +1397,11 @@ class VNextMemoryCommitService:
             )
             if member_id != accepted_id
         ]
+        if proposal_kind == "dedup":
+            # Legacy v0.10.2 proposals omitted the survivor from this list,
+            # which promoted a duplicate active copy. Derive the coherent
+            # reviewed transition from the authoritative member list.
+            proposed = [member_id for member_id in dict.fromkeys(member_ids) if member_id != accepted_id]
 
         # Lock and validate the entire reviewed input set before the first
         # supersession. A correction, retirement, or content edit after the
@@ -1399,6 +1458,19 @@ class VNextMemoryCommitService:
                     raise VNextMemoryCommitValidationError(
                         f"consolidation candidate is stale: member {member_id} changed; regenerate it"
                     )
+
+        if strict_snapshots and dependency_ids:
+            member_scope_keys = {
+                tuple(sorted(value.casefold() for value in resource_project_scope(member)))
+                for member in locked_members.values()
+            }
+            candidate_scope_key = tuple(
+                sorted(value.casefold() for value in resource_project_scope(memory))
+            )
+            if len(member_scope_keys) != 1 or candidate_scope_key not in member_scope_keys:
+                raise VNextMemoryCommitValidationError(
+                    "consolidation candidate crosses project scopes; regenerate it before acceptance"
+                )
 
         # Supersede the members before stamping the acceptance marker so a
         # crash mid-way replays safely: already-superseded members are
@@ -1872,10 +1944,21 @@ class VNextMemoryCommitService:
 
     def inline_confirmations(self, *, limit: int = 20) -> list[VNextRow]:
         rows: list[VNextRow] = []
-        for memory in self.store.list_memories(status=None):
+        list_pending = getattr(self.store, "list_pending_inline_confirmations", None)
+        candidates = (
+            list_pending(limit=limit)
+            if callable(list_pending)
+            else self.store.list_memories(status=None)
+        )
+        for memory in candidates:
             agentic = _agentic_metadata(memory)
             confirmation = agentic.get("confirmation")
-            if agentic.get("kind") == "agentic_memory_commit" and isinstance(confirmation, Mapping):
+            if (
+                agentic.get("kind") == "agentic_memory_commit"
+                and isinstance(confirmation, Mapping)
+                and confirmation.get("status") == "pending"
+                and memory.get("status") == "needs_review"
+            ):
                 rows.append(memory)
             if len(rows) >= limit:
                 break
@@ -2061,8 +2144,7 @@ class VNextMemoryCommitService:
             actor_type=actor_type,
             request=request,
         )
-        attach_memory_embedding(
-            self.store,
+        self._attach_or_defer_memory_embedding(
             memory,
             actor_type=actor_type,
             actor_id=actor_id,
@@ -2168,8 +2250,7 @@ class VNextMemoryCommitService:
             actor_type=actor_type,
             request=request,
         )
-        attach_memory_embedding(
-            self.store,
+        self._attach_or_defer_memory_embedding(
             memory,
             actor_type=actor_type,
             actor_id=actor_id,
@@ -2256,8 +2337,7 @@ class VNextMemoryCommitService:
             actor_type=actor_type,
             request=request,
         )
-        attach_memory_embedding(
-            self.store,
+        self._attach_or_defer_memory_embedding(
             memory,
             actor_type=actor_type,
             actor_id=actor_id,
@@ -2441,8 +2521,7 @@ class VNextMemoryCommitService:
         clear_embedding = getattr(self.store, "clear_memory_embedding", None)
         if callable(clear_embedding):
             clear_embedding(memory_id=memory_id)
-        attach_memory_embedding(
-            self.store,
+        self._attach_or_defer_memory_embedding(
             memory,
             actor_type=actor_type,
             actor_id=actor_id,
@@ -2698,22 +2777,20 @@ class VNextMemoryCommitService:
             patch["metadata_json"] = {**metadata, "superseded_by": successor_id, "agentic_memory": agentic}
             # ---- currency chains (stored currency) begin -------------------
             # An approved supersession closes the retired row's validity
-            # window: stamp valid_to with the replacement's event time
-            # (its valid_from/metadata event date, its provenance source's
-            # date, else its created_at) so read-time currency is stored,
-            # not inferred. Runs ONLY on transitions that already write
-            # the supersession pointer — the review gate itself is
-            # untouched — and never overwrites a row's existing valid_to
-            # (including the unbounded unexpire sentinel, which records an
-            # explicit reviewed decision).
-            if memory.get("valid_to") is None:
-                patch["valid_to"] = (
-                    supersession_event_time(
-                        superseded_by,
-                        source_lookup=getattr(self.store, "get_source", None),
-                    )
-                    or _utc_iso()
+            # window at min(existing valid_to, replacement event time). It
+            # must never extend a previously reviewed expiry, and an unexpire
+            # sentinel must not keep a superseded row current.
+            replacement_event_time = (
+                supersession_event_time(
+                    superseded_by,
+                    source_lookup=getattr(self.store, "get_source", None),
                 )
+                or _utc_iso()
+            )
+            patch["valid_to"] = _earliest_valid_to(
+                memory.get("valid_to"),
+                replacement_event_time,
+            )
             # ---- currency chains (stored currency) end ---------------------
         updated = self.store.update_memory(
             memory_id=str(memory["id"]),

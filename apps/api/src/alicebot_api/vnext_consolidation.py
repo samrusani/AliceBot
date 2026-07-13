@@ -30,7 +30,7 @@ provider, clustering is skipped with an explicit reason in the artifact.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -50,6 +50,7 @@ from alicebot_api.vnext_embeddings import (
     get_embedding_provider,
     memory_embedding_text,
 )
+from alicebot_api.vnext_agent_control import resource_project_scope
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_memory_version import memory_version_snapshot
 from alicebot_api.vnext_model_intelligence import (
@@ -121,6 +122,7 @@ class VNextConsolidationStore(VNextRollupStore, Protocol):
         status: str | None = None,
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
+        projects: Sequence[str] | None = None,
         limit: int | None = None,
     ) -> list[JsonObject]: ...
 
@@ -132,12 +134,23 @@ class VNextConsolidationStore(VNextRollupStore, Protocol):
         status: str | None = None,
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
+        projects: Sequence[str] | None = None,
     ) -> int: ...
+
+    def find_artifact_by_workflow_digest(
+        self,
+        *,
+        artifact_type: str,
+        workflow: str,
+        digest: str,
+        scope_projects: Sequence[str] | None = None,
+    ) -> JsonObject | None: ...
 
 
 @dataclass(frozen=True, slots=True)
 class MemoryConsolidationRequest:
     domains: tuple[str, ...] = ()
+    projects: tuple[str, ...] = ()
     sensitivity_allowed: tuple[str, ...] = DEFAULT_SENSITIVITY_ALLOWED
     generated_for: str | None = None
     # source_limit/memory_limit/artifact_limit/event_limit/rating_limit are
@@ -191,6 +204,7 @@ class _ClusteringOutcome:
     active_count_exact: bool = True
     similarity_matrix_bytes: int = 0
     pairwise_comparisons: int = 0
+    corpus_digest: str = ""
     probe_self_distance: float | None = None
     skipped: list[str] = field(default_factory=list)
     embedding_vectors: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
@@ -207,6 +221,8 @@ def _validate_request(request: MemoryConsolidationRequest) -> None:
             raise VNextConsolidationValidationError(f"{field_name} must be between 1 and 100")
     if request.model_temperature < 0.0 or request.model_temperature > 2.0:
         raise VNextConsolidationValidationError("model_temperature must be between 0.0 and 2.0")
+    if len(request.projects) > 50:
+        raise VNextConsolidationValidationError("projects must contain at most 50 values")
 
 
 def _clustering_options(request: MemoryConsolidationRequest) -> _ClusteringOptions:
@@ -249,12 +265,38 @@ def _allowed_sensitivity(request: MemoryConsolidationRequest) -> list[str]:
     return list(request.sensitivity_allowed)
 
 
+def _allowed_projects(request: MemoryConsolidationRequest) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            normalized
+            for value in request.projects
+            if (normalized := " ".join(str(value).split()).strip())
+        )
+    )
+
+
+def _supports_explicit_parameter(method: object, name: str) -> bool:
+    if not callable(method):
+        return False
+    try:
+        parameters = signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == name
+        and parameter.kind
+        in {Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY}
+        for parameter in parameters
+    )
+
+
 def _list_memories_bounded(
     store: VNextConsolidationStore,
     *,
     status: str,
     domains: list[str] | None,
     sensitivity_allowed: list[str],
+    projects: tuple[str, ...],
     limit: int,
 ) -> list[JsonObject]:
     """Apply the corpus bound in the database when the store supports it.
@@ -275,17 +317,41 @@ def _list_memories_bounded(
         field_name in parameters
         for field_name in ("limit", "domains", "sensitivity_allowed")
     )
+    if projects and "projects" not in parameters:
+        raise VNextConsolidationValidationError(
+            "project-scoped consolidation requires list_memories with explicit projects support"
+        )
     if supports_bounded_scope:
-        return list_memories(
-            status=status,
+        if projects:
+            rows = list_memories(
+                status=status,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                projects=projects,
+                limit=limit,
+            )
+        else:
+            rows = list_memories(
+                status=status,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                limit=limit,
+            )
+        return _scoped_rows(
+            rows,
             domains=domains,
             sensitivity_allowed=sensitivity_allowed,
-            limit=limit,
+            projects=projects,
+        )
+    if projects:
+        raise VNextConsolidationValidationError(
+            "project-scoped consolidation cannot use an unbounded legacy memory reader"
         )
     return _scoped_rows(
         list_memories(status=status),
         domains=domains,
         sensitivity_allowed=sensitivity_allowed,
+        projects=projects,
     )[:limit]
 
 
@@ -337,6 +403,7 @@ def _scoped_rows(
     *,
     domains: list[str] | None,
     sensitivity_allowed: list[str],
+    projects: tuple[str, ...] = (),
 ) -> list[JsonObject]:
     allowed_sensitivity = set(sensitivity_allowed)
     scoped: list[JsonObject] = []
@@ -348,15 +415,41 @@ def _scoped_rows(
             domain = str(row.get("domain") or "unknown")
             if domain not in domains and domain != "unknown":
                 continue
+        if projects:
+            allowed_projects = {value.casefold() for value in projects}
+            if not any(
+                value.casefold() in allowed_projects
+                for value in resource_project_scope(row)
+            ):
+                continue
         scoped.append(row)
     return scoped
 
 
+def _project_scope_key(row: JsonObject) -> tuple[str, ...]:
+    """Exact normalized scope identity used for safe consolidation groups.
+
+    Overlap is insufficient here: merging a memory scoped to A+B with one
+    scoped only to A would widen B-only information into project A. Candidate
+    members must therefore carry the same scope set (including the empty
+    global scope).
+    """
+
+    return tuple(sorted({value.casefold() for value in resource_project_scope(row)}))
+
+
+def _shared_project_scope(rows: list[JsonObject]) -> tuple[str, ...]:
+    if not rows:
+        return ()
+    first = resource_project_scope(rows[0])
+    first_key = _project_scope_key(rows[0])
+    if all(_project_scope_key(row) == first_key for row in rows[1:]):
+        return first
+    return ()
+
+
 def _member_source_ids(row: JsonObject) -> set[str]:
     sources: set[str] = set()
-    event_ids = row.get("source_event_ids")
-    if isinstance(event_ids, list):
-        sources.update(str(item) for item in event_ids if item is not None)
     metadata = row.get("metadata_json")
     if isinstance(metadata, dict):
         source_id = metadata.get("source_id")
@@ -400,10 +493,31 @@ def _union_source_event_ids(members: list[JsonObject]) -> list[str]:
     return list(dict.fromkeys(merged))
 
 
-def _existing_cluster_candidates(store: VNextConsolidationStore) -> dict[str, str]:
+def _existing_cluster_candidates(
+    store: VNextConsolidationStore,
+    *,
+    projects: tuple[str, ...],
+) -> dict[str, str]:
     """Map cluster consolidation_digest -> existing candidate memory id."""
     existing: dict[str, str] = {}
-    for memory in store.list_memories(status="candidate"):
+    if projects and not _supports_explicit_parameter(store.list_memories, "projects"):
+        raise VNextConsolidationValidationError(
+            "project-scoped consolidation requires candidate lookup with explicit projects support"
+        )
+    if projects:
+        candidate_rows = store.list_memories(status="candidate", projects=projects)
+    else:
+        candidate_rows = store.list_memories(status="candidate")
+    for memory in candidate_rows:
+        if projects and not _scoped_rows(
+            [memory],
+            domains=None,
+            sensitivity_allowed=list(DEFAULT_SENSITIVITY_ALLOWED),
+            projects=projects,
+        ):
+            raise VNextConsolidationValidationError(
+                "candidate lookup returned memory outside the requested project scope"
+            )
         metadata = memory.get("metadata_json")
         if not isinstance(metadata, dict) or memory.get("id") is None:
             continue
@@ -432,8 +546,12 @@ def _cohesive_clusters(
     while remaining:
         seed, *candidates = remaining
         group = [seed]
+        seed_scope = _project_scope_key(member_rows[seed])
         rejected: list[int] = []
         for candidate in candidates:
+            if _project_scope_key(member_rows[candidate]) != seed_scope:
+                rejected.append(candidate)
+                continue
             clears_group = True
             for start in range(0, len(group), SIMILARITY_BLOCK_ROWS):
                 block = group[start : start + SIMILARITY_BLOCK_ROWS]
@@ -504,21 +622,36 @@ class VNextConsolidationService:
         *,
         domains: list[str] | None,
         sensitivity: list[str],
+        projects: tuple[str, ...],
         options: _ClusteringOptions,
     ) -> _ClusteringOutcome:
         outcome = _ClusteringOutcome()
         count_memories = getattr(self.store, "count_memories", None)
         count_is_authoritative = False
-        if callable(count_memories):
+        if callable(count_memories) and (
+            not projects or _supports_explicit_parameter(count_memories, "projects")
+        ):
             try:
-                outcome.active_count = sum(
-                    int(
+                def _count(status: str) -> int:
+                    if projects:
+                        return int(
+                            count_memories(
+                                status=status,
+                                domains=domains,
+                                sensitivity_allowed=sensitivity,
+                                projects=projects,
+                            )
+                        )
+                    return int(
                         count_memories(
                             status=status,
                             domains=domains,
                             sensitivity_allowed=sensitivity,
                         )
                     )
+
+                outcome.active_count = sum(
+                    _count(status)
                     for status in ("active", "accepted")
                 )
                 count_is_authoritative = True
@@ -534,6 +667,7 @@ class VNextConsolidationService:
             status="active",
             domains=domains,
             sensitivity_allowed=sensitivity,
+            projects=projects,
             limit=status_query_limit,
         )
         accepted_status_rows = _list_memories_bounded(
@@ -541,6 +675,7 @@ class VNextConsolidationService:
             status="accepted",
             domains=domains,
             sensitivity_allowed=sensitivity,
+            projects=projects,
             limit=status_query_limit,
         )
         active_rows = [
@@ -575,6 +710,14 @@ class VNextConsolidationService:
                 outcome.active_count,
             )
             active_rows = active_rows[: options.max_embedded_memories]
+        outcome.corpus_digest = _digest_payload(
+            {
+                "memory_versions": [
+                    memory_version_snapshot(row)
+                    for row in sorted(active_rows, key=lambda item: str(item.get("id")))
+                ]
+            }
+        )
         if not active_rows:
             outcome.skipped.append("no_active_memories_in_scope")
             return outcome
@@ -633,14 +776,25 @@ class VNextConsolidationService:
         # leaves probe_self_distance unset.
         probe_row_id = str(embedded_rows_and_text[0][0].get("id"))
         probe_rows: list[JsonObject] = []
-        if callable(search_memories_vector):
+        if callable(search_memories_vector) and (
+            not projects or _supports_explicit_parameter(search_memories_vector, "projects")
+        ):
             try:
-                probe_rows = search_memories_vector(
-                    query_vector=derived_vectors[0].tolist(),
-                    domains=domains,
-                    sensitivity_allowed=sensitivity,
-                    limit=options.max_embedded_memories,
-                )
+                if projects:
+                    probe_rows = search_memories_vector(
+                        query_vector=derived_vectors[0].tolist(),
+                        domains=domains,
+                        sensitivity_allowed=sensitivity,
+                        projects=projects,
+                        limit=options.max_embedded_memories,
+                    )
+                else:
+                    probe_rows = search_memories_vector(
+                        query_vector=derived_vectors[0].tolist(),
+                        domains=domains,
+                        sensitivity_allowed=sensitivity,
+                        limit=options.max_embedded_memories,
+                    )
             except Exception:  # noqa: BLE001 - diagnostic only; presence already resolved
                 probe_rows = []
         for row in probe_rows:
@@ -734,7 +888,7 @@ class VNextConsolidationService:
             else:
                 merge_refusal = merge.refusal_reason
         proposed_supersede = member_ids if proposal_kind == "merge" else [
-            member_id for member_id in member_ids if member_id != str(survivor.get("id"))
+            member_id for member_id in member_ids
         ]
         return {
             "proposal_kind": proposal_kind,
@@ -794,6 +948,7 @@ class VNextConsolidationService:
             f"(members proposed for supersession: {', '.join(proposed_supersede) or 'none'}).",
             "Consolidation never supersedes active memories automatically; nothing changes until a reviewer accepts.",
         ]
+        project_scope = _shared_project_scope(members)
         return self.store.create_memory(
             {
                 "memory_key": f"vnext.consolidation.{cluster_digest}",
@@ -817,11 +972,13 @@ class VNextConsolidationService:
                 ),
                 "domain": _domain(request, members),
                 "sensitivity": _highest_sensitivity(members),
+                "project_id": project_scope[0] if len(project_scope) == 1 else None,
                 "source_event_ids": proposal["source_event_ids"],
                 "metadata_json": {
                     "candidate_kind": "memory_consolidation",
                     "consolidation_digest": cluster_digest,
                     "source_refs": proposal["source_refs"],
+                    "project_scope": list(project_scope),
                     "review_required": True,
                     "consolidation": {
                         "cluster_member_ids": member_ids,
@@ -886,22 +1043,145 @@ class VNextConsolidationService:
         rollup_options = RollupOptions.from_metadata(request.metadata_json) if request.propose_rollups else None
         domains = _allowed_domains(request)
         sensitivity = _allowed_sensitivity(request)
+        projects = _allowed_projects(request)
 
-        events = self.store.list_events(limit=request.event_limit)
+        if projects:
+            list_memory_events = getattr(self.store, "list_memory_events", None)
+            if callable(list_memory_events) and _supports_explicit_parameter(
+                list_memory_events, "scope_projects"
+            ):
+                events = list_memory_events(
+                    scope_projects=projects,
+                    limit=request.event_limit,
+                )
+            else:
+                # Event context is optional. Omitting it is safe; reading an
+                # unscoped prefix and filtering after LIMIT is not.
+                events = []
+        else:
+            events = self.store.list_events(limit=request.event_limit)
+        events = [
+            event
+            for event in events
+            if not str(event.get("event_type") or "").startswith("scheduler.")
+            and event.get("event_type")
+            not in {"memory.consolidation.generated", "artifact.created"}
+        ]
         ratings: list[JsonObject] = []
         list_ratings = getattr(self.store, "list_artifact_quality_ratings", None)
         if callable(list_ratings):
-            ratings = list_ratings(limit=request.rating_limit)
+            if projects:
+                if _supports_explicit_parameter(list_ratings, "scope_projects"):
+                    ratings = list_ratings(
+                        limit=request.rating_limit,
+                        scope_projects=projects,
+                    )
+            else:
+                ratings = list_ratings(limit=request.rating_limit)
         artifacts: list[JsonObject] = []
         list_artifacts = getattr(self.store, "list_artifacts", None)
         if callable(list_artifacts):
+            artifact_kwargs: dict[str, object] = {
+                "domains": domains,
+                "sensitivity_allowed": sensitivity,
+                "limit": request.artifact_limit,
+            }
+            if projects:
+                if not _supports_explicit_parameter(list_artifacts, "scope_projects"):
+                    raise VNextConsolidationValidationError(
+                        "project-scoped consolidation requires artifact lookup with explicit scope_projects support"
+                    )
+                artifact_kwargs["scope_projects"] = projects
             artifacts = [
                 row
-                for row in list_artifacts(
-                    domains=domains, sensitivity_allowed=sensitivity, limit=request.artifact_limit
-                )
+                for row in list_artifacts(**artifact_kwargs)
                 if row.get("artifact_type") != "memory_consolidation"
             ]
+        if projects:
+            events = _scoped_rows(
+                events,
+                domains=None,
+                sensitivity_allowed=sensitivity,
+                projects=projects,
+            )
+            ratings = _scoped_rows(
+                ratings,
+                domains=None,
+                sensitivity_allowed=sensitivity,
+                projects=projects,
+            )
+            artifacts = _scoped_rows(
+                artifacts,
+                domains=domains,
+                sensitivity_allowed=sensitivity,
+                projects=projects,
+            )
+
+        clustering = self._cluster_memories(
+            domains=domains,
+            sensitivity=sensitivity,
+            projects=projects,
+            options=options,
+        )
+        cluster_membership = [
+            sorted(str(row.get("id")) for row in members) for members in clustering.clusters
+        ]
+        brain_charter = self._brain_charter()
+        run_digest = _digest_payload(
+            {
+                "scope": {
+                    "domains": request.domains,
+                    "projects": projects,
+                    "sensitivity_allowed": request.sensitivity_allowed,
+                },
+                "limits": {
+                    "source": request.source_limit,
+                    "memory": request.memory_limit,
+                    "artifact": request.artifact_limit,
+                    "event": request.event_limit,
+                    "rating": request.rating_limit,
+                },
+                "behavior": {
+                    "create_candidate_memories": request.create_candidate_memories,
+                    "propose_rollups": request.propose_rollups,
+                    "clustering": {
+                        "similarity_threshold": options.similarity_threshold,
+                        "max_embedded_memories": options.max_embedded_memories,
+                        "min_cluster_size": options.min_cluster_size,
+                        "max_clusters": options.max_clusters,
+                    },
+                    "rollups": rollup_options.to_record() if rollup_options is not None else None,
+                    "generation_mode": request.generation_mode,
+                    "model_route_mode": request.model_route_mode,
+                    "model_provider": request.model_provider,
+                    "model": request.model,
+                    "model_temperature": request.model_temperature,
+                    "allow_cloud_private": request.allow_cloud_private,
+                    "generated_for": request.generated_for,
+                    "generated_by": request.generated_by,
+                    "agent_identity": request.agent_identity,
+                    "brain_charter": brain_charter,
+                },
+                "corpus_digest": clustering.corpus_digest,
+                "cluster_membership": cluster_membership,
+                "embedded_count": clustering.embedded_count,
+                "context": {
+                    "events": _digest_payload(events),
+                    "artifacts": _digest_payload(artifacts),
+                    "ratings": _digest_payload(ratings),
+                },
+            }
+        )
+        find_existing = getattr(self.store, "find_artifact_by_workflow_digest", None)
+        if callable(find_existing):
+            existing_report = find_existing(
+                artifact_type="memory_consolidation",
+                workflow="memory_consolidation",
+                digest=run_digest,
+                scope_projects=projects or None,
+            )
+            if existing_report is not None:
+                return existing_report
 
         route = None
         if request.generation_mode == "model_backed":
@@ -912,7 +1192,7 @@ class VNextConsolidationService:
                     domains=request.domains,
                     sensitivity_allowed=request.sensitivity_allowed,
                     agent_identity=request.agent_identity,
-                    brain_charter=self._brain_charter(),
+                    brain_charter=brain_charter,
                     requested_route_mode=request.model_route_mode,
                     requested_provider=request.model_provider,
                     requested_model=request.model,
@@ -920,12 +1200,9 @@ class VNextConsolidationService:
                 )
             )
             if route.approval_required or route.route_mode == "model_disabled":
-                # Fail before any candidate writes, preserving the previous
-                # behavior where build_model_backed_artifact raised first.
                 raise VNextModelIntelligenceError("model-backed generation is not allowed by routing policy")
 
-        clustering = self._cluster_memories(domains=domains, sensitivity=sensitivity, options=options)
-        existing_candidates = _existing_cluster_candidates(self.store)
+        existing_candidates = _existing_cluster_candidates(self.store, projects=projects)
 
         proposals: list[JsonObject] = []
         skipped: list[str] = list(clustering.skipped)
@@ -980,6 +1257,7 @@ class VNextConsolidationService:
                 precomputed_embeddings=clustering.embedding_vectors,
             ).propose_rollups(
                 domains=domains,
+                projects=projects,
                 sensitivity_allowed=sensitivity,
                 options=rollup_options,
                 create_candidate_memories=request.create_candidate_memories,
@@ -995,18 +1273,6 @@ class VNextConsolidationService:
                 ],
             )
             candidate_ids.extend(rollups.candidate_ids)
-
-        cluster_membership = [
-            sorted(str(row.get("id")) for row in members) for members in clustering.clusters
-        ]
-        run_digest = _digest_payload(
-            {
-                "cluster_membership": cluster_membership,
-                "similarity_threshold": options.similarity_threshold,
-                "min_cluster_size": options.min_cluster_size,
-                "embedded_count": clustering.embedded_count,
-            }
-        )
 
         content = self._render_markdown(
             request=request,
@@ -1059,6 +1325,7 @@ class VNextConsolidationService:
             "scheduler_run_id": request.run_id,
             "review_status": "needs_review",
             "generation_mode": request.generation_mode,
+            "project_scope": list(projects),
             "source_refs": report_source_refs,
             "consolidation_digest": run_digest,
             "candidate_memory_ids": candidate_ids,

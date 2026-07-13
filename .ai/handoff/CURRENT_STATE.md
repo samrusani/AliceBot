@@ -2,102 +2,94 @@
 
 ## Snapshot
 
-- `v0.9.4` is the latest published release: a security and reliability hotfix
-  over v0.9.2 that supersedes the withdrawn `v0.9.3` candidate. It carries the
-  original five v0.9.3 fixes — lifecycle state-machine defects (one central
-  transition table), expire/unexpire row-locking races, a migration-0083
-  identifier-reservation bug (corrective migration 0084), project-scoped
-  capture persistence, and hard people/time filter pagination — and
-  attempted the nine P1 remediations from the second external audit. A third
-  independent audit found partial fixes and regressions; do not treat the
-  v0.9.4 remediation claims as proof that those findings are closed.
-  It is tagged and published on PyPI and GitHub as an immutable release, with
-  Trusted Publishing attestations, and its artifact digests are recorded in
-  `docs/release/v0.9.4-checksums.txt`. It replaces `v0.9.2` as the latest
-  published release.
-- `v0.9.2` is now a prior published release: security and reliability
-  hardening — project-bound agent authorization, lifecycle and upgrade
-  correctness, safe local SQLite backup/restore, truthful retrieval
-  contracts, patched web dependencies, packaging, and release evidence. It
-  also carries the round-2..6 retrieval and memory features already recorded
-  in the changelog. It remains tagged and published on PyPI and GitHub, but is
-  no longer the latest published release — `v0.9.4` is.
-- `v0.9.3` was an internal security-hotfix candidate carrying five P1 fixes.
-  A follow-up external audit returned NO-GO with nine additional P1 findings,
-  so `v0.9.3` was withdrawn and never published. Nothing for `v0.9.3` ever
-  reached PyPI or GitHub.
-- `v0.10.2` is the active audit-remediation development candidate over the
-  immutable v0.9.4 tag. Correctness and release-evidence repair take priority
-  over feature work. No `v0.10.2` work is published yet.
-- Alice is a local-first continuity layer for AI agents. Agent developers
-  are the primary customer.
+- `v0.10.2` is the latest published release. It is available from PyPI and
+  GitHub, and its exact wheel and source-distribution digests are recorded in
+  `docs/release/v0.10.2-checksums.txt`.
+- The historical LongMemEval_s result is **79.4% (397/500)** from one run on
+  2026-07-07. It is a historical benchmark receipt, not a fresh v0.10.2
+  measurement and not a repeated-run estimate.
+- Alice is a local-first continuity layer for AI agents. Agent developers are
+  the primary customer.
+- `main` plus the reviewed remediation tree form the `v0.10.3` release
+  candidate. It is unreleased until it passes exact-SHA gates, an annotated
+  tag, PyPI publication, and the final GitHub Release through the
+  transactional release workflow.
 
-## What `v0.10.2` Targets
+## What `v0.10.2` Shipped
 
-`v0.10.2` is the reopened development-cycle candidate over the published
-`v0.9.4` baseline. It is a third-audit remediation cycle; unrelated feature
-work remains paused. No `v0.10.2` work has shipped yet. Release requires every
-reviewer repair, the canonical local gates, independent re-review, and the
-protected semantic gate to pass against one exact clean SHA.
+`v0.10.2` carries the third-audit remediation and the corrected semantic release
+gate. The published release includes:
 
-After the remediation gate is independently approved, resume feature work:
+- one signed-vector write contract across eval seeding and backfills;
+- production-compatible vector participation evidence on all 48 vector queries;
+- scope/status/domain/sensitivity-aware atomic capture deduplication;
+- fail-closed lifecycle-cycle detection and duplicate-pointer repair;
+- people/time predicates pushed into persistence with bulk edge resolution;
+- iterative HNSW scanning with pgvector 0.8+ enforcement;
+- full first-party mypy, web typecheck, browser/accessibility, coverage, package,
+  and installed-artifact gates; and
+- structured repository-control and semantic exact-SHA attestations.
 
-- **Multi-session synthesis** — still the weakest published LongMemEval
-  category; measure and improve aggregation-aware retrieval without overfitting
-  the development slice.
-- **Dogfood daily** — run real agent workflows with an embedding endpoint and
-  measure correction quality, review burden, project-scope usability, and
-  end-to-end latency.
-- **Reference integrations** — deeper examples for popular agent frameworks on
-  the eleven-tool core surface.
+The release notes and checksum record are the authoritative publication receipt:
 
-The active remediation also clears the third-audit findings:
+- `docs/release/v0.10.2-release-notes.md`
+- `docs/release/v0.10.2-checksums.txt`
 
-- **Full-package mypy + web typecheck** — extend static typing across the full
-  package and add the web typecheck to the gate set.
-- **Packaged-README PyPI links** — fix the packaged-README links that render on
-  the PyPI project page.
-- **Backup/restore hardening** — harden the local backup/restore path beyond
-  the v0.9.x baseline.
-- **N+1 retrieval fan-out** — remove the N+1 fan-out in retrieval.
-- **Non-finite embedding validation** — validate and reject non-finite
-  embedding values before persistence.
-- **Related items** — the remaining P2 cleanup recorded in the audit backlog.
-- **Release evidence** — a configured exact-SHA semantic eval must persist and
-  retrieve fully signed vectors, record positive vector candidate
-  participation, and produce an attested report consumed by publication.
-- **Correctness follow-ups** — complete hard filters, scoped/atomic capture
-  dedupe, fail-closed lifecycle graphs, truthful rollups, cohesive grouping,
-  pgvector version enforcement, and backup/restore input stability.
-- **Web quality** — thread-keyed drafts, independent outage degradation,
-  type-safe tests, real-browser navigation, accessibility, and performance
-  budgets.
+## What `v0.10.3` Targets
+
+The `v0.10.3` candidate remediates the fourth external audit's 13 confirmed
+release-blocking findings and their independent-review correction passes:
+
+- multi-project scope enforced through every synthesis, consolidation,
+  scheduler, and retrieval path, with explicit `project_scope: []` treated as
+  authoritative;
+- coherent consolidation dedup (one active representative; legacy proposals
+  repaired) and locked review/lifecycle transitions on every surface;
+- inferred retrieval domains as disclosure-only ranking hints and scoped
+  supplemental retrieval that deepens fail-closed instead of truncating;
+- a real ChatGPT conversation parser (order, roles, branch-aware timestamps,
+  one source per conversation);
+- contained best-effort embedding/grounding failure boundaries, per-user
+  fenced scheduler claims, durable idempotent response jobs, and provider I/O
+  outside database transactions;
+- bounded workspace/trace reads with authoritative counts, indexed capture
+  dedupe, and a PostgreSQL connection pool (migrations `0087`–`0089`); and
+- draft-first transactional publication, live ruleset auditing, mode-aware
+  control-document truth, canonical coverage attribution with per-file
+  floors, and per-operation OpenAPI contracts.
+
+No unreleased change should be described as part of v0.10.2. The `v0.10.3`
+candidate publishes only after independent review and the canonical release
+gates pass on one exact clean SHA.
 
 ## Published Evidence
 
-- The historical LongMemEval_s result is **79.4% (397/500)** from one run on
-  2026-07-07. Per-question rows and protocol receipts are committed under
-  `docs/benchmarks/longmemeval/`.
-- The result has not been replicated and is not a `v0.9.4` measurement.
-- The scale envelope is a single-machine synthetic benchmark, not a
+- The 2026-07-07 LongMemEval_s run, methodology, and per-question rows live
+  under `docs/benchmarks/longmemeval/`.
+- The result has not been replicated. Treat small single-run deltas as noise.
+- The published scale envelope is a single-machine synthetic benchmark, not a
   concurrent load test.
+- The v0.10.2 semantic release gate used Postgres/pgvector and an OpenAI
+  `text-embedding-3-small` compatible 1536-dimensional endpoint. All 48 vector
+  queries produced at least one signed candidate.
 
 ## Release Boundary
 
-`v0.9.4` is tagged and immutable, with Trusted Publishing attestations and
-digests recorded in `docs/release/v0.9.4-checksums.txt`. Its publish workflow
-passed unit, LongMemEval, packaging, and artifact checks, but it did not run a
-successful configured semantic-vector release eval. A later audit also found
-that the bundled eval seeded vectors without the production signature. The
-repository therefore does not claim that v0.9.4 cleared the current canonical
-release boundary. `v0.10.2` is releasable only after every gate passes on one
-exact clean SHA, the semantic report proves nonzero signed-vector candidates,
-and an independent reviewer reports no release blocker.
+`v0.10.2` is tagged, published, and immutable. Its PyPI files carry Trusted
+Publishing provenance, and their hashes match
+`docs/release/v0.10.2-checksums.txt`. The source tag remains the release
+boundary; later commits on `main` are not silently part of that release.
+
+Future publication is transactional: exact-SHA preflight and semantic evidence
+must pass, verified bytes are published to PyPI, and only then may the workflow
+create the stable immutable GitHub Release with those same artifacts. A failed
+PyPI step must never leave a new stable GitHub Release claiming availability.
 
 ## Product Boundaries
 
-- Local-first, single-user, self-hosted.
+- Public-alpha, pre-1.0, local-first, single-user, and self-hosted.
 - No hosted service or SLA.
-- No managed OAuth connectors.
+- Gmail and Calendar have manual operator-token backends, but Alice does not
+  provide a managed OAuth consent/account-linking flow or automatic polling.
 - No silent capture from arbitrary conversations.
 - Durable agent writes remain policy-checked and reviewable.

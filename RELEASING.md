@@ -1,9 +1,8 @@
 # Releasing Alice
 
-`v0.9.4` is the latest published release. `v0.10.0` is an unshipped
-development candidate until the procedure below completes on one exact clean
-commit and an independent reviewer reports no blocker. Preparing a candidate
-does not authorize a tag, GitHub release, or PyPI upload.
+`v0.10.2` is the latest published release. `main` plus the reviewed
+remediation tree form the `v0.10.3` candidate. Preparing a candidate does not
+authorize a tag, PyPI upload, or GitHub Release.
 
 ## One Release Identity
 
@@ -32,6 +31,39 @@ readback:
    release pull requests by administrative merge after those checks pass, which
    is the audited release route. The controls below gate *what publishes*, not
    *who approves the merge*. Keep `main` branch protection enabled as well.
+   Before every release, run the read-only ruleset drift check so a renamed CI
+   job cannot silently remove a current release-critical context. Additional
+   organization-level required checks are allowed:
+
+   ```bash
+   GITHUB_TOKEN="$(gh auth token)" python scripts/check_github_release_checks.py \
+     --repo OWNER/REPOSITORY --sha RELEASE_SHA --check-rulesets
+   ```
+
+   If that readback reports drift in `MainProtect`, an authorized repository
+   administrator can prepare and inspect an update that preserves every
+   current condition, bypass actor, and non-status rule while replacing only
+   the required status-check list with the repository constant:
+
+   ```bash
+   REPOSITORY="OWNER/REPOSITORY"
+   RULESET_ID="$(gh api "repos/${REPOSITORY}/rulesets" \
+     --jq '.[] | select(.name == "MainProtect" and .target == "branch") | .id')"
+   test -n "$RULESET_ID"
+   gh api "repos/${REPOSITORY}/rulesets/${RULESET_ID}" \
+     > /tmp/alice-mainprotect-current.json
+   python -m scripts.prepare_mainprotect_update \
+     --input /tmp/alice-mainprotect-current.json \
+     --output /tmp/alice-mainprotect-update.json
+   python -m json.tool /tmp/alice-mainprotect-update.json
+   gh api --method PUT "repos/${REPOSITORY}/rulesets/${RULESET_ID}" \
+     --input /tmp/alice-mainprotect-update.json
+   GITHUB_TOKEN="$(gh auth token)" python scripts/check_github_release_checks.py \
+     --repo "$REPOSITORY" --sha RELEASE_SHA --check-rulesets
+   ```
+
+   The `PUT` is the state-changing step. Review the generated JSON and obtain
+   repository-administrator authorization before running it.
 3. Protect stable `v*` tags from mutation or deletion.
 4. Enable immutable GitHub releases for the repository.
 5. Configure PyPI trusted publishing for this repository, the pinned publish
@@ -41,7 +73,8 @@ readback:
    transcript, revoke and replace it at the provider. Do not paste or print the
    old or replacement value while checking that local `.env` files remain
    ignored by Git.
-7. Immediately before publishing, after the exact stable tag exists, verify
+7. Immediately before publishing, after the exact stable tag exists but before
+   any stable GitHub Release exists, verify
    items 1-6 by readback for that tag and commit. Then set the repository
    variable `ALICE_RELEASE_CONTROLS_ATTESTATION` to the credentialless JSON
    contract below. Publication fails closed when the variable is missing,
@@ -125,8 +158,9 @@ unbacked production database.
 
 The gate performs correctness-only Python linting, normal cross-module mypy
 over the complete first-party production/release-tool surface, unit coverage,
-PostgreSQL integration tests, every model-free LongMemEval test, and the
-offline evidence replay. Web gates include units, core plus vNext per-file coverage,
+PostgreSQL integration tests, every model-free LongMemEval test, the checked-in
+compact dataset-manifest/slice consistency contract, and the offline evidence
+replay. Web gates include units, core plus vNext per-file coverage,
 TypeScript, lint, the production build, navigation/axe/outage browser
 tests, and bundle budgets. It also builds both distributions, runs Twine, and
 tests the installed wheel/sdist across all four public entrypoints. It first
@@ -215,44 +249,106 @@ verified:
 3. Create an annotated `vX.Y.Z` tag on that SHA. Lightweight tags are rejected.
 4. Run `python scripts/release_check.py --tag vX.Y.Z --expected-sha SHA
    --require-main-head --require-clean`; the publish workflow repeats the same
-   identity check on the release event.
+   identity check from the exact tag dispatch.
 5. Read back the external controls again and set the release-specific
    `ALICE_RELEASE_CONTROLS_ATTESTATION` for that repository, tag, and SHA with
    fresh `verified_at` and `expires_at` values.
 6. Confirm the protected semantic gate succeeded on that exact SHA and inspect
    its credential-free report and attestation artifact.
-7. Create a non-draft, non-prerelease GitHub release from that tag.
+7. Confirm no stable GitHub Release exists for the tag. Any existing release
+   must be the recoverable draft left by an earlier attempt. Then dispatch the
+   transactional workflow from the tag itself:
+
+   ```bash
+   gh workflow run publish-pypi.yml --ref vX.Y.Z \
+     -f release_tag=vX.Y.Z -f publication_mode=publish
+   ```
+
+   Do not create the GitHub Release manually. The workflow stages the verified
+   draft before PyPI and makes it stable only after PyPI accepts the same bytes.
 
 The `Publish to PyPI` workflow then:
 
-- rejects a prerelease or mismatched tag;
+- rejects a mismatched dispatch/tag identity or an already-existing stable
+  GitHub Release; an existing matching draft is refreshed and reverified;
 - rejects a missing, invalid, stale, wrong-repository, wrong-tag, wrong-SHA, or
   incomplete repository-control attestation;
+- reads the live active branch rulesets and rejects a ruleset that omits any
+  current release-critical workflow context, while allowing additional policy
+  checks;
 - independently rejects missing exact-SHA semantic report/attestation evidence
   or release documents whose structured publication/checksum state is
   inconsistent;
 - rejects a lightweight tag;
 - requires the tag commit to equal the exact `origin/main` head;
 - rejects a version already present on PyPI;
-- builds the wheel and sdist once;
+- builds the wheel and sdist under pinned build backends and a commit-derived
+  `SOURCE_DATE_EPOCH`, then rejects a byte-different reproducibility rebuild;
 - tests those exact bytes and records their SHA-256 digests;
+- stages a draft GitHub Release containing those exact verified files, the
+  checksum manifest, and a body rendered only from structured identity fields;
+- reads the draft assets back and byte-compares them before any upload to
+  PyPI;
 - publishes the downloaded, checksum-verified artifacts through the protected
-  `pypi` environment.
+  `pypi` environment; and
+- only after the PyPI job succeeds, verifies the staged files against PyPI's
+  recorded SHA-256 digests and makes that same draft non-draft and immutable.
 
-Never rebuild between verification and publication. PyPI files are immutable;
-if a publication partially succeeds, diagnose the published state and issue a
-new patch version rather than reusing the version.
+### Recovering finalization after PyPI succeeds
+
+The workflow deliberately stages and verifies a draft before crossing the
+PyPI boundary. If PyPI succeeds but GitHub finalization or readback fails,
+first rerun only the failed `finalize-github-release` job in the original run.
+That job downloads the already-staged draft assets, checks `SHA256SUMS`, and
+requires every wheel/sdist filename and digest to exactly match PyPI before it
+can remove draft status.
+
+If the original run can no longer be retried, dispatch the explicit recovery
+mode from the same annotated tag:
+
+```bash
+gh workflow run publish-pypi.yml --ref vX.Y.Z \
+  -f release_tag=vX.Y.Z -f publication_mode=finalize-existing-draft
+```
+
+Recovery does not rebuild, upload, or select files. It requires the existing
+draft for the exact tag, downloads its attached artifacts, verifies their
+manifest, compares their SHA-256 digests with PyPI, regenerates the neutral body
+from the tag/SHA/checksum fields, and finalizes only that draft. A missing
+draft, changed file set, digest mismatch, non-annotated tag, or wrong SHA fails
+closed. If finalization succeeded but the runner died before readback, the same
+mode accepts the already-stable release only after re-verifying the exact tag,
+body, three-asset set, checksum manifest, and PyPI digests. Do not run normal
+publish mode after PyPI already contains the version.
+
+PyPI uploads wheel and sdist as separate requests. If PyPI accepted only one
+file before an upload failure, use the protected resume mode:
+
+```bash
+gh workflow run publish-pypi.yml --ref vX.Y.Z \
+  -f release_tag=vX.Y.Z -f publication_mode=resume-pypi-and-finalize
+```
+
+That mode requires the exact staged draft, enforces an asset set containing
+only one wheel, one sdist, and `SHA256SUMS`, and proves every file already on
+PyPI is a byte-identical subset of the staged distributions. The protected
+`pypi` job then skips the verified existing file and uploads only the missing
+file. Finalization still requires the complete PyPI file set and digests to
+match the staged draft. An unexpected filename or changed digest fails closed.
 
 ## After Publication
 
-Verify the GitHub release, a clean install from PyPI, and the published file
+Verify the GitHub Release, a clean install from PyPI, and the published file
 hashes against PyPI's integrity attestations (which bind each file to this
-repository, the tag, the workflow, the exact commit, the release event, and
-the `pypi` environment). Because immutable releases cannot take assets after
-publication, the durable checksum record lives in the repository: record the
-published wheel and sdist SHA-256 digests in
+repository, the tag, the workflow, the exact commit, and the `pypi`
+environment). The transactional workflow attaches the verified files before
+the release becomes immutable. The durable checksum record also lives in the
+repository: record the published wheel and sdist SHA-256 digests in
 `docs/release/vX.Y.Z-checksums.txt` as part of the post-publication commit,
 which also updates remaining active control-document status language to say
 the version is published. That truth change is a separate, evidence-backed
 commit; the tagged changelog and release notes were already finalized before
 the tag and must not have claimed publication early.
+
+Verify checksum files on Linux with `sha256sum -c SHA256SUMS` and on stock
+macOS with `shasum -a 256 -c SHA256SUMS`.

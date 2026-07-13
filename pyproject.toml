@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "alice-memory"
-version = "0.10.2"
+version = "0.10.3"
 description = "Alice: the continuity layer for AI agents. Local-first memory with provenance, open loops, resumption, and review-governed writes."
 readme = "README.md"
 license = "MIT"
@@ -12,7 +12,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Sami Rusani" }]
 requires-python = ">=3.12"
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -23,7 +23,7 @@ dependencies = [
   "alembic>=1.14,<2.0",
   "fastapi>=0.115,<1.0",
   "numpy>=1.26,<3.0",
-  "psycopg[binary]>=3.2,<4.0",
+  "psycopg[binary,pool]>=3.2,<4.0",
   "redis>=5.0,<6.0",
   "sqlalchemy>=2.0,<3.0",
   "uvicorn>=0.34,<1.0",

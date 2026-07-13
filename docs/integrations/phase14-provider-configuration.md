@@ -114,6 +114,7 @@ The provider-test flow persists normalized invocation telemetry with status, lat
 ```bash
 curl -sS -X POST "http://127.0.0.1:8000/v1/runtime/invoke" \
   -H "Authorization: Bearer $SESSION_TOKEN" \
+  -H "Idempotency-Key: provider-runtime-$(uuidgen)" \
   -H "Content-Type: application/json" \
   -d '{
     "provider_id": "'"$PROVIDER_ID"'",

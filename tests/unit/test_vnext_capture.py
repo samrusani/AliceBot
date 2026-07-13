@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 
+import alicebot_api.vnext_capture as vnext_capture
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_capture import (
@@ -123,6 +124,31 @@ def test_capture_text_preserves_raw_source_before_normalization_and_links_candid
         "memory.candidate_created",
         "memory.candidate_created",
     ]
+
+
+def test_capture_can_defer_embedding_with_internal_handoff_and_unchanged_public_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = InMemoryVNextCaptureStore()
+    attach_calls: list[object] = []
+    monkeypatch.setattr(
+        vnext_capture,
+        "attach_memory_embeddings",
+        lambda *args, **kwargs: attach_calls.append((args, kwargs)),
+    )
+
+    result = VNextCaptureService(store, defer_embeddings=True).capture_text(
+        "Fact: Deferred vector one is durable.\nFact: Deferred vector two is durable."
+    )
+
+    assert attach_calls == []
+    assert len(result.deferred_embedding_inputs) == 2
+    assert [item.memory_id for item in result.deferred_embedding_inputs] == [
+        "memory-1",
+        "memory-2",
+    ]
+    assert all(item.canonical_text for item in result.deferred_embedding_inputs)
+    assert "deferred_embedding_inputs" not in result.to_record()
 
 
 def test_capture_text_deduplicates_existing_content_by_hash() -> None:
@@ -282,7 +308,7 @@ def test_import_markdown_folder_logs_failed_imports_and_continues(tmp_path: Path
     assert failure_events[0]["payload_json"]["error_type"] == "UnicodeDecodeError"
 
 
-def test_import_chatgpt_export_extracts_message_text_and_preserves_raw_json(tmp_path: Path) -> None:
+def test_import_chatgpt_export_preserves_roles_without_duplicating_raw_json(tmp_path: Path) -> None:
     export_path = tmp_path / "conversations.json"
     export_payload = {
         "conversations": [
@@ -303,12 +329,218 @@ def test_import_chatgpt_export_extracts_message_text_and_preserves_raw_json(tmp_
 
     result = service.import_chatgpt_export_file(export_path)
 
-    assert result.status == "imported"
-    assert result.candidate_memory_count == 1
+    assert result.status == "ok"
+    assert result.imported_count == 1
+    assert result.duplicate_count == 0
+    assert result.source_ids == ("source-1",)
     assert store.sources[0]["source_type"] == "chatgpt_export"
-    assert store.sources[0]["metadata_json"]["raw_json"] == export_payload
-    assert store.chunks[0]["text"] == "Fact: ChatGPT exports should preserve provenance."
-    assert store.memories[0]["canonical_text"] == "ChatGPT exports should preserve provenance."
+    assert store.sources[0]["title"] == "Alice vNext"
+    assert store.sources[0]["external_id"] == "conversation-1"
+    assert store.sources[0]["captured_at"].endswith("Z")
+    metadata = store.sources[0]["metadata_json"]
+    assert "raw_json" not in metadata
+    assert metadata["export_conversation_count"] == 1
+    assert metadata["conversation_index"] == 1
+    assert metadata["conversation_id"] == "conversation-1"
+    assert metadata["conversation_title"] == "Alice vNext"
+    assert metadata["message_count"] == 1
+    assert metadata["export_sha256"].startswith("sha256:")
+    assert store.chunks[0]["text"] == (
+        "[CONVERSATION]: conversation-1\n"
+        "[TITLE]: Alice vNext\n"
+        "[USER]: Fact: ChatGPT exports should preserve provenance."
+    )
+    assert store.memories[0]["canonical_text"] == (
+        "[USER]: Fact: ChatGPT exports should preserve provenance."
+    )
+    assert store.memories[0]["metadata_json"]["provenance_role"] == "user"
+
+
+def test_import_chatgpt_export_orders_mapping_graph_and_preserves_timestamps_and_repeats(
+    tmp_path: Path,
+) -> None:
+    export_path = tmp_path / "conversations.json"
+    repeated = "I paid $50 for the taxi."
+    export_payload = [
+        {
+            "id": "conversation-out-of-order",
+            "title": "Out-of-order mapping",
+            "create_time": 1704067200,
+            "update_time": "1704067203",
+            "current_node": "child-2",
+            # Deliberately reverse lexical and insertion order. Parent/child
+            # links, not opaque IDs, define the transcript.
+            "mapping": {
+                "child-2": {
+                    "id": "child-2",
+                    "parent": "child-1",
+                    "children": [],
+                    "message": {
+                        "author": {"role": "user"},
+                        "create_time": 1704067202,
+                        "content": {"parts": [repeated]},
+                    },
+                },
+                "root": {
+                    "id": "root",
+                    "parent": None,
+                    "children": ["child-1"],
+                    "message": {
+                        "author": {"role": "user"},
+                        "create_time": 1704067200,
+                        "content": {"parts": [repeated]},
+                    },
+                },
+                "child-1": {
+                    "id": "child-1",
+                    "parent": "root",
+                    "children": ["child-2"],
+                    "message": {
+                        "author": {"role": "assistant"},
+                        "create_time": 1704067201,
+                        "content": {"parts": ["That amount is recorded."]},
+                    },
+                },
+            },
+        },
+        {
+            "conversation_id": "conversation-second",
+            "title": "Second conversation",
+            "messages": [
+                {
+                    "author": {"role": "assistant"},
+                    "create_time": "2024-02-03T04:05:06Z",
+                    "content": {"parts": ["The second conversation stays separate."]},
+                }
+            ],
+        },
+    ]
+    export_path.write_text(json.dumps(export_payload), encoding="utf-8")
+    store = InMemoryVNextCaptureStore()
+
+    result = VNextCaptureService(store).import_chatgpt_export_file(export_path)
+
+    assert result.status == "ok"
+    assert result.imported_count == 2
+    assert result.source_ids == ("source-1", "source-2")
+    assert len(store.sources) == 2
+    first_transcript = store.sources[0]["metadata_json"]["raw_text"]
+    second_transcript = store.sources[1]["metadata_json"]["raw_text"]
+    assert first_transcript.index("[USER]: I paid $50 for the taxi.") < first_transcript.index(
+        "[ASSISTANT]: That amount is recorded."
+    )
+    assert first_transcript.rindex("[USER]: I paid $50 for the taxi.") > first_transcript.index(
+        "[ASSISTANT]: That amount is recorded."
+    )
+    assert first_transcript.count("[USER]: I paid $50 for the taxi.") == 2
+    assert "[AT]: 2024-01-01T00:00:00Z" in first_transcript
+    assert "[AT]: 2024-02-03T04:05:06Z" not in first_transcript
+    assert "[AT]: 2024-02-03T04:05:06Z" in second_transcript
+    assert "[CONVERSATION]: conversation-second" not in first_transcript
+    assert "[CONVERSATION]: conversation-out-of-order" not in second_transcript
+    assert store.sources[0]["external_id"] == "conversation-out-of-order"
+    assert store.sources[1]["external_id"] == "conversation-second"
+    assert store.sources[0]["source_created_at"] == "2024-01-01T00:00:00Z"
+    assert store.sources[0]["source_modified_at"] == "2024-01-01T00:00:03Z"
+    assert store.sources[1]["source_created_at"] == "2024-02-03T04:05:06Z"
+    assert store.sources[1]["source_modified_at"] == "2024-02-03T04:05:06Z"
+    assert [source["metadata_json"]["message_count"] for source in store.sources] == [3, 1]
+    assert [source["metadata_json"]["conversation_index"] for source in store.sources] == [1, 2]
+    assert all("raw_json" not in source["metadata_json"] for source in store.sources)
+
+
+def test_import_chatgpt_export_derives_timestamp_bounds_across_branches(
+    tmp_path: Path,
+) -> None:
+    export_path = tmp_path / "conversations.json"
+    export_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "branched-timestamps",
+                    "title": "Branched timestamps",
+                    "current_node": "active",
+                    "mapping": {
+                        "root": {
+                            "parent": None,
+                            "children": ["alternate", "active"],
+                            "message": {
+                                "author": {"role": "user"},
+                                "create_time": 100,
+                                "content": {"parts": ["Start"]},
+                            },
+                        },
+                        "active": {
+                            "parent": "root",
+                            "children": [],
+                            "message": {
+                                "author": {"role": "assistant"},
+                                "create_time": 300,
+                                "content": {"parts": ["Active branch"]},
+                            },
+                        },
+                        "alternate": {
+                            "parent": "root",
+                            "children": [],
+                            "message": {
+                                "author": {"role": "assistant"},
+                                "create_time": 200,
+                                "content": {"parts": ["Alternate branch"]},
+                            },
+                        },
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    store = InMemoryVNextCaptureStore()
+
+    result = VNextCaptureService(store).import_chatgpt_export_file(export_path)
+
+    assert result.imported_count == 1
+    assert store.sources[0]["source_created_at"] == "1970-01-01T00:01:40Z"
+    assert store.sources[0]["source_modified_at"] == "1970-01-01T00:05:00Z"
+
+
+def test_import_chatgpt_export_persists_identical_conversations_separately_and_dedupes_reimport(
+    tmp_path: Path,
+) -> None:
+    export_path = tmp_path / "conversations.json"
+    export_payload = [
+        {
+            "id": conversation_id,
+            "title": "Repeated transcript",
+            "messages": [
+                {
+                    "author": {"role": "user"},
+                    "create_time": 1704067200,
+                    "content": {"parts": ["The exact same message is intentionally repeated."]},
+                }
+            ],
+        }
+        for conversation_id in ("conversation-a", "conversation-b")
+    ]
+    export_path.write_text(json.dumps(export_payload), encoding="utf-8")
+    store = InMemoryVNextCaptureStore()
+    service = VNextCaptureService(store)
+
+    first = service.import_chatgpt_export_file(export_path)
+    export_path.write_text(json.dumps(list(reversed(export_payload))), encoding="utf-8")
+    second = service.import_chatgpt_export_file(export_path)
+
+    assert first.status == "ok"
+    assert first.imported_count == 2
+    assert len(store.sources) == 2
+    assert store.sources[0]["content_hash"] != store.sources[1]["content_hash"]
+    assert [source["external_id"] for source in store.sources] == [
+        "conversation-a",
+        "conversation-b",
+    ]
+    assert second.status == "duplicate"
+    assert second.imported_count == 0
+    assert second.duplicate_count == 2
+    assert len(store.sources) == 2
 
 
 def test_chunking_and_candidate_extraction_are_deterministic() -> None:
@@ -842,6 +1074,48 @@ def test_cross_batch_dedupe_degrades_when_store_lacks_list_memories() -> None:
     second = service.capture_text(f"Chat session s9 on 2026/07/08.\n\n{_OMEGA_LINE}\n\nExtra line.")
 
     assert first.status == "imported" and second.status == "imported"
+
+
+def test_user_asserted_dedupe_prefers_targeted_store_lookup() -> None:
+    class TargetedStore(InMemoryVNextCaptureStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.find_calls: list[dict[str, object]] = []
+
+        def find_live_memory_by_canonical_text(
+            self,
+            canonical_text: str,
+            *,
+            domain: str,
+            sensitivity: str,
+            project_scope: tuple[str, ...],
+        ) -> dict[str, object] | None:
+            self.find_calls.append(
+                {
+                    "canonical_text": canonical_text,
+                    "domain": domain,
+                    "sensitivity": sensitivity,
+                    "project_scope": project_scope,
+                }
+            )
+            return {"id": "existing"} if "Omega Seamaster" in canonical_text else None
+
+        def list_memories(self):
+            raise AssertionError("targeted stores must not scan every memory")
+
+    store = TargetedStore()
+
+    result = VNextCaptureService(store).capture_text(
+        f"{_OMEGA_LINE}\n[USER]: I also paid $40 for a replacement strap.",
+        domain="personal",
+        sensitivity="private",
+        project_scope=("Watches",),
+    )
+
+    assert result.candidate_memory_count == 1
+    assert len(store.find_calls) == 2
+    assert all(call["project_scope"] == ("Watches",) for call in store.find_calls)
+    assert store.memories[0]["canonical_text"].endswith("replacement strap.")
 
 
 # -- project-scoped capture threads its effective scope end-to-end (audit P1 #4) ------

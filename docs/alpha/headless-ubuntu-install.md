@@ -10,9 +10,9 @@ Supported assumptions for this alpha:
 - local Postgres with `pgvector >= 0.8.0` on the same host, or an existing Postgres reached through `DATABASE_URL`
 - services bound to `127.0.0.1` by default
 
-This is the current headless install path for Alice. Install development code
-from `--branch main` or use the latest published release tag (`v0.9.4`) for an
-immutable deployment.
+This is the current headless install path for Alice. Install unreleased
+development code from `--branch main` or use the latest published release tag
+(`v0.10.2`) for an immutable deployment.
 
 Historical note: `v0.5.1-vnext-preview` and `v0.6.0-alpha-rc.2` are older milestones kept for audit trail and rollback evidence. Do not install them for new setups; they predate the v0.6.0 overhaul (hybrid retrieval, consolidated core MCP surface, per-agent API keys).
 
@@ -40,7 +40,7 @@ less install-alice.sh
 bash install-alice.sh --branch main --install-dir ~/alicebot
 ```
 
-For an immutable install after a release tag is published, replace `--branch main` with `--tag <release-tag>` (currently `--tag v0.9.4`).
+For an immutable install after a release tag is published, replace `--branch main` with `--tag <release-tag>` (currently `--tag v0.10.2`).
 
 Use `--non-interactive` only after you have chosen a safe install directory and know whether the host should install local Postgres.
 

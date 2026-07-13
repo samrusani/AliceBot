@@ -46,7 +46,10 @@ def test_parser_routes_required_commands() -> None:
         (["vnext", "beliefs", "review", "belief-1", "--action", "challenge"], "_run_vnext_belief_review"),
         (["vnext", "beliefs", "state", "belief-1"], "_run_vnext_belief_state"),
         (["vnext", "projects", "update-candidate"], "_run_vnext_project_update_candidate"),
-        (["vnext", "projects", "review-update", "artifact-1", "--action", "accept"], "_run_vnext_project_update_review"),
+        (
+            ["vnext", "projects", "review-update", "artifact-1", "--action", "accept"],
+            "_run_vnext_project_update_review",
+        ),
         (["vnext", "projects", "dashboard", "project-1"], "_run_vnext_project_dashboard"),
         (["vnext", "open-loops", "extract"], "_run_vnext_open_loops_extract"),
         (["vnext", "open-loops", "review", "loop-1", "--action", "close"], "_run_vnext_open_loop_review"),
@@ -277,6 +280,14 @@ class FakeVNextCliStore:
         self.memories.append(row)
         return row
 
+    def get_memory_for_update(self, memory_id: str) -> dict[str, object] | None:
+        """Mirror the production locking read for single-threaded CLI tests."""
+
+        return next(
+            (memory for memory in self.memories if memory.get("id") == memory_id),
+            None,
+        )
+
     def update_memory(self, *, memory_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         for memory in self.memories:
             if memory["id"] == memory_id:
@@ -304,6 +315,7 @@ class FakeVNextCliStore:
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = 8,
+        **_filters: object,
     ) -> list[dict[str, object]]:
         del query, domains, sensitivity_allowed
         return self.memories[:limit]
@@ -315,6 +327,7 @@ class FakeVNextCliStore:
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = 8,
+        **_filters: object,
     ) -> list[dict[str, object]]:
         del query, domains, sensitivity_allowed
         return self.sources[:limit]
@@ -502,6 +515,11 @@ class FakeVNextCliStore:
     def get_artifact(self, artifact_id: str) -> dict[str, object] | None:
         return self.artifacts.get(artifact_id)
 
+    def get_artifact_for_update(self, artifact_id: str) -> dict[str, object] | None:
+        """Mirror the production locking read for single-threaded CLI tests."""
+
+        return self.artifacts.get(artifact_id)
+
     def list_artifacts(
         self,
         *,
@@ -509,16 +527,20 @@ class FakeVNextCliStore:
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = 4,
+        **_filters: object,
     ) -> list[dict[str, object]]:
         del domains, sensitivity_allowed
         rows = [
-            row
-            for row in self.artifacts.values()
-            if artifact_type is None or row.get("artifact_type") == artifact_type
+            row for row in self.artifacts.values() if artifact_type is None or row.get("artifact_type") == artifact_type
         ]
         return rows[:limit]
 
     def get_project(self, project_id: str) -> dict[str, object] | None:
+        return self.projects.get(project_id)
+
+    def get_project_for_update(self, project_id: str) -> dict[str, object] | None:
+        """Mirror the production locking read for single-threaded CLI tests."""
+
         return self.projects.get(project_id)
 
     def list_projects(
@@ -613,7 +635,9 @@ class FakeVNextCliStore:
                 run["finished_at"] = datetime.now(UTC).isoformat()
                 self.append_event(
                     {
-                        "event_type": "scheduler.run_succeeded" if run.get("status") == "succeeded" else "scheduler.run_failed",
+                        "event_type": "scheduler.run_succeeded"
+                        if run.get("status") == "succeeded"
+                        else "scheduler.run_failed",
                         "target_type": "scheduler_run",
                         "target_id": run_id,
                         "payload_json": {"workflow_type": run["workflow_type"]},
@@ -643,6 +667,7 @@ def test_vnext_capture_text_cli_uses_vnext_capture_service(monkeypatch) -> None:
         yield store
 
     monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+
     ctx = cli_module.CLIContext(
         settings=Settings(database_url="postgresql://db"),
         database_url="postgresql://db",
@@ -801,9 +826,7 @@ def test_agent_keys_cli_revoke_rejects_unknown_and_already_revoked_keys(monkeypa
         user_id=uuid4(),
     )
     parser = cli_module.build_parser()
-    create_args = parser.parse_args(
-        ["agent", "keys", "create", "--agent-id", "hermes", "--profile", "read_only_agent"]
-    )
+    create_args = parser.parse_args(["agent", "keys", "create", "--agent-id", "hermes", "--profile", "read_only_agent"])
     create_payload = json.loads(create_args.handler(ctx, create_args))
     prefix = create_payload["key"]["key_prefix"]
     revoke_args = parser.parse_args(["agent", "keys", "revoke", prefix])
@@ -881,9 +904,7 @@ def test_eval_run_cli_release_gate_partial_skip_exits_nonzero(monkeypatch, capsy
     assert payload["report"]["summary"]["skipped_suite_count"] == 1
 
 
-def test_eval_run_cli_release_gate_accepts_threshold_pass_with_case_misses(
-    monkeypatch, capsys
-) -> None:
+def test_eval_run_cli_release_gate_accepts_threshold_pass_with_case_misses(monkeypatch, capsys) -> None:
     report = _stub_eval_report("pass")
     report["summary"] = {
         "status": "pass",
@@ -1140,6 +1161,20 @@ def test_vnext_agentic_scheduler_smoke_cli_runs_required_gates(monkeypatch) -> N
         yield store
 
     monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+
+    def fake_run_due_workflows_durable(**kwargs):
+        return cli_module._scheduler_service(store).run_due_workflows(
+            limit=int(kwargs.get("limit", 10)),
+            triggered_by=str(kwargs.get("triggered_by", "scheduler")),
+            agent_identity=kwargs.get("agent_identity"),
+            policy_decision=kwargs.get("policy_decision"),
+        )
+
+    monkeypatch.setattr(
+        cli_module,
+        "run_due_workflows_durable",
+        fake_run_due_workflows_durable,
+    )
     ctx = cli_module.CLIContext(
         settings=Settings(database_url="postgresql://db"),
         database_url="postgresql://db",
@@ -1194,9 +1229,7 @@ def test_vnext_connection_cli_generates_reviews_and_lists_neighborhood(monkeypat
     )
     parser = cli_module.build_parser()
 
-    generate_args = parser.parse_args(
-        ["connections", "generate", "--domain", "project", "--max-connections", "1"]
-    )
+    generate_args = parser.parse_args(["connections", "generate", "--domain", "project", "--max-connections", "1"])
     review_args = parser.parse_args(["vnext", "graph", "review", "edge-1", "--action", "accept"])
     neighborhood_args = parser.parse_args(["vnext", "graph", "neighborhood", "source-1"])
 
@@ -1288,7 +1321,8 @@ def test_vnext_project_and_open_loop_cli(monkeypatch) -> None:
             "domain": "project",
             "sensitivity": "private",
             "metadata_json": {
-                "raw_text": "Project: Alice vNext needs project automation.\nTODO: validate dashboard Owner: Samir"
+                "project_scope": ["project-1"],
+                "raw_text": "Project: Alice vNext needs project automation.\nTODO: validate dashboard Owner: Samir",
             },
         }
     )
@@ -1446,6 +1480,722 @@ def test_resolve_user_id_prefers_flag_then_settings_then_env_then_default(monkey
     assert cli_module._resolve_user_id(settings_without_auth, None) == UUID(cli_module.DEFAULT_CLI_USER_ID)
 
 
+def test_build_context_applies_production_flags_before_scoped_validation(monkeypatch) -> None:
+    user_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setattr(
+        cli_module,
+        "get_settings",
+        lambda: (_ for _ in ()).throw(AssertionError("cached full settings must not load")),
+    )
+    args = cli_module.build_parser().parse_args(
+        [
+            "--database-url",
+            "postgresql://runtime:secret@db/alice",
+            "--user-id",
+            user_id,
+            "status",
+        ]
+    )
+
+    context = cli_module._build_context(args)
+
+    assert context.database_url == "postgresql://runtime:secret@db/alice"
+    assert context.user_id == UUID(user_id)
+    assert context.settings.app_env == "production"
+
+
+def test_build_context_accepts_environment_only_production_runtime(monkeypatch) -> None:
+    user_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://runtime:secret@db/alice")
+    monkeypatch.setenv("ALICEBOT_AUTH_USER_ID", user_id)
+    for key in (
+        "DATABASE_ADMIN_URL",
+        "S3_ACCESS_KEY",
+        "S3_SECRET_KEY",
+        "TELEGRAM_WEBHOOK_SECRET",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        cli_module,
+        "get_settings",
+        lambda: (_ for _ in ()).throw(AssertionError("hosted settings must not load")),
+    )
+
+    context = cli_module._build_context(cli_module.build_parser().parse_args(["status"]))
+
+    assert context.database_url == "postgresql://runtime:secret@db/alice"
+    assert context.user_id == UUID(user_id)
+
+
+def test_connector_config_enablement_is_tri_state() -> None:
+    parser = cli_module.build_parser()
+
+    preserved = parser.parse_args(["vnext", "connectors", "configure", "telegram"])
+    disabled = parser.parse_args(["vnext", "connectors", "configure", "telegram", "--no-enabled"])
+
+    assert preserved.enabled is None
+    assert disabled.enabled is False
+
+
+def test_checked_batch_output_keeps_json_and_signals_failure() -> None:
+    with pytest.raises(cli_module.PartialCommandFailure) as exc_info:
+        cli_module._checked_batch_output({"status": "partial", "imported_count": 1, "failed_count": 1})
+
+    assert json.loads(exc_info.value.output) == {
+        "status": "partial",
+        "imported_count": 1,
+        "failed_count": 1,
+    }
+
+
+def test_failed_queue_task_signals_cli_failure(monkeypatch) -> None:
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        yield object()
+
+    class Result:
+        def to_record(self):
+            return {"status": "failed", "failed_count": 1, "task": {"status": "failed"}}
+
+    class FakeQueueService:
+        def __init__(self, _store):
+            pass
+
+        def process_next_task(self):
+            return Result()
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(cli_module, "VNextQueueService", FakeQueueService)
+    context = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    args = cli_module.build_parser().parse_args(["vnext", "queue", "process-next"])
+
+    with pytest.raises(cli_module.PartialCommandFailure):
+        args.handler(context, args)
+
+
+def test_failed_due_scan_signals_cli_failure(monkeypatch) -> None:
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        yield object()
+
+    class Decision:
+        decision = "allowed"
+        effective_domains = ()
+        effective_project_scope = ()
+        effective_sensitivity_allowed = ("private",)
+
+        def to_record(self):
+            return {"decision": "allowed"}
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(
+        cli_module,
+        "_vnext_policy_checked_for_args",
+        lambda *_args, **_kwargs: (None, "scheduler", None, Decision()),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_due_workflows_durable",
+        lambda **_kwargs: {"due_count": 1, "failed_count": 1, "runs": []},
+    )
+    context = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    args = cli_module.build_parser().parse_args(["vnext", "scheduler", "run-due"])
+
+    with pytest.raises(cli_module.PartialCommandFailure):
+        args.handler(context, args)
+
+
+def test_foreground_once_scheduler_failure_signals_cli_failure(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "run_foreground_daemon",
+        lambda _config: {
+            "running": False,
+            "exit_code": 1,
+            "last_error": "1 scheduled workflow(s) failed",
+        },
+    )
+    context = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    args = cli_module.build_parser().parse_args(
+        [
+            "vnext",
+            "scheduler",
+            "daemon",
+            "start",
+            "--foreground",
+            "--once",
+        ]
+    )
+
+    with pytest.raises(cli_module.PartialCommandFailure):
+        args.handler(context, args)
+
+
+def test_deferred_embedding_provider_call_happens_between_transactions(monkeypatch) -> None:
+    transaction_open = False
+    calls: list[str] = []
+
+    class Result:
+        deferred_embedding_inputs = (object(),)
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        nonlocal transaction_open
+        transaction_open = True
+        calls.append("transaction_open")
+        try:
+            yield object()
+        finally:
+            transaction_open = False
+            calls.append("transaction_closed")
+
+    def fake_best_effort(_inputs, *, store_context, **_kwargs):
+        assert transaction_open is False
+        calls.append("provider")
+        with store_context():
+            assert transaction_open is True
+            calls.append("persist")
+        return 1
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(
+        cli_module,
+        "persist_deferred_memory_embeddings_best_effort",
+        fake_best_effort,
+    )
+    context = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+
+    cli_module._persist_deferred_capture_embeddings(context, Result())
+
+    assert calls == ["provider", "transaction_open", "persist", "transaction_closed"]
+
+
+def test_telegram_poll_happens_between_cli_transactions(monkeypatch) -> None:
+    transaction_depth = 0
+    calls: list[str] = []
+    poll_context = object()
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        nonlocal transaction_depth
+        transaction_depth += 1
+        calls.append("transaction_open")
+        try:
+            yield object()
+        finally:
+            transaction_depth -= 1
+            calls.append("transaction_closed")
+
+    class Result:
+        deferred_embedding_inputs = ()
+
+        def to_record(self):
+            return {"status": "ok", "failed_count": 0}
+
+    class FakeConnectorService:
+        def __init__(self, _store, *, defer_embeddings=False):
+            assert transaction_depth == 1
+
+        def prepare_telegram_poll(self, **_kwargs):
+            return poll_context
+
+        def get_config(self, _connector_name):
+            return {"config_json": {"allowed_chat_ids": ["chat-1"]}}
+
+        def sync_telegram_updates(self, updates, **_kwargs):
+            assert transaction_depth == 1
+            assert updates == [{"update_id": 1}]
+            calls.append("persist")
+            return Result()
+
+    def fake_poll(context, **_kwargs):
+        assert transaction_depth == 0
+        assert context is poll_context
+        calls.append("poll")
+        return [{"update_id": 1}]
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(cli_module, "VNextConnectorService", FakeConnectorService)
+    monkeypatch.setattr(cli_module, "poll_telegram_updates", fake_poll)
+    context = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    args = cli_module.build_parser().parse_args(["vnext", "connectors", "telegram", "sync"])
+
+    payload = json.loads(args.handler(context, args))
+
+    assert payload["status"] == "ok"
+    assert calls == [
+        "transaction_open",
+        "transaction_closed",
+        "poll",
+        "transaction_open",
+        "persist",
+        "transaction_closed",
+    ]
+
+
+def test_telegram_live_test_resolves_secret_and_polls_after_transaction(monkeypatch) -> None:
+    transaction_depth = 0
+    calls: list[str] = []
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        nonlocal transaction_depth
+        transaction_depth += 1
+        calls.append("transaction_open")
+        try:
+            yield object()
+        finally:
+            transaction_depth -= 1
+            calls.append("transaction_closed")
+
+    class FakeConnectorService:
+        def __init__(self, _store):
+            assert transaction_depth == 1
+
+        def get_config(self, _connector_name):
+            return {
+                "configured": True,
+                "enabled": True,
+                "secret_ref": "telegram.test.token",
+                "config_json": {"allowed_chat_ids": ["chat-1"]},
+            }
+
+        def get_cursor(self, _connector_name):
+            return "41"
+
+    class FakeSecretProvider:
+        def get_secret(self, secret_ref):
+            assert transaction_depth == 0
+            assert secret_ref == "telegram.test.token"
+            calls.append("secret")
+            return "test-token"
+
+    def fake_poll(context, **_kwargs):
+        assert transaction_depth == 0
+        assert context.token == "test-token"
+        assert context.cursor == "41"
+        calls.append("poll")
+        return []
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(cli_module, "VNextConnectorService", FakeConnectorService)
+    monkeypatch.setattr(cli_module, "default_secret_provider", lambda: FakeSecretProvider())
+    monkeypatch.setattr(cli_module, "poll_telegram_updates", fake_poll)
+    context = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    args = cli_module.build_parser().parse_args(["vnext", "connectors", "telegram", "test", "--live"])
+
+    payload = json.loads(args.handler(context, args))
+
+    assert payload["live_poll"] == "ok"
+    assert payload["secret_resolved"] is True
+    assert calls == ["transaction_open", "transaction_closed", "secret", "poll"]
+
+
+def test_local_folder_scan_happens_before_cli_transaction(monkeypatch) -> None:
+    transaction_depth = 0
+    calls: list[str] = []
+    scan_result = object()
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        nonlocal transaction_depth
+        transaction_depth += 1
+        calls.append("transaction_open")
+        try:
+            yield object()
+        finally:
+            transaction_depth -= 1
+            calls.append("transaction_closed")
+
+    class Result:
+        deferred_embedding_inputs = ()
+
+        def to_record(self):
+            return {"status": "ok", "failed_count": 0}
+
+    class FakeConnectorService:
+        def __init__(self, _store, *, defer_embeddings=False):
+            assert transaction_depth == 1
+
+        def sync_local_folder_scan(self, scan, **_kwargs):
+            assert transaction_depth == 1
+            assert scan is scan_result
+            calls.append("persist")
+            return Result()
+
+    def fake_scan(paths, **_kwargs):
+        assert transaction_depth == 0
+        assert paths == ["/tmp/notes"]
+        calls.append("scan")
+        return scan_result
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(cli_module, "VNextConnectorService", FakeConnectorService)
+    monkeypatch.setattr(cli_module, "scan_local_folder", fake_scan)
+    context = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    args = cli_module.build_parser().parse_args(["vnext", "connectors", "local-folder", "sync", "--path", "/tmp/notes"])
+
+    payload = json.loads(args.handler(context, args))
+
+    assert payload["status"] == "ok"
+    assert calls == ["scan", "transaction_open", "persist", "transaction_closed"]
+
+
+def test_scheduler_cli_run_now_starts_after_policy_transaction(monkeypatch) -> None:
+    transaction_open = False
+    calls: list[str] = []
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        nonlocal transaction_open
+        transaction_open = True
+        calls.append("policy_open")
+        try:
+            yield object()
+        finally:
+            transaction_open = False
+            calls.append("policy_closed")
+
+    class Decision:
+        decision = "allowed"
+        effective_domains = ("project",)
+        effective_project_scope = ("alice",)
+        effective_sensitivity_allowed = ("private",)
+
+        def to_record(self):
+            return {"decision": "allowed"}
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(
+        cli_module,
+        "_vnext_policy_checked_for_args",
+        lambda *_args, **_kwargs: (None, "user", None, Decision()),
+    )
+
+    def fake_run_now(**kwargs):
+        assert transaction_open is False
+        calls.append("durable_execute")
+        assert kwargs["request"].projects == ("alice",)
+        return {"run": {"status": "succeeded"}, "artifact": {"id": "artifact-1"}}
+
+    monkeypatch.setattr(cli_module, "run_now_durable", fake_run_now)
+    context = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    args = cli_module.build_parser().parse_args(["vnext", "scheduler", "run-now", "daily_brief"])
+
+    payload = json.loads(args.handler(context, args))
+
+    assert payload["run"]["status"] == "succeeded"
+    assert calls == ["policy_open", "policy_closed", "durable_execute"]
+
+
+def test_cli_policy_telemetry_uses_bounded_agent_scoped_readers(monkeypatch) -> None:
+    calls: list[tuple[str, str | None, int]] = []
+
+    class Store:
+        def list_agent_events(self, *, agent_id, limit):
+            calls.append(("events", agent_id, limit))
+            return []
+
+        def list_agent_policy_artifacts(self, *, agent_id, limit):
+            calls.append(("artifacts", agent_id, limit))
+            return []
+
+        def list_agent_policy_memories(self, *, agent_id, limit):
+            calls.append(("memories", agent_id, limit))
+            return []
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        yield Store()
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    context = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    args = cli_module.build_parser().parse_args(
+        ["vnext", "agents", "policy-telemetry", "--agent-id", "hermes", "--limit", "999"]
+    )
+
+    payload = json.loads(args.handler(context, args))
+
+    assert "summary" in payload
+    assert calls == [
+        ("events", "hermes", 200),
+        ("artifacts", "hermes", 200),
+        ("memories", "hermes", 200),
+    ]
+
+
+def test_main_normalizes_expected_runtime_errors_without_traceback(monkeypatch, capsys) -> None:
+    class Parser:
+        def parse_args(self, _argv):
+            def fail(_ctx, _args):
+                raise RuntimeError("expected command failure")
+
+            return type("Args", (), {"handler": staticmethod(fail)})()
+
+    monkeypatch.setattr(cli_module, "build_parser", lambda: Parser())
+    monkeypatch.setattr(cli_module, "_validate_arguments", lambda _args: None)
+    monkeypatch.setattr(cli_module, "_build_context", lambda _args: object())
+
+    exit_code = cli_module.main(["anything"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == "error: expected command failure\n"
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize(
+    "handler_name",
+    ["_run_vnext_smoke_live_capture_connectors", "_run_vnext_smoke_connector_hardening"],
+)
+def test_connector_smoke_folder_scan_starts_outside_transaction(monkeypatch, handler_name) -> None:
+    transaction_depth = 0
+    calls: list[str] = []
+
+    class ScanObserved(RuntimeError):
+        pass
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        nonlocal transaction_depth
+        transaction_depth += 1
+        calls.append("transaction_open")
+        try:
+            yield object()
+        finally:
+            transaction_depth -= 1
+            calls.append("transaction_closed")
+
+    def stop_after_scan(_paths, **_kwargs):
+        assert transaction_depth == 0
+        calls.append("scan")
+        raise ScanObserved
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(cli_module, "scan_local_folder", stop_after_scan)
+    context = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+
+    with pytest.raises(ScanObserved):
+        getattr(cli_module, handler_name)(context, object())
+
+    assert calls == ["scan"]
+
+
+def test_memory_commit_defers_embedding_until_after_primary_transaction(monkeypatch) -> None:
+    transaction_open = False
+    calls: list[str] = []
+    deferred_input = object()
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        nonlocal transaction_open
+        transaction_open = True
+        calls.append("primary_open")
+        try:
+            yield object()
+        finally:
+            transaction_open = False
+            calls.append("primary_closed")
+
+    class FakeMemoryCommitService:
+        def __init__(self, _store, *, defer_embeddings: bool = False) -> None:
+            assert transaction_open is True
+            assert defer_embeddings is True
+            self.deferred_embedding_inputs = (deferred_input,)
+
+        def commit(self, *, identity, request):
+            assert transaction_open is True
+            assert identity is None
+            assert request.canonical_text == "Embedding work happens after commit."
+            calls.append("commit")
+            return {"status": "committed"}
+
+    def fake_persist(_ctx, inputs, **_kwargs) -> None:
+        assert transaction_open is False
+        assert inputs == (deferred_input,)
+        calls.append("embedding")
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(cli_module, "VNextMemoryCommitService", FakeMemoryCommitService)
+    monkeypatch.setattr(cli_module, "_persist_deferred_embedding_inputs", fake_persist)
+    context = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    args = cli_module.build_parser().parse_args(
+        [
+            "vnext",
+            "memories",
+            "commit",
+            "--title",
+            "Transaction boundary",
+            "--text",
+            "Embedding work happens after commit.",
+        ]
+    )
+
+    payload = json.loads(cli_module._run_vnext_memory_commit(context, args))
+
+    assert payload == {"status": "committed"}
+    assert calls == ["primary_open", "commit", "primary_closed", "embedding"]
+
+
+def test_memory_consolidation_defers_embedding_until_primary_transaction_closes(monkeypatch) -> None:
+    transaction_depth = 0
+    calls: list[str] = []
+    deferred_input = object()
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        nonlocal transaction_depth
+        transaction_depth += 1
+        try:
+            yield object()
+        finally:
+            transaction_depth -= 1
+
+    class FakeMemoryService:
+        def __init__(self, _store, *, defer_embeddings: bool = False) -> None:
+            assert transaction_depth == 1
+            assert defer_embeddings is True
+            self.deferred_embedding_inputs = (deferred_input,)
+
+        def accept_consolidation_candidate(self, memory_id: str, **_kwargs):
+            assert transaction_depth == 1
+            calls.append("accept")
+            return {"memory": {"id": memory_id, "status": "active"}}
+
+    def fake_persist(_ctx, deferred_inputs, **_kwargs) -> None:
+        assert transaction_depth == 0
+        assert deferred_inputs == (deferred_input,)
+        calls.append("embedding")
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(cli_module, "VNextMemoryCommitService", FakeMemoryService)
+    monkeypatch.setattr(cli_module, "_persist_deferred_embedding_inputs", fake_persist)
+    context = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    args = cli_module.build_parser().parse_args(
+        ["vnext", "memories", "accept-consolidation", "memory-1", "--reason", "Merge duplicates."]
+    )
+
+    payload = json.loads(cli_module._run_vnext_memory_accept_consolidation(context, args))
+
+    assert payload["memory"]["status"] == "active"
+    assert calls == ["accept", "embedding"]
+
+
+def test_project_review_defers_embedding_until_primary_transaction_closes(monkeypatch) -> None:
+    transaction_depth = 0
+    calls: list[str] = []
+    deferred_input = object()
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        nonlocal transaction_depth
+        transaction_depth += 1
+        try:
+            yield object()
+        finally:
+            transaction_depth -= 1
+
+    class FakeProjectService:
+        def __init__(self, _store, *, defer_embeddings: bool = False) -> None:
+            assert transaction_depth == 1
+            assert defer_embeddings is True
+            self.deferred_embedding_inputs = (deferred_input,)
+
+        def review_project_update(self, **_kwargs):
+            assert transaction_depth == 1
+            calls.append("review")
+            return {"id": "artifact-1", "status": "accepted"}
+
+    def fake_persist(_ctx, deferred_inputs, **_kwargs) -> None:
+        assert transaction_depth == 0
+        assert deferred_inputs == (deferred_input,)
+        calls.append("embedding")
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(cli_module, "VNextProjectService", FakeProjectService)
+    monkeypatch.setattr(cli_module, "_persist_deferred_embedding_inputs", fake_persist)
+    context = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    args = cli_module.build_parser().parse_args(
+        ["vnext", "projects", "review-update", "artifact-1", "--action", "accept"]
+    )
+
+    payload = json.loads(cli_module._run_vnext_project_update_review(context, args))
+
+    assert payload["status"] == "accepted"
+    assert calls == ["review", "embedding"]
+
+
+def test_missing_connector_payload_returns_clean_nonzero(monkeypatch, capsys, tmp_path) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "get_settings",
+        lambda: Settings(database_url="postgresql://db", auth_user_id=str(uuid4())),
+    )
+
+    exit_code = cli_module.main(["vnext", "connectors", "ingest", "telegram", str(tmp_path / "missing.json")])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert "missing.json" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_main_returns_error_for_non_object_json_on_review_apply(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         cli_module,
@@ -1597,7 +2347,7 @@ def test_recall_formatting_is_deterministic() -> None:
         "    contradiction_summary=open=0 resolved=0 kinds= penalty=0.000\n"
         "    timestamps=capture_created_at=2026-03-30T09:58:00+00:00 created_at=2026-03-30T09:59:00+00:00 updated_at=2026-03-30T10:00:00+00:00 last_confirmed_at=2026-03-30T10:00:00+00:00\n"
         "    source_facts=raw_content=Decision: Keep rollout phased | decision_text=Keep rollout phased\n"
-        "    evidence_segments=continuity_capture_event:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb \"Decision: Keep rollout phased\"\n"
+        '    evidence_segments=continuity_capture_event:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb "Decision: Keep rollout phased"\n'
         "    supersession_notes=(none)"
     )
 
@@ -1678,7 +2428,9 @@ def test_status_command_surfaces_latest_maintenance_snapshot(monkeypatch, capsys
     assert exit_code == 0
     assert "maintenance: status=warn schedule=nightly" in captured.out
     assert "last_run=2026-04-11T01:00:00Z" in captured.out
-    assert "failures=0 warnings=2 stale_facts=3 reembedded_segments=5 pattern_candidates=8 benchmark=pass" in captured.out
+    assert (
+        "failures=0 warnings=2 stale_facts=3 reembedded_segments=5 pattern_candidates=8 benchmark=pass" in captured.out
+    )
 
 
 def test_status_command_reports_memory_hygiene_and_thread_health_when_database_is_reachable(
@@ -1905,6 +2657,8 @@ def test_backfill_embeddings_cli_exits_nonzero_when_provider_unconfigured(monkey
 
 
 def test_backfill_embeddings_cli_embeds_missing_memories_in_batches(monkeypatch) -> None:
+    transaction_depth = 0
+
     class BackfillStore(FakeVNextCliStore):
         def __init__(self) -> None:
             super().__init__()
@@ -1923,6 +2677,7 @@ def test_backfill_embeddings_cli_embeds_missing_memories_in_batches(monkeypatch)
             after_id: str | None = None,
             **_signature: object,
         ):
+            assert transaction_depth == 1
             rows = [row for row in self.missing if after_id is None or str(row["id"]) > after_id]
             return rows[:limit]
 
@@ -1933,6 +2688,7 @@ def test_backfill_embeddings_cli_embeds_missing_memories_in_batches(monkeypatch)
             vector: list[float],
             **signature: object,
         ):
+            assert transaction_depth == 1
             self.embedding_updates.append((memory_id, vector))
             self.embedding_signatures.append(signature)
             return {"id": memory_id}
@@ -1943,6 +2699,7 @@ def test_backfill_embeddings_cli_embeds_missing_memories_in_batches(monkeypatch)
         base_url = "https://Embed.Example:443/Case/V1"
 
         def embed_batch(self, texts):
+            assert transaction_depth == 0
             return [[0.5] * 4 for _text in texts]
 
         def embed_text(self, text):
@@ -1952,7 +2709,12 @@ def test_backfill_embeddings_cli_embeds_missing_memories_in_batches(monkeypatch)
 
     @contextmanager
     def fake_vnext_store_context(_ctx):
-        yield store
+        nonlocal transaction_depth
+        transaction_depth += 1
+        try:
+            yield store
+        finally:
+            transaction_depth -= 1
 
     monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
     monkeypatch.setattr(cli_module, "get_embedding_provider", lambda: StubProvider())
@@ -1966,6 +2728,7 @@ def test_backfill_embeddings_cli_embeds_missing_memories_in_batches(monkeypatch)
     output = args.handler(ctx, args)
 
     payload = json.loads(output)
+    assert transaction_depth == 0
     assert payload["embedded"] == 2
     assert payload["skipped"] == 1
     assert payload["failed"] == 0
@@ -1979,9 +2742,7 @@ def test_backfill_embeddings_cli_embeds_missing_memories_in_batches(monkeypatch)
     assert all(signature["endpoint"] for signature in store.embedding_signatures)
 
 
-def test_backfill_embeddings_cli_exits_nonzero_when_any_batch_fails(
-    monkeypatch, capsys
-) -> None:
+def test_backfill_embeddings_cli_exits_nonzero_when_any_batch_fails(monkeypatch, capsys) -> None:
     class BackfillStore(FakeVNextCliStore):
         def list_memories_missing_embeddings(
             self,

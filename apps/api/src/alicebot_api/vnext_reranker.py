@@ -46,6 +46,7 @@ from typing import Any, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from alicebot_api.vnext_ranking import content_stable_tiebreak
 from alicebot_api.vnext_repositories import JsonObject
 
 
@@ -260,20 +261,21 @@ def parse_rerank_scores(content: str, *, expected_count: int) -> list[float]:
         )
     scores: list[float] = []
     for value in parsed:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise VNextRerankerProviderError("reranker scores must be numbers")
+        # The prompt contract is deliberately narrower than merely
+        # "numeric": each score must be a JSON integer in the inclusive
+        # 0..100 range.  Python's JSON decoder otherwise accepts NaN and
+        # Infinity, and floats/out-of-range values can corrupt ordering while
+        # the trace incorrectly reports a successful rerank.
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise VNextRerankerProviderError(
+                "reranker scores must be integers between 0 and 100"
+            )
+        if value < 0 or value > 100:
+            raise VNextRerankerProviderError(
+                "reranker scores must be integers between 0 and 100"
+            )
         scores.append(float(value))
     return scores
-
-
-def _content_stable_tiebreak(item: JsonObject) -> tuple:
-    # Deferred import: vnext_retrieval imports this module for its
-    # integration block, so a module-level import here would be circular.
-    # Reuses (never duplicates) the retrieval service's content-stable
-    # cascade so equal-score reranker ties are ingest-invariant.
-    from alicebot_api.vnext_retrieval import content_stable_tiebreak
-
-    return content_stable_tiebreak(item)
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,7 +372,7 @@ def rerank(
         range(scored_count),
         key=lambda index: (
             -scores[index],
-            *_content_stable_tiebreak(head[index]),
+            *content_stable_tiebreak(head[index]),
             str(head[index].get("id")),
         ),
     )

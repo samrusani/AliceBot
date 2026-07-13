@@ -14,6 +14,7 @@ import json
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
 
 def _request_json(
@@ -22,17 +23,21 @@ def _request_json(
     url: str,
     bearer_token: str,
     payload: dict[str, Any] | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     body = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {bearer_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    if idempotency_key is not None:
+        headers["Idempotency-Key"] = idempotency_key
     request = Request(
         url=url,
         method=method,
         data=body,
-        headers={
-            "Authorization": f"Bearer {bearer_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
+        headers=headers,
     )
     try:
         with urlopen(request, timeout=30) as response:
@@ -145,6 +150,7 @@ def main() -> int:
         method="POST",
         url=f"{args.api_base_url.rstrip('/')}/v1/runtime/invoke",
         bearer_token=args.session_token,
+        idempotency_key=f"local-provider-e2e-{uuid4()}",
         payload={
             "provider_id": provider_id,
             "thread_id": args.thread_id,

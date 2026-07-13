@@ -14,7 +14,9 @@ from alicebot_api.vnext_store import PostgresVNextStore, _search_patterns
 
 
 class RecordingCursor:
-    def __init__(self, fetchone_results: list[dict[str, Any]], fetchall_result: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self, fetchone_results: list[dict[str, Any]], fetchall_result: list[dict[str, Any]] | None = None
+    ) -> None:
         self.executed: list[tuple[str, tuple[object, ...] | None]] = []
         self.fetchone_results = list(fetchone_results)
         self.fetchall_result = fetchall_result or []
@@ -102,7 +104,7 @@ def test_source_crud_and_chunks_write_audit_events() -> None:
             "metadata_json": {"section": "intro"},
         }
     )
-    chunks = store.list_source_chunks(source_id)
+    chunks = store.list_source_chunks(source_id, limit=17)
 
     assert created["id"] == source_id
     assert fetched is not None
@@ -121,6 +123,16 @@ def test_source_crud_and_chunks_write_audit_events() -> None:
     source_update_query, source_update_params = cursor.executed[3]
     assert "UPDATE sources" in source_update_query
     assert source_update_params is not None
+
+    chunk_query, chunk_params = cursor.executed[-1]
+    assert "WHERE source_id = %s::uuid" in chunk_query
+    assert chunk_query.index("WHERE source_id") < chunk_query.index("LIMIT %s")
+    assert chunk_params == (source_id, 17)
+
+    with pytest.raises(ValueError, match="limit must be positive"):
+        store.list_source_chunks(source_id, limit=0)
+    store.list_source_chunks(source_id, limit=10_000)
+    assert cursor.executed[-1][1] == (source_id, 501)
     assert isinstance(source_update_params[6], Jsonb)
     assert source_update_params[6].obj == {"rev": 2}
 
@@ -289,22 +301,50 @@ def test_keyword_search_methods_apply_domain_sensitivity_and_limit_filters() -> 
         ["project"],
         ["public", "private"],
         ["public", "private"],
+        None,  # exact project id
+        None,
+        None,  # exact person id
+        None,
+        None,  # scoped projects
+        None,
+        None,  # scoped people
         None,
         None,
+        None,  # window start
         None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
+        None,  # window end
         None,
         2,
     )
+
+
+def test_project_scope_sql_uses_canonical_key_precedence_for_all_resources() -> None:
+    cursor = RecordingCursor(fetchone_results=[], fetchall_result=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+    project = "canonical-project"
+
+    store.list_memories(projects=(project,), limit=1)
+    store.search_sources(query="scope marker", scope_projects=(project,), limit=1)
+    store.list_artifacts(scope_projects=(project,), limit=1)
+    store.list_open_loops(scope_projects=(project,), limit=1)
+
+    memory_query, source_query, artifact_query, open_loop_query = [query for query, _ in cursor.executed]
+    for query, metadata_expression in (
+        (memory_query, "metadata_json"),
+        (source_query, "metadata_json"),
+        (artifact_query, "metadata_json"),
+        (open_loop_query, "metadata_json"),
+    ):
+        canonical_guard = f"{metadata_expression} ? 'project_scope'"
+        nested_fallback = f"{metadata_expression} #> '{{agentic_memory,project_scope}}'"
+        assert canonical_guard in query
+        assert query.index(canonical_guard) < query.index(nested_fallback)
+        assert f"jsonb_typeof({metadata_expression} -> 'project_scope') = 'array'" in query
+        assert "ELSE '[]'::jsonb" in query
+        assert "jsonb_path_query_array" in query
+        assert "?| %s::text[]" in query
+
+    assert "OR project_id::text = ANY" not in open_loop_query
 
 
 def test_search_memories_by_time_builds_window_predicate_and_proximity_order() -> None:
@@ -414,6 +454,7 @@ def test_list_artifacts_applies_type_domain_sensitivity_and_limit_filters() -> N
     assert "%s::text IS NULL OR artifact_type = %s" in query
     assert "domain = ANY" in query
     assert "sensitivity = ANY" in query
+    assert "project_scope" in query
     assert params == (
         "daily_brief",
         "daily_brief",
@@ -421,6 +462,8 @@ def test_list_artifacts_applies_type_domain_sensitivity_and_limit_filters() -> N
         ["project"],
         ["public", "private"],
         ["public", "private"],
+        None,
+        None,
         5,
     )
 
@@ -466,7 +509,7 @@ def test_artifact_quality_ratings_insert_and_export_json_safe_payloads() -> None
     assert insert_params[-1].obj == {"prompt_hash": "sha256:test"}
     list_query, list_params = cursor.executed[2]
     assert "FROM artifact_quality_ratings" in list_query
-    assert list_params == (artifact_id, artifact_id, 10)
+    assert list_params == (artifact_id, artifact_id, None, None, 10)
 
 
 def test_list_beliefs_joins_memory_domain_sensitivity_filters() -> None:
@@ -507,6 +550,15 @@ def test_list_beliefs_joins_memory_domain_sensitivity_filters() -> None:
         ["project"],
         ["public", "private"],
         ["public", "private"],
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
         6,
     )
 
@@ -619,9 +671,9 @@ def test_create_memory_persists_canonical_multi_project_scope_metadata() -> None
             {
                 "id": memory_id,
                 "memory_key": "shared.scope",
-                    "canonical_text": "Shared scope",
-                    "metadata_json": {"project_scope": ["alicebot", "hermes"]},
-                    "project_id": "alicebot",
+                "canonical_text": "Shared scope",
+                "metadata_json": {"project_scope": ["alicebot", "hermes"]},
+                "project_id": "alicebot",
             },
             _event_row(memory_id),
         ],
@@ -705,16 +757,22 @@ def test_memory_and_rollup_counts_are_exact_scoped_database_reads() -> None:
     cursor = RecordingCursor(fetchone_results=[{"count": 7}, {"count": 5}])
     store = PostgresVNextStore(RecordingConnection(cursor))
 
-    assert store.count_memories(
-        status="active",
-        domains=["project"],
-        sensitivity_allowed=["private"],
-    ) == 7
-    assert store.count_rollup_input_memories(
-        domains=["project"],
-        sensitivity_allowed=["private"],
-        excluded_candidate_kind="memory_rollup",
-    ) == 5
+    assert (
+        store.count_memories(
+            status="active",
+            domains=["project"],
+            sensitivity_allowed=["private"],
+        )
+        == 7
+    )
+    assert (
+        store.count_rollup_input_memories(
+            domains=["project"],
+            sensitivity_allowed=["private"],
+            excluded_candidate_kind="memory_rollup",
+        )
+        == 5
+    )
 
     memory_query, memory_params = cursor.executed[0]
     assert "SELECT COUNT(*) AS count" in memory_query
@@ -729,6 +787,8 @@ def test_memory_and_rollup_counts_are_exact_scoped_database_reads() -> None:
         ["project"],
         ["project"],
         ["private"],
+        None,
+        None,
     )
 
 
@@ -769,6 +829,8 @@ def test_rollup_reads_push_status_scope_exact_keys_order_and_limits_into_postgre
         ["project"],
         ["project"],
         ["private"],
+        None,
+        None,
         501,
     )
 
@@ -784,6 +846,8 @@ def test_rollup_reads_push_status_scope_exact_keys_order_and_limits_into_postgre
         ["project"],
         ["project"],
         ["private"],
+        None,
+        None,
         2,
     )
 
@@ -799,6 +863,8 @@ def test_rollup_reads_push_status_scope_exact_keys_order_and_limits_into_postgre
         ["project"],
         ["project"],
         ["private"],
+        None,
+        None,
         2,
     )
 
@@ -813,6 +879,8 @@ def test_rollup_reads_push_status_scope_exact_keys_order_and_limits_into_postgre
         None,
         None,
         ["internal"],
+        None,
+        None,
         1,
     )
 
@@ -878,7 +946,19 @@ def test_project_people_belief_and_open_loop_methods_write_audit_events() -> Non
     assert "INSERT INTO projects" in cursor.executed[0][0]
     assert "FROM projects" in cursor.executed[3][0]
     assert "%s::text IS NULL OR status = %s" in cursor.executed[3][0]
-    assert cursor.executed[3][1] == ("active", "active", ["project"], ["project"], ["private"], ["private"], 3)
+    assert cursor.executed[3][1] == (
+        "active",
+        "active",
+        ["project"],
+        ["project"],
+        ["private"],
+        ["private"],
+        None,
+        None,
+        None,
+        None,
+        3,
+    )
     assert "UPDATE projects" in cursor.executed[4][0]
     assert "INSERT INTO people" in cursor.executed[6][0]
     assert "UPDATE people" in cursor.executed[9][0]
@@ -891,9 +971,7 @@ def test_project_people_belief_and_open_loop_methods_write_audit_events() -> Non
 
 def test_get_artifact_for_update_locks_the_persisted_authorization_target() -> None:
     artifact_id = str(uuid4())
-    cursor = RecordingCursor(
-        fetchone_results=[{"id": artifact_id, "artifact_type": "daily_brief"}]
-    )
+    cursor = RecordingCursor(fetchone_results=[{"id": artifact_id, "artifact_type": "daily_brief"}])
     store = PostgresVNextStore(RecordingConnection(cursor))
 
     artifact = store.get_artifact_for_update(artifact_id)
@@ -903,6 +981,76 @@ def test_get_artifact_for_update_locks_the_persisted_authorization_target() -> N
     assert "FROM generated_artifacts" in query
     assert "FOR UPDATE" in query
     assert params == (artifact_id,)
+
+
+def test_exact_open_loop_and_artifact_digest_lookups_scope_before_limit() -> None:
+    project_id = str(uuid4())
+    person_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[{"id": "loop-1"}, {"id": "artifact-1"}],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    assert store.find_open_loop_by_automation_digest(
+        digest="loop-digest",
+        project_id=project_id,
+        person_id=person_id,
+    ) == {"id": "loop-1"}
+    assert store.find_artifact_by_workflow_digest(
+        artifact_type="project_update",
+        workflow="project_auto_update",
+        digest="artifact-digest",
+        scope_projects=(project_id,),
+    ) == {"id": "artifact-1"}
+
+    loop_query, loop_params = cursor.executed[0]
+    assert loop_query.index("automation_digest") < loop_query.index("LIMIT 1")
+    assert "project_id = %s::uuid" in loop_query
+    assert "person_id = %s::uuid" in loop_query
+    assert loop_params == (
+        "loop-digest",
+        project_id,
+        project_id,
+        person_id,
+        person_id,
+    )
+    artifact_query, artifact_params = cursor.executed[1]
+    assert artifact_query.index("automation_digest") < artifact_query.index("LIMIT 1")
+    assert "consolidation_digest" in artifact_query
+    assert artifact_params == (
+        "project_update",
+        "project_auto_update",
+        "artifact-digest",
+        [project_id],
+        [project_id],
+    )
+
+
+def test_source_trace_and_policy_telemetry_queries_filter_before_limit() -> None:
+    source_id = str(uuid4())
+    cursor = RecordingCursor(fetchone_results=[], fetchall_result=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.list_memories_referencing_source(source_id=source_id, limit=11)
+    store.list_artifacts_referencing_source(source_id=source_id, limit=12)
+    store.list_open_loops_referencing_source(source_id=source_id, limit=13)
+    store.list_events_for_source_trace(
+        source_id=source_id,
+        memory_ids=(str(uuid4()),),
+        artifact_ids=(str(uuid4()),),
+        open_loop_ids=(str(uuid4()),),
+        limit=14,
+    )
+    store.list_agent_policy_artifacts(agent_id="hermes", limit=15)
+    store.list_agent_policy_memories(agent_id="hermes", limit=16)
+
+    for query, _params in cursor.executed[:4]:
+        assert query.index("source_id") < query.index("LIMIT %s")
+    assert "provenance_links" in cursor.executed[0][0]
+    assert "provenance_links" in cursor.executed[1][0]
+    assert "target_type = 'source'" in cursor.executed[3][0]
+    assert "generated_by' = 'agent'" in cursor.executed[4][0]
+    assert "agent_id' IS NOT NULL" in cursor.executed[5][0]
 
 
 def test_artifact_task_and_brain_charter_methods_write_audit_events() -> None:
@@ -1028,18 +1176,18 @@ def test_connector_settings_and_state_methods_use_dedicated_tables_and_audit_eve
             },
             _event_row("telegram"),
             {"id": setting_id, "connector_name": "telegram"},
-                {
-                    "id": state_id,
-                    "connector_id": setting_id,
-                    "connector_name": "telegram",
-                    "cursor_type": "sync_cursor",
-                    "cursor_value": "42",
-                    "last_sync_at": "2026-05-11T12:00:00Z",
-                    "last_success_at": "2026-05-11T12:00:00Z",
-                    "last_failure_at": None,
-                    "items_seen": 3,
-                    "items_captured": 1,
-                    "items_deduped": 1,
+            {
+                "id": state_id,
+                "connector_id": setting_id,
+                "connector_name": "telegram",
+                "cursor_type": "sync_cursor",
+                "cursor_value": "42",
+                "last_sync_at": "2026-05-11T12:00:00Z",
+                "last_success_at": "2026-05-11T12:00:00Z",
+                "last_failure_at": None,
+                "items_seen": 3,
+                "items_captured": 1,
+                "items_deduped": 1,
                 "items_failed": 1,
             },
             _event_row("telegram"),
@@ -1506,9 +1654,7 @@ def test_vector_search_enables_iterative_hnsw_scan() -> None:
     store.search_memories_vector(query_vector=[1.0, 0.0], limit=20)
 
     statements = [q for q, _ in cursor.executed]
-    assert any(
-        "hnsw.iterative_scan" in q and "strict_order" in q for q in statements
-    ), statements
+    assert any("hnsw.iterative_scan" in q and "strict_order" in q for q in statements), statements
     # The iterative-scan setting must precede the vector SELECT.
     set_index = next(i for i, q in enumerate(statements) if "hnsw.iterative_scan" in q)
     select_index = next(i for i, q in enumerate(statements) if "vector_distance" in q)
@@ -1551,7 +1697,231 @@ def test_vector_search_discards_stale_content_signatures_after_database_read() -
 
     assert [row["id"] for row in rows] == ["memory-current"]
     _query, select_params = next((q, p) for q, p in cursor.executed if "vector_distance" in q)
+    vector_query = next(q for q, _p in cursor.executed if "vector_distance" in q)
+    assert "content_sha256" in vector_query
+    assert "digest(" in vector_query
     assert select_params[-1] == 4
+
+
+def test_scheduler_lock_key_includes_current_rls_user() -> None:
+    cursor = RecordingCursor(fetchone_results=[{"acquired": True}])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    assert store.try_scheduler_workflow_lock("daily_brief") is True
+
+    query, params = cursor.executed[0]
+    assert "app.current_user_id()::text" in query
+    assert "concat_ws" in query
+    assert params == ("daily_brief",)
+
+
+@pytest.mark.parametrize(
+    ("patch", "preserves_claim"),
+    (
+        (
+            {
+                "last_run_id": str(uuid4()),
+                "last_run_at": "2026-07-13T09:00:00Z",
+                "last_result": "succeeded",
+                "last_error": None,
+                "next_run_at": "2026-07-14T09:00:00Z",
+            },
+            True,
+        ),
+        ({"enabled": False, "next_run_at": None}, False),
+    ),
+)
+def test_scheduler_workflow_updates_only_preserve_claim_for_run_bookkeeping(
+    patch: dict[str, object], preserves_claim: bool
+) -> None:
+    workflow_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {"id": workflow_id, "workflow_type": "daily_brief"},
+            _event_row(workflow_id),
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.update_scheduler_workflow(
+        workflow_type="daily_brief",
+        patch=patch,
+        actor_type="test",
+    )
+
+    query, params = cursor.executed[0]
+    assert "claim_token = CASE WHEN %s THEN claim_token ELSE NULL END" in query
+    assert "claim_version = claim_version + CASE WHEN %s THEN 0 ELSE 1 END" in query
+    assert params is not None
+    assert params[-4:] == (
+        preserves_claim,
+        preserves_claim,
+        preserves_claim,
+        "daily_brief",
+    )
+
+
+def test_artifact_status_update_uses_expected_status_compare_and_set() -> None:
+    artifact_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {"id": artifact_id, "status": "accepted"},
+            _event_row(artifact_id),
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    row = store.update_artifact_status(
+        artifact_id=artifact_id,
+        status="accepted",
+        expected_status="needs_review",
+        metadata_json={"review_status": "accepted"},
+    )
+
+    assert row is not None
+    query, params = cursor.executed[0]
+    assert "AND (%s::text IS NULL OR status = %s)" in query
+    assert "metadata_json || %s::jsonb" in query
+    assert params is not None
+    assert params[-3:] == (artifact_id, "needs_review", "needs_review")
+
+
+def test_scheduler_claim_rechecks_due_state_and_persists_fence() -> None:
+    workflow_id = str(uuid4())
+    run_id = str(uuid4())
+    scheduled_for = datetime(2026, 7, 13, 8, tzinfo=UTC)
+    checked_at = datetime(2026, 7, 13, 8, 1, tzinfo=UTC)
+    lease_expires_at = datetime(2026, 7, 13, 8, 6, tzinfo=UTC)
+    workflow = {
+        "id": workflow_id,
+        "workflow_type": "daily_brief",
+        "next_run_at": scheduled_for,
+        "claim_version": 0,
+    }
+    claimed_workflow = {**workflow, "claim_version": 1, "claim_token": "server-token"}
+    cursor = RecordingCursor(
+        fetchone_results=[
+            workflow,
+            {"acquired": True},
+            workflow,
+            claimed_workflow,
+            {
+                "id": run_id,
+                "workflow_id": workflow_id,
+                "workflow_type": "daily_brief",
+                "status": "started",
+                "trace_id": "trace-1",
+                "triggered_by": "scheduler",
+            },
+            _event_row(run_id),
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    claim = store.claim_due_scheduler_workflow(
+        checked_at=checked_at,
+        lease_expires_at=lease_expires_at,
+        triggered_by="scheduler",
+    )
+
+    assert claim is not None
+    assert claim["claim_version"] == 1
+    assert claim["scheduled_for"] == scheduled_for
+    statements = [query for query, _params in cursor.executed]
+    assert "FOR UPDATE SKIP LOCKED" in statements[0]
+    assert "enabled = true" in statements[2]
+    assert "claim_version = claim_version + 1" in statements[3]
+    assert "INSERT INTO scheduler_runs" in statements[4]
+    assert "claim_token" in statements[4]
+    assert "scheduled_for" in statements[4]
+
+
+def test_scheduler_heartbeat_finalize_and_reaper_are_fenced() -> None:
+    run_id = str(uuid4())
+    workflow_id = str(uuid4())
+    now = datetime(2026, 7, 13, 9, tzinfo=UTC)
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {"renewed": True},
+            {"run_id": run_id},
+            {
+                "id": run_id,
+                "workflow_id": workflow_id,
+                "workflow_type": "daily_brief",
+                "status": "succeeded",
+                "trace_id": "trace-1",
+            },
+            _event_row(run_id),
+            _event_row(run_id),
+        ],
+        fetchall_result=[
+            {
+                "id": run_id,
+                "workflow_id": workflow_id,
+                "workflow_type": "daily_brief",
+                "status": "failed",
+                "trace_id": "trace-1",
+                "error_message": "scheduler claim lease expired",
+            }
+        ],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    assert store.heartbeat_scheduler_claim(
+        run_id=run_id,
+        claim_token="token-1",
+        claim_version=3,
+        lease_expires_at=now,
+    )
+    assert store.lock_scheduler_claim_for_publish(
+        run_id=run_id,
+        claim_token="token-1",
+        claim_version=3,
+    )
+    finalized = store.finalize_scheduler_claim(
+        run_id=run_id,
+        claim_token="token-1",
+        claim_version=3,
+        status="succeeded",
+        artifact_id=None,
+        error_message=None,
+        next_run_at="2026-07-14T08:00:00Z",
+        metadata_json={"artifact_id": None},
+    )
+    reaped = store.reap_expired_scheduler_claims(reference_time=now, limit=5)
+
+    assert finalized is not None
+    assert reaped[0]["status"] == "failed"
+    heartbeat_query = cursor.executed[0][0]
+    publish_lock_query = cursor.executed[1][0]
+    finalize_query = cursor.executed[2][0]
+    reap_query = cursor.executed[4][0]
+    for query in (heartbeat_query, publish_lock_query, finalize_query):
+        assert "claim_token = %s" in query
+        assert "claim_version = %s" in query
+        assert "claim_expires_at > clock_timestamp()" in query
+    assert "FOR UPDATE OF r, w" in publish_lock_query
+    assert "claim_token = NULL" in finalize_query
+    assert "FOR UPDATE SKIP LOCKED" in reap_query
+    assert "claim_expires_at <= %s::timestamptz" in reap_query
+    assert "claim_token = NULL" in reap_query
+    assert "w.claim_token = r.expired_claim_token" in reap_query
+    assert "FROM updated_runs\n                WHERE EXISTS" not in reap_query
+    assert "next_run_at" not in reap_query.split("cleared_workflows AS", 1)[1]
+
+
+def test_pending_confirmation_query_enforces_all_actionable_invariants_before_limit() -> None:
+    cursor = RecordingCursor(fetchone_results=[], fetchall_result=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.list_pending_inline_confirmations(limit=3)
+
+    query, params = cursor.executed[0]
+    assert "status = 'needs_review'" in query
+    assert "confirmation_status = 'unconfirmed'" in query
+    assert "confirmation,status" in query
+    assert query.index("status = 'needs_review'") < query.index("LIMIT %s")
+    assert params == (3,)
 
 
 def test_update_memory_embedding_and_missing_embedding_listing() -> None:
@@ -1575,6 +1945,30 @@ def test_update_memory_embedding_and_missing_embedding_listing() -> None:
     assert "%s::uuid IS NULL OR id > %s::uuid" in missing_query
     assert "ORDER BY id ASC" in missing_query
     assert missing_params == (memory_id, memory_id, 64)
+
+
+def test_signed_embedding_update_compares_current_memory_content_digest() -> None:
+    memory_id = str(uuid4())
+    cursor = RecordingCursor(fetchone_results=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    assert (
+        store.update_memory_embedding(
+            memory_id=memory_id,
+            vector=[1.0, 0.5],
+            provider="stub",
+            model="embed-v1",
+            endpoint="stub-endpoint",
+            content_sha256="a" * 64,
+            signature_version=2,
+        )
+        is None
+    )
+
+    query, params = cursor.executed[0]
+    assert "digest(" in query
+    assert "= %s" in query
+    assert params[-2:] == (memory_id, "a" * 64)
 
 
 def test_embedding_backfill_includes_unsigned_or_incompatible_vectors() -> None:
@@ -1738,7 +2132,14 @@ def test_create_agent_api_key_persists_project_scope_binding() -> None:
     # Unbound keys keep a NULL project_scope.
     cursor.executed.clear()
     cursor.fetchone_results = [
-        {"id": key_id, "agent_id": "hermes", "permission_profile": "trusted_local_agent", "project_scope": None, "key_prefix": "alice_sk_def", "label": None},
+        {
+            "id": key_id,
+            "agent_id": "hermes",
+            "permission_profile": "trusted_local_agent",
+            "project_scope": None,
+            "key_prefix": "alice_sk_def",
+            "label": None,
+        },
         _event_row(key_id),
     ]
     unbound = store.create_agent_api_key(
@@ -1825,6 +2226,42 @@ def test_create_edge_without_event_time_notes_the_write_time_fallback_in_metadat
     assert metadata_param.obj["observed_at_source"] == "now"
     # Caller metadata is preserved alongside the note.
     assert metadata_param.obj["review_action"] == "assign_project"
+
+
+def test_edge_digest_upsert_creates_once_and_replays_without_a_second_event() -> None:
+    edge_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            None,  # no existing digest row
+            {"id": edge_id, "edge_type": "supports"},
+            _event_row(edge_id),
+            {"id": edge_id, "edge_type": "supports"},
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+    payload = {
+        "from_type": "source",
+        "from_id": "source-1",
+        "to_type": "memory",
+        "to_id": "memory-1",
+        "edge_type": "supports",
+        "metadata_json": {"workflow": "connection_finder"},
+    }
+
+    created = store.upsert_edge_by_idempotency_digest(payload, digest="edge-digest")
+    replayed = store.upsert_edge_by_idempotency_digest(payload, digest="edge-digest")
+
+    assert created["id"] == replayed["id"] == edge_id
+    insert_query, insert_params = next(
+        (query, params) for query, params in cursor.executed if "INSERT INTO graph_edges" in query
+    )
+    assert "ON CONFLICT DO NOTHING" in insert_query
+    assert insert_params is not None
+    metadata_param = insert_params[-1]
+    assert isinstance(metadata_param, Jsonb)
+    assert metadata_param.obj["idempotency_digest"] == "edge-digest"
+    assert _event_log_insert_count(cursor) == 1
+    assert sum("INSERT INTO graph_edges" in query for query, _params in cursor.executed) == 1
 
 
 def test_list_edges_as_of_filters_on_the_validity_interval_with_limit() -> None:
@@ -1952,9 +2389,7 @@ def test_entity_crud_methods_normalize_names_and_write_audit_events() -> None:
     fetched = store.get_entity(entity_id)
     by_name = store.get_entity_by_normalized_name("organization", "openai inc")
     listed = store.list_entities(entity_type="organization", limit=7)
-    updated = store.update_entity(
-        entity_id=entity_id, patch={"name": "OpenAI", "aliases": ["oai"]}
-    )
+    updated = store.update_entity(entity_id=entity_id, patch={"name": "OpenAI", "aliases": ["oai"]})
 
     assert created["id"] == entity_id
     assert fetched is not None
@@ -2055,9 +2490,7 @@ def test_record_entity_mention_increments_count_and_widens_window() -> None:
     )
     store = PostgresVNextStore(RecordingConnection(cursor))
 
-    row = store.record_entity_mention(
-        entity_id=entity_id, observed_at="2026-05-01T00:00:00Z", source_id="source-1"
-    )
+    row = store.record_entity_mention(entity_id=entity_id, observed_at="2026-05-01T00:00:00Z", source_id="source-1")
 
     assert row["id"] == entity_id
     assert _event_log_insert_count(cursor) == 1
@@ -2183,11 +2616,7 @@ class FailingCursor(RecordingCursor):
 
 
 def _redaction_flag_statements(cursor: RecordingCursor) -> list[str]:
-    return [
-        query
-        for query, _params in cursor.executed
-        if "app.redaction_in_progress" in query
-    ]
+    return [query for query, _params in cursor.executed if "app.redaction_in_progress" in query]
 
 
 def test_redaction_marker_constant() -> None:

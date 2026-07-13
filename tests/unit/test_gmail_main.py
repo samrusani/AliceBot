@@ -5,8 +5,8 @@ from contextlib import contextmanager
 from uuid import uuid4
 
 import pytest
-import apps.api.src.alicebot_api.main as main_module
-from apps.api.src.alicebot_api.config import Settings
+import alicebot_api.main as main_module
+from alicebot_api.config import Settings
 from alicebot_api.gmail import (
     GmailAccountAlreadyExistsError,
     GmailAccountNotFoundError,

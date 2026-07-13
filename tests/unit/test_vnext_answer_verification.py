@@ -158,6 +158,19 @@ def test_unrecognized_reply_fails_open_with_a_note() -> None:
     assert note == "unrecognized verifier reply; failing open as grounded"
 
 
+def test_grounded_marker_requires_an_exact_standalone_token() -> None:
+    for reply in ("UNGROUNDED", "NOT GROUNDED", "GROUNDED because it looks right"):
+        grounded, claims, note = parse_verifier_reply(reply)
+        assert grounded is True
+        assert claims == ()
+        assert note == "unrecognized verifier reply; failing open as grounded"
+
+    grounded, claims, note = parse_verifier_reply("- GROUNDED")
+    assert grounded is True
+    assert claims == ()
+    assert note is None
+
+
 # -- verify_answer_grounding ----------------------------------------------------------
 
 

@@ -6,9 +6,25 @@ from pathlib import Path
 from typing import Protocol
 
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_agent_control import resource_project_scope
 from alicebot_api.vnext_repositories import JsonObject
 
 DEFAULT_VNEXT_ARTIFACT_EXPORT_ROOT = Path("/tmp/alicebot-vnext-artifact-exports")
+
+# Artifact review is a lifecycle, not an arbitrary status setter.  Keeping the
+# complete transition table in one place makes terminal-state behavior
+# reviewable and prevents a promoted memory source from later being presented
+# as rejected or archived while its trusted memory remains active.
+ARTIFACT_STATUS_TRANSITIONS: dict[str, frozenset[str]] = {
+    "draft": frozenset({"reviewed", "accepted", "rejected", "archived", "promoted_to_memory"}),
+    "needs_review": frozenset({"reviewed", "accepted", "rejected", "archived", "promoted_to_memory"}),
+    "reviewed": frozenset({"accepted", "rejected", "archived", "promoted_to_memory"}),
+    "accepted": frozenset({"rejected", "archived", "promoted_to_memory"}),
+    "rejected": frozenset({"archived"}),
+    "superseded": frozenset({"archived"}),
+    "archived": frozenset(),
+    "promoted_to_memory": frozenset(),
+}
 
 
 class VNextQueueValidationError(ValueError):
@@ -34,7 +50,17 @@ class VNextQueueStore(Protocol):
 
     def get_artifact(self, artifact_id: str) -> JsonObject | None: ...
 
-    def update_artifact_status(self, *, artifact_id: str, status: str) -> JsonObject: ...
+    def get_artifact_for_update(self, artifact_id: str) -> JsonObject | None: ...
+
+    def update_artifact_status(
+        self,
+        *,
+        artifact_id: str,
+        status: str,
+        expected_status: str | None = None,
+    ) -> JsonObject | None: ...
+
+    def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,15 +274,32 @@ class VNextQueueService:
             "review": "reviewed",
             "accept": "accepted",
             "reject": "rejected",
-            "promote": "promoted_to_memory",
             "archive": "archived",
         }
+        if action == "promote":
+            return self._promote_artifact(artifact_id=artifact_id)
         status = action_to_status.get(action)
         if status is None:
-            raise VNextQueueValidationError("artifact review action must be review, accept, reject, promote, or archive")
-        if self.store.get_artifact(artifact_id) is None:
+            raise VNextQueueValidationError(
+                "artifact review action must be review, accept, reject, promote, or archive"
+            )
+        artifact = self.store.get_artifact_for_update(artifact_id)
+        if artifact is None:
             raise VNextQueueNotFoundError(f"artifact {artifact_id} was not found")
-        artifact = self.store.update_artifact_status(artifact_id=artifact_id, status=status)
+        current_status = str(artifact.get("status") or "draft")
+        if current_status == status:
+            return artifact
+        if status not in ARTIFACT_STATUS_TRANSITIONS.get(current_status, frozenset()):
+            raise VNextQueueValidationError(
+                f"artifact status transition {current_status!r} -> {status!r} is not allowed"
+            )
+        updated_artifact = self.store.update_artifact_status(
+            artifact_id=artifact_id,
+            status=status,
+            expected_status=current_status,
+        )
+        if updated_artifact is None:
+            raise VNextQueueValidationError("artifact review conflicted with another reviewer")
         append_event(
             self.store,
             event_type="artifact.reviewed",
@@ -265,7 +308,93 @@ class VNextQueueService:
             target_id=artifact_id,
             payload={"action": action, "status": status},
         )
-        return artifact
+        return updated_artifact
+
+    def _promote_artifact(self, *, artifact_id: str) -> JsonObject:
+        # Promotion creates a trusted-memory side effect. Lock the artifact for
+        # the duration of the caller's transaction so concurrent reviewers
+        # cannot both observe the pre-promotion state and create two memories.
+        artifact = self.store.get_artifact_for_update(artifact_id)
+        if artifact is None:
+            raise VNextQueueNotFoundError(f"artifact {artifact_id} was not found")
+        artifact_status = str(artifact.get("status") or "draft")
+        if artifact_status == "promoted_to_memory":
+            for event in self.store.list_events(target_type="artifact", target_id=artifact_id):
+                payload = event.get("payload_json")
+                if (
+                    event.get("event_type") == "artifact.promoted_to_memory"
+                    and isinstance(payload, dict)
+                    and payload.get("memory_id") is not None
+                ):
+                    return {**artifact, "promoted_memory_id": str(payload["memory_id"])}
+            raise VNextQueueValidationError(
+                "artifact is marked promoted, but no persisted memory target can be verified"
+            )
+        if artifact_status in {"rejected", "superseded", "archived"}:
+            raise VNextQueueValidationError(f"artifact in terminal status {artifact_status!r} cannot be promoted")
+        if "promoted_to_memory" not in ARTIFACT_STATUS_TRANSITIONS.get(artifact_status, frozenset()):
+            raise VNextQueueValidationError(
+                f"artifact status transition {artifact_status!r} -> 'promoted_to_memory' is not allowed"
+            )
+
+        content = str(artifact.get("content_markdown") or "").strip()
+        if not content:
+            raise VNextQueueValidationError("artifact content must not be empty before promotion")
+        create_memory = getattr(self.store, "create_memory", None)
+        if not callable(create_memory):
+            raise VNextQueueValidationError(
+                "artifact promotion is unavailable because this store cannot create a memory target"
+            )
+        scope = resource_project_scope(artifact)
+        digest = hashlib.sha256(artifact_id.encode("utf-8")).hexdigest()[:24]
+        promoted = create_memory(
+            {
+                "memory_key": f"artifact.promotion.{digest}",
+                "value": {
+                    "kind": "promoted_artifact",
+                    "artifact_id": artifact_id,
+                    "text": content,
+                },
+                "status": "active",
+                "memory_type": "semantic",
+                "confirmation_status": "confirmed",
+                "confidence": 1.0,
+                "trust_class": "human_curated",
+                "promotion_eligibility": "promotable",
+                "title": str(artifact.get("title") or "Promoted artifact"),
+                "canonical_text": content,
+                "summary": content[:280],
+                "domain": str(artifact.get("domain") or "unknown"),
+                "sensitivity": str(artifact.get("sensitivity") or "unknown"),
+                "project_id": scope[0] if len(scope) == 1 else None,
+                "source_event_ids": [],
+                "metadata_json": {
+                    "source_artifact_id": artifact_id,
+                    "project_scope": list(scope),
+                    "promotion_reviewed": True,
+                },
+            },
+            actor_type="user",
+        )
+        memory_id = str(promoted.get("id") or "")
+        if not memory_id:
+            raise VNextQueueValidationError("artifact promotion did not return a persisted memory target")
+        updated_artifact = self.store.update_artifact_status(
+            artifact_id=artifact_id,
+            status="promoted_to_memory",
+            expected_status=artifact_status,
+        )
+        if updated_artifact is None:
+            raise VNextQueueValidationError("artifact promotion conflicted with another reviewer")
+        append_event(
+            self.store,
+            event_type="artifact.promoted_to_memory",
+            actor_type="user",
+            target_type="artifact",
+            target_id=artifact_id,
+            payload={"memory_id": memory_id},
+        )
+        return {**updated_artifact, "promoted_memory_id": memory_id}
 
     def export_artifact_markdown(self, *, artifact_id: str, output_dir: str | Path) -> Path:
         artifact = self.store.get_artifact(artifact_id)
@@ -273,7 +402,7 @@ class VNextQueueService:
             raise VNextQueueNotFoundError(f"artifact {artifact_id} was not found")
         content = str(artifact.get("content_markdown", ""))
         requested_output_dir = str(output_dir)
-        target_dir = DEFAULT_VNEXT_ARTIFACT_EXPORT_ROOT.resolve()
+        target_dir = Path(output_dir).expanduser().resolve()
         target_dir.mkdir(parents=True, exist_ok=True)
         artifact_digest = hashlib.sha256(artifact_id.encode("utf-8")).hexdigest()[:24]
         output_path = target_dir / f"artifact-{artifact_digest}.md"
@@ -291,6 +420,7 @@ class VNextQueueService:
 
 __all__ = [
     "DEFAULT_VNEXT_ARTIFACT_EXPORT_ROOT",
+    "ARTIFACT_STATUS_TRANSITIONS",
     "QueueProcessResult",
     "QueueTaskRequest",
     "VNextQueueNotFoundError",

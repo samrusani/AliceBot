@@ -8,8 +8,8 @@ from uuid import UUID, uuid4
 
 import anyio
 
-import apps.api.src.alicebot_api.main as main_module
-from apps.api.src.alicebot_api.config import Settings
+import alicebot_api.main as main_module
+from alicebot_api.config import Settings
 from alicebot_api.contracts import MemoryCandidateInput
 from alicebot_api.db import user_connection
 from alicebot_api.memory import admit_memory_candidate

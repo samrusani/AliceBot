@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 import json
+from uuid import UUID
 
-from apps.api.src.alicebot_api.config import Settings
+import pytest
+
+from alicebot_api.config import Settings
 from alicebot_api.contracts import (
+    ContextCompilerLimits,
     ModelInvocationRequest,
     ModelInvocationResponse,
     PROMPT_ASSEMBLY_VERSION_V0,
     PromptAssemblyInput,
 )
 from alicebot_api.response_generation import (
+    ModelInvocationError,
+    PreparedResponseGeneration,
+    ResponseGenerationConflictError,
     assemble_prompt,
     build_assistant_response_payload,
+    complete_response_generation,
     invoke_model,
     resolve_thread_model_runtime,
 )
@@ -332,6 +340,36 @@ def test_invoke_model_parses_optional_cached_input_token_telemetry(monkeypatch) 
     }
 
 
+def test_invoke_model_normalizes_non_utf8_provider_payload(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "alicebot_api.response_generation.urlopen",
+        lambda *_args, **_kwargs: FakeHTTPResponse(b"\xff\xfe"),
+    )
+    prompt = assemble_prompt(
+        request=PromptAssemblyInput(
+            context_pack=make_context_pack(),
+            system_instruction="System instruction",
+            developer_instruction="Developer instruction",
+        ),
+        compile_trace_id="compile-trace-123",
+    )
+
+    with pytest.raises(ModelInvocationError, match="invalid JSON"):
+        invoke_model(
+            settings=Settings(
+                model_provider="openai_responses",
+                model_base_url="https://example.test/v1",
+                model_name="gpt-5-mini",
+                model_api_key="secret-key",
+            ),
+            request=ModelInvocationRequest(
+                provider="openai_responses",
+                model="gpt-5-mini",
+                prompt=prompt,
+            ),
+        )
+
+
 def test_build_assistant_response_payload_captures_model_and_prompt_metadata() -> None:
     prompt = assemble_prompt(
         request=PromptAssemblyInput(
@@ -457,3 +495,97 @@ def test_resolve_thread_model_runtime_falls_back_when_profile_runtime_missing_or
         thread={"agent_profile_id": "coach_default"},  # type: ignore[arg-type]
         settings=settings,
     ) == ("openai_responses", "gpt-5-mini")
+
+
+def test_interleaved_response_completion_rejects_superseded_user_turn() -> None:
+    user_id = UUID("11111111-1111-4111-8111-111111111111")
+    thread_id = UUID("22222222-2222-4222-8222-222222222222")
+    first_event_id = UUID("33333333-3333-4333-8333-333333333331")
+    second_event_id = UUID("33333333-3333-4333-8333-333333333332")
+    prompt = assemble_prompt(
+        request=PromptAssemblyInput(
+            context_pack=make_context_pack(),
+            system_instruction="System instruction",
+            developer_instruction="Developer instruction",
+        ),
+        compile_trace_id="compile-trace-123",
+    )
+    model_request = ModelInvocationRequest(
+        provider="openai_responses",
+        model="gpt-5-mini",
+        prompt=prompt,
+    )
+    limits = ContextCompilerLimits()
+
+    def prepared(event_id: UUID, sequence_no: int) -> PreparedResponseGeneration:
+        return PreparedResponseGeneration(
+            user_id=user_id,
+            thread_id=thread_id,
+            limits=limits,
+            compiled_trace_id=f"compile-{sequence_no}",
+            compiled_trace_event_count=1,
+            prompt=prompt,
+            model_request=model_request,
+            agent_profile_id="assistant_default",
+            user_event_id=event_id,
+            user_event_sequence_no=sequence_no,
+        )
+
+    class InterleavingStore:
+        def __init__(self) -> None:
+            self.tail = (second_event_id, 2)
+            self.assistant_events: list[dict[str, object]] = []
+
+        def append_event_if_tail(
+            self,
+            _thread_id,
+            _session_id,
+            kind,
+            payload,
+            *,
+            expected_event_id,
+            expected_sequence_no,
+        ):
+            if self.tail != (expected_event_id, expected_sequence_no):
+                return None
+            row = {
+                "id": UUID("44444444-4444-4444-8444-444444444444"),
+                "sequence_no": expected_sequence_no + 1,
+                "kind": kind,
+                "payload": payload,
+            }
+            self.tail = (row["id"], row["sequence_no"])
+            self.assistant_events.append(row)
+            return row
+
+        def create_trace(self, **_kwargs):
+            return {"id": UUID("55555555-5555-4555-8555-555555555555")}
+
+        def append_trace_event(self, **_kwargs):
+            return None
+
+    store = InterleavingStore()
+    model_response = ModelInvocationResponse(
+        provider="openai_responses",
+        model="gpt-5-mini",
+        response_id="resp-1",
+        finish_reason="completed",
+        output_text="Latest-turn answer",
+        usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+    )
+
+    complete_response_generation(
+        store=store,  # type: ignore[arg-type]
+        prepared=prepared(second_event_id, 2),
+        model_response=model_response,
+    )
+    with pytest.raises(ResponseGenerationConflictError, match="superseded"):
+        complete_response_generation(
+            store=store,  # type: ignore[arg-type]
+            prepared=prepared(first_event_id, 1),
+            model_response=model_response,
+        )
+
+    assert [event["payload"]["text"] for event in store.assistant_events] == [
+        "Latest-turn answer"
+    ]

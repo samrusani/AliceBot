@@ -184,6 +184,29 @@ def test_invalid_calendar_dates_are_rejected() -> None:
     assert parse_temporal_anchor("logs for 0000/13/99 build", reference_time=REF) is None
 
 
+def test_out_of_supported_range_date_does_not_overflow() -> None:
+    assert parse_temporal_anchor("events on 9999-12-31", reference_time=REF) is None
+
+
+@pytest.mark.parametrize(
+    ("reference", "expected_year"),
+    [
+        (_utc(2023, 4, 18), 2020),
+        (_utc(2024, 2, 28), 2020),
+        (_utc(2024, 2, 29, 12), 2024),
+    ],
+)
+def test_yearless_leap_day_resolves_to_most_recent_valid_occurrence(
+    reference: datetime,
+    expected_year: int,
+) -> None:
+    anchor = parse_temporal_anchor("what happened on February 29?", reference_time=reference)
+
+    assert anchor is not None
+    assert anchor.window_start == _utc(expected_year, 2, 29)
+    assert anchor.window_end == _utc(expected_year, 3, 1)
+
+
 def test_window_center_is_the_midpoint_for_closed_windows() -> None:
     anchor = TemporalAnchor(_utc(2023, 3, 1), _utc(2023, 3, 3), "test")
 

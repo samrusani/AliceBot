@@ -11,9 +11,9 @@ from psycopg.types.json import Jsonb
 
 from alicebot_api.db import UserConnection
 
-JsonScalar = str | int | float | bool | None
-JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
-JsonObject = dict[str, JsonValue]
+type JsonScalar = str | int | float | bool | None
+type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+type JsonObject = dict[str, JsonValue]
 
 
 class UserRow(TypedDict):
@@ -432,6 +432,8 @@ class ModelProviderRow(TypedDict):
     azure_api_version: str
     azure_auth_secret_ref: str
     metadata: JsonObject
+    config_revision: int
+    config_fingerprint_sha256: str
     created_at: datetime
     updated_at: datetime
 
@@ -445,6 +447,8 @@ class ProviderCapabilityRow(TypedDict):
     discovery_status: str
     capability_snapshot: JsonObject
     discovery_error: str | None
+    provider_config_revision: int
+    provider_config_fingerprint_sha256: str
     discovered_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -1240,6 +1244,14 @@ LIST_THREAD_EVENTS_SQL = """
                 FROM events
                 WHERE thread_id = %s
                 ORDER BY sequence_no ASC
+                """
+
+GET_THREAD_EVENT_TAIL_SQL = """
+                SELECT id, user_id, thread_id, session_id, sequence_no, kind, payload, created_at
+                FROM events
+                WHERE thread_id = %s
+                ORDER BY sequence_no DESC
+                LIMIT 1
                 """
 
 LIST_EVENTS_BY_IDS_SQL = """
@@ -2342,6 +2354,8 @@ INSERT_MODEL_PROVIDER_SQL = """
                   azure_api_version,
                   azure_auth_secret_ref,
                   metadata,
+                  config_revision,
+                  config_fingerprint_sha256,
                   created_at,
                   updated_at
                 )
@@ -2361,6 +2375,8 @@ INSERT_MODEL_PROVIDER_SQL = """
                   %s,
                   %s,
                   %s,
+                  %s,
+                  1,
                   %s,
                   clock_timestamp(),
                   clock_timestamp()
@@ -2383,6 +2399,8 @@ INSERT_MODEL_PROVIDER_SQL = """
                   azure_api_version,
                   azure_auth_secret_ref,
                   metadata,
+                  config_revision,
+                  config_fingerprint_sha256,
                   created_at,
                   updated_at
                 """
@@ -2406,6 +2424,8 @@ GET_MODEL_PROVIDER_FOR_WORKSPACE_SQL = """
                   azure_api_version,
                   azure_auth_secret_ref,
                   metadata,
+                  config_revision,
+                  config_fingerprint_sha256,
                   created_at,
                   updated_at
                 FROM model_providers
@@ -2432,6 +2452,8 @@ LIST_MODEL_PROVIDERS_FOR_WORKSPACE_SQL = """
                   azure_api_version,
                   azure_auth_secret_ref,
                   metadata,
+                  config_revision,
+                  config_fingerprint_sha256,
                   created_at,
                   updated_at
                 FROM model_providers
@@ -2455,9 +2477,13 @@ UPDATE_MODEL_PROVIDER_SQL = """
                     azure_api_version = %s,
                     azure_auth_secret_ref = %s,
                     metadata = %s,
+                    config_revision = config_revision + 1,
+                    config_fingerprint_sha256 = %s,
                     updated_at = clock_timestamp()
                 WHERE id = %s
                   AND workspace_id = %s
+                  AND config_revision = %s
+                  AND config_fingerprint_sha256 = %s
                 RETURNING
                   id,
                   workspace_id,
@@ -2476,11 +2502,22 @@ UPDATE_MODEL_PROVIDER_SQL = """
                   azure_api_version,
                   azure_auth_secret_ref,
                   metadata,
+                  config_revision,
+                  config_fingerprint_sha256,
                   created_at,
                   updated_at
                 """
 
-UPSERT_PROVIDER_CAPABILITY_SQL = """
+UPSERT_PROVIDER_CAPABILITY_IF_CURRENT_SQL = """
+                WITH current_provider AS (
+                  SELECT id, workspace_id, config_revision, config_fingerprint_sha256
+                  FROM model_providers
+                  WHERE id = %s
+                    AND workspace_id = %s
+                    AND config_revision = %s
+                    AND config_fingerprint_sha256 = %s
+                  FOR SHARE
+                )
                 INSERT INTO provider_capabilities (
                   workspace_id,
                   provider_id,
@@ -2489,11 +2526,26 @@ UPSERT_PROVIDER_CAPABILITY_SQL = """
                   discovery_status,
                   capability_snapshot,
                   discovery_error,
+                  provider_config_revision,
+                  provider_config_fingerprint_sha256,
                   discovered_at,
                   created_at,
                   updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, clock_timestamp(), clock_timestamp(), clock_timestamp())
+                SELECT
+                  workspace_id,
+                  id,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  config_revision,
+                  config_fingerprint_sha256,
+                  clock_timestamp(),
+                  clock_timestamp(),
+                  clock_timestamp()
+                FROM current_provider
                 ON CONFLICT (provider_id) DO UPDATE
                 SET workspace_id = EXCLUDED.workspace_id,
                     discovered_by_user_account_id = EXCLUDED.discovered_by_user_account_id,
@@ -2501,6 +2553,8 @@ UPSERT_PROVIDER_CAPABILITY_SQL = """
                     discovery_status = EXCLUDED.discovery_status,
                     capability_snapshot = EXCLUDED.capability_snapshot,
                     discovery_error = EXCLUDED.discovery_error,
+                    provider_config_revision = EXCLUDED.provider_config_revision,
+                    provider_config_fingerprint_sha256 = EXCLUDED.provider_config_fingerprint_sha256,
                     discovered_at = EXCLUDED.discovered_at,
                     updated_at = clock_timestamp()
                 RETURNING
@@ -2512,6 +2566,8 @@ UPSERT_PROVIDER_CAPABILITY_SQL = """
                   discovery_status,
                   capability_snapshot,
                   discovery_error,
+                  provider_config_revision,
+                  provider_config_fingerprint_sha256,
                   discovered_at,
                   created_at,
                   updated_at
@@ -2519,20 +2575,36 @@ UPSERT_PROVIDER_CAPABILITY_SQL = """
 
 GET_PROVIDER_CAPABILITY_FOR_PROVIDER_SQL = """
                 SELECT
-                  id,
-                  workspace_id,
-                  provider_id,
-                  discovered_by_user_account_id,
-                  adapter_key,
-                  discovery_status,
-                  capability_snapshot,
-                  discovery_error,
-                  discovered_at,
-                  created_at,
-                  updated_at
-                FROM provider_capabilities
-                WHERE provider_id = %s
-                  AND workspace_id = %s
+                  capability.id,
+                  capability.workspace_id,
+                  capability.provider_id,
+                  capability.discovered_by_user_account_id,
+                  capability.adapter_key,
+                  capability.discovery_status,
+                  capability.capability_snapshot,
+                  capability.discovery_error,
+                  capability.provider_config_revision,
+                  capability.provider_config_fingerprint_sha256,
+                  capability.discovered_at,
+                  capability.created_at,
+                  capability.updated_at
+                FROM provider_capabilities AS capability
+                JOIN model_providers AS provider
+                  ON provider.id = capability.provider_id
+                 AND provider.workspace_id = capability.workspace_id
+                 AND provider.config_revision = capability.provider_config_revision
+                 AND provider.config_fingerprint_sha256 = capability.provider_config_fingerprint_sha256
+                WHERE capability.provider_id = %s
+                  AND capability.workspace_id = %s
+                """
+
+IS_PROVIDER_SECRET_REFERENCE_IN_USE_SQL = """
+                SELECT EXISTS (
+                  SELECT 1
+                  FROM model_providers
+                  WHERE workspace_id = %s
+                    AND (api_key = %s OR azure_auth_secret_ref = %s)
+                ) AS in_use
                 """
 
 INSERT_PROVIDER_INVOCATION_TELEMETRY_SQL = """
@@ -6897,6 +6969,32 @@ class ContinuityStore:
             params=(thread_id, thread_id, session_id, kind, Jsonb(payload)),
         )
 
+    def append_event_if_tail(
+        self,
+        thread_id: UUID,
+        session_id: UUID | None,
+        kind: str,
+        payload: JsonObject,
+        *,
+        expected_event_id: UUID,
+        expected_sequence_no: int,
+    ) -> EventRow | None:
+        """Append only when the prepared user turn is still the thread tail.
+
+        The same transaction-scoped advisory lock used by ``append_event``
+        makes the tail comparison and insert one atomic conversation action.
+        """
+
+        self._acquire_advisory_lock(LOCK_THREAD_EVENTS_SQL, thread_id)
+        tail = self._fetch_optional_one(GET_THREAD_EVENT_TAIL_SQL, (thread_id,))
+        if tail is None or tail["id"] != expected_event_id or tail["sequence_no"] != expected_sequence_no:
+            return None
+        return self._fetch_one(
+            "append_event_if_tail",
+            INSERT_EVENT_SQL,
+            (thread_id, thread_id, session_id, kind, Jsonb(payload)),
+        )
+
     def list_thread_events(self, thread_id: UUID) -> list[EventRow]:
         return self._fetch_all(LIST_THREAD_EVENTS_SQL, (thread_id,))
 
@@ -7380,14 +7478,10 @@ class ContinuityStore:
     ) -> ContinuityObjectRow:
         resolved_is_preserved = True if is_preserved is None else is_preserved
         resolved_is_searchable = (
-            self._default_continuity_searchable(object_type)
-            if is_searchable is None
-            else is_searchable
+            self._default_continuity_searchable(object_type) if is_searchable is None else is_searchable
         )
         resolved_is_promotable = (
-            self._default_continuity_promotable(object_type)
-            if is_promotable is None
-            else is_promotable
+            self._default_continuity_promotable(object_type) if is_promotable is None else is_promotable
         )
         return self._fetch_one(
             "create_continuity_object",
@@ -8342,6 +8436,7 @@ class ContinuityStore:
         invoke_path: str = "",
         azure_api_version: str = "",
         azure_auth_secret_ref: str = "",
+        config_fingerprint_sha256: str,
     ) -> ModelProviderRow:
         return self._fetch_one(
             "create_model_provider",
@@ -8363,6 +8458,7 @@ class ContinuityStore:
                 azure_api_version,
                 azure_auth_secret_ref,
                 Jsonb(metadata),
+                config_fingerprint_sha256,
             ),
         )
 
@@ -8402,9 +8498,11 @@ class ContinuityStore:
         azure_api_version: str,
         azure_auth_secret_ref: str,
         metadata: JsonObject,
-    ) -> ModelProviderRow:
-        return self._fetch_one(
-            "update_model_provider",
+        config_fingerprint_sha256: str,
+        expected_config_revision: int,
+        expected_config_fingerprint_sha256: str,
+    ) -> ModelProviderRow | None:
+        return self._fetch_optional_one(
             UPDATE_MODEL_PROVIDER_SQL,
             (
                 provider_key,
@@ -8421,12 +8519,15 @@ class ContinuityStore:
                 azure_api_version,
                 azure_auth_secret_ref,
                 Jsonb(metadata),
+                config_fingerprint_sha256,
                 provider_id,
                 workspace_id,
+                expected_config_revision,
+                expected_config_fingerprint_sha256,
             ),
         )
 
-    def upsert_provider_capability(
+    def upsert_provider_capability_if_current(
         self,
         *,
         workspace_id: UUID,
@@ -8436,13 +8537,16 @@ class ContinuityStore:
         discovery_status: str,
         capability_snapshot: JsonObject,
         discovery_error: str | None,
-    ) -> ProviderCapabilityRow:
-        return self._fetch_one(
-            "upsert_provider_capability",
-            UPSERT_PROVIDER_CAPABILITY_SQL,
+        expected_config_revision: int,
+        expected_config_fingerprint_sha256: str,
+    ) -> ProviderCapabilityRow | None:
+        return self._fetch_optional_one(
+            UPSERT_PROVIDER_CAPABILITY_IF_CURRENT_SQL,
             (
-                workspace_id,
                 provider_id,
+                workspace_id,
+                expected_config_revision,
+                expected_config_fingerprint_sha256,
                 discovered_by_user_account_id,
                 adapter_key,
                 discovery_status,
@@ -8461,6 +8565,19 @@ class ContinuityStore:
             GET_PROVIDER_CAPABILITY_FOR_PROVIDER_SQL,
             (provider_id, workspace_id),
         )
+
+    def is_provider_secret_reference_in_use(
+        self,
+        *,
+        workspace_id: UUID,
+        encoded_reference: str,
+    ) -> bool:
+        row = self._fetch_one(
+            "is_provider_secret_reference_in_use",
+            IS_PROVIDER_SECRET_REFERENCE_IN_USE_SQL,
+            (workspace_id, encoded_reference, encoded_reference),
+        )
+        return bool(row["in_use"])
 
     def record_provider_invocation_telemetry(
         self,

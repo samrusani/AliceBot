@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -16,7 +17,7 @@ import re
 import subprocess
 import tarfile
 import tomllib
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 import zipfile
 
@@ -2280,6 +2281,118 @@ def read_release_metadata(root_dir: Path = ROOT_DIR) -> ReleaseMetadata:
     )
 
 
+def _app_constructor_uses_distribution_version(api_source: str) -> bool:
+    """Return whether the exported top-level ``app`` receives ``__version__``.
+
+    The concrete constructor may be FastAPI or a project subclass. Checking the
+    AST keeps the release contract semantic instead of coupling it to one
+    formatting style or constructor name.
+    """
+    module = ast.parse(api_source)
+    app_value: ast.expr | None = None
+    for statement in module.body:
+        if isinstance(statement, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "app"
+            for target in statement.targets
+        ):
+            app_value = statement.value
+        elif (
+            isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+            and statement.target.id == "app"
+        ):
+            app_value = statement.value
+    if not isinstance(app_value, ast.Call):
+        return False
+    return any(
+        keyword.arg == "version"
+        and isinstance(keyword.value, ast.Name)
+        and keyword.value.id == "__version__"
+        for keyword in app_value.keywords
+    )
+
+
+def _package_version_uses_distribution_metadata(package_source: str) -> bool:
+    """Return whether top-level package initialization reads alice-memory metadata.
+
+    This is intentionally an AST check rather than an import: release validation
+    must not execute package code from an arbitrary checkout. Import aliases and
+    quote/formatting choices are accepted, while comments, strings, functions,
+    and unrelated lookalike calls cannot satisfy the contract.
+    """
+    module = ast.parse(package_source)
+    direct_version_functions: set[str] = set()
+    metadata_modules: set[str] = set()
+    importlib_modules: set[str] = set()
+    for statement in module.body:
+        if isinstance(statement, ast.ImportFrom):
+            if statement.module == "importlib.metadata":
+                direct_version_functions.update(
+                    alias.asname or alias.name
+                    for alias in statement.names
+                    if alias.name == "version"
+                )
+            elif statement.module == "importlib":
+                metadata_modules.update(
+                    alias.asname or alias.name
+                    for alias in statement.names
+                    if alias.name == "metadata"
+                )
+        elif isinstance(statement, ast.Import):
+            for alias in statement.names:
+                if alias.name == "importlib.metadata":
+                    if alias.asname:
+                        metadata_modules.add(alias.asname)
+                    else:
+                        importlib_modules.add("importlib")
+
+    def is_metadata_version_call(value: ast.expr | None) -> bool:
+        if not isinstance(value, ast.Call) or not value.args:
+            return False
+        distribution = value.args[0]
+        if not (
+            isinstance(distribution, ast.Constant)
+            and distribution.value == "alice-memory"
+        ):
+            return False
+        function = value.func
+        if isinstance(function, ast.Name):
+            return function.id in direct_version_functions
+        if not isinstance(function, ast.Attribute) or function.attr != "version":
+            return False
+        owner = function.value
+        if isinstance(owner, ast.Name):
+            return owner.id in metadata_modules
+        return (
+            isinstance(owner, ast.Attribute)
+            and owner.attr == "metadata"
+            and isinstance(owner.value, ast.Name)
+            and owner.value.id in importlib_modules
+        )
+
+    def block_version_state(statements: list[ast.stmt]) -> bool | None:
+        state: bool | None = None
+        for statement in statements:
+            if isinstance(statement, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "__version__"
+                for target in statement.targets
+            ):
+                state = is_metadata_version_call(statement.value)
+            elif (
+                isinstance(statement, ast.AnnAssign)
+                and isinstance(statement.target, ast.Name)
+                and statement.target.id == "__version__"
+            ):
+                state = is_metadata_version_call(statement.value)
+            elif isinstance(statement, ast.Try):
+                try_state = block_version_state(statement.body)
+                if try_state is not None:
+                    state = try_state
+        return state
+
+    return block_version_state(module.body) is True
+
+
 def validate_metadata(root_dir: Path = ROOT_DIR) -> tuple[ReleaseMetadata, list[str]]:
     metadata = read_release_metadata(root_dir)
     issues: list[str] = []
@@ -2294,12 +2407,24 @@ def validate_metadata(root_dir: Path = ROOT_DIR) -> tuple[ReleaseMetadata, list[
         )
 
     api_source = (root_dir / "apps" / "api" / "src" / "alicebot_api" / "main.py").read_text(encoding="utf-8")
-    if 'FastAPI(title="AliceBot API", version=__version__)' not in api_source:
+    try:
+        app_uses_distribution_version = _app_constructor_uses_distribution_version(
+            api_source
+        )
+    except SyntaxError:
+        app_uses_distribution_version = False
+    if not app_uses_distribution_version:
         issues.append("FastAPI application version is not sourced from alicebot_api.__version__")
     package_init = (
         root_dir / "apps" / "api" / "src" / "alicebot_api" / "__init__.py"
     ).read_text(encoding="utf-8")
-    if '_distribution_version("alice-memory")' not in package_init:
+    try:
+        package_version_uses_metadata = _package_version_uses_distribution_metadata(
+            package_init
+        )
+    except SyntaxError:
+        package_version_uses_metadata = False
+    if not package_version_uses_metadata:
         issues.append("alicebot_api.__version__ is not sourced from installed distribution metadata")
     return metadata, issues
 
@@ -2530,6 +2655,74 @@ def write_checksums(dist_dir: Path, artifacts: list[Path]) -> Path:
     return manifest
 
 
+def validate_release_asset_set(
+    *, dist_dir: Path, artifacts: Sequence[Path]
+) -> list[str]:
+    """Require exactly one manifest covering exactly the validated distributions."""
+
+    manifest = dist_dir / "SHA256SUMS"
+    expected_names = {path.name for path in artifacts}
+    expected_asset_names = {*expected_names, manifest.name}
+    try:
+        actual_asset_names = {path.name for path in dist_dir.iterdir()}
+    except OSError as exc:
+        return [f"could not list release assets: {exc}"]
+    issues: list[str] = []
+    if actual_asset_names != expected_asset_names:
+        issues.append(
+            "release asset set must contain only the wheel, sdist, and SHA256SUMS: "
+            f"expected={sorted(expected_asset_names)} actual={sorted(actual_asset_names)}"
+        )
+    try:
+        lines = manifest.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        issues.append(f"could not read SHA256SUMS: {exc}")
+        return issues
+
+    entries: dict[str, str] = {}
+    for line_number, line in enumerate(lines, start=1):
+        match = re.fullmatch(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9_.+-]*)", line)
+        if match is None:
+            issues.append(f"SHA256SUMS line {line_number} is malformed")
+            continue
+        digest, filename = match.groups()
+        if filename in entries:
+            issues.append(f"SHA256SUMS repeats artifact {filename}")
+            continue
+        entries[filename] = digest
+    if set(entries) != expected_names:
+        issues.append(
+            "SHA256SUMS file set does not match validated distributions: "
+            f"expected={sorted(expected_names)} manifest={sorted(entries)}"
+        )
+    for artifact in artifacts:
+        expected_digest = entries.get(artifact.name)
+        if expected_digest is not None and sha256(artifact.read_bytes()).hexdigest() != expected_digest:
+            issues.append(f"SHA256SUMS digest does not match {artifact.name}")
+    return issues
+
+
+def compare_distribution_artifacts(
+    *, canonical: Sequence[Path], rebuilt: Sequence[Path]
+) -> list[str]:
+    """Require a deterministic rebuild to reproduce every canonical distribution byte."""
+
+    canonical_by_name = {path.name: path for path in canonical}
+    rebuilt_by_name = {path.name: path for path in rebuilt}
+    if set(canonical_by_name) != set(rebuilt_by_name):
+        return [
+            "deterministic rebuild file set does not match canonical distributions: "
+            f"canonical={sorted(canonical_by_name)} rebuilt={sorted(rebuilt_by_name)}"
+        ]
+    issues: list[str] = []
+    for filename in sorted(canonical_by_name):
+        canonical_digest = sha256(canonical_by_name[filename].read_bytes()).hexdigest()
+        rebuilt_digest = sha256(rebuilt_by_name[filename].read_bytes()).hexdigest()
+        if canonical_digest != rebuilt_digest:
+            issues.append(f"deterministic rebuild does not match canonical artifact {filename}")
+    return issues
+
+
 def pypi_version_exists(distribution_name: str, version: str) -> bool:
     url = f"https://pypi.org/pypi/{distribution_name}/{version}/json"
     request = Request(url, headers={"User-Agent": "alice-release-check/1"})
@@ -2542,6 +2735,71 @@ def pypi_version_exists(distribution_name: str, version: str) -> bool:
         raise
 
 
+def verify_pypi_artifacts(
+    *,
+    distribution_name: str,
+    version: str,
+    artifacts: Sequence[Path],
+    allow_subset: bool = False,
+) -> list[str]:
+    """Verify local release artifacts exactly match the files recorded by PyPI."""
+
+    url = f"https://pypi.org/pypi/{distribution_name}/{version}/json"
+    request = Request(url, headers={"User-Agent": "alice-release-check/1"})
+    try:
+        with urlopen(request, timeout=15) as response:  # noqa: S310 - fixed PyPI origin
+            payload = json.load(response)
+    except HTTPError as exc:
+        if exc.code == 404:
+            return [f"{distribution_name} {version} does not exist on PyPI"]
+        return [f"could not read PyPI release metadata: HTTP {exc.code}"]
+    except (OSError, URLError, json.JSONDecodeError, TypeError) as exc:
+        return [f"could not read PyPI release metadata: {exc}"]
+
+    if not isinstance(payload, dict):
+        return ["PyPI release metadata must be a JSON object"]
+    urls = payload.get("urls")
+    if not isinstance(urls, list):
+        return ["PyPI release metadata is missing its file list"]
+
+    published: dict[str, str] = {}
+    issues: list[str] = []
+    for index, item in enumerate(urls):
+        if not isinstance(item, dict):
+            issues.append(f"PyPI file entry {index} must be an object")
+            continue
+        filename = item.get("filename")
+        digests = item.get("digests")
+        digest = digests.get("sha256") if isinstance(digests, dict) else None
+        if not isinstance(filename, str) or not isinstance(digest, str):
+            issues.append(f"PyPI file entry {index} is missing filename or sha256")
+            continue
+        if filename in published:
+            issues.append(f"PyPI release metadata repeats file {filename}")
+            continue
+        published[filename] = digest
+
+    local = {path.name: sha256(path.read_bytes()).hexdigest() for path in artifacts}
+    if allow_subset and not published:
+        issues.append("PyPI resume requires at least one already-published verified artifact")
+    if allow_subset and set(published) == set(local):
+        issues.append(
+            "PyPI resume requires a proper partial file set; use finalization recovery when all artifacts exist"
+        )
+    file_set_matches = (
+        set(published).issubset(local) if allow_subset else set(local) == set(published)
+    )
+    if not file_set_matches:
+        issues.append(
+            "PyPI file set is not an exact permitted set of verified artifacts: "
+            f"local={sorted(local)} published={sorted(published)}"
+        )
+    for filename in sorted(set(local) & set(published)):
+        if local[filename] != published[filename]:
+            issues.append(f"PyPI sha256 does not match verified artifact {filename}")
+    return issues
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT_DIR)
@@ -2551,11 +2809,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--require-clean", action="store_true")
     parser.add_argument("--check-pypi", action="store_true")
     parser.add_argument(
+        "--verify-pypi-artifacts",
+        action="store_true",
+        help="Require --dist-dir wheel/sdist bytes to exactly match PyPI file digests.",
+    )
+    parser.add_argument(
+        "--verify-pypi-artifact-subset",
+        action="store_true",
+        help="Allow PyPI to contain an exact verified subset before a protected resume upload.",
+    )
+    parser.add_argument(
+        "--verify-release-assets",
+        action="store_true",
+        help="Require exactly wheel, sdist, and a matching SHA256SUMS manifest.",
+    )
+    parser.add_argument(
         "--require-finalized-release-docs",
         action="store_true",
         help="Require a dated changelog section and final release-note title before tagging.",
     )
     parser.add_argument("--dist-dir", type=Path, default=None)
+    parser.add_argument(
+        "--compare-dist-dir",
+        type=Path,
+        default=None,
+        help="Require a second valid distribution directory to be byte-identical.",
+    )
     parser.add_argument("--write-checksums", action="store_true")
     parser.add_argument(
         "--semantic-eval-report",
@@ -2608,6 +2887,45 @@ def main(argv: list[str] | None = None) -> int:
         issues.extend(artifact_issues)
     elif args.write_checksums:
         issues.append("--write-checksums requires --dist-dir")
+    if args.compare_dist_dir is not None:
+        if args.dist_dir is None:
+            issues.append("--compare-dist-dir requires --dist-dir")
+        else:
+            rebuilt, rebuilt_issues = validate_distributions(
+                args.compare_dist_dir.resolve(), version=metadata.version
+            )
+            issues.extend(rebuilt_issues)
+            if artifacts and not rebuilt_issues:
+                issues.extend(
+                    compare_distribution_artifacts(
+                        canonical=artifacts, rebuilt=rebuilt
+                    )
+                )
+    if args.verify_pypi_artifacts and args.verify_pypi_artifact_subset:
+        issues.append(
+            "--verify-pypi-artifacts and --verify-pypi-artifact-subset are mutually exclusive"
+        )
+    verify_pypi = args.verify_pypi_artifacts or args.verify_pypi_artifact_subset
+    if args.verify_release_assets or verify_pypi:
+        if args.dist_dir is None:
+            issues.append("release asset verification requires --dist-dir")
+        elif not artifacts:
+            issues.append("release asset verification requires valid wheel and sdist artifacts")
+        else:
+            issues.extend(
+                validate_release_asset_set(
+                    dist_dir=args.dist_dir.resolve(), artifacts=artifacts
+                )
+            )
+    if verify_pypi and artifacts:
+        issues.extend(
+            verify_pypi_artifacts(
+                distribution_name=metadata.distribution_name,
+                version=metadata.version,
+                artifacts=artifacts,
+                allow_subset=args.verify_pypi_artifact_subset,
+            )
+        )
 
     semantic_report_path = (
         args.semantic_eval_report.resolve()

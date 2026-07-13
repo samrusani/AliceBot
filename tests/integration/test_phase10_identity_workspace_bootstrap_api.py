@@ -8,9 +8,9 @@ import anyio
 import psycopg
 from psycopg.rows import dict_row
 
-import apps.api.src.alicebot_api.main as main_module
-from apps.api.src.alicebot_api.config import Settings
-from apps.api.src.alicebot_api.hosted_auth import hash_token
+import alicebot_api.main as main_module
+from alicebot_api.config import Settings
+from alicebot_api.hosted_auth import hash_token
 
 
 def invoke_request(

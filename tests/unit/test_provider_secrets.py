@@ -10,6 +10,7 @@ from alicebot_api.provider_secrets import (
     ProviderSecretManagerError,
     _secret_root,
     build_provider_secret_ref,
+    delete_provider_api_key,
     encode_provider_secret_ref,
     resolve_provider_api_key,
     write_provider_api_key,
@@ -31,6 +32,13 @@ def test_provider_secret_round_trip(tmp_path: Path) -> None:
     )
 
     assert resolved == "provider-secret-key"
+
+    delete_provider_api_key(settings=settings, secret_ref=secret_ref)
+    with pytest.raises(ProviderSecretManagerError, match="was not found"):
+        resolve_provider_api_key(
+            settings=settings,
+            api_key_field=encode_provider_secret_ref(secret_ref=secret_ref),
+        )
 
 
 def test_provider_secret_resolution_allows_legacy_plaintext_keys() -> None:

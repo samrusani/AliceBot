@@ -50,6 +50,7 @@ def _seed_metadata_tree(tmp_path: Path, *, python_version: str, web_version: str
         encoding="utf-8",
     )
     (package_dir / "__init__.py").write_text(
+        "from importlib.metadata import version as _distribution_version\n"
         '__version__ = _distribution_version("alice-memory")\n',
         encoding="utf-8",
     )
@@ -79,6 +80,94 @@ def test_release_metadata_rejects_prerelease_version(tmp_path: Path) -> None:
     _metadata, issues = release_check.validate_metadata(tmp_path)
 
     assert any("stable SemVer" in issue for issue in issues)
+
+
+def test_release_metadata_accepts_fastapi_subclass_constructor(tmp_path: Path) -> None:
+    _seed_metadata_tree(tmp_path, python_version="1.2.3", web_version="1.2.3")
+    main_path = tmp_path / "apps" / "api" / "src" / "alicebot_api" / "main.py"
+    main_path.write_text(
+        "class AliceFastAPI:\n    pass\n\n"
+        "app: AliceFastAPI = AliceFastAPI(\n"
+        '    title="AliceBot API",\n'
+        "    version=__version__,\n"
+        ")\n",
+        encoding="utf-8",
+    )
+
+    _metadata, issues = release_check.validate_metadata(tmp_path)
+
+    assert issues == []
+
+
+@pytest.mark.parametrize(
+    "package_source",
+    (
+        "from importlib.metadata import version as installed_version\n"
+        "__version__ = installed_version('alice-memory')\n",
+        "from importlib import metadata as installed_metadata\n"
+        '__version__ = installed_metadata.version("alice-memory")\n',
+        "import importlib.metadata\n"
+        '__version__ = importlib.metadata.version("alice-memory")\n',
+    ),
+)
+def test_release_metadata_accepts_semantic_distribution_version_forms(
+    tmp_path: Path,
+    package_source: str,
+) -> None:
+    _seed_metadata_tree(tmp_path, python_version="1.2.3", web_version="1.2.3")
+    package_init = tmp_path / "apps" / "api" / "src" / "alicebot_api" / "__init__.py"
+    package_init.write_text(package_source, encoding="utf-8")
+
+    _metadata, issues = release_check.validate_metadata(tmp_path)
+
+    assert issues == []
+
+
+@pytest.mark.parametrize(
+    "package_source",
+    (
+        "# _distribution_version('alice-memory')\n__version__ = '1.2.3'\n",
+        "from importlib.metadata import version\n"
+        "def hidden():\n    return version('alice-memory')\n"
+        "__version__ = '1.2.3'\n",
+        "from importlib.metadata import version\n"
+        "__version__ = version('different-package')\n",
+        "from importlib.metadata import version\n"
+        "__version__ = version('alice-memory')\n"
+        "__version__ = 'overridden'\n",
+    ),
+)
+def test_release_metadata_rejects_distribution_version_false_positives(
+    tmp_path: Path,
+    package_source: str,
+) -> None:
+    _seed_metadata_tree(tmp_path, python_version="1.2.3", web_version="1.2.3")
+    package_init = tmp_path / "apps" / "api" / "src" / "alicebot_api" / "__init__.py"
+    package_init.write_text(package_source, encoding="utf-8")
+
+    _metadata, issues = release_check.validate_metadata(tmp_path)
+
+    assert any("installed distribution metadata" in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
+    "app_source",
+    (
+        'app = FastAPI(title="AliceBot API", version="1.2.3")\n',
+        'app = FastAPI(title="AliceBot API")\n',
+        'def build():\n    return FastAPI(version=__version__)\napp = build()\n',
+    ),
+)
+def test_release_metadata_rejects_app_without_distribution_version(
+    tmp_path: Path, app_source: str
+) -> None:
+    _seed_metadata_tree(tmp_path, python_version="1.2.3", web_version="1.2.3")
+    main_path = tmp_path / "apps" / "api" / "src" / "alicebot_api" / "main.py"
+    main_path.write_text(app_source, encoding="utf-8")
+
+    _metadata, issues = release_check.validate_metadata(tmp_path)
+
+    assert any("FastAPI application version" in issue for issue in issues)
 
 
 def test_checksum_manifest_is_deterministic(tmp_path: Path) -> None:

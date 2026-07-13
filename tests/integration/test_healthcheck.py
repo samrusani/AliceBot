@@ -10,8 +10,8 @@ from urllib import error, request
 
 import anyio
 
-import apps.api.src.alicebot_api.main as main_module
-from apps.api.src.alicebot_api.config import Settings
+import alicebot_api.main as main_module
+from alicebot_api.config import Settings
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

@@ -36,6 +36,7 @@ from alicebot_api.contracts import (
     ToolRoutingRequestInput,
 )
 from alicebot_api.store import ApprovalRow, ContinuityStore, JsonObject, JsonValue
+from alicebot_api.trace_events import append_trace_events as _append_trace_events
 from alicebot_api.tasks import (
     DEFAULT_TASK_STEP_KIND,
     DEFAULT_TASK_STEP_SEQUENCE_NO,
@@ -171,21 +172,6 @@ def _resume_task_run_after_resolution(
         cast(str | None, updated["failure_class"]),
         cast(str, updated["retry_posture"]),
     )
-
-
-def _append_trace_events(
-    store: ContinuityStore,
-    *,
-    trace_id: UUID,
-    trace_events: list[tuple[str, dict[str, object]]],
-) -> None:
-    for sequence_no, (kind, payload) in enumerate(trace_events, start=1):
-        store.append_trace_event(
-            trace_id=trace_id,
-            sequence_no=sequence_no,
-            kind=kind,
-            payload=cast(JsonObject, payload),
-        )
 
 
 def _resolution_outcome(

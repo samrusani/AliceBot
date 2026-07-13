@@ -85,6 +85,7 @@ import {
   getContinuityRetrievalEvaluation,
   hasLiveApiConfig,
   isLocalApiBaseUrl,
+  isAssistantResponseAccepted,
   isSupportedApiBaseUrl,
   requestJson,
   sanitizeApiBaseUrl,
@@ -622,17 +623,24 @@ describe("api helpers", () => {
       ),
     );
 
-    await submitAssistantResponse("https://api.example.com", {
-      user_id: "user-1",
-      thread_id: "thread-1",
-      message: "What do I usually take in coffee?",
-    });
+    await submitAssistantResponse(
+      "https://api.example.com",
+      {
+        user_id: "user-1",
+        thread_id: "thread-1",
+        message: "What do I usually take in coffee?",
+      },
+      "response-request-1",
+    );
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.com/v0/responses",
       expect.objectContaining({
         method: "POST",
-        headers: expect.objectContaining({ "Content-Type": "application/json" }),
+        headers: expect.objectContaining({
+          "Content-Type": "application/json",
+          "idempotency-key": "response-request-1",
+        }),
       }),
     );
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
@@ -640,6 +648,39 @@ describe("api helpers", () => {
       thread_id: "thread-1",
       message: "What do I usually take in coffee?",
     });
+  });
+
+  it("models an accepted assistant response job without terminal-only fields", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: {
+            code: "response_generation_in_progress",
+            message: "response generation is already in progress",
+          },
+          response_job: {
+            id: "job-1",
+            state: "running",
+            endpoint: "/v0/responses",
+            created_at: "2026-07-13T10:00:00Z",
+            updated_at: "2026-07-13T10:00:01Z",
+            completed_at: null,
+          },
+        }),
+        { status: 202, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const result = await submitAssistantResponse(
+      "https://api.example.com",
+      { user_id: "user-1", thread_id: "thread-1", message: "Continue" },
+      "stable-response-key",
+    );
+
+    expect(isAssistantResponseAccepted(result)).toBe(true);
+    if (isAssistantResponseAccepted(result)) {
+      expect(result.response_job).toMatchObject({ id: "job-1", state: "running" });
+    }
   });
 
   it("uses the shipped continuity endpoints for thread create and review", async () => {
@@ -947,11 +988,15 @@ describe("api helpers", () => {
         }),
     );
 
-    const request = submitAssistantResponse("https://api.example.com", {
-      user_id: "user-1",
-      thread_id: "thread-1",
-      message: "Run the model-backed response path.",
-    });
+    const request = submitAssistantResponse(
+      "https://api.example.com",
+      {
+        user_id: "user-1",
+        thread_id: "thread-1",
+        message: "Run the model-backed response path.",
+      },
+      "long-running-response-key",
+    );
     const rejection = expect(request).rejects.toEqual(
       expect.objectContaining({
         message: "Request timed out after 120 seconds",

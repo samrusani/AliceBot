@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from alicebot_api.config import Settings
+from alicebot_api.config import Settings, get_runtime_settings
 
 
 def test_settings_defaults(monkeypatch):
@@ -351,6 +351,81 @@ def test_settings_raise_clear_error_for_invalid_integer_values() -> None:
 
     with pytest.raises(ValueError, match="RESPONSE_RATE_LIMIT_MAX_REQUESTS must be an integer"):
         Settings.from_env({"RESPONSE_RATE_LIMIT_MAX_REQUESTS": "not-an-integer"})
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "APP_ACCESS_LOG",
+        "CORS_ALLOW_CREDENTIALS",
+        "SECURITY_HEADERS_ENABLED",
+        "TRUST_PROXY_HEADERS",
+    ],
+)
+def test_settings_reject_unknown_boolean_tokens(key: str) -> None:
+    with pytest.raises(ValueError, match=rf"{key} must be a boolean"):
+        Settings.from_env({key: "definitely"})
+
+
+@pytest.mark.parametrize(
+    ("env", "message"),
+    [
+        ({"APP_PORT": "0"}, "APP_PORT must be between 1 and 65535"),
+        ({"APP_PORT": "65536"}, "APP_PORT must be between 1 and 65535"),
+        (
+            {"HEALTHCHECK_TIMEOUT_SECONDS": "0"},
+            "HEALTHCHECK_TIMEOUT_SECONDS must be a positive integer",
+        ),
+        (
+            {"MODEL_TIMEOUT_SECONDS": "0"},
+            "MODEL_TIMEOUT_SECONDS must be a positive integer",
+        ),
+    ],
+)
+def test_settings_reject_invalid_ports_and_timeouts(
+    env: dict[str, str],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        Settings.from_env(env)
+
+
+def test_scoped_runtime_settings_can_skip_unrelated_hosted_requirements() -> None:
+    settings = Settings.from_env(
+        {
+            "APP_ENV": "production",
+            "DATABASE_URL": "postgresql://app:secret@db/alice",
+            "ALICEBOT_AUTH_USER_ID": "11111111-1111-4111-8111-111111111111",
+        },
+        require_production_services=False,
+    )
+
+    assert settings.app_env == "production"
+    assert settings.database_url == "postgresql://app:secret@db/alice"
+
+
+def test_runtime_settings_use_environment_without_hosted_production_requirements(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://runtime:secret@db/alice")
+    monkeypatch.setenv(
+        "ALICEBOT_AUTH_USER_ID",
+        "11111111-1111-4111-8111-111111111111",
+    )
+    for key in (
+        "DATABASE_ADMIN_URL",
+        "S3_ACCESS_KEY",
+        "S3_SECRET_KEY",
+        "TELEGRAM_WEBHOOK_SECRET",
+        "WORKSPACE_PROVIDER_CONFIGS_JSON",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    settings = get_runtime_settings()
+
+    assert settings.app_env == "production"
+    assert settings.database_url == "postgresql://runtime:secret@db/alice"
 
 
 def test_settings_reject_invalid_auth_user_id() -> None:

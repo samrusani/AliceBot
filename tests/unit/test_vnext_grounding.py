@@ -401,6 +401,30 @@ def test_grounding_none_for_uncheckable_store() -> None:
     assert compute_query_grounding(object(), 'Have I read "Sapiens" yet?') is None
 
 
+def test_operational_probe_failures_degrade_to_uncheckable_but_baseexception_escapes() -> None:
+    class OperationalFailureStore:
+        def search_source_chunks(self, **_kwargs):
+            raise RuntimeError("database connection dropped")
+
+        def search_memories_fts(self, **_kwargs):
+            raise RuntimeError("database connection dropped")
+
+    assert compute_query_grounding(
+        OperationalFailureStore(),
+        'Have I read "Sapiens" yet?',
+    ) is None
+
+    class ProbeCancelled(BaseException):
+        pass
+
+    class CancelledStore:
+        def search_source_chunks(self, **_kwargs):
+            raise ProbeCancelled("cancelled")
+
+    with pytest.raises(ProbeCancelled, match="cancelled"):
+        compute_query_grounding(CancelledStore(), 'Have I read "Sapiens" yet?')
+
+
 def test_grounding_payload_lists_only_unsupported_entities(conn) -> None:
     store = _store(conn)
     _seed_chunk(store, "we talked about Sapiens over coffee")

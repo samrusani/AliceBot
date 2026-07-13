@@ -8,7 +8,7 @@ from typing import Any, BinaryIO, Literal
 from uuid import UUID
 
 from alicebot_api import __version__
-from alicebot_api.config import Settings, get_settings
+from alicebot_api.config import Settings, get_runtime_settings, get_settings
 from alicebot_api.mcp_tools import (
     MCPRuntimeContext,
     MCPToolError,
@@ -42,9 +42,31 @@ def _resolve_user_id(settings: Settings, user_id_flag: str | None) -> UUID:
     return UUID(os.getenv("ALICEBOT_AUTH_USER_ID", _DEFAULT_MCP_USER_ID))
 
 
+def _settings_with_runtime_overrides(args: argparse.Namespace) -> Settings:
+    """Apply stdio-runtime overrides before validating MCP-relevant settings."""
+
+    if args.database_url is None and args.user_id is None:
+        if os.getenv("APP_ENV", "development") in {"development", "test"}:
+            return get_settings()
+        return get_runtime_settings()
+    effective_env = dict(os.environ)
+    if args.database_url is not None:
+        effective_env["DATABASE_URL"] = args.database_url
+    if args.user_id is not None:
+        try:
+            UUID(args.user_id)
+        except ValueError as exc:
+            raise ValueError(f"--user-id must be a UUID, got: {args.user_id}") from exc
+        effective_env["ALICEBOT_AUTH_USER_ID"] = args.user_id
+    return Settings.from_env(
+        effective_env,
+        require_production_services=False,
+    )
+
+
 def _build_runtime_context(args: argparse.Namespace) -> MCPRuntimeContext:
-    settings = get_settings()
-    database_url = args.database_url if args.database_url is not None else settings.database_url
+    settings = _settings_with_runtime_overrides(args)
+    database_url = settings.database_url
     user_id = _resolve_user_id(settings, args.user_id)
     return MCPRuntimeContext(database_url=database_url, user_id=user_id)
 

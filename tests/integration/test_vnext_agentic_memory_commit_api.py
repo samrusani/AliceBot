@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-import apps.api.src.alicebot_api.main as main_module
-from apps.api.src.alicebot_api.config import Settings
+import alicebot_api.main as main_module
+from alicebot_api.config import Settings
 
 from tests.integration.test_vnext_live_workspace_api import invoke_request, seed_user
 

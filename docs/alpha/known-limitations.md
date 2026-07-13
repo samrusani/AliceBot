@@ -5,8 +5,10 @@ This alpha is intentionally limited.
 - local setup is still technical
 - no hosted cloud
 - no production SLA
-- no Gmail OAuth
-- no Calendar OAuth
+- no managed Gmail OAuth consent/account-linking flow; manual operator-token
+  storage exists
+- no managed Calendar OAuth consent/account-linking flow; manual operator-token
+  storage exists
 - no live email polling
 - no live calendar polling
 - Telegram webhook automation is not packaged

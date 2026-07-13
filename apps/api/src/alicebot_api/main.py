@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from dataclasses import replace
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 import hmac
 import hashlib
@@ -11,16 +12,19 @@ import logging
 import re
 import threading
 import time
-from typing import TYPE_CHECKING, Annotated, Awaitable, Callable, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, Any, Awaitable, Callable, Literal, TypedDict, cast
 from uuid import UUID, uuid4
 from fastapi import FastAPI, Header, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from fastapi.openapi.utils import get_openapi
+from pydantic import BaseModel as PydanticBaseModel, ConfigDict, Field, TypeAdapter, model_validator
 from fastapi.responses import JSONResponse
 import psycopg
 from psycopg.rows import dict_row
+from starlette.concurrency import run_in_threadpool
 from starlette.routing import Match
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
 if TYPE_CHECKING:
     import redis
     from redis.exceptions import RedisError as _RedisError
@@ -33,6 +37,7 @@ else:
 
         class _RedisError(Exception):
             """Fallback Redis error used when redis package is unavailable."""
+
 
 from alicebot_api import __version__
 from alicebot_api.compiler import compile_and_persist_trace, compile_resumption_brief
@@ -207,6 +212,7 @@ from alicebot_api.contracts import (
     MemoryCandidateInput,
     ModelInvocationRequest,
     ModelInvocationResponse,
+    GenerateResponseSuccess,
     OpenLoopCandidateInput,
     MemoryEmbeddingUpsertInput,
     THREAD_EVENT_LIST_ORDER,
@@ -490,6 +496,9 @@ from alicebot_api.vnext_agent_keys import (
 )
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService, VNextBrainValidationError
 from alicebot_api.vnext_capture import VNextCaptureService, VNextCaptureValidationError
+from alicebot_api.vnext_embeddings import (
+    persist_deferred_memory_embeddings_best_effort,
+)
 from alicebot_api.vnext_connections import (
     ConnectionFinderRequest,
     VNextConnectionService,
@@ -499,6 +508,8 @@ from alicebot_api.vnext_connectors import (
     VNextConnectorService,
     VNextConnectorValidationError,
     list_connector_definitions,
+    poll_telegram_updates,
+    scan_local_folder,
 )
 from alicebot_api.vnext_context_tree import (
     ContextTreeRequest,
@@ -537,7 +548,11 @@ from alicebot_api.vnext_scheduler import (
     default_schedule,
     validate_schedule,
 )
-from alicebot_api.vnext_scheduler_runtime import daemon_status
+from alicebot_api.vnext_scheduler_runtime import (
+    daemon_status,
+    run_due_workflows_durable,
+    run_now_durable,
+)
 from alicebot_api.vnext_store import PostgresVNextStore
 from alicebot_api.continuity_lifecycle import (
     ContinuityLifecycleNotFoundError,
@@ -641,6 +656,7 @@ from alicebot_api.telegram_channels import (
     TelegramLinkTokenInvalidError,
     TelegramMessageNotFoundError,
     TelegramRoutingError,
+    TelegramWebhookIngestResult,
     TelegramWebhookValidationError,
     confirm_telegram_link_challenge,
     dispatch_telegram_message,
@@ -762,9 +778,24 @@ from alicebot_api.semantic_retrieval import (
 from alicebot_api.response_generation import (
     DEVELOPER_INSTRUCTION,
     ModelInvocationError,
+    ModelProviderUnavailableError,
+    ResponseGenerationConflictError,
     ResponseFailure,
     SYSTEM_INSTRUCTION,
-    generate_response,
+    complete_response_generation,
+    fail_response_generation,
+    invoke_prepared_response,
+    prepare_response_generation,
+)
+from alicebot_api.response_jobs import (
+    RESPONSE_JOB_ENDPOINT_RUNTIME,
+    RESPONSE_JOB_ENDPOINT_V0,
+    RESPONSE_JOB_LEASE_SECONDS,
+    ResponseGenerationJobRow,
+    ResponseGenerationJobStore,
+    ResponseJobFenceLostError,
+    normalize_idempotency_key,
+    request_fingerprint,
 )
 from alicebot_api.proxy_execution import (
     ProxyExecutionApprovalStateError,
@@ -793,6 +824,7 @@ from alicebot_api.provider_runtime import (
     normalized_capability_snapshot,
     resolve_runtime_provider_config_secrets,
 )
+from alicebot_api.provider_configuration import provider_config_fingerprint
 from alicebot_api.model_packs import (
     MODEL_PACK_BINDING_SOURCE_MANUAL,
     MODEL_PACK_STATUS_ACTIVE,
@@ -813,6 +845,12 @@ from alicebot_api.model_packs import (
     normalize_pack_version,
     resolve_workspace_model_pack_selection,
 )
+from alicebot_api.openapi_operation_contracts import (
+    OPENAPI_INTENTIONALLY_POLYMORPHIC_OPERATIONS,
+    OPENAPI_OPEN_RESPONSE_OPERATIONS,
+    OPENAPI_OPERATION_RESPONSE_SCHEMAS,
+    OPENAPI_SOURCE_VERIFIED_OPERATIONS,
+)
 from alicebot_api.task_briefing import (
     TaskBriefNotFoundError,
     TaskBriefValidationError,
@@ -823,7 +861,10 @@ from alicebot_api.task_briefing import (
 from alicebot_api.provider_secrets import (
     ProviderSecretManagerError,
     build_provider_secret_ref,
+    decode_provider_secret_ref,
+    delete_provider_api_key,
     encode_provider_secret_ref,
+    is_provider_secret_ref,
     write_provider_api_key,
 )
 from alicebot_api.provider_security import (
@@ -853,7 +894,357 @@ from alicebot_api.traces import (
 LOGGER = logging.getLogger(__name__)
 
 
-app = FastAPI(title="AliceBot API", version=__version__)
+class BaseModel(PydanticBaseModel):
+    """Fail-closed request model shared by all HTTP body contracts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+def _openapi_tag_for_path(path: str) -> str:
+    if path in {"/healthz", "/readyz", "/version"}:
+        return "Operations"
+    if path.startswith("/v0/vnext"):
+        return "vNext memory"
+    if path.startswith("/v0"):
+        return "Continuity v0"
+    if path.startswith("/v1/auth") or path.startswith("/v1/device"):
+        return "Authentication"
+    if path.startswith("/v1/channels"):
+        return "Channels"
+    if path.startswith("/v1/providers") or path.startswith("/v1/model-packs"):
+        return "Providers"
+    return "Hosted API"
+
+
+_OPENAPI_EXACT_RESPONSE_CONTRACTS: dict[tuple[str, str], tuple[str, object]] = {
+    ("GET", "/v0/agent-profiles"): ("AgentProfileListResponse", AgentProfileListResponse),
+    ("POST", "/v0/threads"): ("ThreadCreateResponse", ThreadCreateResponse),
+    ("GET", "/v0/threads"): ("ThreadListResponse", ThreadListResponse),
+    ("GET", "/v0/threads/health-dashboard"): ("ThreadHealthDashboardResponse", ThreadHealthDashboardResponse),
+    ("GET", "/v0/threads/{thread_id}"): ("ThreadDetailResponse", ThreadDetailResponse),
+    ("GET", "/v0/threads/{thread_id}/sessions"): ("ThreadSessionListResponse", ThreadSessionListResponse),
+    ("GET", "/v0/threads/{thread_id}/events"): ("ThreadEventListResponse", ThreadEventListResponse),
+    ("GET", "/v0/threads/{thread_id}/resumption-brief"): ("ResumptionBriefResponse", ResumptionBriefResponse),
+    ("GET", "/v0/admin/debug/continuity/lifecycle"): (
+        "ContinuityLifecycleListResponse",
+        ContinuityLifecycleListResponse,
+    ),
+    ("GET", "/v0/admin/debug/continuity/lifecycle/{continuity_object_id}"): (
+        "ContinuityLifecycleDetailResponse",
+        ContinuityLifecycleDetailResponse,
+    ),
+    ("GET", "/v0/continuity/review-queue"): ("ContinuityReviewQueueResponse", ContinuityReviewQueueResponse),
+    ("GET", "/v0/continuity/review-queue/{continuity_object_id}"): (
+        "ContinuityReviewDetailResponse",
+        ContinuityReviewDetailResponse,
+    ),
+    ("GET", "/v0/continuity/explain/{continuity_object_id}"): (
+        "ContinuityExplainResponse",
+        ContinuityExplainResponse,
+    ),
+    ("POST", "/v1/contradictions/detect"): ("ContradictionSyncResponse", ContradictionSyncResponse),
+    ("GET", "/v1/contradictions/cases"): ("ContradictionCaseListResponse", ContradictionCaseListResponse),
+    ("GET", "/v1/contradictions/cases/{contradiction_case_id}"): (
+        "ContradictionCaseDetailResponse",
+        ContradictionCaseDetailResponse,
+    ),
+    ("POST", "/v1/contradictions/cases/{contradiction_case_id}/resolve"): (
+        "ContradictionResolveResponse",
+        ContradictionResolveResponse,
+    ),
+    ("GET", "/v1/trust/signals"): ("TrustSignalListResponse", TrustSignalListResponse),
+    ("GET", "/v0/state-at"): ("TemporalStateAtResponse", TemporalStateAtResponse),
+    ("GET", "/v0/timeline"): ("TemporalTimelineResponse", TemporalTimelineResponse),
+    ("GET", "/v0/explain"): ("TemporalExplainResponse", TemporalExplainResponse),
+    ("GET", "/v0/patterns"): ("TrustedFactPatternListResponse", TrustedFactPatternListResponse),
+    ("GET", "/v0/patterns/{pattern_id}"): ("TrustedFactPatternExplainResponse", TrustedFactPatternExplainResponse),
+    ("GET", "/v0/playbooks"): ("TrustedFactPlaybookListResponse", TrustedFactPlaybookListResponse),
+    ("GET", "/v0/playbooks/{playbook_id}"): (
+        "TrustedFactPlaybookExplainResponse",
+        TrustedFactPlaybookExplainResponse,
+    ),
+    ("GET", "/v0/admin/debug/continuity/artifacts/{artifact_id}"): (
+        "ContinuityArtifactDetailResponse",
+        ContinuityArtifactDetailResponse,
+    ),
+    ("GET", "/v0/continuity/open-loops"): (
+        "ContinuityOpenLoopDashboardResponse",
+        ContinuityOpenLoopDashboardResponse,
+    ),
+    ("GET", "/v0/continuity/daily-brief"): ("ContinuityDailyBriefResponse", ContinuityDailyBriefResponse),
+    ("GET", "/v0/continuity/weekly-review"): (
+        "ContinuityWeeklyReviewResponse",
+        ContinuityWeeklyReviewResponse,
+    ),
+    ("POST", "/v0/continuity/open-loops/{continuity_object_id}/review-action"): (
+        "ContinuityOpenLoopReviewActionResponse",
+        ContinuityOpenLoopReviewActionResponse,
+    ),
+    ("GET", "/v0/continuity/recall"): ("ContinuityRecallResponse", ContinuityRecallResponse),
+    ("GET", "/v0/continuity/retrieval-runs"): ("RetrievalRunListResponse", RetrievalRunListResponse),
+    ("GET", "/v0/continuity/retrieval-runs/{retrieval_run_id}"): (
+        "RetrievalTraceResponse",
+        RetrievalTraceResponse,
+    ),
+    ("GET", "/v0/continuity/retrieval-evaluation"): (
+        "RetrievalEvaluationResponse",
+        RetrievalEvaluationResponse,
+    ),
+    ("GET", "/v1/evals/suites"): ("PublicEvalSuiteDefinitionListResponse", PublicEvalSuiteDefinitionListResponse),
+    ("POST", "/v1/evals/runs"): ("PublicEvalRunDetailResponse", PublicEvalRunDetailResponse),
+    ("GET", "/v1/evals/runs"): ("PublicEvalRunListResponse", PublicEvalRunListResponse),
+    ("GET", "/v1/evals/runs/{eval_run_id}"): ("PublicEvalRunDetailResponse", PublicEvalRunDetailResponse),
+    ("GET", "/v0/continuity/resumption-brief"): (
+        "ContinuityResumptionBriefResponse",
+        ContinuityResumptionBriefResponse,
+    ),
+    ("POST", "/v1/continuity/brief"): ("ContinuityBriefResponse", ContinuityBriefResponse),
+    ("POST", "/v0/task-briefs/compile"): ("TaskBriefResponse", TaskBriefResponse),
+    ("POST", "/v0/task-briefs/compare"): ("TaskBriefComparisonResponse", TaskBriefComparisonResponse),
+    ("GET", "/v0/chief-of-staff"): ("ChiefOfStaffPriorityBriefResponse", ChiefOfStaffPriorityBriefResponse),
+    ("POST", "/v0/chief-of-staff/recommendation-outcomes"): (
+        "ChiefOfStaffRecommendationOutcomeCaptureResponse",
+        ChiefOfStaffRecommendationOutcomeCaptureResponse,
+    ),
+    ("POST", "/v0/chief-of-staff/handoff-review-actions"): (
+        "ChiefOfStaffHandoffReviewActionCaptureResponse",
+        ChiefOfStaffHandoffReviewActionCaptureResponse,
+    ),
+    ("POST", "/v0/chief-of-staff/execution-routing-actions"): (
+        "ChiefOfStaffExecutionRoutingActionCaptureResponse",
+        ChiefOfStaffExecutionRoutingActionCaptureResponse,
+    ),
+    ("POST", "/v0/chief-of-staff/handoff-outcomes"): (
+        "ChiefOfStaffHandoffOutcomeCaptureResponse",
+        ChiefOfStaffHandoffOutcomeCaptureResponse,
+    ),
+    ("GET", "/v0/memories/trust-dashboard"): ("MemoryTrustDashboardResponse", MemoryTrustDashboardResponse),
+    ("GET", "/v0/memories/hygiene-dashboard"): ("MemoryHygieneDashboardResponse", MemoryHygieneDashboardResponse),
+}
+
+
+_OPENAPI_CREATED_ONLY_OPERATIONS = {
+    ("POST", "/v0/threads"),
+    ("POST", "/v0/open-loops"),
+    ("POST", "/v0/policies"),
+    ("POST", "/v0/tools"),
+    ("POST", "/v0/tasks/{task_id}/runs"),
+    ("POST", "/v0/gmail-accounts"),
+    ("POST", "/v0/calendar-accounts"),
+    ("POST", "/v0/tasks/{task_id}/workspace"),
+    ("POST", "/v0/task-workspaces/{task_workspace_id}/artifacts"),
+    ("POST", "/v0/tasks/{task_id}/steps"),
+    ("POST", "/v0/execution-budgets"),
+    ("POST", "/v0/continuity/captures"),
+    ("POST", "/v0/vnext/sources"),
+    ("POST", "/v0/vnext/projects"),
+    ("POST", "/v0/vnext/connectors/telegram/sync"),
+    ("POST", "/v0/vnext/connectors/local-folder/sync"),
+    ("POST", "/v0/vnext/connectors/browser-clipper/capture"),
+    ("POST", "/v0/vnext/agents/ingest-output"),
+    ("POST", "/v0/vnext/artifacts/{artifact_id}/insight-feedback"),
+    ("POST", "/v0/vnext/context-packs"),
+    ("POST", "/v0/vnext/memory-proposals"),
+    ("POST", "/v0/vnext/artifacts/generate/daily-brief"),
+    ("POST", "/v0/vnext/artifacts/generate/weekly-synthesis"),
+    ("POST", "/v0/vnext/artifacts/generate/connections"),
+    ("POST", "/v0/vnext/artifacts/generate/contradictions"),
+    ("POST", "/v0/vnext/queue/tasks"),
+    ("POST", "/v0/vnext/artifacts/{artifact_id}/quality-ratings"),
+    ("POST", "/v0/vnext/projects/update-candidates"),
+    ("POST", "/v0/vnext/open-loops"),
+    ("POST", "/v0/vnext/scheduler/workflows/{workflow_type}/run-now"),
+    ("POST", "/v0/vnext/scheduler/run-due"),
+    ("POST", "/v0/vnext/open-loops/extract"),
+    ("POST", "/v0/task-briefs/compile"),
+    ("POST", "/v0/memories/{memory_id}/labels"),
+    ("POST", "/v0/embedding-configs"),
+    ("POST", "/v0/memory-embeddings"),
+    ("POST", "/v0/task-artifact-chunk-embeddings"),
+    ("POST", "/v0/entities"),
+    ("POST", "/v0/entity-edges"),
+    ("POST", "/v1/workspaces"),
+    ("POST", "/v1/providers"),
+    ("POST", "/v1/providers/ollama/register"),
+    ("POST", "/v1/providers/llamacpp/register"),
+    ("POST", "/v1/providers/vllm/register"),
+    ("POST", "/v1/providers/azure/register"),
+    ("POST", "/v1/model-packs"),
+    ("POST", "/v1/devices/link/confirm"),
+    ("POST", "/v1/admin/hosted/design-partners"),
+    ("POST", "/v1/admin/hosted/design-partners/{design_partner_id}/workspaces"),
+    ("POST", "/v1/admin/hosted/design-partners/{design_partner_id}/feedback"),
+    ("POST", "/v1/channels/telegram/link/confirm"),
+    ("POST", "/v1/channels/telegram/messages/{message_id}/dispatch"),
+}
+
+
+_OPENAPI_CONDITIONAL_SUCCESS_OPERATIONS: dict[tuple[str, str], tuple[int, ...]] = {
+    ("POST", "/v0/consents"): (200, 201),
+    ("POST", "/v0/vnext/memories/commit"): (200, 201),
+    ("POST", "/v1/channels/telegram/daily-brief/deliver"): (200, 201),
+    ("POST", "/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver"): (200, 201),
+    ("POST", "/v0/vnext/connectors/{connector_name}/sync"): (201, 207),
+    ("POST", "/v0/responses"): (200, 202),
+    ("POST", "/v1/runtime/invoke"): (200, 202),
+}
+
+
+def _openapi_live_operation_keys(schema: dict[str, Any]) -> set[tuple[str, str]]:
+    operation_keys: set[tuple[str, str]] = set()
+    for path, path_item in schema.get("paths", {}).items():
+        if not isinstance(path, str) or not isinstance(path_item, dict):
+            continue
+        for method, operation in path_item.items():
+            if method in {"get", "post", "put", "patch", "delete"} and isinstance(operation, dict):
+                operation_keys.add((method.upper(), path))
+    return operation_keys
+
+
+class AliceFastAPI(FastAPI):
+    """FastAPI app with concrete success contracts for every JSON route."""
+
+    def openapi(self) -> dict[str, Any]:
+        if self.openapi_schema is not None:
+            return self.openapi_schema
+        schema = get_openapi(
+            title=self.title,
+            version=self.version,
+            description=self.description,
+            routes=self.routes,
+        )
+        components = schema.setdefault("components", {}).setdefault("schemas", {})
+        live_operation_keys = _openapi_live_operation_keys(schema)
+        registered_operation_keys = set(_OPENAPI_EXACT_RESPONSE_CONTRACTS) | set(OPENAPI_OPERATION_RESPONSE_SCHEMAS)
+        if live_operation_keys != registered_operation_keys:
+            missing = sorted(live_operation_keys - registered_operation_keys)
+            extra = sorted(registered_operation_keys - live_operation_keys)
+            raise RuntimeError(
+                f"OpenAPI success-contract registry drifted from live routes; missing={missing}, extra={extra}"
+            )
+        component_names = [
+            component_name for component_name, _component_schema in OPENAPI_OPERATION_RESPONSE_SCHEMAS.values()
+        ]
+        if len(component_names) != len(set(component_names)):
+            raise RuntimeError("OpenAPI per-operation success component names must be unique")
+        non_closed_operation_keys = {
+            operation_key
+            for operation_key, (_component_name, component_schema) in OPENAPI_OPERATION_RESPONSE_SCHEMAS.items()
+            if component_schema.get("additionalProperties") is not False
+        }
+        closed_operation_keys = set(OPENAPI_OPERATION_RESPONSE_SCHEMAS) - non_closed_operation_keys
+        if closed_operation_keys != set(OPENAPI_SOURCE_VERIFIED_OPERATIONS):
+            raise RuntimeError("OpenAPI source-verified operation inventory drifted from closed schemas")
+        if non_closed_operation_keys != set(OPENAPI_OPEN_RESPONSE_OPERATIONS):
+            raise RuntimeError("OpenAPI open operation inventory drifted from permissive schemas")
+        if not set(OPENAPI_INTENTIONALLY_POLYMORPHIC_OPERATIONS) <= non_closed_operation_keys:
+            raise RuntimeError("OpenAPI polymorphic operations must use permissive schemas")
+        if any(not justification.strip() for justification in OPENAPI_INTENTIONALLY_POLYMORPHIC_OPERATIONS.values()):
+            raise RuntimeError("OpenAPI polymorphic operations require individual justifications")
+        for component_name, component_schema in OPENAPI_OPERATION_RESPONSE_SCHEMAS.values():
+            components[component_name] = component_schema
+        for component_name, contract in _OPENAPI_EXACT_RESPONSE_CONTRACTS.values():
+            contract_schema = TypeAdapter(contract).json_schema(
+                ref_template="#/components/schemas/{model}",
+            )
+            definitions = contract_schema.pop("$defs", {})
+            if isinstance(definitions, dict):
+                for definition_name, definition in definitions.items():
+                    components.setdefault(definition_name, definition)
+            contract_schema["additionalProperties"] = False
+            components[component_name] = contract_schema
+        components["APIErrorResponse"] = {
+            "title": "API error response",
+            "type": "object",
+            "required": ["detail"],
+            "properties": {
+                "detail": {
+                    "description": "Human-readable detail or structured error payload.",
+                    "oneOf": [
+                        {"type": "string"},
+                        {"type": "object", "additionalProperties": True},
+                        {"type": "array", "items": {}},
+                    ],
+                }
+            },
+        }
+        tag_descriptions = {
+            "Operations": "Health, readiness, and build identity.",
+            "vNext memory": "Agentic memory, retrieval, project, and scheduler workflows.",
+            "Continuity v0": "Deterministic continuity and memory APIs.",
+            "Authentication": "Hosted account, session, workspace, and device-link operations.",
+            "Channels": "Hosted Telegram and channel integrations.",
+            "Providers": "Model-provider discovery, configuration, and invocation.",
+            "Hosted API": "Hosted application workflows.",
+        }
+        schema["tags"] = [{"name": name, "description": description} for name, description in tag_descriptions.items()]
+        for path, path_item in schema.get("paths", {}).items():
+            if not isinstance(path_item, dict):
+                continue
+            for method, operation in path_item.items():
+                if not isinstance(operation, dict) or "responses" not in operation:
+                    continue
+                operation_key = (method.upper(), path)
+                operation.setdefault("tags", [_openapi_tag_for_path(path)])
+                summary = operation.get("summary")
+                operation.setdefault(
+                    "description",
+                    f"{summary}." if isinstance(summary, str) and summary else "AliceBot API operation.",
+                )
+                responses = operation.get("responses")
+                if not isinstance(responses, dict):
+                    continue
+                expected_statuses: tuple[int, ...] | None = None
+                if operation_key in _OPENAPI_CREATED_ONLY_OPERATIONS:
+                    expected_statuses = (201,)
+                elif operation_key in _OPENAPI_CONDITIONAL_SUCCESS_OPERATIONS:
+                    expected_statuses = _OPENAPI_CONDITIONAL_SUCCESS_OPERATIONS[operation_key]
+                if expected_statuses is not None:
+                    for status_code in tuple(responses):
+                        if str(status_code).startswith("2") and int(status_code) not in expected_statuses:
+                            responses.pop(status_code)
+                    for status_code in expected_statuses:
+                        responses.setdefault(str(status_code), {"description": "Successful response"})
+
+                exact_contract = _OPENAPI_EXACT_RESPONSE_CONTRACTS.get(operation_key)
+                if exact_contract is not None:
+                    schema_name = exact_contract[0]
+                else:
+                    operation_contract = OPENAPI_OPERATION_RESPONSE_SCHEMAS.get(operation_key)
+                    if operation_contract is None:  # pragma: no cover - inventory fence above
+                        raise RuntimeError(f"OpenAPI operation {operation_key!r} has no success contract")
+                    schema_name = operation_contract[0]
+                for status_code, response in responses.items():
+                    if not str(status_code).startswith("2") or not isinstance(response, dict):
+                        continue
+                    content = response.setdefault("content", {})
+                    if isinstance(content, dict):
+                        json_content = content.setdefault("application/json", {})
+                        if isinstance(json_content, dict):
+                            json_content["schema"] = {"$ref": f"#/components/schemas/{schema_name}"}
+                if path == "/healthz":
+                    responses["503"] = {
+                        "description": "Service is degraded or unavailable",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/HealthcheckSuccessResponse"}}
+                        },
+                    }
+                responses.setdefault(
+                    "default",
+                    {
+                        "description": "Error response",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/APIErrorResponse"}}},
+                    },
+                )
+        self.openapi_schema = schema
+        return self.openapi_schema
+
+
+app = AliceFastAPI(
+    title="AliceBot API",
+    version=__version__,
+    description="AliceBot continuity, hosted workspace, and agentic-memory API.",
+)
 provider_adapter_registry = make_provider_adapter_registry()
 HealthStatus = Literal["ok", "degraded"]
 ServiceStatus = Literal["ok", "unreachable", "not_checked"]
@@ -1016,9 +1407,7 @@ class EntrypointRateLimiter:
                     max_requests=max_requests,
                     window_seconds=window_seconds,
                 )
-            raise EntrypointRateLimiterUnavailableError(
-                "redis-backed entrypoint rate limiter is unavailable"
-            ) from exc
+            raise EntrypointRateLimiterUnavailableError("redis-backed entrypoint rate limiter is unavailable") from exc
 
     def reset(self) -> None:
         self._memory_fallback.reset()
@@ -1038,8 +1427,7 @@ def _resolve_authenticated_user_id(settings: Settings, request: Request) -> UUID
         if settings.app_env in {"development", "test"}:
             return None
         raise ValueError(
-            "request authentication is not configured; set ALICEBOT_AUTH_USER_ID "
-            "or provide X-AliceBot-User-Id"
+            "request authentication is not configured; set ALICEBOT_AUTH_USER_ID or provide X-AliceBot-User-Id"
         )
 
     try:
@@ -1134,8 +1522,7 @@ class CompileContextArtifactScopedArtifactRetrievalRequest(BaseModel):
 
 
 CompileContextArtifactRetrievalRequest = Annotated[
-    CompileContextTaskScopedArtifactRetrievalRequest
-    | CompileContextArtifactScopedArtifactRetrievalRequest,
+    CompileContextTaskScopedArtifactRetrievalRequest | CompileContextArtifactScopedArtifactRetrievalRequest,
     Field(discriminator="kind"),
 ]
 
@@ -1669,50 +2056,6 @@ def _vnext_public_error_response(*, status_code: int, detail: str) -> JSONRespon
     return JSONResponse(status_code=status_code, content={"detail": detail})
 
 
-def _link_reviewed_memory_entities(store: PostgresVNextStore, memory: dict[str, object]) -> None:
-    """Entity-link a memory the moment dashboard review accepts it.
-
-    Review candidates deliberately do not link at proposal time; acceptance is
-    the promotion into trusted memory, so it is also the linking moment.
-    Mirrors VNextMemoryCommitService._link_memory_entities semantics: linking
-    failures never fail the review action.
-    """
-    from alicebot_api.vnext_entities import (
-        EntityLinkingService,
-        derive_person_name_from_title,
-        store_supports_entity_linking,
-    )
-
-    event_store = store
-    if not store_supports_entity_linking(store):
-        return
-    observed_at = memory.get("last_reviewed_at") or memory.get("updated_at") or memory.get("created_at")
-    try:
-        linker = EntityLinkingService(store, actor_type="user", actor_id=None, trace_id=None)
-        text = str(memory.get("canonical_text") or "")
-        if text.strip():
-            linker.link_entities_for_memory(
-                memory_id=str(memory["id"]), text=text, observed_at=observed_at
-            )
-        if str(memory.get("memory_type") or "") == "person":
-            person_name = derive_person_name_from_title(str(memory.get("title") or ""))
-            if person_name is not None:
-                linker.link_memory_to_person(
-                    memory_id=str(memory["id"]), person_name=person_name, observed_at=observed_at
-                )
-    except Exception:
-        try:
-            event_store.append_event(
-                {
-                    "event_type": "entity.extraction_failed",
-                    "actor_type": "user",
-                    "payload": {"memory_id": str(memory.get("id")), "stage": "dashboard_review_accept"},
-                }
-            )
-        except Exception:
-            pass
-
-
 def _vnext_terminal_review_metadata(
     existing_metadata: dict[str, object],
     *,
@@ -1922,10 +2265,29 @@ def _vnext_event_references(
     )
 
 
-def _vnext_source_chunks(store: PostgresVNextStore, source_id: str) -> list[dict[str, object]]:
+_VNEXT_SOURCE_TRACE_COLLECTION_LIMIT = 500
+
+
+def _vnext_bounded_trace_rows(
+    rows: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], bool]:
+    limit = _VNEXT_SOURCE_TRACE_COLLECTION_LIMIT
+    return rows[:limit], len(rows) <= limit
+
+
+def _vnext_source_chunks(
+    store: PostgresVNextStore,
+    source_id: str,
+) -> tuple[list[dict[str, object]], bool]:
     if not hasattr(store, "list_source_chunks"):
-        return []
-    return list(store.list_source_chunks(source_id))
+        return [], True
+    rows = list(
+        store.list_source_chunks(
+            source_id,
+            limit=_VNEXT_SOURCE_TRACE_COLLECTION_LIMIT + 1,
+        )
+    )
+    return _vnext_bounded_trace_rows(rows)
 
 
 def _vnext_source_trace(
@@ -1936,6 +2298,8 @@ def _vnext_source_trace(
     artifacts: list[dict[str, object]],
     open_loops: list[dict[str, object]],
     events: list[dict[str, object]],
+    memory_scope: str = "complete",
+    collection_completeness: dict[str, bool] | None = None,
 ) -> dict[str, object]:
     source_id = str(source["id"])
     related_memories = [memory for memory in memories if _vnext_row_references_source(memory, source_id)]
@@ -1956,7 +2320,21 @@ def _vnext_source_trace(
         )
     ]
     trace_id = next((str(event.get("trace_id")) for event in related_events if event.get("trace_id")), None)
-    chunks = _vnext_source_chunks(store, source_id)
+    chunks, chunks_complete = _vnext_source_chunks(store, source_id)
+    default_complete = memory_scope == "complete"
+    completeness = {
+        "chunks": chunks_complete,
+        "candidate_memories": default_complete,
+        "artifacts": default_complete,
+        "open_loops": default_complete,
+        "events": default_complete,
+    }
+    if collection_completeness is not None:
+        completeness.update(collection_completeness)
+        completeness["chunks"] = chunks_complete
+    truncated_collections = [
+        collection_name for collection_name, is_complete in completeness.items() if not is_complete
+    ]
     return {
         "trace_id": trace_id or f"source:{source_id}",
         "trace_kind": "capture_to_brief",
@@ -1966,6 +2344,14 @@ def _vnext_source_trace(
         "artifacts": related_artifacts,
         "open_loops": related_open_loops,
         "events": related_events,
+        "sampling": {
+            "memory_scope": memory_scope,
+            "collection_limit": _VNEXT_SOURCE_TRACE_COLLECTION_LIMIT,
+            "collection_complete": completeness,
+            "truncated_collections": truncated_collections,
+            "trace_complete": len(truncated_collections) == 0,
+            "memory_history_complete": completeness["candidate_memories"],
+        },
         "summary": {
             "source_id": source_id,
             "chunk_count": len(chunks),
@@ -1975,6 +2361,58 @@ def _vnext_source_trace(
             "event_count": len(related_events),
         },
     }
+
+
+def _vnext_load_source_trace(
+    *,
+    store: PostgresVNextStore,
+    source: dict[str, object],
+) -> dict[str, object]:
+    """Load one bounded source trace and disclose per-collection truncation."""
+
+    source_id = str(source["id"])
+    memories, memories_complete = _vnext_bounded_trace_rows(
+        store.list_memories_referencing_source(
+            source_id=source_id,
+            limit=_VNEXT_SOURCE_TRACE_COLLECTION_LIMIT + 1,
+        )
+    )
+    artifacts, artifacts_complete = _vnext_bounded_trace_rows(
+        store.list_artifacts_referencing_source(
+            source_id=source_id,
+            limit=_VNEXT_SOURCE_TRACE_COLLECTION_LIMIT + 1,
+        )
+    )
+    open_loops, open_loops_complete = _vnext_bounded_trace_rows(
+        store.list_open_loops_referencing_source(
+            source_id=source_id,
+            limit=_VNEXT_SOURCE_TRACE_COLLECTION_LIMIT + 1,
+        )
+    )
+    events, direct_events_complete = _vnext_bounded_trace_rows(
+        store.list_events_for_source_trace(
+            source_id=source_id,
+            memory_ids=[str(memory["id"]) for memory in memories],
+            artifact_ids=[str(artifact["id"]) for artifact in artifacts],
+            open_loop_ids=[str(open_loop["id"]) for open_loop in open_loops],
+            limit=_VNEXT_SOURCE_TRACE_COLLECTION_LIMIT + 1,
+        )
+    )
+    events_complete = direct_events_complete and memories_complete and artifacts_complete and open_loops_complete
+    return _vnext_source_trace(
+        store=store,
+        source=source,
+        memories=memories,
+        artifacts=artifacts,
+        open_loops=open_loops,
+        events=events,
+        collection_completeness={
+            "candidate_memories": memories_complete,
+            "artifacts": artifacts_complete,
+            "open_loops": open_loops_complete,
+            "events": events_complete,
+        },
+    )
 
 
 def _vnext_artifact_trace(
@@ -2164,15 +2602,48 @@ def _vnext_central_route_policy(
         return PolicyDecision(
             decision="blocked",
             action="http.route.unclassified",
-            permission_profile=(
-                identity.permission_profile if identity is not None else "user_or_system"
-            ),
+            permission_profile=(identity.permission_profile if identity is not None else "user_or_system"),
             reasons=("vnext_route_not_classified",),
         )
     if identity is None:
         # Zero-key local installs retain their explicit human/operator path.
         return None
     return evaluate_agent_policy(identity=identity, action="http.operator.access")
+
+
+def _resolve_vnext_http_auth(
+    *,
+    settings: Settings,
+    user_id: UUID,
+    raw_key: str | None,
+    payload: dict[str, object],
+    method: str,
+    route_path: str,
+) -> tuple[AgentIdentity | None, PolicyDecision | None]:
+    """Run protected-route database authentication off the event-loop thread."""
+
+    with user_connection(settings.database_url, user_id) as conn:
+        store = PostgresVNextStore(conn)
+        identity = resolve_protected_agent_identity(
+            store,
+            user_id=user_id,
+            raw_key=raw_key,
+            payload=payload,
+        )
+        route_decision = _vnext_central_route_policy(
+            identity=identity,
+            method=method,
+            route_path=route_path,
+        )
+        if route_decision is not None and route_decision.decision == "blocked":
+            append_policy_events(
+                store,
+                identity=identity,
+                decision=route_decision,
+                target_type="http_route",
+                target_id=route_path,
+            )
+    return identity, route_decision
 
 
 async def _vnext_protected_http_auth(
@@ -2215,29 +2686,18 @@ async def _vnext_protected_http_auth(
 
     try:
         settings = get_settings()
-        with user_connection(settings.database_url, user_id) as conn:
-            store = PostgresVNextStore(conn)
-            identity = resolve_protected_agent_identity(
-                store,
-                user_id=user_id,
-                raw_key=agent_key_from_authorization(request.headers.get("authorization")),
-                payload=payload,
-            )
-            route_path = _matched_vnext_route_path(request)
-            route_decision = _vnext_central_route_policy(
-                identity=identity,
-                method=request.method,
-                route_path=route_path,
-            )
-            if route_decision is not None and route_decision.decision == "blocked":
-                append_policy_events(
-                    store,
-                    identity=identity,
-                    decision=route_decision,
-                    target_type="http_route",
-                    target_id=route_path,
-                )
-                return _vnext_permission_response(route_decision)
+        route_path = _matched_vnext_route_path(request)
+        identity, route_decision = await run_in_threadpool(
+            _resolve_vnext_http_auth,
+            settings=settings,
+            user_id=user_id,
+            raw_key=agent_key_from_authorization(request.headers.get("authorization")),
+            payload=payload,
+            method=request.method,
+            route_path=route_path,
+        )
+        if route_decision is not None and route_decision.decision == "blocked":
+            return _vnext_permission_response(route_decision)
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except AgentIdentityValidationError as exc:
@@ -2310,27 +2770,20 @@ def _vnext_exact_resource_policy(
     resource: dict[str, object],
 ) -> PolicyDecision:
     domain = " ".join(str(resource.get("domain") or "unknown").split()).strip() or "unknown"
-    sensitivity = (
-        " ".join(str(resource.get("sensitivity") or "unknown").split()).strip()
-        or "unknown"
-    )
+    sensitivity = " ".join(str(resource.get("sensitivity") or "unknown").split()).strip() or "unknown"
     decision = evaluate_agent_policy(
         identity=identity,
         action=action,
         domains=(domain,),
         sensitivity_allowed=(sensitivity,),
         project_scope=resource_project_scope(resource),
-        require_explicit_project_scope=bool(
-            identity is not None and identity.project_scope_locked
-        ),
+        require_explicit_project_scope=bool(identity is not None and identity.project_scope_locked),
     )
     if decision.decision == "allowed_with_filtering":
         decision = replace(
             decision,
             decision="blocked",
-            reasons=tuple(
-                dict.fromkeys((*decision.reasons, "exact_target_filtering_not_permitted"))
-            ),
+            reasons=tuple(dict.fromkeys((*decision.reasons, "exact_target_filtering_not_permitted"))),
         )
     return decision
 
@@ -2352,11 +2805,7 @@ def _vnext_authorized_artifact(
     the unfiltered row.
     """
 
-    artifact = (
-        store.get_artifact_for_update(artifact_id)
-        if for_update
-        else store.get_artifact(artifact_id)
-    )
+    artifact = store.get_artifact_for_update(artifact_id) if for_update else store.get_artifact(artifact_id)
     if artifact is None:
         raise VNextQueueNotFoundError(f"artifact {artifact_id} was not found")
 
@@ -2380,26 +2829,59 @@ def _vnext_authorized_artifact(
 
 def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
     sensitivity_allowed = ["public", "internal", "private", "unknown"]
+    review_statuses = ["candidate", "needs_review", "private_only", "accepted", "rejected"]
     sources = store.list_sources(sensitivity_allowed=sensitivity_allowed, limit=20)
-    memories = store.list_memories(status=None)
-    review_memories = [
-        memory
-        for memory in memories
-        if str(memory.get("status")) in {"candidate", "needs_review", "private_only", "accepted", "rejected"}
-    ][:30]
+    source_count = store.count_sources()
+    list_memories_by_statuses = getattr(store, "list_memories_by_statuses", None)
+    if callable(list_memories_by_statuses):
+        review_memories = list_memories_by_statuses(
+            statuses=review_statuses,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=30,
+        )
+    else:  # Compatibility for external/test stores implementing the older protocol.
+        review_memories = [
+            memory for memory in store.list_memories(status=None) if str(memory.get("status")) in set(review_statuses)
+        ][:30]
+    count_memories_by_status = getattr(store, "count_memories_by_status", None)
+    memory_status_counts = (
+        count_memories_by_status(sensitivity_allowed=sensitivity_allowed)
+        if callable(count_memories_by_status)
+        else _vnext_status_counts(review_memories)
+    )
+    review_memory_total = sum(memory_status_counts.get(status, 0) for status in review_statuses)
     artifacts = store.list_artifacts(sensitivity_allowed=sensitivity_allowed, limit=30)
+    artifact_count = store.count_artifacts()
+    artifact_status_counts = store.count_artifacts_by_status()
     quality_evals = store.list_artifact_quality_ratings(limit=50)
+    quality_eval_count = store.count_artifact_quality_ratings()
     projects = store.list_projects(status=None, sensitivity_allowed=sensitivity_allowed, limit=20)
+    project_count = store.count_projects()
     open_loops = store.list_open_loops(status=None, sensitivity_allowed=sensitivity_allowed, limit=30)
+    open_loop_count = store.count_open_loops(status="open")
+    open_loop_status_counts = store.count_open_loops_by_status()
     people = store.list_people(sensitivity_allowed=sensitivity_allowed, limit=12)
     beliefs = store.list_beliefs(status=None, sensitivity_allowed=sensitivity_allowed, limit=12)
     tasks = store.list_tasks(status=None, limit=12)
     recent_events = store.list_events(limit=20)
+    count_events = getattr(store, "count_events", None)
+    event_count = count_events() if callable(count_events) else len(recent_events)
     agent_identities = store.list_agent_identities(limit=20)
+    agent_count = store.count_agent_identities()
     agent_events = store.list_agent_events(limit=50)
+    list_recent_agentic_commits = getattr(store, "list_recent_agentic_commits", None)
+    list_pending_inline_confirmations = getattr(store, "list_pending_inline_confirmations", None)
     memory_commit_service = VNextMemoryCommitService(store)
-    recent_memory_commits = memory_commit_service.recent_commits(limit=20)["recent_commits"]
-    inline_confirmations = memory_commit_service.inline_confirmations(limit=20)
+    recent_memory_commits = (
+        list_recent_agentic_commits(limit=20)
+        if callable(list_recent_agentic_commits)
+        else memory_commit_service.recent_commits(limit=20)["recent_commits"]
+    )
+    inline_confirmations = (
+        list_pending_inline_confirmations(limit=20)
+        if callable(list_pending_inline_confirmations)
+        else memory_commit_service.inline_confirmations(limit=20)
+    )
     scheduler_status = VNextSchedulerService(store).status()
     scheduler_status = {**scheduler_status, "daemon": daemon_status()}
     connector_health = VNextConnectorService(store).connector_health_all()
@@ -2421,32 +2903,83 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
         _vnext_source_trace(
             store=store,
             source=source,
-            memories=memories,
+            memories=review_memories,
             artifacts=artifacts,
             open_loops=open_loops,
             events=recent_events,
+            memory_scope="bounded_workspace_review_sample",
         )
         for source in sources[:8]
     ]
     return {
         "mode": "live",
         "summary": {
-            "source_count": len(sources),
-            "candidate_memory_count": len([memory for memory in memories if memory.get("status") == "candidate"]),
-            "review_memory_count": len(review_memories),
-            "artifact_count": len(artifacts),
-            "open_loop_count": len([loop for loop in open_loops if loop.get("status") == "open"]),
-            "project_count": len(projects),
-            "event_count": len(recent_events),
-            "agent_count": len(agent_identities),
+            "source_count": source_count,
+            "candidate_memory_count": memory_status_counts.get("candidate", 0),
+            "review_memory_count": review_memory_total,
+            "artifact_count": artifact_count,
+            "open_loop_count": open_loop_count,
+            "project_count": project_count,
+            "event_count": event_count,
+            "agent_count": agent_count,
             "scheduler_enabled_count": _vnext_int(scheduler_status, "enabled_count", 0),
-            "memory_status_counts": _vnext_status_counts(memories),
-            "artifact_status_counts": _vnext_status_counts(artifacts),
-            "quality_eval_count": len(quality_evals),
-            "open_loop_status_counts": _vnext_status_counts(open_loops),
+            "memory_status_counts": memory_status_counts,
+            "artifact_status_counts": artifact_status_counts,
+            "quality_eval_count": quality_eval_count,
+            "open_loop_status_counts": open_loop_status_counts,
         },
         "sources": sources,
         "review_memories": review_memories,
+        "samples": {
+            "sources": {
+                "returned_count": len(sources),
+                "total_count": source_count,
+                "limit": 20,
+                "has_more": source_count > len(sources),
+            },
+            "review_memories": {
+                "returned_count": len(review_memories),
+                "total_count": review_memory_total,
+                "limit": 30,
+                "has_more": review_memory_total > len(review_memories),
+            },
+            "recent_events": {
+                "returned_count": len(recent_events),
+                "total_count": event_count,
+                "limit": 20,
+                "has_more": event_count > len(recent_events),
+            },
+            "artifacts": {
+                "returned_count": len(artifacts),
+                "total_count": artifact_count,
+                "limit": 30,
+                "has_more": artifact_count > len(artifacts),
+            },
+            "quality_evals": {
+                "returned_count": len(quality_evals),
+                "total_count": quality_eval_count,
+                "limit": 50,
+                "has_more": quality_eval_count > len(quality_evals),
+            },
+            "projects": {
+                "returned_count": len(projects),
+                "total_count": project_count,
+                "limit": 20,
+                "has_more": project_count > len(projects),
+            },
+            "open_loops": {
+                "returned_count": len(open_loops),
+                "total_count": sum(open_loop_status_counts.values()),
+                "limit": 30,
+                "has_more": sum(open_loop_status_counts.values()) > len(open_loops),
+            },
+            "agent_identities": {
+                "returned_count": len(agent_identities),
+                "total_count": agent_count,
+                "limit": 20,
+                "has_more": agent_count > len(agent_identities),
+            },
+        },
         "artifacts": artifacts,
         "quality_evals": quality_evals,
         "connector_health": connector_health,
@@ -2493,6 +3026,33 @@ def _vnext_workspace_payload(store: PostgresVNextStore) -> dict[str, object]:
     }
 
 
+@contextmanager
+def _vnext_embedding_store_context(database_url: str, user_id: UUID):
+    with user_connection(database_url, user_id) as conn:
+        yield PostgresVNextStore(conn)
+
+
+def _persist_vnext_deferred_embeddings(
+    *,
+    database_url: str,
+    user_id: UUID,
+    result: object,
+    actor_type: str = "system",
+    actor_id: str | None = None,
+    trace_id: str | None = None,
+) -> None:
+    """Prepare vectors without a connection, then persist in a short transaction."""
+
+    deferred_inputs = getattr(result, "deferred_embedding_inputs", ())
+    persist_deferred_memory_embeddings_best_effort(
+        deferred_inputs,
+        store_context=lambda: _vnext_embedding_store_context(database_url, user_id),
+        actor_type=actor_type,
+        actor_id=actor_id,
+        trace_id=trace_id,
+    )
+
+
 def _vnext_brain_artifact_request(
     request: VNextBrainArtifactGenerateRequest,
     *,
@@ -2505,6 +3065,9 @@ def _vnext_brain_artifact_request(
     actor_type, actor_id = _vnext_agent_actor(identity, fallback="system")
     return BrainArtifactRequest(
         domains=decision.effective_domains if decision is not None else _vnext_string_list(scope, "domains"),
+        projects=decision.effective_project_scope
+        if decision is not None
+        else tuple(request.project_scope) or _vnext_string_list(scope, "projects"),
         sensitivity_allowed=decision.effective_sensitivity_allowed
         if decision is not None
         else _vnext_string_list(options, "sensitivity_allowed") or ("public", "internal", "private", "unknown"),
@@ -2537,6 +3100,9 @@ def _vnext_connection_request(
     return ConnectionFinderRequest(
         query=request.query,
         domains=decision.effective_domains if decision is not None else _vnext_string_list(request.scope, "domains"),
+        projects=decision.effective_project_scope
+        if decision is not None
+        else tuple(request.project_scope) or _vnext_string_list(request.scope, "projects"),
         sensitivity_allowed=decision.effective_sensitivity_allowed
         if decision is not None
         else _vnext_string_list(options, "sensitivity_allowed") or ("public", "internal", "private", "unknown"),
@@ -2564,6 +3130,9 @@ def _vnext_contradiction_request(
     return ContradictionFinderRequest(
         query=request.query,
         domains=decision.effective_domains if decision is not None else _vnext_string_list(request.scope, "domains"),
+        projects=decision.effective_project_scope
+        if decision is not None
+        else tuple(request.project_scope) or _vnext_string_list(request.scope, "projects"),
         sensitivity_allowed=decision.effective_sensitivity_allowed
         if decision is not None
         else _vnext_string_list(options, "sensitivity_allowed") or ("public", "internal", "private", "unknown"),
@@ -2587,7 +3156,22 @@ def _vnext_project_automation_request(
 ) -> ProjectAutomationRequest:
     options = request.options
     scope = request.scope
-    project_id = options.get("project_id") or scope.get("project_id")
+    explicit_project_id = options.get("project_id") or scope.get("project_id")
+    canonical_projects = (
+        decision.effective_project_scope
+        if decision is not None
+        else tuple(request.project_scope) or _vnext_string_list(scope, "projects")
+    )
+    if isinstance(explicit_project_id, str) and explicit_project_id.strip():
+        project_id = explicit_project_id.strip()
+        if canonical_projects and project_id not in canonical_projects:
+            raise ValueError("project_id must be contained in the canonical project_scope")
+    elif len(canonical_projects) == 1:
+        project_id = canonical_projects[0]
+    elif len(canonical_projects) > 1:
+        raise ValueError("project automation requires one project_id when project_scope contains multiple projects")
+    else:
+        project_id = None
     person_id = options.get("person_id") or scope.get("person_id")
     actor_type, actor_id = _vnext_agent_actor(identity, fallback="system")
     return ProjectAutomationRequest(
@@ -2595,7 +3179,7 @@ def _vnext_project_automation_request(
         sensitivity_allowed=decision.effective_sensitivity_allowed
         if decision is not None
         else _vnext_string_list(options, "sensitivity_allowed") or ("public", "internal", "private", "unknown"),
-        project_id=str(project_id) if isinstance(project_id, str) else None,
+        project_id=project_id,
         person_id=str(person_id) if isinstance(person_id, str) else None,
         max_items=_vnext_int(options, "max_items", 8),
         generated_by=actor_type,
@@ -2942,9 +3526,7 @@ class ConnectGmailAccountRequest(BaseModel):
     provider_account_id: str = Field(min_length=1, max_length=320)
     email_address: str = Field(min_length=1, max_length=320)
     display_name: str | None = Field(default=None, min_length=1, max_length=200)
-    scope: Literal["https://www.googleapis.com/auth/gmail.readonly"] = (
-        "https://www.googleapis.com/auth/gmail.readonly"
-    )
+    scope: Literal["https://www.googleapis.com/auth/gmail.readonly"] = "https://www.googleapis.com/auth/gmail.readonly"
     access_token: str = Field(min_length=1, max_length=8000)
     refresh_token: str | None = Field(default=None, min_length=1, max_length=8000)
     client_id: str | None = Field(default=None, min_length=1, max_length=2000)
@@ -3162,6 +3744,7 @@ def _serialize_model_provider(provider: ModelProviderRow) -> dict[str, object]:
         "invoke_path": provider["invoke_path"],
         "azure_api_version": provider["azure_api_version"],
         "metadata": provider["metadata"],
+        "config_revision": provider["config_revision"],
         "created_at": provider["created_at"].isoformat(),
         "updated_at": provider["updated_at"].isoformat(),
     }
@@ -3179,6 +3762,7 @@ def _serialize_provider_capability(capability: ProviderCapabilityRow) -> dict[st
         "capability_version": capability_version,
         "snapshot": snapshot,
         "discovery_error": capability["discovery_error"],
+        "provider_config_revision": capability["provider_config_revision"],
         "discovered_at": capability["discovered_at"].isoformat(),
     }
 
@@ -3263,6 +3847,41 @@ def _normalize_provider_path(*, field_name: str, value: str) -> str:
     return path if path.startswith("/") else f"/{path}"
 
 
+def _provider_config_fingerprint(
+    *,
+    provider_key: str,
+    model_provider: str,
+    display_name: str,
+    base_url: str,
+    api_key: str,
+    auth_mode: str,
+    default_model: str,
+    status: str,
+    model_list_path: str,
+    healthcheck_path: str,
+    invoke_path: str,
+    azure_api_version: str,
+    azure_auth_secret_ref: str,
+    metadata: JsonObject,
+) -> str:
+    return provider_config_fingerprint(
+        provider_key=provider_key,
+        model_provider=model_provider,
+        display_name=display_name,
+        base_url=base_url,
+        api_key=api_key,
+        auth_mode=auth_mode,
+        default_model=default_model,
+        status=status,
+        model_list_path=model_list_path,
+        healthcheck_path=healthcheck_path,
+        invoke_path=invoke_path,
+        azure_api_version=azure_api_version,
+        azure_auth_secret_ref=azure_auth_secret_ref,
+        metadata=metadata,
+    )
+
+
 def _fallback_provider_capability_snapshot(
     *,
     adapter_key: str,
@@ -3298,18 +3917,115 @@ def _fallback_provider_capability_snapshot(
     return snapshot
 
 
-def _invoke_runtime_provider_model(
+@dataclass(frozen=True, slots=True)
+class _ProviderDiscoveryOutcome:
+    adapter_key: str
+    discovery_status: str
+    capability_snapshot: JsonObject
+    discovery_error: str | None
+
+
+def _discover_provider_capability(
     *,
-    store: ContinuityStore,
+    provider: ModelProviderRow,
+    settings: Settings,
+) -> _ProviderDiscoveryOutcome:
+    """Perform provider discovery without holding a database transaction."""
+
+    runtime_provider = resolve_runtime_provider_config_secrets(
+        config=RuntimeProviderConfig.from_row(_object_dict(provider)),
+        settings=settings,
+    )
+    adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
+    try:
+        snapshot = adapter.discover_capabilities(
+            config=runtime_provider,
+            settings=settings,
+        )
+    except ModelInvocationError as exc:
+        discovery_error = sanitize_provider_error_message(str(exc))
+        extra_snapshot_fields = None
+        if runtime_provider.provider_key == AZURE_ADAPTER_KEY:
+            extra_snapshot_fields = {
+                "azure_api_version": runtime_provider.azure_api_version.strip() or DEFAULT_AZURE_API_VERSION,
+                "azure_auth_mode": runtime_provider.auth_mode,
+            }
+        snapshot = _fallback_provider_capability_snapshot(
+            adapter_key=adapter.adapter_key,
+            runtime_provider=adapter.runtime_provider,
+            model_list_path=runtime_provider.model_list_path,
+            healthcheck_path=runtime_provider.healthcheck_path,
+            invoke_path=runtime_provider.invoke_path,
+            extra_snapshot_fields=extra_snapshot_fields,
+        )
+        return _ProviderDiscoveryOutcome(
+            adapter_key=adapter.adapter_key,
+            discovery_status="failed",
+            capability_snapshot=_json_object(snapshot),
+            discovery_error=discovery_error,
+        )
+    return _ProviderDiscoveryOutcome(
+        adapter_key=adapter.adapter_key,
+        discovery_status="ready",
+        capability_snapshot=_json_object(snapshot),
+        discovery_error=None,
+    )
+
+
+def _persist_discovered_provider_capability(
+    *,
+    settings: Settings,
+    session_token: str,
     workspace_id: UUID,
-    invoked_by_user_account_id: UUID,
-    thread_id: UUID | None,
-    invocation_kind: str,
+    provider: ModelProviderRow,
+    outcome: _ProviderDiscoveryOutcome,
+) -> ProviderCapabilityRow | None:
+    """Persist discovery only if the exact provider configuration is current."""
+
+    with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+        with conn.transaction():
+            resolution = resolve_auth_session(conn, session_token=session_token)
+            workspace = get_workspace_for_member(
+                conn,
+                workspace_id=workspace_id,
+                user_account_id=resolution["user_account"]["id"],
+            )
+            if workspace is None:
+                return None
+            _ensure_workspace_owner_access(
+                workspace=workspace,
+                user_account_id=resolution["user_account"]["id"],
+            )
+            return ContinuityStore(conn).upsert_provider_capability_if_current(
+                workspace_id=workspace_id,
+                provider_id=provider["id"],
+                discovered_by_user_account_id=resolution["user_account"]["id"],
+                adapter_key=outcome.adapter_key,
+                discovery_status=outcome.discovery_status,
+                capability_snapshot=outcome.capability_snapshot,
+                discovery_error=outcome.discovery_error,
+                expected_config_revision=provider["config_revision"],
+                expected_config_fingerprint_sha256=provider["config_fingerprint_sha256"],
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeProviderInvocationOutcome:
+    response: ModelInvocationResponse | None
+    error: ModelInvocationError | None
+    latency_ms: int
+    error_detail: str | None
+
+
+def _attempt_runtime_provider_model(
+    *,
     adapter: ProviderAdapter,
     runtime_provider: RuntimeProviderConfig,
     settings: Settings,
     model_request: ModelInvocationRequest,
-) -> ModelInvocationResponse:
+) -> _RuntimeProviderInvocationOutcome:
+    """Perform only the external provider call; no persistence handle is required."""
+
     started_at = time.monotonic()
     try:
         model_response = adapter.invoke(
@@ -3319,43 +4035,48 @@ def _invoke_runtime_provider_model(
         )
     except ValueError as exc:
         error_detail = str(exc)
-        store.record_provider_invocation_telemetry(
-            workspace_id=workspace_id,
-            provider_id=runtime_provider.provider_id,
-            thread_id=thread_id,
-            invoked_by_user_account_id=invoked_by_user_account_id,
-            invocation_kind=invocation_kind,
-            adapter_key=adapter.adapter_key,
-            runtime_provider=runtime_provider.model_provider,
-            requested_model=model_request.model,
-            response_model=None,
-            response_id=None,
-            status="failed",
+        return _RuntimeProviderInvocationOutcome(
+            response=None,
+            error=ModelInvocationError(error_detail),
             latency_ms=max(0, int((time.monotonic() - started_at) * 1000)),
-            usage={"input_tokens": None, "output_tokens": None, "total_tokens": None},
             error_detail=error_detail,
         )
-        raise ModelInvocationError(error_detail) from exc
     except ModelInvocationError as exc:
         sanitized_error = sanitize_provider_error_message(str(exc))
-        store.record_provider_invocation_telemetry(
-            workspace_id=workspace_id,
-            provider_id=runtime_provider.provider_id,
-            thread_id=thread_id,
-            invoked_by_user_account_id=invoked_by_user_account_id,
-            invocation_kind=invocation_kind,
-            adapter_key=adapter.adapter_key,
-            runtime_provider=runtime_provider.model_provider,
-            requested_model=model_request.model,
-            response_model=None,
-            response_id=None,
-            status="failed",
+        error: ModelInvocationError
+        if isinstance(exc, ModelProviderUnavailableError):
+            error = ModelProviderUnavailableError(sanitized_error)
+        else:
+            error = ModelInvocationError(sanitized_error)
+        return _RuntimeProviderInvocationOutcome(
+            response=None,
+            error=error,
             latency_ms=max(0, int((time.monotonic() - started_at) * 1000)),
-            usage={"input_tokens": None, "output_tokens": None, "total_tokens": None},
             error_detail=sanitized_error,
         )
-        raise ModelInvocationError(sanitized_error) from exc
+    return _RuntimeProviderInvocationOutcome(
+        response=model_response,
+        error=None,
+        latency_ms=max(0, int((time.monotonic() - started_at) * 1000)),
+        error_detail=None,
+    )
 
+
+def _record_runtime_provider_invocation(
+    *,
+    store: ContinuityStore,
+    workspace_id: UUID,
+    invoked_by_user_account_id: UUID,
+    thread_id: UUID | None,
+    invocation_kind: str,
+    adapter: ProviderAdapter,
+    runtime_provider: RuntimeProviderConfig,
+    model_request: ModelInvocationRequest,
+    outcome: _RuntimeProviderInvocationOutcome,
+) -> None:
+    """Persist provider telemetry after the network call has finished."""
+
+    model_response = outcome.response
     store.record_provider_invocation_telemetry(
         workspace_id=workspace_id,
         provider_id=runtime_provider.provider_id,
@@ -3365,59 +4086,166 @@ def _invoke_runtime_provider_model(
         adapter_key=adapter.adapter_key,
         runtime_provider=runtime_provider.model_provider,
         requested_model=model_request.model,
-        response_model=model_response.model,
-        response_id=model_response.response_id,
-        status="succeeded",
-        latency_ms=max(0, int((time.monotonic() - started_at) * 1000)),
-        usage=_json_object(model_response.usage),
-        error_detail=None,
+        response_model=model_response.model if model_response is not None else None,
+        response_id=model_response.response_id if model_response is not None else None,
+        status="succeeded" if model_response is not None else "failed",
+        latency_ms=outcome.latency_ms,
+        usage=_json_object(model_response.usage)
+        if model_response is not None
+        else {"input_tokens": None, "output_tokens": None, "total_tokens": None},
+        error_detail=outcome.error_detail,
     )
-    return model_response
 
 
-def _seed_workspace_provider_configs(
+class ProviderConfigurationChangedError(RuntimeError):
+    """Raised when mutable provider write context changes across an I/O gap."""
+
+
+@dataclass(frozen=True, slots=True)
+class _StagedProviderSecret:
+    secret_ref: str
+    encoded_reference: str
+
+
+def _stage_provider_secret(
     *,
     settings: Settings,
-    store: ContinuityStore,
     workspace_id: UUID,
-    created_by_user_account_id: UUID,
+    credential: str,
+) -> _StagedProviderSecret:
+    normalized_credential = credential.strip()
+    if normalized_credential == "":
+        raise ValueError("provider credential is required")
+    secret_ref = build_provider_secret_ref(workspace_id=workspace_id)
+    write_provider_api_key(
+        settings=settings,
+        secret_ref=secret_ref,
+        api_key=normalized_credential,
+    )
+    return _StagedProviderSecret(
+        secret_ref=secret_ref,
+        encoded_reference=encode_provider_secret_ref(secret_ref=secret_ref),
+    )
+
+
+def _retire_provider_secret_if_unreferenced(
+    *,
+    settings: Settings,
+    session_token: str,
+    workspace_id: UUID,
+    user_account_id: UUID,
+    encoded_reference: str,
 ) -> None:
-    if len(settings.workspace_provider_configs) == 0:
+    if not is_provider_secret_ref(encoded_reference):
         return
 
-    existing_provider_keys = {
-        (provider["provider_key"], provider["display_name"])
-        for provider in store.list_model_providers_for_workspace(workspace_id=workspace_id)
-    }
-    for provider_config in settings.workspace_provider_configs:
-        provider_identity = (provider_config.provider_key, provider_config.display_name)
-        if provider_identity in existing_provider_keys:
-            continue
-        _register_workspace_provider(
-            settings=settings,
-            store=store,
-            workspace_id=workspace_id,
-            created_by_user_account_id=created_by_user_account_id,
-            provider_key=provider_config.provider_key,
-            display_name=provider_config.display_name,
-            base_url=provider_config.base_url,
-            api_key=provider_config.api_key,
-            auth_mode=provider_config.auth_mode,
-            default_model=provider_config.default_model,
-            model_list_path=provider_config.model_list_path,
-            healthcheck_path=provider_config.healthcheck_path,
-            invoke_path=provider_config.invoke_path,
-            metadata={} if provider_config.metadata is None else dict(provider_config.metadata),
+    # A commit acknowledgement can be lost after the database has durably
+    # stored the staged reference. Treat any inability to prove non-reference
+    # as "in use" so compensation can only leak an orphan, never delete a live
+    # credential.
+    try:
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                _assert_provider_write_context(
+                    conn=conn,
+                    session_token=session_token,
+                    expected_workspace_id=workspace_id,
+                    expected_user_account_id=user_account_id,
+                )
+                in_use = ContinuityStore(conn).is_provider_secret_reference_in_use(
+                    workspace_id=workspace_id,
+                    encoded_reference=encoded_reference,
+                )
+    except Exception:
+        LOGGER.warning(
+            "provider secret retirement skipped because reference state was unavailable",
+            exc_info=True,
         )
-        existing_provider_keys.add(provider_identity)
+        return
+    if in_use:
+        return
+
+    try:
+        delete_provider_api_key(
+            settings=settings,
+            secret_ref=decode_provider_secret_ref(encoded_reference),
+        )
+    except ProviderSecretManagerError:
+        LOGGER.warning("unreferenced provider secret could not be retired", exc_info=True)
 
 
-def _register_workspace_provider(
+def _discard_staged_provider_secret(
     *,
     settings: Settings,
-    store: ContinuityStore,
+    session_token: str,
     workspace_id: UUID,
-    created_by_user_account_id: UUID,
+    user_account_id: UUID,
+    staged_secret: _StagedProviderSecret | None,
+) -> None:
+    if staged_secret is None:
+        return
+    _retire_provider_secret_if_unreferenced(
+        settings=settings,
+        session_token=session_token,
+        workspace_id=workspace_id,
+        user_account_id=user_account_id,
+        encoded_reference=staged_secret.encoded_reference,
+    )
+
+
+def _resolve_owned_provider_workspace(
+    *,
+    settings: Settings,
+    session_token: str,
+) -> tuple[UUID, UUID]:
+    with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+        with conn.transaction():
+            resolution = resolve_auth_session(conn, session_token=session_token)
+            user_account_id = resolution["user_account"]["id"]
+            workspace = get_current_workspace(
+                conn,
+                user_account_id=user_account_id,
+                preferred_workspace_id=resolution["session"]["workspace_id"],
+            )
+            if workspace is None:
+                raise HostedWorkspaceNotFoundError("no workspace is currently selected")
+            _ensure_workspace_owner_access(
+                workspace=workspace,
+                user_account_id=user_account_id,
+            )
+            return workspace["id"], user_account_id
+
+
+def _assert_provider_write_context(
+    *,
+    conn: Any,
+    session_token: str,
+    expected_workspace_id: UUID,
+    expected_user_account_id: UUID,
+) -> None:
+    resolution = resolve_auth_session(conn, session_token=session_token)
+    user_account_id = resolution["user_account"]["id"]
+    workspace = get_current_workspace(
+        conn,
+        user_account_id=user_account_id,
+        preferred_workspace_id=resolution["session"]["workspace_id"],
+    )
+    if workspace is None:
+        raise HostedWorkspaceNotFoundError("no workspace is currently selected")
+    if user_account_id != expected_user_account_id or workspace["id"] != expected_workspace_id:
+        raise ProviderConfigurationChangedError(
+            "provider write context changed while credential storage was being prepared"
+        )
+    _ensure_workspace_owner_access(
+        workspace=workspace,
+        user_account_id=user_account_id,
+    )
+
+
+def _create_workspace_provider_durable(
+    *,
+    settings: Settings,
+    session_token: str,
     provider_key: str,
     display_name: str,
     base_url: str,
@@ -3429,9 +4257,85 @@ def _register_workspace_provider(
     invoke_path: str,
     metadata: dict[str, object],
 ) -> tuple[ModelProviderRow, ProviderCapabilityRow]:
+    workspace_id, user_account_id = _resolve_owned_provider_workspace(
+        settings=settings,
+        session_token=session_token,
+    )
+    normalized_base_url = validate_provider_base_url(base_url)
+    normalized_auth_mode = auth_mode.strip().lower()
+    normalized_api_key = api_key.strip()
+    staged_secret: _StagedProviderSecret | None = None
+    if normalized_auth_mode == "bearer":
+        staged_secret = _stage_provider_secret(
+            settings=settings,
+            workspace_id=workspace_id,
+            credential=normalized_api_key,
+        )
+        api_key_field = staged_secret.encoded_reference
+    elif normalized_auth_mode == "none":
+        if normalized_api_key != "":
+            raise ValueError("api_key must be empty when auth_mode is none")
+        api_key_field = "auth_mode_none"
+    else:
+        raise ValueError(f"unsupported auth_mode: {auth_mode}")
+
+    provider_persisted = False
+    try:
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                _assert_provider_write_context(
+                    conn=conn,
+                    session_token=session_token,
+                    expected_workspace_id=workspace_id,
+                    expected_user_account_id=user_account_id,
+                )
+                provider, capability = _register_workspace_provider(
+                    store=ContinuityStore(conn),
+                    workspace_id=workspace_id,
+                    created_by_user_account_id=user_account_id,
+                    provider_key=provider_key,
+                    display_name=display_name,
+                    base_url=normalized_base_url,
+                    api_key_field=api_key_field,
+                    auth_mode=auth_mode,
+                    default_model=default_model,
+                    model_list_path=model_list_path,
+                    healthcheck_path=healthcheck_path,
+                    invoke_path=invoke_path,
+                    metadata=metadata,
+                )
+        provider_persisted = True
+        return provider, capability
+    finally:
+        if not provider_persisted:
+            _discard_staged_provider_secret(
+                settings=settings,
+                session_token=session_token,
+                workspace_id=workspace_id,
+                user_account_id=user_account_id,
+                staged_secret=staged_secret,
+            )
+
+
+def _register_workspace_provider(
+    *,
+    store: ContinuityStore,
+    workspace_id: UUID,
+    created_by_user_account_id: UUID,
+    provider_key: str,
+    display_name: str,
+    base_url: str,
+    api_key_field: str,
+    auth_mode: str,
+    default_model: str,
+    model_list_path: str,
+    healthcheck_path: str,
+    invoke_path: str,
+    metadata: dict[str, object],
+) -> tuple[ModelProviderRow, ProviderCapabilityRow]:
     normalized_display_name = display_name.strip()
     normalized_base_url = base_url.strip()
-    normalized_api_key = api_key.strip()
+    normalized_api_key_field = api_key_field.strip()
     normalized_default_model = default_model.strip()
     normalized_auth_mode = auth_mode.strip().lower()
     normalized_model_list_path = _normalize_provider_path(
@@ -3457,21 +4361,30 @@ def _register_workspace_provider(
         raise ValueError("default_model is required")
     if normalized_auth_mode not in {"bearer", "none"}:
         raise ValueError(f"unsupported auth_mode: {auth_mode}")
-    if normalized_auth_mode == "bearer" and normalized_api_key == "":
-        raise ValueError("api_key is required when auth_mode is bearer")
-    if normalized_auth_mode == "none" and normalized_api_key != "":
+    if normalized_auth_mode == "bearer" and not is_provider_secret_ref(normalized_api_key_field):
+        raise ValueError("api_key must be a staged secret reference when auth_mode is bearer")
+    if normalized_auth_mode == "none" and normalized_api_key_field != "auth_mode_none":
         raise ValueError("api_key must be empty when auth_mode is none")
 
-    encoded_api_key = "auth_mode_none"
-    if normalized_auth_mode == "bearer":
-        secret_ref = build_provider_secret_ref(workspace_id=workspace_id)
-        write_provider_api_key(
-            settings=settings,
-            secret_ref=secret_ref,
-            api_key=normalized_api_key,
-        )
-        encoded_api_key = encode_provider_secret_ref(secret_ref=secret_ref)
+    encoded_api_key = normalized_api_key_field
 
+    normalized_metadata = _json_object(metadata)
+    config_fingerprint = _provider_config_fingerprint(
+        provider_key=provider_key,
+        model_provider=OPENAI_RESPONSES_PROVIDER,
+        display_name=normalized_display_name,
+        base_url=normalized_base_url,
+        api_key=encoded_api_key,
+        auth_mode=normalized_auth_mode,
+        default_model=normalized_default_model,
+        status="active",
+        model_list_path=normalized_model_list_path,
+        healthcheck_path=normalized_healthcheck_path,
+        invoke_path=normalized_invoke_path,
+        azure_api_version="",
+        azure_auth_secret_ref="",
+        metadata=normalized_metadata,
+    )
     provider = store.create_model_provider(
         workspace_id=workspace_id,
         created_by_user_account_id=created_by_user_account_id,
@@ -3482,7 +4395,7 @@ def _register_workspace_provider(
         api_key=encoded_api_key,
         default_model=normalized_default_model,
         status="active",
-        metadata=_json_object(metadata),
+        metadata=normalized_metadata,
         auth_mode=normalized_auth_mode,
         model_list_path=normalized_model_list_path,
         healthcheck_path=normalized_healthcheck_path,
@@ -3490,42 +4403,31 @@ def _register_workspace_provider(
         azure_api_version="",
         # Non-Azure providers intentionally store an empty Azure secret ref.
         azure_auth_secret_ref="",  # nosec B106
+        config_fingerprint_sha256=config_fingerprint,
     )
 
-    runtime_provider = resolve_runtime_provider_config_secrets(
-        config=RuntimeProviderConfig.from_row(_object_dict(provider)),
-        settings=settings,
-    )
-    adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
-    discovery_status: str = "ready"
-    discovery_error: str | None = None
-
-    try:
-        capability_snapshot = adapter.discover_capabilities(
-            config=runtime_provider,
-            settings=settings,
-        )
-    except ModelInvocationError as exc:
-        sanitized_discovery_error = sanitize_provider_error_message(str(exc))
-        capability_snapshot = _fallback_provider_capability_snapshot(
-            adapter_key=adapter.adapter_key,
-            runtime_provider=adapter.runtime_provider,
-            model_list_path=normalized_model_list_path,
-            healthcheck_path=normalized_healthcheck_path,
-            invoke_path=normalized_invoke_path,
-        )
-        discovery_status = "failed"
-        discovery_error = sanitized_discovery_error
-
-    capability = store.upsert_provider_capability(
+    adapter = provider_adapter_registry.resolve(provider_key)
+    capability = store.upsert_provider_capability_if_current(
         workspace_id=workspace_id,
         provider_id=provider["id"],
         discovered_by_user_account_id=created_by_user_account_id,
         adapter_key=adapter.adapter_key,
-        discovery_status=discovery_status,
-        capability_snapshot=_json_object(capability_snapshot),
-        discovery_error=discovery_error,
+        discovery_status="failed",
+        capability_snapshot=_json_object(
+            _fallback_provider_capability_snapshot(
+                adapter_key=adapter.adapter_key,
+                runtime_provider=adapter.runtime_provider,
+                model_list_path=normalized_model_list_path,
+                healthcheck_path=normalized_healthcheck_path,
+                invoke_path=normalized_invoke_path,
+            )
+        ),
+        discovery_error="capability discovery pending",
+        expected_config_revision=provider["config_revision"],
+        expected_config_fingerprint_sha256=provider["config_fingerprint_sha256"],
     )
+    if capability is None:  # pragma: no cover - same-transaction invariant
+        raise ContinuityStoreInvariantError("new provider configuration changed before capability initialization")
     return provider, capability
 
 
@@ -3538,13 +4440,12 @@ def _normalize_azure_api_version(value: str) -> str:
 
 def _register_workspace_azure_provider(
     *,
-    settings: Settings,
     store: ContinuityStore,
     workspace_id: UUID,
     created_by_user_account_id: UUID,
     display_name: str,
     base_url: str,
-    credential: str,
+    credential_secret_ref: str,
     auth_mode: str,
     default_model: str,
     model_list_path: str,
@@ -3555,7 +4456,7 @@ def _register_workspace_azure_provider(
 ) -> tuple[ModelProviderRow, ProviderCapabilityRow]:
     normalized_display_name = display_name.strip()
     normalized_base_url = base_url.strip()
-    normalized_credential = credential.strip()
+    normalized_credential_secret_ref = credential_secret_ref.strip()
     normalized_default_model = default_model.strip()
     normalized_auth_mode = auth_mode.strip().lower()
     normalized_api_version = _normalize_azure_api_version(api_version)
@@ -3582,17 +4483,28 @@ def _register_workspace_azure_provider(
         raise ValueError("default_model is required")
     if normalized_auth_mode not in {AZURE_AUTH_MODE_API_KEY, AZURE_AUTH_MODE_AD_TOKEN}:
         raise ValueError(f"unsupported auth_mode: {auth_mode}")
-    if normalized_credential == "":
-        raise ValueError("azure credential is required")
+    if not is_provider_secret_ref(normalized_credential_secret_ref):
+        raise ValueError("azure credential must be a staged secret reference")
 
-    secret_ref = build_provider_secret_ref(workspace_id=workspace_id)
-    write_provider_api_key(
-        settings=settings,
-        secret_ref=secret_ref,
-        api_key=normalized_credential,
+    encoded_secret_ref = normalized_credential_secret_ref
+
+    normalized_metadata = _json_object(metadata)
+    config_fingerprint = _provider_config_fingerprint(
+        provider_key=AZURE_ADAPTER_KEY,
+        model_provider=OPENAI_RESPONSES_PROVIDER,
+        display_name=normalized_display_name,
+        base_url=normalized_base_url,
+        api_key="auth_mode_azure_secret_ref",
+        auth_mode=normalized_auth_mode,
+        default_model=normalized_default_model,
+        status="active",
+        model_list_path=normalized_model_list_path,
+        healthcheck_path=normalized_healthcheck_path,
+        invoke_path=normalized_invoke_path,
+        azure_api_version=normalized_api_version,
+        azure_auth_secret_ref=encoded_secret_ref,
+        metadata=normalized_metadata,
     )
-    encoded_secret_ref = encode_provider_secret_ref(secret_ref=secret_ref)
-
     provider = store.create_model_provider(
         workspace_id=workspace_id,
         created_by_user_account_id=created_by_user_account_id,
@@ -3603,59 +4515,110 @@ def _register_workspace_azure_provider(
         api_key="auth_mode_azure_secret_ref",
         default_model=normalized_default_model,
         status="active",
-        metadata=_json_object(metadata),
+        metadata=normalized_metadata,
         auth_mode=normalized_auth_mode,
         model_list_path=normalized_model_list_path,
         healthcheck_path=normalized_healthcheck_path,
         invoke_path=normalized_invoke_path,
         azure_api_version=normalized_api_version,
         azure_auth_secret_ref=encoded_secret_ref,
+        config_fingerprint_sha256=config_fingerprint,
     )
 
-    runtime_provider = resolve_runtime_provider_config_secrets(
-        config=RuntimeProviderConfig.from_row(_object_dict(provider)),
-        settings=settings,
-    )
-    adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
-    discovery_status: str = "ready"
-    discovery_error: str | None = None
-
-    try:
-        capability_snapshot = adapter.discover_capabilities(
-            config=runtime_provider,
-            settings=settings,
-        )
-    except ModelInvocationError as exc:
-        sanitized_discovery_error = sanitize_provider_error_message(str(exc))
-        capability_snapshot = _fallback_provider_capability_snapshot(
-            adapter_key=adapter.adapter_key,
-            runtime_provider=adapter.runtime_provider,
-            model_list_path=normalized_model_list_path,
-            healthcheck_path=normalized_healthcheck_path,
-            invoke_path=normalized_invoke_path,
-            extra_snapshot_fields={
-                "azure_api_version": normalized_api_version,
-                "azure_auth_mode": normalized_auth_mode,
-            },
-        )
-        discovery_status = "failed"
-        discovery_error = sanitized_discovery_error
-
-    capability = store.upsert_provider_capability(
+    adapter = provider_adapter_registry.resolve(AZURE_ADAPTER_KEY)
+    capability = store.upsert_provider_capability_if_current(
         workspace_id=workspace_id,
         provider_id=provider["id"],
         discovered_by_user_account_id=created_by_user_account_id,
         adapter_key=adapter.adapter_key,
-        discovery_status=discovery_status,
-        capability_snapshot=_json_object(capability_snapshot),
-        discovery_error=discovery_error,
+        discovery_status="failed",
+        capability_snapshot=_json_object(
+            _fallback_provider_capability_snapshot(
+                adapter_key=adapter.adapter_key,
+                runtime_provider=adapter.runtime_provider,
+                model_list_path=normalized_model_list_path,
+                healthcheck_path=normalized_healthcheck_path,
+                invoke_path=normalized_invoke_path,
+                extra_snapshot_fields={
+                    "azure_api_version": normalized_api_version,
+                    "azure_auth_mode": normalized_auth_mode,
+                },
+            )
+        ),
+        discovery_error="capability discovery pending",
+        expected_config_revision=provider["config_revision"],
+        expected_config_fingerprint_sha256=provider["config_fingerprint_sha256"],
     )
+    if capability is None:  # pragma: no cover - same-transaction invariant
+        raise ContinuityStoreInvariantError("new Azure provider configuration changed before capability initialization")
     return provider, capability
+
+
+def _create_workspace_azure_provider_durable(
+    *,
+    settings: Settings,
+    session_token: str,
+    display_name: str,
+    base_url: str,
+    credential: str,
+    auth_mode: str,
+    default_model: str,
+    model_list_path: str,
+    healthcheck_path: str,
+    invoke_path: str,
+    api_version: str,
+    metadata: dict[str, object],
+) -> tuple[ModelProviderRow, ProviderCapabilityRow]:
+    workspace_id, user_account_id = _resolve_owned_provider_workspace(
+        settings=settings,
+        session_token=session_token,
+    )
+    normalized_base_url = validate_provider_base_url(base_url)
+    staged_secret = _stage_provider_secret(
+        settings=settings,
+        workspace_id=workspace_id,
+        credential=credential,
+    )
+    provider_persisted = False
+    try:
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                _assert_provider_write_context(
+                    conn=conn,
+                    session_token=session_token,
+                    expected_workspace_id=workspace_id,
+                    expected_user_account_id=user_account_id,
+                )
+                provider, capability = _register_workspace_azure_provider(
+                    store=ContinuityStore(conn),
+                    workspace_id=workspace_id,
+                    created_by_user_account_id=user_account_id,
+                    display_name=display_name,
+                    base_url=normalized_base_url,
+                    credential_secret_ref=staged_secret.encoded_reference,
+                    auth_mode=auth_mode,
+                    default_model=default_model,
+                    model_list_path=model_list_path,
+                    healthcheck_path=healthcheck_path,
+                    invoke_path=invoke_path,
+                    api_version=api_version,
+                    metadata=metadata,
+                )
+        provider_persisted = True
+        return provider, capability
+    finally:
+        if not provider_persisted:
+            _discard_staged_provider_secret(
+                settings=settings,
+                session_token=session_token,
+                workspace_id=workspace_id,
+                user_account_id=user_account_id,
+                staged_secret=staged_secret,
+            )
 
 
 def _update_workspace_provider(
     *,
-    settings: Settings,
     store: ContinuityStore,
     existing_provider: ModelProviderRow,
     updated_by_user_account_id: UUID,
@@ -3663,6 +4626,7 @@ def _update_workspace_provider(
     base_url: str | None,
     api_key: str | None,
     ad_token: str | None,
+    credential_secret_ref: str | None,
     auth_mode: str | None,
     default_model: str | None,
     model_list_path: str | None,
@@ -3672,13 +4636,9 @@ def _update_workspace_provider(
     metadata: dict[str, object] | None,
 ) -> tuple[ModelProviderRow, ProviderCapabilityRow]:
     provider_key = existing_provider["provider_key"]
-    normalized_display_name = (
-        existing_provider["display_name"] if display_name is None else display_name.strip()
-    )
+    normalized_display_name = existing_provider["display_name"] if display_name is None else display_name.strip()
     normalized_base_url = existing_provider["base_url"] if base_url is None else base_url.strip()
-    normalized_default_model = (
-        existing_provider["default_model"] if default_model is None else default_model.strip()
-    )
+    normalized_default_model = existing_provider["default_model"] if default_model is None else default_model.strip()
     normalized_model_list_path = (
         existing_provider["model_list_path"]
         if model_list_path is None
@@ -3694,9 +4654,7 @@ def _update_workspace_provider(
         if invoke_path is None
         else _normalize_provider_path(field_name="invoke_path", value=invoke_path)
     )
-    normalized_metadata: JsonObject = (
-        existing_provider["metadata"] if metadata is None else _json_object(metadata)
-    )
+    normalized_metadata: JsonObject = existing_provider["metadata"] if metadata is None else _json_object(metadata)
 
     if normalized_display_name == "":
         raise ValueError("display_name is required")
@@ -3715,18 +4673,19 @@ def _update_workspace_provider(
     if provider_key == AZURE_ADAPTER_KEY:
         if normalized_auth_mode not in {AZURE_AUTH_MODE_API_KEY, AZURE_AUTH_MODE_AD_TOKEN}:
             raise ValueError(f"unsupported auth_mode: {normalized_auth_mode}")
+        credential_update = api_key if normalized_auth_mode == AZURE_AUTH_MODE_API_KEY else ad_token
+        if normalized_auth_mode != existing_provider["auth_mode"] and (
+            credential_update is None or credential_update.strip() == "" or credential_secret_ref is None
+        ):
+            credential_field = "api_key" if normalized_auth_mode == AZURE_AUTH_MODE_API_KEY else "ad_token"
+            raise ValueError(f"{credential_field} is required when changing Azure auth_mode")
         if api_version is not None:
             normalized_api_version = _normalize_azure_api_version(api_version)
-        credential_update = api_key if normalized_auth_mode == AZURE_AUTH_MODE_API_KEY else ad_token
         if credential_update is not None and credential_update.strip() != "":
-            secret_ref = build_provider_secret_ref(workspace_id=existing_provider["workspace_id"])
-            write_provider_api_key(
-                settings=settings,
-                secret_ref=secret_ref,
-                api_key=credential_update.strip(),
-            )
+            if credential_secret_ref is None or not is_provider_secret_ref(credential_secret_ref):
+                raise ValueError("azure credential must be staged before provider update")
             encoded_api_key = "auth_mode_azure_secret_ref"
-            normalized_azure_secret_ref = encode_provider_secret_ref(secret_ref=secret_ref)
+            normalized_azure_secret_ref = credential_secret_ref
     else:
         if normalized_auth_mode not in {"bearer", "none"}:
             raise ValueError(f"unsupported auth_mode: {normalized_auth_mode}")
@@ -3738,18 +4697,30 @@ def _update_workspace_provider(
             if api_key is not None:
                 if api_key.strip() == "":
                     raise ValueError("api_key is required when auth_mode is bearer")
-                secret_ref = build_provider_secret_ref(workspace_id=existing_provider["workspace_id"])
-                write_provider_api_key(
-                    settings=settings,
-                    secret_ref=secret_ref,
-                    api_key=api_key.strip(),
-                )
-                encoded_api_key = encode_provider_secret_ref(secret_ref=secret_ref)
+                if credential_secret_ref is None or not is_provider_secret_ref(credential_secret_ref):
+                    raise ValueError("api_key must be staged before provider update")
+                encoded_api_key = credential_secret_ref
             elif existing_provider["auth_mode"] != "bearer":
                 raise ValueError("api_key is required when auth_mode is bearer")
         normalized_api_version = ""
         normalized_azure_secret_ref = ""
 
+    config_fingerprint = _provider_config_fingerprint(
+        provider_key=provider_key,
+        model_provider=existing_provider["model_provider"],
+        display_name=normalized_display_name,
+        base_url=normalized_base_url,
+        api_key=encoded_api_key,
+        auth_mode=normalized_auth_mode,
+        default_model=normalized_default_model,
+        status=existing_provider["status"],
+        model_list_path=normalized_model_list_path,
+        healthcheck_path=normalized_healthcheck_path,
+        invoke_path=normalized_invoke_path,
+        azure_api_version=normalized_api_version,
+        azure_auth_secret_ref=normalized_azure_secret_ref,
+        metadata=normalized_metadata,
+    )
     provider = store.update_model_provider(
         provider_id=existing_provider["id"],
         workspace_id=existing_provider["workspace_id"],
@@ -3767,50 +4738,240 @@ def _update_workspace_provider(
         azure_api_version=normalized_api_version,
         azure_auth_secret_ref=normalized_azure_secret_ref,
         metadata=normalized_metadata,
+        config_fingerprint_sha256=config_fingerprint,
+        expected_config_revision=existing_provider["config_revision"],
+        expected_config_fingerprint_sha256=existing_provider["config_fingerprint_sha256"],
     )
+    if provider is None:
+        raise ProviderConfigurationChangedError("provider configuration changed while the update was being committed")
 
-    runtime_provider = resolve_runtime_provider_config_secrets(
-        config=RuntimeProviderConfig.from_row(_object_dict(provider)),
-        settings=settings,
-    )
-    adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
-    discovery_status: str = "ready"
-    discovery_error: str | None = None
-    try:
-        capability_snapshot = adapter.discover_capabilities(
-            config=runtime_provider,
-            settings=settings,
-        )
-    except ModelInvocationError as exc:
-        sanitized_discovery_error = sanitize_provider_error_message(str(exc))
-        extra_snapshot_fields = None
-        if runtime_provider.provider_key == AZURE_ADAPTER_KEY:
-            extra_snapshot_fields = {
-                "azure_api_version": runtime_provider.azure_api_version.strip()
-                or DEFAULT_AZURE_API_VERSION,
-                "azure_auth_mode": runtime_provider.auth_mode,
-            }
-        capability_snapshot = _fallback_provider_capability_snapshot(
-            adapter_key=adapter.adapter_key,
-            runtime_provider=adapter.runtime_provider,
-            model_list_path=normalized_model_list_path,
-            healthcheck_path=normalized_healthcheck_path,
-            invoke_path=normalized_invoke_path,
-            extra_snapshot_fields=extra_snapshot_fields,
-        )
-        discovery_status = "failed"
-        discovery_error = sanitized_discovery_error
-
-    capability = store.upsert_provider_capability(
+    adapter = provider_adapter_registry.resolve(provider_key)
+    extra_snapshot_fields = None
+    if provider_key == AZURE_ADAPTER_KEY:
+        extra_snapshot_fields = {
+            "azure_api_version": normalized_api_version,
+            "azure_auth_mode": normalized_auth_mode,
+        }
+    capability = store.upsert_provider_capability_if_current(
         workspace_id=existing_provider["workspace_id"],
         provider_id=provider["id"],
         discovered_by_user_account_id=updated_by_user_account_id,
         adapter_key=adapter.adapter_key,
-        discovery_status=discovery_status,
-        capability_snapshot=_json_object(capability_snapshot),
-        discovery_error=discovery_error,
+        discovery_status="failed",
+        capability_snapshot=_json_object(
+            _fallback_provider_capability_snapshot(
+                adapter_key=adapter.adapter_key,
+                runtime_provider=adapter.runtime_provider,
+                model_list_path=normalized_model_list_path,
+                healthcheck_path=normalized_healthcheck_path,
+                invoke_path=normalized_invoke_path,
+                extra_snapshot_fields=extra_snapshot_fields,
+            )
+        ),
+        discovery_error="capability discovery pending",
+        expected_config_revision=provider["config_revision"],
+        expected_config_fingerprint_sha256=provider["config_fingerprint_sha256"],
     )
+    if capability is None:  # pragma: no cover - same-transaction invariant
+        raise ContinuityStoreInvariantError("updated provider configuration changed before capability initialization")
     return provider, capability
+
+
+def _update_workspace_provider_durable(
+    *,
+    settings: Settings,
+    session_token: str,
+    provider_id: UUID,
+    display_name: str | None,
+    base_url: str | None,
+    api_key: str | None,
+    ad_token: str | None,
+    auth_mode: str | None,
+    default_model: str | None,
+    model_list_path: str | None,
+    healthcheck_path: str | None,
+    invoke_path: str | None,
+    api_version: str | None,
+    metadata: dict[str, object] | None,
+) -> tuple[ModelProviderRow, ProviderCapabilityRow]:
+    workspace_id, user_account_id = _resolve_owned_provider_workspace(
+        settings=settings,
+        session_token=session_token,
+    )
+    with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+        with conn.transaction():
+            _assert_provider_write_context(
+                conn=conn,
+                session_token=session_token,
+                expected_workspace_id=workspace_id,
+                expected_user_account_id=user_account_id,
+            )
+            existing_provider = ContinuityStore(conn).get_model_provider_for_workspace_optional(
+                provider_id=provider_id,
+                workspace_id=workspace_id,
+            )
+            if existing_provider is None:
+                raise HostedWorkspaceNotFoundError(f"provider {provider_id} was not found")
+
+    validated_base_url = validate_provider_base_url(existing_provider["base_url"] if base_url is None else base_url)
+
+    final_auth_mode = existing_provider["auth_mode"] if auth_mode is None else auth_mode.strip().lower()
+    credential: str | None = None
+    if existing_provider["provider_key"] == AZURE_ADAPTER_KEY:
+        if final_auth_mode == AZURE_AUTH_MODE_API_KEY:
+            if ad_token is not None and ad_token.strip() != "":
+                raise ValueError("ad_token must be empty when auth_mode is azure_api_key")
+            credential = api_key
+        elif final_auth_mode == AZURE_AUTH_MODE_AD_TOKEN:
+            if api_key is not None and api_key.strip() != "":
+                raise ValueError("api_key must be empty when auth_mode is azure_ad_token")
+            credential = ad_token
+        else:
+            raise ValueError(f"unsupported auth_mode: {final_auth_mode}")
+        if final_auth_mode != existing_provider["auth_mode"] and (credential is None or credential.strip() == ""):
+            credential_field = "api_key" if final_auth_mode == AZURE_AUTH_MODE_API_KEY else "ad_token"
+            raise ValueError(f"{credential_field} is required when changing Azure auth_mode")
+    else:
+        if ad_token is not None and ad_token.strip() != "":
+            raise ValueError("ad_token is only supported by Azure providers")
+        if final_auth_mode not in {"bearer", "none"}:
+            raise ValueError(f"unsupported auth_mode: {final_auth_mode}")
+        if final_auth_mode == "none" and api_key is not None and api_key.strip() != "":
+            raise ValueError("api_key must be empty when auth_mode is none")
+        if final_auth_mode == "bearer":
+            credential = api_key
+
+    staged_secret: _StagedProviderSecret | None = None
+    if credential is not None:
+        if credential.strip() == "":
+            if existing_provider["provider_key"] != AZURE_ADAPTER_KEY:
+                raise ValueError("api_key is required when auth_mode is bearer")
+        else:
+            staged_secret = _stage_provider_secret(
+                settings=settings,
+                workspace_id=workspace_id,
+                credential=credential,
+            )
+
+    old_secret_reference = (
+        existing_provider["azure_auth_secret_ref"]
+        if existing_provider["provider_key"] == AZURE_ADAPTER_KEY
+        else existing_provider["api_key"]
+    )
+    provider_persisted = False
+    try:
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                _assert_provider_write_context(
+                    conn=conn,
+                    session_token=session_token,
+                    expected_workspace_id=workspace_id,
+                    expected_user_account_id=user_account_id,
+                )
+                store = ContinuityStore(conn)
+                current_provider = store.get_model_provider_for_workspace_optional(
+                    provider_id=provider_id,
+                    workspace_id=workspace_id,
+                )
+                if current_provider is None:
+                    raise HostedWorkspaceNotFoundError(f"provider {provider_id} was not found")
+                if (
+                    current_provider["config_revision"] != existing_provider["config_revision"]
+                    or current_provider["config_fingerprint_sha256"] != existing_provider["config_fingerprint_sha256"]
+                ):
+                    raise ProviderConfigurationChangedError(
+                        "provider configuration changed while credential storage was being prepared"
+                    )
+                provider, capability = _update_workspace_provider(
+                    store=store,
+                    existing_provider=current_provider,
+                    updated_by_user_account_id=user_account_id,
+                    display_name=display_name,
+                    base_url=validated_base_url,
+                    api_key=api_key,
+                    ad_token=ad_token,
+                    credential_secret_ref=(None if staged_secret is None else staged_secret.encoded_reference),
+                    auth_mode=auth_mode,
+                    default_model=default_model,
+                    model_list_path=model_list_path,
+                    healthcheck_path=healthcheck_path,
+                    invoke_path=invoke_path,
+                    api_version=api_version,
+                    metadata=metadata,
+                )
+        provider_persisted = True
+        new_secret_reference = (
+            provider["azure_auth_secret_ref"] if provider["provider_key"] == AZURE_ADAPTER_KEY else provider["api_key"]
+        )
+        if old_secret_reference != new_secret_reference:
+            _retire_provider_secret_if_unreferenced(
+                settings=settings,
+                session_token=session_token,
+                workspace_id=workspace_id,
+                user_account_id=user_account_id,
+                encoded_reference=old_secret_reference,
+            )
+        return provider, capability
+    finally:
+        if not provider_persisted:
+            _discard_staged_provider_secret(
+                settings=settings,
+                session_token=session_token,
+                workspace_id=workspace_id,
+                user_account_id=user_account_id,
+                staged_secret=staged_secret,
+            )
+
+
+def _seed_workspace_provider_configs(
+    *,
+    settings: Settings,
+    session_token: str,
+    workspace_id: UUID,
+) -> list[ModelProviderRow]:
+    if len(settings.workspace_provider_configs) == 0:
+        return []
+    resolved_workspace_id, user_account_id = _resolve_owned_provider_workspace(
+        settings=settings,
+        session_token=session_token,
+    )
+    if resolved_workspace_id != workspace_id:
+        raise ProviderConfigurationChangedError("workspace selection changed before provider bootstrap")
+    with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+        with conn.transaction():
+            _assert_provider_write_context(
+                conn=conn,
+                session_token=session_token,
+                expected_workspace_id=workspace_id,
+                expected_user_account_id=user_account_id,
+            )
+            existing_provider_keys = {
+                (provider["provider_key"], provider["display_name"])
+                for provider in ContinuityStore(conn).list_model_providers_for_workspace(workspace_id=workspace_id)
+            }
+
+    seeded_providers: list[ModelProviderRow] = []
+    for provider_config in settings.workspace_provider_configs:
+        provider_identity = (provider_config.provider_key, provider_config.display_name)
+        if provider_identity in existing_provider_keys:
+            continue
+        provider, _capability = _create_workspace_provider_durable(
+            settings=settings,
+            session_token=session_token,
+            provider_key=provider_config.provider_key,
+            display_name=provider_config.display_name,
+            base_url=provider_config.base_url,
+            api_key=provider_config.api_key,
+            auth_mode=provider_config.auth_mode,
+            default_model=provider_config.default_model,
+            model_list_path=provider_config.model_list_path,
+            healthcheck_path=provider_config.healthcheck_path,
+            invoke_path=provider_config.invoke_path,
+            metadata={} if provider_config.metadata is None else dict(provider_config.metadata),
+        )
+        seeded_providers.append(provider)
+        existing_provider_keys.add(provider_identity)
+    return seeded_providers
 
 
 def redact_url_credentials(raw_url: str) -> str:
@@ -3866,8 +5027,7 @@ def _response_rate_limit_error(
             "detail": {
                 "code": "response_rate_limit_exceeded",
                 "message": (
-                    "response generation rate limit exceeded; "
-                    f"max {max_requests} requests per {window_seconds} seconds"
+                    f"response generation rate limit exceeded; max {max_requests} requests per {window_seconds} seconds"
                 ),
                 "retry_after_seconds": retry_after_seconds,
             }
@@ -3890,16 +5050,103 @@ def _enforce_response_rate_limit(settings: Settings, user_id: UUID) -> JSONRespo
     )
 
 
+def _response_job_headers(
+    job: ResponseGenerationJobRow,
+    *,
+    replayed: bool,
+) -> dict[str, str]:
+    headers = {"Response-Job-Id": str(job["id"])}
+    if replayed:
+        headers["Idempotency-Replayed"] = "true"
+    return headers
+
+
+def _response_job_public_status(job: ResponseGenerationJobRow) -> JsonObject:
+    return {
+        "id": str(job["id"]),
+        "state": job["state"],
+        "endpoint": job["endpoint"],
+        "created_at": job["created_at"].isoformat(),
+        "updated_at": job["updated_at"].isoformat(),
+        "completed_at": None if job["completed_at"] is None else job["completed_at"].isoformat(),
+    }
+
+
+def _terminal_response_job_replay(job: ResponseGenerationJobRow) -> JSONResponse:
+    payload = job["response_payload"] if job["state"] == "succeeded" else job["error_payload"]
+    status_code = job["response_status_code"]
+    if payload is None or status_code is None:
+        raise RuntimeError("terminal response job is missing its persisted outcome")
+    return JSONResponse(
+        status_code=status_code,
+        headers=_response_job_headers(job, replayed=True),
+        content=jsonable_encoder(payload),
+    )
+
+
+def _response_job_replay_or_in_progress(
+    *,
+    store: ResponseGenerationJobStore,
+    job: ResponseGenerationJobRow,
+    expected_request_fingerprint: str,
+) -> JSONResponse | None:
+    if job["request_fingerprint_sha256"] != expected_request_fingerprint:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": {
+                    "code": "idempotency_key_reused",
+                    "message": "Idempotency-Key was already used for a different request",
+                }
+            },
+        )
+    if job["state"] in {"succeeded", "failed"}:
+        return _terminal_response_job_replay(job)
+    if job["state"] == "pending":
+        return None
+    if job["state"] != "running":
+        raise RuntimeError(f"unsupported response job state: {job['state']}")
+
+    abandoned_payload: JsonObject = {
+        "detail": {
+            "code": "provider_outcome_unknown",
+            "message": (
+                "the original provider call did not finalize before its lease expired; "
+                "AliceBot will not invoke it again under the same Idempotency-Key"
+            ),
+        },
+        "response_job": {**_response_job_public_status(job), "state": "failed"},
+    }
+    abandoned = store.fail_if_abandoned(
+        job_id=job["id"],
+        error_payload=abandoned_payload,
+    )
+    if abandoned is not None:
+        return _terminal_response_job_replay(abandoned)
+    return JSONResponse(
+        status_code=202,
+        headers={
+            **_response_job_headers(job, replayed=True),
+            "Retry-After": "2",
+        },
+        content=jsonable_encoder(
+            {
+                "detail": {
+                    "code": "response_generation_in_progress",
+                    "message": "response generation is already in progress for this Idempotency-Key",
+                },
+                "response_job": _response_job_public_status(job),
+            }
+        ),
+    )
+
+
 def _request_client_identifier(request: Request, settings: Settings) -> str:
     peer_host = ""
     if request.client is not None:
         peer_host = (request.client.host or "").strip()
 
-    if (
-        settings.trust_proxy_headers
-        and peer_host != ""
-        and peer_host in settings.trusted_proxy_ips
-    ):
+    if settings.trust_proxy_headers and peer_host != "" and peer_host in settings.trusted_proxy_ips:
         forwarded_for = request.headers.get("x-forwarded-for", "").strip()
         if forwarded_for != "":
             first_hop = forwarded_for.split(",", maxsplit=1)[0].strip()
@@ -4058,8 +5305,7 @@ async def apply_http_security_posture(
     settings = get_settings()
     origin = request.headers.get("origin", "").strip()
     is_preflight = (
-        request.method.upper() == "OPTIONS"
-        and request.headers.get("access-control-request-method", "").strip() != ""
+        request.method.upper() == "OPTIONS" and request.headers.get("access-control-request-method", "").strip() != ""
     )
     response: Response
 
@@ -4253,9 +5499,7 @@ class DesignPartnerCreateRequest(BaseModel):
     onboarding_status: Literal["pending", "in_progress", "completed", "blocked"] = "pending"
     support_status: Literal["green", "watch", "needs_attention", "blocked"] = "green"
     instrumentation_status: Literal["not_ready", "partial", "ready"] = "not_ready"
-    case_study_status: Literal["not_started", "candidate", "drafting", "approved", "published"] = (
-        "not_started"
-    )
+    case_study_status: Literal["not_started", "candidate", "drafting", "approved", "published"] = "not_started"
     target_outcome: str | None = Field(default=None, min_length=1, max_length=500)
     launch_notes: str | None = Field(default=None, min_length=1, max_length=2000)
     onboarding_checklist: dict[str, object] | None = None
@@ -4579,9 +5823,7 @@ def _ensure_hosted_admin_access(conn, *, user_account_id: UUID) -> None:
     required_flags = {"hosted_admin_read", "hosted_admin_operator"}
     missing_flags = sorted(required_flags - enabled_flags)
     if missing_flags:
-        raise PermissionError(
-            "hosted admin access requires hosted_admin_read and hosted_admin_operator flags"
-        )
+        raise PermissionError("hosted admin access requires hosted_admin_read and hosted_admin_operator flags")
     set_hosted_admin_bypass(conn, True)
 
 
@@ -4732,9 +5974,7 @@ def list_agent_profiles() -> JSONResponse:
 def compile_context(request: CompileContextRequest) -> JSONResponse:
     settings = get_settings()
     artifact_retrieval: (
-        CompileContextTaskScopedArtifactRetrievalInput
-        | CompileContextArtifactScopedArtifactRetrievalInput
-        | None
+        CompileContextTaskScopedArtifactRetrievalInput | CompileContextArtifactScopedArtifactRetrievalInput | None
     ) = None
     semantic_artifact_retrieval: (
         CompileContextTaskScopedSemanticArtifactRetrievalInput
@@ -4770,13 +6010,11 @@ def compile_context(request: CompileContextRequest) -> JSONResponse:
         request.semantic_artifact_retrieval,
         CompileContextArtifactScopedSemanticArtifactRetrievalRequest,
     ):
-        semantic_artifact_retrieval = (
-            CompileContextArtifactScopedSemanticArtifactRetrievalInput(
-                task_artifact_id=request.semantic_artifact_retrieval.task_artifact_id,
-                embedding_config_id=request.semantic_artifact_retrieval.embedding_config_id,
-                query_vector=tuple(request.semantic_artifact_retrieval.query_vector),
-                limit=request.semantic_artifact_retrieval.limit,
-            )
+        semantic_artifact_retrieval = CompileContextArtifactScopedSemanticArtifactRetrievalInput(
+            task_artifact_id=request.semantic_artifact_retrieval.task_artifact_id,
+            embedding_config_id=request.semantic_artifact_retrieval.embedding_config_id,
+            query_vector=tuple(request.semantic_artifact_retrieval.query_vector),
+            limit=request.semantic_artifact_retrieval.limit,
         )
 
     try:
@@ -4831,17 +6069,65 @@ def compile_context(request: CompileContextRequest) -> JSONResponse:
 
 
 @app.post("/v0/responses")
-def generate_assistant_response(request: GenerateResponseRequest) -> JSONResponse:
+def generate_assistant_response(
+    request: GenerateResponseRequest,
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key"),
+    ] = None,
+) -> JSONResponse:
     settings = get_settings()
-    rate_limit_error = _enforce_response_rate_limit(settings, request.user_id)
-    if rate_limit_error is not None:
-        return rate_limit_error
+    if idempotency_key is None or idempotency_key.strip() == "":
+        return JSONResponse(
+            status_code=428,
+            content={"detail": "Idempotency-Key header is required"},
+        )
+    try:
+        normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    fingerprint = request_fingerprint(cast(JsonObject, {"body": request.model_dump(mode="json")}))
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = ContinuityStore(conn)
-            thread = store.get_thread(request.thread_id)
-            result = generate_response(
+            job_store = ResponseGenerationJobStore(conn)
+            lookup = job_store.create_or_get_for_update(
+                user_id=request.user_id,
+                workspace_id=None,
+                endpoint=RESPONSE_JOB_ENDPOINT_V0,
+                idempotency_key=normalized_idempotency_key,
+                request_fingerprint_sha256=fingerprint,
+            )
+            replay = _response_job_replay_or_in_progress(
+                store=job_store,
+                job=lookup.job,
+                expected_request_fingerprint=fingerprint,
+            )
+            if replay is not None:
+                return replay
+
+            rate_limit_error = _enforce_response_rate_limit(settings, request.user_id)
+            if rate_limit_error is not None:
+                error_payload = cast(
+                    JsonObject,
+                    json.loads(bytes(rate_limit_error.body).decode("utf-8")),
+                )
+                failed_job = job_store.fail_pending(
+                    job_id=lookup.job["id"],
+                    status_code=429,
+                    error_payload=error_payload,
+                )
+                return JSONResponse(
+                    status_code=429,
+                    headers={
+                        **dict(rate_limit_error.headers),
+                        **_response_job_headers(failed_job, replayed=False),
+                    },
+                    content=jsonable_encoder(error_payload),
+                )
+
+            prepared = prepare_response_generation(
                 store=store,
                 settings=settings,
                 user_id=request.user_id,
@@ -4855,37 +6141,97 @@ def generate_assistant_response(request: GenerateResponseRequest) -> JSONRespons
                     max_entity_edges=request.max_entity_edges,
                 ),
             )
+            lease_token = uuid4()
+            claimed_job = job_store.claim_pending(
+                job_id=lookup.job["id"],
+                lease_token=lease_token,
+                lease_seconds=RESPONSE_JOB_LEASE_SECONDS,
+                user_event_id=prepared.user_event_id,
+                user_event_sequence_no=prepared.user_event_sequence_no,
+            )
     except ContinuityStoreInvariantError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ResponseJobFenceLostError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
-    if isinstance(result, ResponseFailure):
-        return JSONResponse(
-            status_code=502,
-            content=jsonable_encoder(
-                {
-                    "detail": result.detail,
-                    "trace": result.trace,
-                    "metadata": {"agent_profile_id": _thread_agent_profile_id(thread)},
-                }
-            ),
-        )
+    try:
+        model_response = invoke_prepared_response(prepared, settings=settings)
+        model_error: ModelInvocationError | None = None
+    except ModelInvocationError as exc:
+        model_response = None
+        model_error = exc
 
-    response_payload = dict(result)
-    response_payload["metadata"] = {"agent_profile_id": _thread_agent_profile_id(thread)}
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = ContinuityStore(conn)
+            response_conflict = False
+            result: GenerateResponseSuccess | ResponseFailure
+            if model_error is not None:
+                result = fail_response_generation(
+                    store=store,
+                    prepared=prepared,
+                    error=model_error,
+                )
+            else:
+                if model_response is None:  # pragma: no cover - invocation invariant
+                    raise ModelInvocationError("model provider returned no outcome")
+                try:
+                    result = complete_response_generation(
+                        store=store,
+                        prepared=prepared,
+                        model_response=model_response,
+                    )
+                except ResponseGenerationConflictError as exc:
+                    response_conflict = True
+                    result = fail_response_generation(
+                        store=store,
+                        prepared=prepared,
+                        error=ModelInvocationError(str(exc)),
+                    )
+
+            if isinstance(result, ResponseFailure):
+                status_code = 409 if response_conflict else 502
+                response_payload = cast(
+                    JsonObject,
+                    jsonable_encoder(
+                        {
+                            "detail": result.detail,
+                            "trace": result.trace,
+                            "metadata": {"agent_profile_id": prepared.agent_profile_id},
+                        }
+                    ),
+                )
+                terminal_state = "failed"
+            else:
+                response_payload_dict = dict(result)
+                response_payload_dict["metadata"] = {"agent_profile_id": prepared.agent_profile_id}
+                response_payload = cast(
+                    JsonObject,
+                    jsonable_encoder(response_payload_dict),
+                )
+                status_code = 200
+                terminal_state = "succeeded"
+
+            terminal_job = ResponseGenerationJobStore(conn).finalize(
+                job_id=claimed_job["id"],
+                lease_token=lease_token,
+                state=terminal_state,
+                status_code=status_code,
+                payload=response_payload,
+            )
+    except ResponseJobFenceLostError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
     return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(response_payload),
+        status_code=status_code,
+        headers=_response_job_headers(terminal_job, replayed=False),
+        content=response_payload,
     )
 
 
 @app.post("/v0/threads")
 def create_thread(request: CreateThreadRequest) -> JSONResponse:
     settings = get_settings()
-    agent_profile_id = (
-        request.agent_profile_id
-        if request.agent_profile_id is not None
-        else DEFAULT_AGENT_PROFILE_ID
-    )
+    agent_profile_id = request.agent_profile_id if request.agent_profile_id is not None else DEFAULT_AGENT_PROFILE_ID
     thread_input = ThreadCreateInput(
         title=request.title,
         agent_profile_id=agent_profile_id,
@@ -4900,10 +6246,7 @@ def create_thread(request: CreateThreadRequest) -> JSONResponse:
                 content={
                     "detail": {
                         "code": "invalid_agent_profile_id",
-                        "message": (
-                            "agent_profile_id must be one of: "
-                            + ", ".join(allowed_agent_profile_ids)
-                        ),
+                        "message": ("agent_profile_id must be one of: " + ", ".join(allowed_agent_profile_ids)),
                         "allowed_agent_profile_ids": allowed_agent_profile_ids,
                     }
                 },
@@ -5343,10 +6686,7 @@ def create_policy(request: CreatePolicyRequest) -> JSONResponse:
                     content={
                         "detail": {
                             "code": "invalid_agent_profile_id",
-                            "message": (
-                                "agent_profile_id must be one of: "
-                                + ", ".join(allowed_agent_profile_ids)
-                            ),
+                            "message": ("agent_profile_id must be one of: " + ", ".join(allowed_agent_profile_ids)),
                             "allowed_agent_profile_ids": allowed_agent_profile_ids,
                         }
                     },
@@ -6887,7 +8227,7 @@ def create_vnext_source(
             if decision.decision == "blocked":
                 return _vnext_permission_response(decision)
             actor_type, actor_id = _vnext_agent_actor(identity, fallback="user")
-            payload = VNextCaptureService(
+            capture_result = VNextCaptureService(
                 store,
                 actor_type=actor_type,
                 actor_id=actor_id,
@@ -6895,15 +8235,31 @@ def create_vnext_source(
                 run_id=identity.agent_run_id if identity is not None else None,
                 agent_identity=identity.to_record() if identity is not None else None,
                 policy_decision=decision.to_record(),
+                defer_embeddings=True,
             ).capture_text(
                 request.raw_text,
                 title=request.title,
                 domain=request.domain,
                 sensitivity=request.sensitivity,
                 project_scope=decision.effective_project_scope,
-            ).to_record()
+            )
+            payload = capture_result.to_record()
             if identity is not None:
-                append_policy_events(store, identity=identity, decision=decision, target_type="source", target_id=str(payload.get("source_id")))
+                append_policy_events(
+                    store,
+                    identity=identity,
+                    decision=decision,
+                    target_type="source",
+                    target_id=str(payload.get("source_id")),
+                )
+        _persist_vnext_deferred_embeddings(
+            database_url=settings.database_url,
+            user_id=request.user_id,
+            result=capture_result,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            trace_id=request.trace_id or decision.trace_id,
+        )
     except VNextCaptureValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext source capture request is invalid")
     except AgentKeyAuthenticationError as exc:
@@ -6990,9 +8346,7 @@ def get_vnext_connector_status(connector_name: str, user_id: UUID) -> JSONRespon
             store = PostgresVNextStore(conn)
             service = VNextConnectorService(store)
             sources = [
-                source
-                for source in store.list_sources(limit=50)
-                if source.get("connector_name") == connector_name
+                source for source in store.list_sources(limit=50) if source.get("connector_name") == connector_name
             ]
             failures = [
                 event
@@ -7036,12 +8390,18 @@ def sync_vnext_connector(connector_name: str, request: VNextConnectorSyncRequest
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload = VNextConnectorService(PostgresVNextStore(conn)).sync_items(
+            result = VNextConnectorService(PostgresVNextStore(conn), defer_embeddings=True).sync_items(
                 connector_name,
                 request.items,
                 default_domain=request.default_domain,
                 default_sensitivity=request.default_sensitivity,
-            ).to_record()
+            )
+            payload = result.to_record()
+        _persist_vnext_deferred_embeddings(
+            database_url=settings.database_url,
+            user_id=request.user_id,
+            result=result,
+        )
     except VNextConnectorValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext connector sync request is invalid")
 
@@ -7057,6 +8417,7 @@ def sync_vnext_connector(connector_name: str, request: VNextConnectorSyncRequest
 def sync_vnext_telegram_connector(request: VNextTelegramSyncRequest) -> JSONResponse:
     settings = get_settings()
     try:
+        poll_context = None
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
             service = VNextConnectorService(store)
@@ -7068,44 +8429,76 @@ def sync_vnext_telegram_connector(request: VNextTelegramSyncRequest) -> JSONResp
             allowed_chat_ids = request.allowed_chat_ids or [
                 str(value) for value in configured_allowed if isinstance(value, (str, int))
             ]
-            updates = request.updates or service.fetch_telegram_updates(timeout=10, limit=100)
-            payload = service.sync_telegram_updates(
+            if not request.updates:
+                poll_context = service.prepare_telegram_poll()
+
+        # Telegram can hold the request open for several seconds. Never retain a
+        # database connection while waiting on the remote API.
+        updates = request.updates
+        if poll_context is not None:
+            updates = poll_telegram_updates(poll_context, timeout=10, limit=100)
+
+        with user_connection(settings.database_url, request.user_id) as conn:
+            service = VNextConnectorService(PostgresVNextStore(conn), defer_embeddings=True)
+            result = service.sync_telegram_updates(
                 updates,
                 allowed_chat_ids=allowed_chat_ids,
                 default_domain=request.default_domain,
                 default_sensitivity=request.default_sensitivity,
-            ).to_record()
+            )
+            payload = result.to_record()
+        _persist_vnext_deferred_embeddings(
+            database_url=settings.database_url,
+            user_id=request.user_id,
+            result=result,
+        )
     except VNextConnectorValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext Telegram sync request is invalid")
-    return JSONResponse(status_code=201 if payload["status"] in {"ok", "partial"} else 400, content=jsonable_encoder(payload))
+    return JSONResponse(
+        status_code=201 if payload["status"] in {"ok", "partial"} else 400, content=jsonable_encoder(payload)
+    )
 
 
 @app.post("/v0/vnext/connectors/local-folder/sync")
 def sync_vnext_local_folder_connector(request: VNextLocalFolderSyncRequest) -> JSONResponse:
     settings = get_settings()
     try:
+        paths = list(request.paths)
         with user_connection(settings.database_url, request.user_id) as conn:
-            store = PostgresVNextStore(conn)
-            service = VNextConnectorService(store)
-            paths = list(request.paths)
             if not paths:
-                config = service.get_config("local_folder")
+                config = VNextConnectorService(PostgresVNextStore(conn)).get_config("local_folder")
                 config_json_value = config.get("config_json")
                 config_json: dict[str, object] = config_json_value if isinstance(config_json_value, dict) else {}
                 configured_paths_value = config_json.get("paths")
                 configured_paths = configured_paths_value if isinstance(configured_paths_value, list) else []
                 paths = [str(path) for path in configured_paths if isinstance(path, str)]
-            payload = service.sync_local_folder(
-                paths,
-                recursive=request.recursive,
-                extensions=request.extensions,
-                ignore_patterns=request.ignore_patterns,
+
+        # File traversal and reads are intentionally outside the transaction so
+        # slow or remote mounts cannot monopolize a pooled database connection.
+        scan = scan_local_folder(
+            paths,
+            recursive=request.recursive,
+            extensions=request.extensions,
+            ignore_patterns=request.ignore_patterns,
+        )
+        with user_connection(settings.database_url, request.user_id) as conn:
+            result = VNextConnectorService(PostgresVNextStore(conn), defer_embeddings=True).sync_local_folder_scan(
+                scan,
                 default_domain=request.default_domain,
                 default_sensitivity=request.default_sensitivity,
-            ).to_record()
+            )
+            payload = result.to_record()
+        _persist_vnext_deferred_embeddings(
+            database_url=settings.database_url,
+            user_id=request.user_id,
+            result=result,
+        )
     except VNextConnectorValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext local folder sync request is invalid")
-    return JSONResponse(status_code=201 if payload["status"] in {"ok", "partial", "duplicate"} else 400, content=jsonable_encoder(payload))
+    return JSONResponse(
+        status_code=201 if payload["status"] in {"ok", "partial", "duplicate"} else 400,
+        content=jsonable_encoder(payload),
+    )
 
 
 @app.post("/v0/vnext/connectors/browser-clipper/capture")
@@ -7113,14 +8506,23 @@ def capture_vnext_browser_clip(request: VNextBrowserClipperCaptureRequest) -> JS
     settings = get_settings()
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload = VNextConnectorService(PostgresVNextStore(conn)).capture_browser_clip(
+            result = VNextConnectorService(PostgresVNextStore(conn), defer_embeddings=True).capture_browser_clip(
                 request.model_dump(mode="json"),
                 default_domain=request.domain,
                 default_sensitivity=request.sensitivity,
-            ).to_record()
+            )
+            payload = result.to_record()
+        _persist_vnext_deferred_embeddings(
+            database_url=settings.database_url,
+            user_id=request.user_id,
+            result=result,
+        )
     except VNextConnectorValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext browser clip capture request is invalid")
-    return JSONResponse(status_code=201 if payload["status"] in {"ok", "partial", "duplicate"} else 400, content=jsonable_encoder(payload))
+    return JSONResponse(
+        status_code=201 if payload["status"] in {"ok", "partial", "duplicate"} else 400,
+        content=jsonable_encoder(payload),
+    )
 
 
 @app.post("/v0/vnext/agents/ingest-output")
@@ -7150,10 +8552,19 @@ def ingest_vnext_agent_output(
             )
             ingest_payload = request.model_dump(mode="json")
             ingest_payload["project_scope"] = list(decision.effective_project_scope)
-            payload = VNextConnectorService(store).ingest_agent_output(
+            result = VNextConnectorService(store, defer_embeddings=True).ingest_agent_output(
                 ingest_payload,
                 policy_decision=decision.to_record(),
-            ).to_record()
+            )
+            payload = result.to_record()
+        _persist_vnext_deferred_embeddings(
+            database_url=settings.database_url,
+            user_id=request.user_id,
+            result=result,
+            actor_type="agent",
+            actor_id=identity.agent_id if identity is not None else None,
+            trace_id=decision.trace_id,
+        )
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except AgentPolicyBlockedError as exc:
@@ -7224,7 +8635,9 @@ def record_vnext_artifact_insight_feedback(
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
     except ValueError:
-        return _vnext_public_error_response(status_code=400, detail="vNext artifact insight feedback request is invalid")
+        return _vnext_public_error_response(
+            status_code=400, detail="vNext artifact insight feedback request is invalid"
+        )
     return JSONResponse(status_code=201, content=jsonable_encoder(payload))
 
 
@@ -7266,15 +8679,13 @@ def review_vnext_source(source_id: UUID, request: VNextSourceReviewRequest) -> J
                 target_id=str(source_id),
                 payload={"action": action, "review_note": request.review_note},
             )
-            trace = _vnext_source_trace(
+            trace = _vnext_load_source_trace(
                 store=store,
                 source=archived,
-                memories=store.list_memories(status=None),
-                artifacts=store.list_artifacts(limit=100),
-                open_loops=store.list_open_loops(status=None, limit=100),
-                events=store.list_events(limit=100),
             )
-            return JSONResponse(status_code=200, content=jsonable_encoder({"source": archived, "archived": True, "trace": trace}))
+            return JSONResponse(
+                status_code=200, content=jsonable_encoder({"source": archived, "archived": True, "trace": trace})
+            )
 
         if action == "assign_project" and request.project_id is None:
             return _vnext_public_error_response(status_code=400, detail="project_id is required")
@@ -7329,16 +8740,14 @@ def review_vnext_source(source_id: UUID, request: VNextSourceReviewRequest) -> J
             target_id=str(source_id),
             payload={"action": action, "project_id": request.project_id, "review_note": request.review_note},
         )
-        trace = _vnext_source_trace(
+        trace = _vnext_load_source_trace(
             store=store,
             source=updated,
-            memories=store.list_memories(status=None),
-            artifacts=store.list_artifacts(limit=100),
-            open_loops=store.list_open_loops(status=None, limit=100),
-            events=store.list_events(limit=100),
         )
 
-    return JSONResponse(status_code=200, content=jsonable_encoder({"source": updated, "archived": False, "trace": trace}))
+    return JSONResponse(
+        status_code=200, content=jsonable_encoder({"source": updated, "archived": False, "trace": trace})
+    )
 
 
 @app.get("/v0/vnext/traces/sources/{source_id}")
@@ -7349,13 +8758,9 @@ def get_vnext_source_trace(source_id: UUID, user_id: UUID) -> JSONResponse:
         source = store.get_source(str(source_id))
         if source is None:
             return _vnext_public_error_response(status_code=404, detail="vNext source was not found")
-        payload = _vnext_source_trace(
+        payload = _vnext_load_source_trace(
             store=store,
             source=source,
-            memories=store.list_memories(status=None),
-            artifacts=store.list_artifacts(limit=100),
-            open_loops=store.list_open_loops(status=None, limit=100),
-            events=store.list_events(limit=100),
         )
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -7384,14 +8789,19 @@ def get_vnext_artifact_trace(
                 for_update=False,
             )
             metadata = _vnext_metadata(artifact)
-            source_refs = _vnext_ref_values(metadata.get("source_refs")) + _vnext_ref_values(
-                metadata.get("source_ids")
-            )
-            authorized_sources: list[dict[str, object]] = []
-            for source in store.list_sources(limit=100):
-                source_id = str(source.get("id"))
-                if source_id not in source_refs and f"source:{source_id}" not in source_refs:
+            source_refs = _vnext_ref_values(metadata.get("source_refs")) + _vnext_ref_values(metadata.get("source_ids"))
+            source_ids: list[str] = []
+            for source_ref in source_refs:
+                source_id = source_ref.removeprefix("source:")
+                try:
+                    UUID(source_id)
+                except ValueError:
                     continue
+                if source_id not in source_ids:
+                    source_ids.append(source_id)
+            authorized_sources: list[dict[str, object]] = []
+            for source in store.get_sources_by_ids(source_ids):
+                source_id = str(source.get("id"))
                 source_decision = _vnext_exact_resource_policy(
                     identity=identity,
                     action="artifact.lookup",
@@ -7410,7 +8820,11 @@ def get_vnext_artifact_trace(
                 artifact=artifact,
                 sources=authorized_sources,
                 quality_evals=store.list_artifact_quality_ratings(artifact_id=str(artifact_id), limit=100),
-                events=store.list_events(limit=100),
+                events=store.list_events(
+                    target_type="artifact",
+                    target_id=str(artifact_id),
+                    limit=100,
+                ),
             )
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
@@ -7610,9 +9024,66 @@ def review_vnext_memory(
 
     actor_type, actor_id = _vnext_agent_actor(identity, fallback="user")
 
+    # Consolidation acceptance has its own graph-wide locking protocol. Run it
+    # in a complete primary transaction, then perform optional embedding work
+    # only after that transaction has committed.
+    if is_pending_consolidation_candidate(target) and action in {"accept", "promote"}:
+        if action == "edit" or any(
+            value is not None
+            for value in (
+                request.title,
+                request.canonical_text,
+                request.summary,
+                request.domain,
+                request.sensitivity,
+                request.project_id,
+            )
+        ):
+            return _vnext_public_error_response(
+                status_code=400,
+                detail=(
+                    "pending consolidation candidates cannot be edited during approval; "
+                    "regenerate the candidate or accept it unchanged"
+                ),
+            )
+        try:
+            with user_connection(settings.database_url, request.user_id) as conn:
+                consolidation_service = VNextMemoryCommitService(
+                    PostgresVNextStore(conn),
+                    defer_embeddings=True,
+                )
+                # Preserve the route-level graph boundary before the service
+                # reacquires it and locks the candidate/member rows.
+                consolidation_service.lock_supersession_graph()
+                acceptance = consolidation_service.accept_consolidation_candidate(
+                    str(memory_id),
+                    reason=request.reason or "Approved through vNext memory review.",
+                    identity=identity,
+                )
+        except AgentPolicyBlockedError as exc:
+            return _vnext_permission_response(exc.decision)
+        except VNextMemoryCommitValidationError as exc:
+            return _vnext_public_error_response(status_code=400, detail=str(exc))
+        _persist_vnext_deferred_embeddings(
+            database_url=settings.database_url,
+            user_id=request.user_id,
+            result=consolidation_service,
+            actor_type=actor_type,
+            actor_id=actor_id,
+        )
+        return JSONResponse(
+            status_code=200,
+            content=jsonable_encoder(
+                {
+                    "memory": acceptance["memory"],
+                    "consolidation_acceptance": acceptance,
+                }
+            ),
+        )
+
     with user_connection(settings.database_url, request.user_id) as conn:
         store = PostgresVNextStore(conn)
-        memory_service = VNextMemoryCommitService(store)
+        memory_service = VNextMemoryCommitService(store, defer_embeddings=True)
         # Review can promote a consolidation candidate or mutate a member
         # referenced by pending derived work. Establish the shared per-user
         # graph boundary before the route takes any candidate/member row lock;
@@ -7644,24 +9115,9 @@ def review_vnext_memory(
                     ),
                 )
             if action in {"accept", "promote"}:
-                try:
-                    acceptance = memory_service.accept_consolidation_candidate(
-                        str(memory_id),
-                        reason=request.reason or "Approved through vNext memory review.",
-                        identity=identity,
-                    )
-                except AgentPolicyBlockedError as exc:
-                    return _vnext_permission_response(exc.decision)
-                except VNextMemoryCommitValidationError as exc:
-                    return _vnext_public_error_response(status_code=400, detail=str(exc))
-                return JSONResponse(
-                    status_code=200,
-                    content=jsonable_encoder(
-                        {
-                            "memory": acceptance["memory"],
-                            "consolidation_acceptance": acceptance,
-                        }
-                    ),
+                return _vnext_public_error_response(
+                    status_code=409,
+                    detail="vNext memory became a consolidation candidate during review; retry the approval",
                 )
         get_memory_for_update = getattr(store, "get_memory_for_update", None)
         existing = (
@@ -7715,24 +9171,9 @@ def review_vnext_memory(
                     ),
                 )
             if action in {"accept", "promote"}:
-                try:
-                    acceptance = memory_service.accept_consolidation_candidate(
-                        str(memory_id),
-                        reason=request.reason or "Approved through vNext memory review.",
-                        identity=identity,
-                    )
-                except AgentPolicyBlockedError as exc:
-                    return _vnext_permission_response(exc.decision)
-                except VNextMemoryCommitValidationError as exc:
-                    return _vnext_public_error_response(status_code=400, detail=str(exc))
-                return JSONResponse(
-                    status_code=200,
-                    content=jsonable_encoder(
-                        {
-                            "memory": acceptance["memory"],
-                            "consolidation_acceptance": acceptance,
-                        }
-                    ),
+                return _vnext_public_error_response(
+                    status_code=409,
+                    detail="vNext memory became a consolidation candidate during review; retry the approval",
                 )
 
         existing_metadata_value = existing.get("metadata_json")
@@ -7825,7 +9266,7 @@ def review_vnext_memory(
 
         updated = store.update_memory(memory_id=str(memory_id), patch=patch, actor_type=actor_type)
         if action in ("accept", "edit", "promote"):
-            VNextMemoryCommitService(store).refresh_memory_derived_state(
+            memory_service.refresh_memory_derived_state(
                 updated,
                 identity=identity,
                 stage=f"http_review_{action}",
@@ -7881,6 +9322,13 @@ def review_vnext_memory(
             payload={"action": action, "project_id": request.project_id},
         )
 
+    _persist_vnext_deferred_embeddings(
+        database_url=settings.database_url,
+        user_id=request.user_id,
+        result=memory_service,
+        actor_type=actor_type,
+        actor_id=actor_id,
+    )
     return JSONResponse(status_code=200, content=jsonable_encoder({"memory": updated}))
 
 
@@ -7917,7 +9365,9 @@ def create_vnext_memory_proposal(
                 store, request, user_id=request.user_id, authorization=authorization
             )
             if identity is None:
-                return _vnext_public_error_response(status_code=400, detail="agent identity is required for memory proposals")
+                return _vnext_public_error_response(
+                    status_code=400, detail="agent identity is required for memory proposals"
+                )
             decision = _vnext_policy_checked(
                 store=store,
                 identity=identity,
@@ -7950,9 +9400,7 @@ def create_vnext_memory_proposal(
                     },
                     "status": "candidate",
                     "project_id": (
-                        decision.effective_project_scope[0]
-                        if len(decision.effective_project_scope) == 1
-                        else None
+                        decision.effective_project_scope[0] if len(decision.effective_project_scope) == 1 else None
                     ),
                     "confidence": request.confidence,
                     "title": request.title,
@@ -7988,7 +9436,11 @@ def create_vnext_memory_proposal(
                 target_id=str(memory["id"]),
                 trace_id=request.trace_id or decision.trace_id,
                 run_id=identity.agent_run_id,
-                payload={"proposal_type": request.proposal_type, "agent_identity": identity.to_record(), "policy_decision": decision.to_record()},
+                payload={
+                    "proposal_type": request.proposal_type,
+                    "agent_identity": identity.to_record(),
+                    "policy_decision": decision.to_record(),
+                },
             )
             append_event(
                 store,
@@ -8008,7 +9460,9 @@ def create_vnext_memory_proposal(
 
     return JSONResponse(
         status_code=201,
-        content=jsonable_encoder({"proposal": memory, "policy_decision": decision.to_record(), "review_required": True}),
+        content=jsonable_encoder(
+            {"proposal": memory, "policy_decision": decision.to_record(), "review_required": True}
+        ),
     )
 
 
@@ -8033,12 +9487,21 @@ def commit_vnext_memory(
             identity = _vnext_authenticated_agent_identity(
                 store, request, user_id=request.user_id, authorization=authorization
             )
-            payload = VNextMemoryCommitService(store).commit(identity=identity, request=commit_request)
+            service = VNextMemoryCommitService(store, defer_embeddings=True)
+            payload = service.commit(identity=identity, request=commit_request)
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except VNextMemoryCommitValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
 
+    _persist_vnext_deferred_embeddings(
+        database_url=settings.database_url,
+        user_id=request.user_id,
+        result=service,
+        actor_type="agent" if identity is not None else "user",
+        actor_id=identity.agent_id if identity is not None else None,
+        trace_id=commit_request.trace_id,
+    )
     status_code = 201 if payload.get("status") in {"committed", "confirmation_required", "review_required"} else 200
     return JSONResponse(status_code=status_code, content=jsonable_encoder(payload))
 
@@ -8060,7 +9523,8 @@ def confirm_vnext_memory(
             identity = _vnext_authenticated_agent_identity(
                 store, request, user_id=request.user_id, authorization=authorization
             )
-            payload = VNextMemoryCommitService(store).confirm(
+            service = VNextMemoryCommitService(store, defer_embeddings=True)
+            payload = service.confirm(
                 identity=identity,
                 confirmation_id=request.confirmation_id,
                 action=request.action,
@@ -8074,6 +9538,13 @@ def confirm_vnext_memory(
     except VNextMemoryCommitValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
 
+    _persist_vnext_deferred_embeddings(
+        database_url=settings.database_url,
+        user_id=request.user_id,
+        result=service,
+        actor_type="agent" if identity is not None else "user",
+        actor_id=identity.agent_id if identity is not None else None,
+    )
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
@@ -8126,7 +9597,8 @@ def correct_vnext_memory(
             identity = _vnext_authenticated_agent_identity(
                 store, request, user_id=request.user_id, authorization=authorization
             )
-            payload = VNextMemoryCommitService(store).correct(
+            service = VNextMemoryCommitService(store, defer_embeddings=True)
+            payload = service.correct(
                 identity=identity,
                 memory_id=str(request.memory_id),
                 canonical_text=request.canonical_text,
@@ -8139,6 +9611,13 @@ def correct_vnext_memory(
     except VNextMemoryCommitValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
 
+    _persist_vnext_deferred_embeddings(
+        database_url=settings.database_url,
+        user_id=request.user_id,
+        result=service,
+        actor_type="agent" if identity is not None else "user",
+        actor_id=identity.agent_id if identity is not None else None,
+    )
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
@@ -8250,6 +9729,7 @@ def accept_vnext_memory_consolidation(
     authorization: str | None = Header(default=None),
 ) -> JSONResponse:
     settings = get_settings()
+    service: VNextMemoryCommitService | None = None
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
@@ -8264,7 +9744,8 @@ def accept_vnext_memory_consolidation(
             # Acceptance is a review decision: the commit service
             # policy-checks it internally (human or admin agent only).
             try:
-                payload = VNextMemoryCommitService(store).accept_consolidation_candidate(
+                service = VNextMemoryCommitService(store, defer_embeddings=True)
+                payload = service.accept_consolidation_candidate(
                     str(request.memory_id),
                     reason=request.reason,
                     identity=identity,
@@ -8276,6 +9757,15 @@ def accept_vnext_memory_consolidation(
     except VNextMemoryCommitValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
 
+    if service is not None:
+        actor_type, actor_id = _vnext_agent_actor(identity, fallback="user")
+        _persist_vnext_deferred_embeddings(
+            database_url=settings.database_url,
+            user_id=request.user_id,
+            result=service,
+            actor_type=actor_type,
+            actor_id=actor_id,
+        )
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
@@ -8668,6 +10158,7 @@ def review_vnext_artifact(
     authorization: str | None = Header(default=None),
 ) -> JSONResponse:
     settings = get_settings()
+    project_review_service: VNextProjectService | None = None
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
@@ -8679,25 +10170,40 @@ def review_vnext_artifact(
             identity = _vnext_authenticated_agent_identity(
                 store, request, user_id=request.user_id, authorization=authorization
             )
-            _artifact, _decision = _vnext_authorized_artifact(
+            artifact, _decision = _vnext_authorized_artifact(
                 store=store,
                 identity=identity,
                 artifact_id=str(artifact_id),
                 action="artifact.review",
                 for_update=True,
             )
-            payload = VNextQueueService(store).review_artifact(
-                artifact_id=str(artifact_id),
-                action=request.action,
-            )
+            if VNextProjectService.is_project_update_candidate(artifact):
+                project_review_service = VNextProjectService(store, defer_embeddings=True)
+                payload = project_review_service.review_project_update(
+                    artifact_id=str(artifact_id),
+                    action=request.action,
+                )
+            else:
+                payload = VNextQueueService(store).review_artifact(
+                    artifact_id=str(artifact_id),
+                    action=request.action,
+                )
     except VNextQueueNotFoundError:
         return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
-    except VNextQueueValidationError:
+    except (VNextQueueValidationError, VNextProjectValidationError):
         return _vnext_public_error_response(status_code=400, detail="vNext artifact review request is invalid")
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
+
+    if project_review_service is not None:
+        _persist_vnext_deferred_embeddings(
+            database_url=settings.database_url,
+            user_id=request.user_id,
+            result=project_review_service,
+            actor_type="user",
+        )
 
     return JSONResponse(
         status_code=200,
@@ -8950,7 +10456,7 @@ def generate_vnext_project_update_candidate(
             payload = VNextProjectService(store).generate_project_update_candidate(
                 _vnext_project_automation_request(request, identity=identity, decision=decision)
             )
-    except VNextProjectValidationError:
+    except (ValueError, VNextProjectValidationError):
         return _vnext_public_error_response(status_code=400, detail="vNext project update request is invalid")
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
@@ -8966,7 +10472,8 @@ def review_vnext_project_update_candidate(artifact_id: str, request: VNextProjec
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload = VNextProjectService(PostgresVNextStore(conn)).review_project_update(
+            service = VNextProjectService(PostgresVNextStore(conn), defer_embeddings=True)
+            payload = service.review_project_update(
                 artifact_id=artifact_id,
                 action=request.action,
                 edited_current_state=request.edited_current_state,
@@ -8974,6 +10481,12 @@ def review_vnext_project_update_candidate(artifact_id: str, request: VNextProjec
     except VNextProjectValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext project update review request is invalid")
 
+    _persist_vnext_deferred_embeddings(
+        database_url=settings.database_url,
+        user_id=request.user_id,
+        result=service,
+        actor_type="user",
+    )
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
@@ -9129,15 +10642,20 @@ def list_vnext_scheduler_failures(user_id: UUID, workflow_type: str | None = Non
 
 
 @app.get("/v0/vnext/agents/policy-telemetry")
-def get_vnext_agent_policy_telemetry(user_id: UUID, agent_id: str | None = None, limit: int = 200) -> JSONResponse:
+def get_vnext_agent_policy_telemetry(
+    user_id: UUID,
+    agent_id: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 200,
+) -> JSONResponse:
     settings = get_settings()
+    bounded_limit = min(max(limit, 1), 200)
 
     with user_connection(settings.database_url, user_id) as conn:
         store = PostgresVNextStore(conn)
         payload = summarize_agent_policy_telemetry(
-            agent_events=store.list_agent_events(agent_id=agent_id, limit=limit),
-            artifacts=store.list_artifacts(limit=min(limit, 200)),
-            memories=store.list_memories(status=None),
+            agent_events=store.list_agent_events(agent_id=agent_id, limit=bounded_limit),
+            artifacts=store.list_agent_policy_artifacts(agent_id=agent_id, limit=bounded_limit),
+            memories=store.list_agent_policy_memories(agent_id=agent_id, limit=bounded_limit),
         )
 
     return JSONResponse(status_code=200, content=jsonable_encoder({"summary": payload}))
@@ -9191,7 +10709,9 @@ def patch_vnext_scheduler_workflow(
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
-    return JSONResponse(status_code=200, content=jsonable_encoder({"workflow": payload, "policy_decision": decision.to_record()}))
+    return JSONResponse(
+        status_code=200, content=jsonable_encoder({"workflow": payload, "policy_decision": decision.to_record()})
+    )
 
 
 @app.post("/v0/vnext/scheduler/workflows/{workflow_type}/run-now")
@@ -9233,18 +10753,22 @@ def run_vnext_scheduler_workflow_now(
             if decision.decision == "blocked":
                 return _vnext_permission_response(decision)
             triggered_by = "agent" if identity is not None else "user"
-            payload = VNextSchedulerService(store).run_now(
-                SchedulerRunRequest(
-                    workflow_type=workflow_type,
-                    domains=decision.effective_domains,
-                    sensitivity_allowed=decision.effective_sensitivity_allowed,
-                    generated_for=str(options["generated_for"]) if isinstance(options.get("generated_for"), str) else None,
-                    triggered_by=triggered_by,
-                    agent_identity=identity,
-                    policy_decision=decision,
-                    options=options,
-                )
+            scheduler_request = SchedulerRunRequest(
+                workflow_type=workflow_type,
+                domains=decision.effective_domains,
+                projects=decision.effective_project_scope,
+                sensitivity_allowed=decision.effective_sensitivity_allowed,
+                generated_for=str(options["generated_for"]) if isinstance(options.get("generated_for"), str) else None,
+                triggered_by=triggered_by,
+                agent_identity=identity,
+                policy_decision=decision,
+                options=options,
             )
+        payload = run_now_durable(
+            database_url=settings.database_url,
+            user_id=request.user_id,
+            request=scheduler_request,
+        )
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except VNextSchedulerValidationError as exc:
@@ -9266,6 +10790,7 @@ def run_vnext_scheduler_due(
     except AgentIdentityValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
 
+    actor_type = "scheduler"
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
@@ -9281,12 +10806,14 @@ def run_vnext_scheduler_due(
             if decision.decision == "blocked":
                 return _vnext_permission_response(decision)
             actor_type, _actor_id = _vnext_agent_actor(identity, fallback="scheduler")
-            payload = VNextSchedulerService(store).run_due_workflows(
-                limit=request.limit,
-                triggered_by=actor_type,
-                agent_identity=identity,
-                policy_decision=decision,
-            )
+        payload = run_due_workflows_durable(
+            database_url=settings.database_url,
+            user_id=request.user_id,
+            limit=request.limit,
+            triggered_by=actor_type,
+            agent_identity=identity,
+            policy_decision=decision,
+        )
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except VNextSchedulerValidationError as exc:
@@ -9362,7 +10889,7 @@ def extract_vnext_open_loops(request: VNextProjectAutomationRequest) -> JSONResp
             loops = VNextProjectService(PostgresVNextStore(conn)).extract_open_loops(
                 _vnext_project_automation_request(request)
             )
-    except VNextProjectValidationError:
+    except (ValueError, VNextProjectValidationError):
         return _vnext_public_error_response(status_code=400, detail="vNext open-loop extraction request is invalid")
 
     return JSONResponse(status_code=201, content=jsonable_encoder({"open_loops": loops, "created_count": len(loops)}))
@@ -10796,23 +12323,21 @@ def capture_chief_of_staff_recommendation_outcome_endpoint(
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload: ChiefOfStaffRecommendationOutcomeCaptureResponse = (
-                capture_chief_of_staff_recommendation_outcome(
-                    ContinuityStore(conn),
-                    user_id=request.user_id,
-                    request=ChiefOfStaffRecommendationOutcomeCaptureInput(
-                        outcome=request.outcome,  # type: ignore[arg-type]
-                        recommendation_action_type=request.recommendation_action_type,  # type: ignore[arg-type]
-                        recommendation_title=request.recommendation_title,
-                        rationale=request.rationale,
-                        rewritten_title=request.rewritten_title,
-                        target_priority_id=request.target_priority_id,
-                        thread_id=request.thread_id,
-                        task_id=request.task_id,
-                        project=request.project,
-                        person=request.person,
-                    ),
-                )
+            payload: ChiefOfStaffRecommendationOutcomeCaptureResponse = capture_chief_of_staff_recommendation_outcome(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=ChiefOfStaffRecommendationOutcomeCaptureInput(
+                    outcome=request.outcome,  # type: ignore[arg-type]
+                    recommendation_action_type=request.recommendation_action_type,  # type: ignore[arg-type]
+                    recommendation_title=request.recommendation_title,
+                    rationale=request.rationale,
+                    rewritten_title=request.rewritten_title,
+                    target_priority_id=request.target_priority_id,
+                    thread_id=request.thread_id,
+                    task_id=request.task_id,
+                    project=request.project,
+                    person=request.person,
+                ),
             )
     except ChiefOfStaffValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
@@ -10831,20 +12356,18 @@ def capture_chief_of_staff_handoff_review_action_endpoint(
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload: ChiefOfStaffHandoffReviewActionCaptureResponse = (
-                capture_chief_of_staff_handoff_review_action(
-                    ContinuityStore(conn),
-                    user_id=request.user_id,
-                    request=ChiefOfStaffHandoffReviewActionInput(
-                        handoff_item_id=request.handoff_item_id,
-                        review_action=request.review_action,  # type: ignore[arg-type]
-                        note=request.note,
-                        thread_id=request.thread_id,
-                        task_id=request.task_id,
-                        project=request.project,
-                        person=request.person,
-                    ),
-                )
+            payload: ChiefOfStaffHandoffReviewActionCaptureResponse = capture_chief_of_staff_handoff_review_action(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=ChiefOfStaffHandoffReviewActionInput(
+                    handoff_item_id=request.handoff_item_id,
+                    review_action=request.review_action,  # type: ignore[arg-type]
+                    note=request.note,
+                    thread_id=request.thread_id,
+                    task_id=request.task_id,
+                    project=request.project,
+                    person=request.person,
+                ),
             )
     except ChiefOfStaffValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
@@ -10895,20 +12418,18 @@ def capture_chief_of_staff_handoff_outcome_endpoint(
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload: ChiefOfStaffHandoffOutcomeCaptureResponse = (
-                capture_chief_of_staff_handoff_outcome(
-                    ContinuityStore(conn),
-                    user_id=request.user_id,
-                    request=ChiefOfStaffHandoffOutcomeCaptureInput(
-                        handoff_item_id=request.handoff_item_id,
-                        outcome_status=request.outcome_status,  # type: ignore[arg-type]
-                        note=request.note,
-                        thread_id=request.thread_id,
-                        task_id=request.task_id,
-                        project=request.project,
-                        person=request.person,
-                    ),
-                )
+            payload: ChiefOfStaffHandoffOutcomeCaptureResponse = capture_chief_of_staff_handoff_outcome(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=ChiefOfStaffHandoffOutcomeCaptureInput(
+                    handoff_item_id=request.handoff_item_id,
+                    outcome_status=request.outcome_status,  # type: ignore[arg-type]
+                    note=request.note,
+                    thread_id=request.thread_id,
+                    task_id=request.task_id,
+                    project=request.project,
+                    person=request.person,
+                ),
             )
     except ChiefOfStaffValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
@@ -10945,9 +12466,7 @@ def list_memories(
 def list_memory_review_queue(
     user_id: UUID,
     limit: int = Query(default=DEFAULT_MEMORY_REVIEW_LIMIT, ge=1, le=MAX_MEMORY_REVIEW_LIMIT),
-    priority_mode: MemoryReviewQueuePriorityMode = Query(
-        default=DEFAULT_MEMORY_REVIEW_QUEUE_PRIORITY_MODE
-    ),
+    priority_mode: MemoryReviewQueuePriorityMode = Query(default=DEFAULT_MEMORY_REVIEW_QUEUE_PRIORITY_MODE),
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -11464,10 +12983,7 @@ def start_v1_magic_link(http_request: Request, request: MagicLinkStartRequest) -
     email_fingerprint = hashlib.sha256(request.email.strip().lower().encode("utf-8")).hexdigest()[:20]
     rate_limit_error = _enforce_entrypoint_rate_limit(
         settings=settings,
-        key=(
-            "auth_magic_link_start:"
-            f"{_request_client_identifier(http_request, settings)}:{email_fingerprint}"
-        ),
+        key=(f"auth_magic_link_start:{_request_client_identifier(http_request, settings)}:{email_fingerprint}"),
         max_requests=settings.magic_link_start_rate_limit_max_requests,
         window_seconds=settings.magic_link_start_rate_limit_window_seconds,
         detail_code="magic_link_start_rate_limit_exceeded",
@@ -11512,10 +13028,7 @@ def verify_v1_magic_link(http_request: Request, request: MagicLinkVerifyRequest)
     challenge_fingerprint = hashlib.sha256(request.challenge_token.strip().encode("utf-8")).hexdigest()[:20]
     rate_limit_error = _enforce_entrypoint_rate_limit(
         settings=settings,
-        key=(
-            "auth_magic_link_verify:"
-            f"{_request_client_identifier(http_request, settings)}:{challenge_fingerprint}"
-        ),
+        key=(f"auth_magic_link_verify:{_request_client_identifier(http_request, settings)}:{challenge_fingerprint}"),
         max_requests=settings.magic_link_verify_rate_limit_max_requests,
         window_seconds=settings.magic_link_verify_rate_limit_window_seconds,
         detail_code="magic_link_verify_rate_limit_exceeded",
@@ -11686,6 +13199,7 @@ def bootstrap_v1_workspace(
     settings = get_settings()
     resolved_workspace_id: UUID | None = None
     user_account_id: UUID | None = None
+    seeded_providers: list[ModelProviderRow] = []
 
     try:
         session_token = _extract_bearer_token(request)
@@ -11726,12 +13240,6 @@ def bootstrap_v1_workspace(
                     user_account_id=user_account_id,
                 )
                 store = ContinuityStore(conn)
-                _seed_workspace_provider_configs(
-                    settings=settings,
-                    store=store,
-                    workspace_id=workspace["id"],
-                    created_by_user_account_id=user_account_id,
-                )
                 ensure_tier1_model_packs_for_workspace(
                     store=store,
                     workspace_id=workspace["id"],
@@ -11770,6 +13278,54 @@ def bootstrap_v1_workspace(
                         error_detail=str(exc),
                     )
         return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    if resolved_workspace_id is None or user_account_id is None:
+        return JSONResponse(status_code=500, content={"detail": "bootstrap workspace could not be resolved"})
+    seeded_providers = _seed_workspace_provider_configs(
+        settings=settings,
+        session_token=session_token,
+        workspace_id=resolved_workspace_id,
+    )
+    try:
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                refreshed_resolution = resolve_auth_session(conn, session_token=session_token)
+                if refreshed_resolution["user_account"]["id"] != user_account_id:
+                    raise ProviderConfigurationChangedError(
+                        "bootstrap identity changed while provider configuration was being seeded"
+                    )
+                refreshed_workspace = get_workspace_for_member(
+                    conn,
+                    workspace_id=resolved_workspace_id,
+                    user_account_id=user_account_id,
+                )
+                if refreshed_workspace is None:
+                    raise HostedWorkspaceNotFoundError(f"workspace {resolved_workspace_id} was not found")
+                status_payload = get_bootstrap_status(
+                    conn,
+                    workspace_id=resolved_workspace_id,
+                    user_account_id=user_account_id,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ProviderConfigurationChangedError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    # Provider registration is committed above before any network call.  Seeded
+    # providers begin with a deterministic fallback capability, then discovery
+    # refreshes that snapshot through the same revision/fingerprint fence used
+    # by the public provider endpoints.
+    for provider in seeded_providers:
+        discovery = _discover_provider_capability(provider=provider, settings=settings)
+        _persist_discovered_provider_capability(
+            settings=settings,
+            session_token=session_token,
+            workspace_id=provider["workspace_id"],
+            provider=provider,
+            outcome=discovery,
+        )
 
     return JSONResponse(
         status_code=200,
@@ -11834,40 +13390,40 @@ def register_v1_provider(request: Request, body: RegisterProviderRequest) -> JSO
 
     try:
         session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                _ensure_workspace_owner_access(
-                    workspace=workspace,
-                    user_account_id=resolution["user_account"]["id"],
-                )
-
-                store = ContinuityStore(conn)
-                provider, capability = _register_workspace_provider(
-                    settings=settings,
-                    store=store,
-                    workspace_id=workspace["id"],
-                    created_by_user_account_id=resolution["user_account"]["id"],
-                    provider_key=body.provider_key,
-                    display_name=body.display_name,
-                    base_url=body.base_url,
-                    api_key=body.api_key,
-                    auth_mode=body.auth_mode,
-                    default_model=body.default_model,
-                    model_list_path=body.model_list_path,
-                    healthcheck_path=body.healthcheck_path,
-                    invoke_path=body.invoke_path,
-                    metadata=body.metadata,
-                )
+        provider, capability = _create_workspace_provider_durable(
+            settings=settings,
+            session_token=session_token,
+            provider_key=body.provider_key,
+            display_name=body.display_name,
+            base_url=body.base_url,
+            api_key=body.api_key,
+            auth_mode=body.auth_mode,
+            default_model=body.default_model,
+            model_list_path=body.model_list_path,
+            healthcheck_path=body.healthcheck_path,
+            invoke_path=body.invoke_path,
+            metadata=body.metadata,
+        )
+        discovery = _discover_provider_capability(provider=provider, settings=settings)
+        refreshed_capability = _persist_discovered_provider_capability(
+            settings=settings,
+            session_token=session_token,
+            workspace_id=provider["workspace_id"],
+            provider=provider,
+            outcome=discovery,
+        )
+        if refreshed_capability is None:
+            return JSONResponse(
+                status_code=409,
+                content={"detail": "provider configuration changed during capability discovery"},
+            )
+        capability = refreshed_capability
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ProviderConfigurationChangedError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
     except psycopg.errors.UniqueViolation:
         return JSONResponse(
             status_code=409,
@@ -11902,40 +13458,40 @@ def register_v1_ollama_provider(
 
     try:
         session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                _ensure_workspace_owner_access(
-                    workspace=workspace,
-                    user_account_id=resolution["user_account"]["id"],
-                )
-
-                store = ContinuityStore(conn)
-                provider, capability = _register_workspace_provider(
-                    settings=settings,
-                    store=store,
-                    workspace_id=workspace["id"],
-                    created_by_user_account_id=resolution["user_account"]["id"],
-                    provider_key=OLLAMA_ADAPTER_KEY,
-                    display_name=body.display_name,
-                    base_url=body.base_url,
-                    api_key=body.api_key or "",
-                    auth_mode=body.auth_mode,
-                    default_model=body.default_model,
-                    model_list_path=body.model_list_path,
-                    healthcheck_path=body.healthcheck_path,
-                    invoke_path=body.invoke_path,
-                    metadata=body.metadata,
-                )
+        provider, capability = _create_workspace_provider_durable(
+            settings=settings,
+            session_token=session_token,
+            provider_key=OLLAMA_ADAPTER_KEY,
+            display_name=body.display_name,
+            base_url=body.base_url,
+            api_key=body.api_key or "",
+            auth_mode=body.auth_mode,
+            default_model=body.default_model,
+            model_list_path=body.model_list_path,
+            healthcheck_path=body.healthcheck_path,
+            invoke_path=body.invoke_path,
+            metadata=body.metadata,
+        )
+        discovery = _discover_provider_capability(provider=provider, settings=settings)
+        refreshed_capability = _persist_discovered_provider_capability(
+            settings=settings,
+            session_token=session_token,
+            workspace_id=provider["workspace_id"],
+            provider=provider,
+            outcome=discovery,
+        )
+        if refreshed_capability is None:
+            return JSONResponse(
+                status_code=409,
+                content={"detail": "provider configuration changed during capability discovery"},
+            )
+        capability = refreshed_capability
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ProviderConfigurationChangedError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
     except psycopg.errors.UniqueViolation:
         return JSONResponse(
             status_code=409,
@@ -11970,40 +13526,40 @@ def register_v1_llamacpp_provider(
 
     try:
         session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                _ensure_workspace_owner_access(
-                    workspace=workspace,
-                    user_account_id=resolution["user_account"]["id"],
-                )
-
-                store = ContinuityStore(conn)
-                provider, capability = _register_workspace_provider(
-                    settings=settings,
-                    store=store,
-                    workspace_id=workspace["id"],
-                    created_by_user_account_id=resolution["user_account"]["id"],
-                    provider_key=LLAMACPP_ADAPTER_KEY,
-                    display_name=body.display_name,
-                    base_url=body.base_url,
-                    api_key=body.api_key or "",
-                    auth_mode=body.auth_mode,
-                    default_model=body.default_model,
-                    model_list_path=body.model_list_path,
-                    healthcheck_path=body.healthcheck_path,
-                    invoke_path=body.invoke_path,
-                    metadata=body.metadata,
-                )
+        provider, capability = _create_workspace_provider_durable(
+            settings=settings,
+            session_token=session_token,
+            provider_key=LLAMACPP_ADAPTER_KEY,
+            display_name=body.display_name,
+            base_url=body.base_url,
+            api_key=body.api_key or "",
+            auth_mode=body.auth_mode,
+            default_model=body.default_model,
+            model_list_path=body.model_list_path,
+            healthcheck_path=body.healthcheck_path,
+            invoke_path=body.invoke_path,
+            metadata=body.metadata,
+        )
+        discovery = _discover_provider_capability(provider=provider, settings=settings)
+        refreshed_capability = _persist_discovered_provider_capability(
+            settings=settings,
+            session_token=session_token,
+            workspace_id=provider["workspace_id"],
+            provider=provider,
+            outcome=discovery,
+        )
+        if refreshed_capability is None:
+            return JSONResponse(
+                status_code=409,
+                content={"detail": "provider configuration changed during capability discovery"},
+            )
+        capability = refreshed_capability
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ProviderConfigurationChangedError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
     except psycopg.errors.UniqueViolation:
         return JSONResponse(
             status_code=409,
@@ -12038,40 +13594,40 @@ def register_v1_vllm_provider(
 
     try:
         session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                _ensure_workspace_owner_access(
-                    workspace=workspace,
-                    user_account_id=resolution["user_account"]["id"],
-                )
-
-                store = ContinuityStore(conn)
-                provider, capability = _register_workspace_provider(
-                    settings=settings,
-                    store=store,
-                    workspace_id=workspace["id"],
-                    created_by_user_account_id=resolution["user_account"]["id"],
-                    provider_key=VLLM_ADAPTER_KEY,
-                    display_name=body.display_name,
-                    base_url=body.base_url,
-                    api_key=body.api_key or "",
-                    auth_mode=body.auth_mode,
-                    default_model=body.default_model,
-                    model_list_path=body.model_list_path,
-                    healthcheck_path=body.healthcheck_path,
-                    invoke_path=body.invoke_path,
-                    metadata=body.metadata,
-                )
+        provider, capability = _create_workspace_provider_durable(
+            settings=settings,
+            session_token=session_token,
+            provider_key=VLLM_ADAPTER_KEY,
+            display_name=body.display_name,
+            base_url=body.base_url,
+            api_key=body.api_key or "",
+            auth_mode=body.auth_mode,
+            default_model=body.default_model,
+            model_list_path=body.model_list_path,
+            healthcheck_path=body.healthcheck_path,
+            invoke_path=body.invoke_path,
+            metadata=body.metadata,
+        )
+        discovery = _discover_provider_capability(provider=provider, settings=settings)
+        refreshed_capability = _persist_discovered_provider_capability(
+            settings=settings,
+            session_token=session_token,
+            workspace_id=provider["workspace_id"],
+            provider=provider,
+            outcome=discovery,
+        )
+        if refreshed_capability is None:
+            return JSONResponse(
+                status_code=409,
+                content={"detail": "provider configuration changed during capability discovery"},
+            )
+        capability = refreshed_capability
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ProviderConfigurationChangedError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
     except psycopg.errors.UniqueViolation:
         return JSONResponse(
             status_code=409,
@@ -12113,40 +13669,40 @@ def register_v1_azure_provider(
 
     try:
         session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                _ensure_workspace_owner_access(
-                    workspace=workspace,
-                    user_account_id=resolution["user_account"]["id"],
-                )
-
-                store = ContinuityStore(conn)
-                provider, capability = _register_workspace_azure_provider(
-                    settings=settings,
-                    store=store,
-                    workspace_id=workspace["id"],
-                    created_by_user_account_id=resolution["user_account"]["id"],
-                    display_name=body.display_name,
-                    base_url=body.base_url,
-                    credential=credential,
-                    auth_mode=body.auth_mode,
-                    default_model=body.default_model,
-                    model_list_path=body.model_list_path,
-                    healthcheck_path=body.healthcheck_path,
-                    invoke_path=body.invoke_path,
-                    api_version=body.api_version,
-                    metadata=body.metadata,
-                )
+        provider, capability = _create_workspace_azure_provider_durable(
+            settings=settings,
+            session_token=session_token,
+            display_name=body.display_name,
+            base_url=body.base_url,
+            credential=credential,
+            auth_mode=body.auth_mode,
+            default_model=body.default_model,
+            model_list_path=body.model_list_path,
+            healthcheck_path=body.healthcheck_path,
+            invoke_path=body.invoke_path,
+            api_version=body.api_version,
+            metadata=body.metadata,
+        )
+        discovery = _discover_provider_capability(provider=provider, settings=settings)
+        refreshed_capability = _persist_discovered_provider_capability(
+            settings=settings,
+            session_token=session_token,
+            workspace_id=provider["workspace_id"],
+            provider=provider,
+            outcome=discovery,
+        )
+        if refreshed_capability is None:
+            return JSONResponse(
+                status_code=409,
+                content={"detail": "provider configuration changed during capability discovery"},
+            )
+        capability = refreshed_capability
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ProviderConfigurationChangedError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
     except psycopg.errors.UniqueViolation:
         return JSONResponse(
             status_code=409,
@@ -12249,9 +13805,7 @@ def get_v1_provider(provider_id: UUID, request: Request) -> JSONResponse:
         content=jsonable_encoder(
             {
                 "provider": _serialize_model_provider(provider),
-                "capabilities": None
-                if capability is None
-                else _serialize_provider_capability(capability),
+                "capabilities": None if capability is None else _serialize_provider_capability(capability),
             }
         ),
     )
@@ -12267,48 +13821,42 @@ def update_v1_provider(
 
     try:
         session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                _ensure_workspace_owner_access(
-                    workspace=workspace,
-                    user_account_id=resolution["user_account"]["id"],
-                )
-
-                store = ContinuityStore(conn)
-                provider = store.get_model_provider_for_workspace_optional(
-                    provider_id=provider_id,
-                    workspace_id=workspace["id"],
-                )
-                if provider is None:
-                    return JSONResponse(status_code=404, content={"detail": f"provider {provider_id} was not found"})
-
-                provider, capability = _update_workspace_provider(
-                    settings=settings,
-                    store=store,
-                    existing_provider=provider,
-                    updated_by_user_account_id=resolution["user_account"]["id"],
-                    display_name=body.display_name,
-                    base_url=body.base_url,
-                    api_key=body.api_key,
-                    ad_token=body.ad_token,
-                    auth_mode=body.auth_mode,
-                    default_model=body.default_model,
-                    model_list_path=body.model_list_path,
-                    healthcheck_path=body.healthcheck_path,
-                    invoke_path=body.invoke_path,
-                    api_version=body.api_version,
-                    metadata=body.metadata,
-                )
+        provider, capability = _update_workspace_provider_durable(
+            settings=settings,
+            session_token=session_token,
+            provider_id=provider_id,
+            display_name=body.display_name,
+            base_url=body.base_url,
+            api_key=body.api_key,
+            ad_token=body.ad_token,
+            auth_mode=body.auth_mode,
+            default_model=body.default_model,
+            model_list_path=body.model_list_path,
+            healthcheck_path=body.healthcheck_path,
+            invoke_path=body.invoke_path,
+            api_version=body.api_version,
+            metadata=body.metadata,
+        )
+        discovery = _discover_provider_capability(provider=provider, settings=settings)
+        refreshed_capability = _persist_discovered_provider_capability(
+            settings=settings,
+            session_token=session_token,
+            workspace_id=provider["workspace_id"],
+            provider=provider,
+            outcome=discovery,
+        )
+        if refreshed_capability is None:
+            return JSONResponse(
+                status_code=409,
+                content={"detail": "provider configuration changed during capability discovery"},
+            )
+        capability = refreshed_capability
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ProviderConfigurationChangedError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
     except psycopg.errors.UniqueViolation:
         return JSONResponse(
             status_code=409,
@@ -12354,11 +13902,11 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                     workspace=workspace,
                     user_account_id=resolution["user_account"]["id"],
                 )
-
-                store = ContinuityStore(conn)
-                provider = store.get_model_provider_for_workspace_optional(
+                workspace_id = workspace["id"]
+                user_account_id = resolution["user_account"]["id"]
+                provider = ContinuityStore(conn).get_model_provider_for_workspace_optional(
                     provider_id=body.provider_id,
-                    workspace_id=workspace["id"],
+                    workspace_id=workspace_id,
                 )
                 if provider is None:
                     return JSONResponse(
@@ -12366,106 +13914,85 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                         content={"detail": f"provider {body.provider_id} was not found"},
                     )
 
-                runtime_provider = resolve_runtime_provider_config_secrets(
-                    config=RuntimeProviderConfig.from_row(_object_dict(provider)),
-                    settings=settings,
-                )
-                adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
-                model_name = (body.model or runtime_provider.default_model).strip()
-                if model_name == "":
-                    raise ValueError("model is required")
+        runtime_provider = resolve_runtime_provider_config_secrets(
+            config=RuntimeProviderConfig.from_row(_object_dict(provider)),
+            settings=settings,
+        )
+        adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
+        model_name = (body.model or runtime_provider.default_model).strip()
+        if model_name == "":
+            raise ValueError("model is required")
 
-                try:
-                    capability_snapshot = adapter.discover_capabilities(
-                        config=runtime_provider,
-                        settings=settings,
-                    )
-                except ModelInvocationError as exc:
-                    sanitized_discovery_error = sanitize_provider_error_message(str(exc))
-                    extra_snapshot_fields = None
-                    if runtime_provider.provider_key == AZURE_ADAPTER_KEY:
-                        extra_snapshot_fields = {
-                            "azure_api_version": runtime_provider.azure_api_version.strip()
-                            or DEFAULT_AZURE_API_VERSION,
-                            "azure_auth_mode": runtime_provider.auth_mode,
-                        }
-                    capability = store.upsert_provider_capability(
-                        workspace_id=workspace["id"],
-                        provider_id=runtime_provider.provider_id,
-                        discovered_by_user_account_id=resolution["user_account"]["id"],
-                        adapter_key=adapter.adapter_key,
-                        discovery_status="failed",
-                        capability_snapshot=_json_object(
-                            _fallback_provider_capability_snapshot(
-                                adapter_key=adapter.adapter_key,
-                                runtime_provider=adapter.runtime_provider,
-                                model_list_path=runtime_provider.model_list_path,
-                                healthcheck_path=runtime_provider.healthcheck_path,
-                                invoke_path=runtime_provider.invoke_path,
-                                extra_snapshot_fields=extra_snapshot_fields,
-                            )
-                        ),
-                        discovery_error=sanitized_discovery_error,
-                    )
+        discovery = _discover_provider_capability(provider=provider, settings=settings)
+        invocation_outcome: _RuntimeProviderInvocationOutcome | None = None
+        model_response: ModelInvocationResponse | None = None
+        if discovery.discovery_status == "ready":
+            model_request = build_provider_test_model_request(
+                runtime_provider=runtime_provider.model_provider,
+                model=model_name,
+                prompt_text=body.prompt.strip(),
+            )
+            invocation_outcome = _attempt_runtime_provider_model(
+                adapter=adapter,
+                runtime_provider=runtime_provider,
+                settings=settings,
+                model_request=model_request,
+            )
+            model_response = invocation_outcome.response
+            if invocation_outcome.error is not None:
+                discovery = _ProviderDiscoveryOutcome(
+                    adapter_key=discovery.adapter_key,
+                    discovery_status="failed",
+                    capability_snapshot=discovery.capability_snapshot,
+                    discovery_error=invocation_outcome.error_detail,
+                )
+
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                persisted_resolution = resolve_auth_session(
+                    conn,
+                    session_token=session_token,
+                )
+                persisted_workspace = get_workspace_for_member(
+                    conn,
+                    workspace_id=workspace_id,
+                    user_account_id=persisted_resolution["user_account"]["id"],
+                )
+                if persisted_workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "workspace was not found"})
+                _ensure_workspace_owner_access(
+                    workspace=persisted_workspace,
+                    user_account_id=persisted_resolution["user_account"]["id"],
+                )
+                store = ContinuityStore(conn)
+                capability = store.upsert_provider_capability_if_current(
+                    workspace_id=workspace_id,
+                    provider_id=provider["id"],
+                    discovered_by_user_account_id=user_account_id,
+                    adapter_key=discovery.adapter_key,
+                    discovery_status=discovery.discovery_status,
+                    capability_snapshot=discovery.capability_snapshot,
+                    discovery_error=discovery.discovery_error,
+                    expected_config_revision=provider["config_revision"],
+                    expected_config_fingerprint_sha256=provider["config_fingerprint_sha256"],
+                )
+                if capability is None:
                     return JSONResponse(
-                        status_code=502,
-                        content=jsonable_encoder(
-                            {
-                                "detail": sanitized_discovery_error,
-                                "provider": _serialize_model_provider(provider),
-                                "capabilities": _serialize_provider_capability(capability),
-                            }
-                        ),
+                        status_code=409,
+                        content={"detail": "provider configuration changed during provider test"},
                     )
-                model_request = build_provider_test_model_request(
-                    runtime_provider=runtime_provider.model_provider,
-                    model=model_name,
-                    prompt_text=body.prompt.strip(),
-                )
-
-                try:
-                    model_response = _invoke_runtime_provider_model(
+                if invocation_outcome is not None:
+                    _record_runtime_provider_invocation(
                         store=store,
-                        workspace_id=workspace["id"],
-                        invoked_by_user_account_id=resolution["user_account"]["id"],
+                        workspace_id=workspace_id,
+                        invoked_by_user_account_id=user_account_id,
                         thread_id=None,
                         invocation_kind="provider_test",
                         adapter=adapter,
                         runtime_provider=runtime_provider,
-                        settings=settings,
                         model_request=model_request,
+                        outcome=invocation_outcome,
                     )
-                except ModelInvocationError as exc:
-                    sanitized_invoke_error = sanitize_provider_error_message(str(exc))
-                    capability = store.upsert_provider_capability(
-                        workspace_id=workspace["id"],
-                        provider_id=runtime_provider.provider_id,
-                        discovered_by_user_account_id=resolution["user_account"]["id"],
-                        adapter_key=adapter.adapter_key,
-                        discovery_status="failed",
-                        capability_snapshot=_json_object(capability_snapshot),
-                        discovery_error=sanitized_invoke_error,
-                    )
-                    return JSONResponse(
-                        status_code=502,
-                        content=jsonable_encoder(
-                            {
-                                "detail": sanitized_invoke_error,
-                                "provider": _serialize_model_provider(provider),
-                                "capabilities": _serialize_provider_capability(capability),
-                            }
-                        ),
-                    )
-
-                capability = store.upsert_provider_capability(
-                    workspace_id=workspace["id"],
-                    provider_id=runtime_provider.provider_id,
-                    discovered_by_user_account_id=resolution["user_account"]["id"],
-                    adapter_key=adapter.adapter_key,
-                    discovery_status="ready",
-                    capability_snapshot=_json_object(capability_snapshot),
-                    discovery_error=None,
-                )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
     except ProviderAdapterNotFoundError as exc:
@@ -12476,6 +14003,18 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
         return JSONResponse(status_code=403, content={"detail": str(exc)})
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    if discovery.discovery_status != "ready" or model_response is None:
+        return JSONResponse(
+            status_code=502,
+            content=jsonable_encoder(
+                {
+                    "detail": discovery.discovery_error or "provider test failed",
+                    "provider": _serialize_model_provider(provider),
+                    "capabilities": _serialize_provider_capability(capability),
+                }
+            ),
+        )
 
     return JSONResponse(
         status_code=200,
@@ -12668,9 +14207,7 @@ def bind_v1_model_pack(pack_id: str, request: Request, body: BindModelPackReques
 
     try:
         normalized_pack_id = normalize_pack_id(pack_id)
-        normalized_pack_version = (
-            None if body.pack_version is None else normalize_pack_version(body.pack_version)
-        )
+        normalized_pack_version = None if body.pack_version is None else normalize_pack_version(body.pack_version)
         session_token = _extract_bearer_token(request)
         with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
             with conn.transaction():
@@ -12786,7 +14323,9 @@ def get_v1_workspace_model_pack_binding(
                         workspace_id=workspace["id"],
                     )
                     if provider is None:
-                        return JSONResponse(status_code=404, content={"detail": f"provider {provider_id} was not found"})
+                        return JSONResponse(
+                            status_code=404, content={"detail": f"provider {provider_id} was not found"}
+                        )
                     binding = store.get_resolved_workspace_model_pack_binding_optional(
                         workspace_id=workspace["id"],
                         provider_id=provider_id,
@@ -12798,9 +14337,7 @@ def get_v1_workspace_model_pack_binding(
         status_code=200,
         content=jsonable_encoder(
             {
-                "binding": None
-                if binding is None
-                else _serialize_workspace_model_pack_binding(binding),
+                "binding": None if binding is None else _serialize_workspace_model_pack_binding(binding),
             }
         ),
     )
@@ -12809,9 +14346,20 @@ def get_v1_workspace_model_pack_binding(
 @app.post("/v1/runtime/invoke")
 def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONResponse:
     settings = get_settings()
+    raw_idempotency_key = request.headers.get("idempotency-key")
+    if raw_idempotency_key is None or raw_idempotency_key.strip() == "":
+        return JSONResponse(
+            status_code=428,
+            content={"detail": "Idempotency-Key header is required"},
+        )
+    try:
+        normalized_idempotency_key = normalize_idempotency_key(raw_idempotency_key)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     workspace_id: UUID | None = None
     user_account: UserAccountRow | None = None
+    unresolved_runtime_provider: RuntimeProviderConfig | None = None
     runtime_provider: RuntimeProviderConfig | None = None
     model_pack: ModelPackRow | None = None
     model_pack_source: str = "none"
@@ -12831,30 +14379,83 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
 
                 workspace_id = workspace["id"]
                 user_account = resolution["user_account"]
-
-                store = ContinuityStore(conn)
-                runtime_provider = _runtime_provider_config_or_none(
-                    store=store,
-                    provider_id=body.provider_id,
-                    workspace_id=workspace["id"],
-                    settings=settings,
-                )
-                if runtime_provider is None:
-                    return JSONResponse(
-                        status_code=404,
-                        content={"detail": f"provider {body.provider_id} was not found"},
-                    )
-                selected_pack = resolve_workspace_model_pack_selection(
-                    store=store,
-                    workspace_id=workspace["id"],
-                    requested_pack_id=body.pack_id,
-                    requested_pack_version=body.pack_version,
-                    provider_id=runtime_provider.provider_id,
-                )
-                model_pack = selected_pack.pack
-                model_pack_source = selected_pack.source
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+    if workspace_id is None or user_account is None:
+        return JSONResponse(status_code=500, content={"detail": "runtime context could not be resolved"})
+
+    user_account_id = user_account["id"]
+    if not isinstance(user_account_id, UUID):
+        return JSONResponse(status_code=500, content={"detail": "runtime user context is invalid"})
+
+    fingerprint = request_fingerprint(
+        cast(
+            JsonObject,
+            {
+                "workspace_id": str(workspace_id),
+                "body": body.model_dump(mode="json"),
+            },
+        )
+    )
+
+    # Atomically reserve or lock the stable request identity before touching
+    # provider configuration, secret files, DNS, model packs, or adapters. This
+    # closes the absent-row lookup/create race while preserving terminal replay
+    # even if mutable runtime configuration is later removed.
+    try:
+        with user_connection(settings.database_url, user_account_id) as conn:
+            set_current_user_account(conn, user_account_id)
+            job_store = ResponseGenerationJobStore(conn)
+            initial_lookup = job_store.create_or_get_for_update(
+                user_id=user_account_id,
+                workspace_id=workspace_id,
+                endpoint=RESPONSE_JOB_ENDPOINT_RUNTIME,
+                idempotency_key=normalized_idempotency_key,
+                request_fingerprint_sha256=fingerprint,
+            )
+            replay = _response_job_replay_or_in_progress(
+                store=job_store,
+                job=initial_lookup.job,
+                expected_request_fingerprint=fingerprint,
+            )
+            if replay is not None:
+                return replay
+    except ResponseJobFenceLostError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    # Fetch only database-backed provider/model-pack state while the transaction
+    # is open. Credential resolution and network-address validation happen after
+    # the connection is released.
+    try:
+        with user_connection(settings.database_url, user_account_id) as conn:
+            set_current_user_account(conn, user_account_id)
+            store = ContinuityStore(conn)
+            provider_row = store.get_model_provider_for_workspace_optional(
+                provider_id=body.provider_id,
+                workspace_id=workspace_id,
+            )
+            if provider_row is None:
+                return JSONResponse(
+                    status_code=404,
+                    content={"detail": f"provider {body.provider_id} was not found"},
+                )
+            unresolved_runtime_provider = RuntimeProviderConfig.from_row(_object_dict(provider_row))
+            selected_pack = resolve_workspace_model_pack_selection(
+                store=store,
+                workspace_id=workspace_id,
+                requested_pack_id=body.pack_id,
+                requested_pack_version=body.pack_version,
+                provider_id=unresolved_runtime_provider.provider_id,
+            )
+            model_pack = selected_pack.pack
+            model_pack_source = selected_pack.source
+
+        validate_provider_base_url(unresolved_runtime_provider.base_url)
+        runtime_provider = resolve_runtime_provider_config_secrets(
+            config=unresolved_runtime_provider,
+            settings=settings,
+        )
     except ModelPackCompatibilityError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
     except ModelPackNotFoundError as exc:
@@ -12866,8 +14467,8 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
     except ProviderSecretManagerError as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
 
-    if workspace_id is None or user_account is None or runtime_provider is None:
-        return JSONResponse(status_code=500, content={"detail": "runtime context could not be resolved"})
+    if runtime_provider is None:
+        return JSONResponse(status_code=500, content={"detail": "runtime provider could not be resolved"})
 
     selected_model = (body.model or runtime_provider.default_model).strip()
     if selected_model == "":
@@ -12923,10 +14524,6 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
     except ModelPackCompatibilityError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
-    user_account_id = user_account["id"]
-    if not isinstance(user_account_id, UUID):
-        return JSONResponse(status_code=500, content={"detail": "runtime user context is invalid"})
-
     try:
         adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
     except ProviderAdapterNotFoundError as exc:
@@ -12936,7 +14533,22 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
         with user_connection(settings.database_url, user_account_id) as conn:
             set_current_user_account(conn, user_account_id)
             store = ContinuityStore(conn)
-            result = generate_response(
+            job_store = ResponseGenerationJobStore(conn)
+            lookup = job_store.create_or_get_for_update(
+                user_id=user_account_id,
+                workspace_id=workspace_id,
+                endpoint=RESPONSE_JOB_ENDPOINT_RUNTIME,
+                idempotency_key=normalized_idempotency_key,
+                request_fingerprint_sha256=fingerprint,
+            )
+            replay = _response_job_replay_or_in_progress(
+                store=job_store,
+                job=lookup.job,
+                expected_request_fingerprint=fingerprint,
+            )
+            if replay is not None:
+                return replay
+            prepared = prepare_response_generation(
                 store=store,
                 settings=settings,
                 user_id=user_account_id,
@@ -12944,98 +14556,140 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                 message_text=body.message,
                 limits=runtime_limits,
                 runtime_override=(runtime_provider.model_provider, selected_model),
-                model_invoker=lambda model_request: _invoke_runtime_provider_model(
-                    store=store,
-                    workspace_id=workspace_id,
-                    invoked_by_user_account_id=user_account_id,
-                    thread_id=body.thread_id,
-                    invocation_kind="runtime_invoke",
-                    adapter=adapter,
-                    runtime_provider=runtime_provider,
-                    settings=settings,
-                    model_request=model_request,
-                ),
                 system_instruction=runtime_system_instruction,
                 developer_instruction=runtime_developer_instruction,
             )
+            lease_token = uuid4()
+            claimed_job = job_store.claim_pending(
+                job_id=lookup.job["id"],
+                lease_token=lease_token,
+                lease_seconds=RESPONSE_JOB_LEASE_SECONDS,
+                user_event_id=prepared.user_event_id,
+                user_event_sequence_no=prepared.user_event_sequence_no,
+            )
+    except ContinuityStoreInvariantError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ResponseJobFenceLostError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    outcome = _attempt_runtime_provider_model(
+        adapter=adapter,
+        runtime_provider=runtime_provider,
+        settings=settings,
+        model_request=prepared.model_request,
+    )
+
+    try:
+        with user_connection(settings.database_url, user_account_id) as conn:
+            set_current_user_account(conn, user_account_id)
+            store = ContinuityStore(conn)
+            _record_runtime_provider_invocation(
+                store=store,
+                workspace_id=workspace_id,
+                invoked_by_user_account_id=user_account_id,
+                thread_id=body.thread_id,
+                invocation_kind="runtime_invoke",
+                adapter=adapter,
+                runtime_provider=runtime_provider,
+                model_request=prepared.model_request,
+                outcome=outcome,
+            )
+            response_conflict = False
+            result: GenerateResponseSuccess | ResponseFailure
+            if outcome.error is not None:
+                result = fail_response_generation(
+                    store=store,
+                    prepared=prepared,
+                    error=outcome.error,
+                )
+            else:
+                model_response = outcome.response
+                if model_response is None:  # pragma: no cover - outcome invariant
+                    raise ModelInvocationError("model provider returned no outcome")
+                try:
+                    result = complete_response_generation(
+                        store=store,
+                        prepared=prepared,
+                        model_response=model_response,
+                    )
+                except ResponseGenerationConflictError as exc:
+                    response_conflict = True
+                    result = fail_response_generation(
+                        store=store,
+                        prepared=prepared,
+                        error=ModelInvocationError(str(exc)),
+                    )
+            response_metadata: JsonObject = {
+                "workspace_id": str(workspace_id),
+                "model_pack": None
+                if model_pack is None
+                else {
+                    "pack_id": model_pack["pack_id"],
+                    "pack_version": model_pack["pack_version"],
+                    "source": model_pack_source,
+                },
+            }
             if isinstance(result, ResponseFailure):
-                return JSONResponse(
-                    status_code=502,
-                    content=jsonable_encoder(
+                status_code = 409 if response_conflict else 502
+                response_payload = cast(
+                    JsonObject,
+                    jsonable_encoder(
                         {
                             "detail": result.detail,
                             "trace": result.trace,
                             "metadata": {
-                                "workspace_id": str(workspace_id),
+                                **response_metadata,
                                 "provider_id": str(runtime_provider.provider_id),
                                 "provider_key": runtime_provider.provider_key,
-                                "model_pack": None
-                                if model_pack is None
-                                else {
-                                    "pack_id": model_pack["pack_id"],
-                                    "pack_version": model_pack["pack_version"],
-                                    "source": model_pack_source,
-                                },
                             },
                         }
                     ),
                 )
+                terminal_state = "failed"
+            else:
+                successful_model_response = outcome.response
+                if successful_model_response is None:  # pragma: no cover - outcome invariant
+                    raise ModelInvocationError("model provider returned no outcome")
+                response_payload = cast(
+                    JsonObject,
+                    jsonable_encoder(
+                        {
+                            "assistant": {
+                                "event_id": result["assistant"]["event_id"],
+                                "sequence_no": result["assistant"]["sequence_no"],
+                                "provider_id": str(runtime_provider.provider_id),
+                                "provider_key": runtime_provider.provider_key,
+                                "model_provider": result["assistant"]["model_provider"],
+                                "model": result["assistant"]["model"],
+                                "response_id": successful_model_response.response_id,
+                                "finish_reason": successful_model_response.finish_reason,
+                                "text": result["assistant"]["text"],
+                                "usage": successful_model_response.usage,
+                            },
+                            "trace": result["trace"],
+                            "metadata": response_metadata,
+                        }
+                    ),
+                )
+                status_code = 200
+                terminal_state = "succeeded"
 
-            assistant_event_id = UUID(result["assistant"]["event_id"])
-            assistant_rows = store.list_events_by_ids([assistant_event_id])
-            assistant_payload = assistant_rows[0]["payload"] if assistant_rows else {}
-            model_payload = assistant_payload.get("model", {})
-            usage_payload = (
-                model_payload.get("usage")
-                if isinstance(model_payload, dict) and isinstance(model_payload.get("usage"), dict)
-                else {
-                    "input_tokens": None,
-                    "output_tokens": None,
-                    "total_tokens": None,
-                }
-            )
-            response_id = (
-                model_payload.get("response_id")
-                if isinstance(model_payload, dict) and isinstance(model_payload.get("response_id"), str)
-                else None
-            )
-            finish_reason = (
-                model_payload.get("finish_reason")
-                if isinstance(model_payload, dict) and isinstance(model_payload.get("finish_reason"), str)
-                else "incomplete"
+            terminal_job = ResponseGenerationJobStore(conn).finalize(
+                job_id=claimed_job["id"],
+                lease_token=lease_token,
+                state=terminal_state,
+                status_code=status_code,
+                payload=response_payload,
             )
     except ContinuityStoreInvariantError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ResponseJobFenceLostError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(
-            {
-                "assistant": {
-                    "event_id": result["assistant"]["event_id"],
-                    "sequence_no": result["assistant"]["sequence_no"],
-                    "provider_id": str(runtime_provider.provider_id),
-                    "provider_key": runtime_provider.provider_key,
-                    "model_provider": result["assistant"]["model_provider"],
-                    "model": result["assistant"]["model"],
-                    "response_id": response_id,
-                    "finish_reason": finish_reason,
-                    "text": result["assistant"]["text"],
-                    "usage": usage_payload,
-                },
-                "trace": result["trace"],
-                "metadata": {
-                    "workspace_id": str(workspace_id),
-                    "model_pack": None
-                    if model_pack is None
-                    else {
-                        "pack_id": model_pack["pack_id"],
-                        "pack_version": model_pack["pack_version"],
-                        "source": model_pack_source,
-                    },
-                },
-            }
-        ),
+        status_code=status_code,
+        headers=_response_job_headers(terminal_job, replayed=False),
+        content=response_payload,
     )
 
 
@@ -13874,6 +15528,23 @@ def get_v1_telegram_status(
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
+def _ingest_telegram_webhook_sync(
+    *,
+    settings: Settings,
+    payload: dict[str, object],
+) -> TelegramWebhookIngestResult:
+    """Persist one webhook on a worker thread so async ingress stays responsive."""
+
+    with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+        with conn.transaction():
+            set_hosted_service_bypass(conn, True)
+            return ingest_telegram_webhook(
+                conn,
+                payload=payload,
+                bot_username=settings.telegram_bot_username,
+            )
+
+
 @app.post("/v1/channels/telegram/webhook")
 async def ingest_v1_telegram_webhook(request: Request) -> JSONResponse:
     settings = get_settings()
@@ -13908,14 +15579,11 @@ async def ingest_v1_telegram_webhook(request: Request) -> JSONResponse:
         return JSONResponse(status_code=400, content={"detail": "telegram webhook payload must be an object"})
 
     try:
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                set_hosted_service_bypass(conn, True)
-                ingest_result = ingest_telegram_webhook(
-                    conn,
-                    payload=payload,
-                    bot_username=settings.telegram_bot_username,
-                )
+        ingest_result = await run_in_threadpool(
+            _ingest_telegram_webhook_sync,
+            settings=settings,
+            payload=payload,
+        )
     except TelegramWebhookValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -14313,7 +15981,9 @@ def post_v1_telegram_daily_brief_deliver(
                         }
 
                     if not decision["allowed"]:
-                        blocked_status = "abuse_blocked" if decision["code"] == "hosted_abuse_limit_exceeded" else "rate_limited"
+                        blocked_status = (
+                            "abuse_blocked" if decision["code"] == "hosted_abuse_limit_exceeded" else "rate_limited"
+                        )
                         blocked_event = "abuse_block" if blocked_status == "abuse_blocked" else "rate_limited"
                         record_chat_telemetry(
                             conn,
@@ -14530,7 +16200,9 @@ def post_v1_telegram_open_loop_prompt_deliver(
                         }
 
                     if not decision["allowed"]:
-                        blocked_status = "abuse_blocked" if decision["code"] == "hosted_abuse_limit_exceeded" else "rate_limited"
+                        blocked_status = (
+                            "abuse_blocked" if decision["code"] == "hosted_abuse_limit_exceeded" else "rate_limited"
+                        )
                         blocked_event = "abuse_block" if blocked_status == "abuse_blocked" else "rate_limited"
                         record_chat_telemetry(
                             conn,
@@ -14750,7 +16422,9 @@ def handle_v1_telegram_message(
                         }
 
                     if not decision["allowed"]:
-                        blocked_status = "abuse_blocked" if decision["code"] == "hosted_abuse_limit_exceeded" else "rate_limited"
+                        blocked_status = (
+                            "abuse_blocked" if decision["code"] == "hosted_abuse_limit_exceeded" else "rate_limited"
+                        )
                         blocked_event = "abuse_block" if blocked_status == "abuse_blocked" else "rate_limited"
                         record_chat_telemetry(
                             conn,

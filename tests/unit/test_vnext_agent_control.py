@@ -10,6 +10,7 @@ from alicebot_api.vnext_agent_control import (
     append_policy_events,
     ensure_policy_allowed,
     evaluate_agent_policy,
+    resource_project_scope,
     summarize_agent_policy_telemetry,
 )
 
@@ -21,6 +22,71 @@ class EventStore:
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
         return event
+
+
+@pytest.mark.parametrize(
+    "resource",
+    [
+        {
+            "project_scope": [" alicebot ", "alicebot"],
+            "project_id": "stale-other-project",
+            "metadata_json": {
+                "project_scope": ["stale-other-project"],
+                "agentic_memory": {"project_scope": ["stale-other-project"]},
+            },
+            "scope_json": {
+                "project_scope": ["stale-other-project"],
+                "agent_identity": {"project_scope": ["stale-other-project"]},
+            },
+        },
+        {
+            "project_id": "stale-other-project",
+            "metadata_json": {
+                "project_scope": ["alicebot"],
+                "agentic_memory": {"project_scope": ["stale-other-project"]},
+            },
+            "scope_json": {
+                "agent_identity": {"project_scope": ["stale-other-project"]},
+            },
+        },
+    ],
+)
+def test_canonical_resource_project_scope_cannot_be_widened_by_stale_nested_scope(
+    resource: dict[str, object],
+) -> None:
+    scope = resource_project_scope(resource)
+
+    assert scope == ("alicebot",)
+    assert "alicebot" in scope
+    assert "stale-other-project" not in scope
+
+
+@pytest.mark.parametrize(
+    "resource",
+    [
+        {
+            "project_scope": [],
+            "project_id": "stale-other-project",
+            "metadata_json": {
+                "project_scope": ["stale-other-project"],
+                "agentic_memory": {"project_scope": ["stale-other-project"]},
+            },
+        },
+        {
+            "project_id": "stale-other-project",
+            "metadata_json": {
+                "project_scope": [],
+                "agentic_memory": {"project_scope": ["stale-other-project"]},
+            },
+            "scope_json": {"project_scope": ["stale-other-project"]},
+        },
+    ],
+)
+def test_empty_canonical_resource_project_scope_does_not_resurrect_stale_nested_scope(
+    resource: dict[str, object],
+) -> None:
+
+    assert resource_project_scope(resource) == ()
 
 
 def test_agent_identity_defaults_known_agents_without_hardcoding_only_them() -> None:
