@@ -2,18 +2,17 @@
 
 ## Snapshot
 
-- `v0.10.2` is the latest published release. It is available from PyPI and
+- `v0.10.3` is the latest published release. It is available from PyPI and
   GitHub, and its exact wheel and source-distribution digests are recorded in
-  `docs/release/v0.10.2-checksums.txt`.
+  `docs/release/v0.10.3-checksums.txt`.
 - The historical LongMemEval_s result is **79.4% (397/500)** from one run on
   2026-07-07. It is a historical benchmark receipt, not a fresh v0.10.2
   measurement and not a repeated-run estimate.
 - Alice is a local-first continuity layer for AI agents. Agent developers are
   the primary customer.
-- `main` plus the reviewed remediation tree form the `v0.10.3` release
-  candidate. It is unreleased until it passes exact-SHA gates, an annotated
-  tag, PyPI publication, and the final GitHub Release through the
-  transactional release workflow.
+- The fourth-audit remediation shipped in `v0.10.3` through the
+  transactional draft-first release workflow: exact-SHA gates, an annotated
+  tag, PyPI publication, then the finalized GitHub Release.
 
 ## What `v0.10.2` Shipped
 
@@ -35,9 +34,9 @@ The release notes and checksum record are the authoritative publication receipt:
 - `docs/release/v0.10.2-release-notes.md`
 - `docs/release/v0.10.2-checksums.txt`
 
-## What `v0.10.3` Targets
+## What `v0.10.3` Shipped
 
-The `v0.10.3` candidate remediates the fourth external audit's 13 confirmed
+`v0.10.3` remediates the fourth external audit's 13 confirmed
 release-blocking findings and their independent-review correction passes:
 
 - multi-project scope enforced through every synthesis, consolidation,
@@ -58,9 +57,11 @@ release-blocking findings and their independent-review correction passes:
   control-document truth, canonical coverage attribution with per-file
   floors, and per-operation OpenAPI contracts.
 
-No unreleased change should be described as part of v0.10.2. The `v0.10.3`
-candidate publishes only after independent review and the canonical release
-gates pass on one exact clean SHA.
+The release notes and checksum record are the authoritative publication
+receipt:
+
+- `docs/release/v0.10.3-release-notes.md`
+- `docs/release/v0.10.3-checksums.txt`
 
 ## Published Evidence
 
@@ -75,7 +76,7 @@ gates pass on one exact clean SHA.
 
 ## Release Boundary
 
-`v0.10.2` is tagged, published, and immutable. Its PyPI files carry Trusted
+`v0.10.3` is tagged, published, and immutable. Its PyPI files carry Trusted
 Publishing provenance, and their hashes match
 `docs/release/v0.10.2-checksums.txt`. The source tag remains the release
 boundary; later commits on `main` are not silently part of that release.

@@ -13,7 +13,7 @@ Agent developers — people building or operating AI agents who need durable, ex
 - Local-first: your data stays on your machine; models and embeddings are pluggable via OpenAI-compatible endpoints.
 
 ## Current Posture
-- `v0.10.2` is the latest published release and immutable baseline. Its PyPI
+- `v0.10.3` is the latest published release and immutable baseline. Its PyPI
   wheel and source distribution have Trusted Publishing provenance, with exact
   digests in `docs/release/v0.10.2-checksums.txt`.
 - The product baseline includes hybrid retrieval, the eleven-tool core MCP
@@ -22,9 +22,8 @@ Agent developers — people building or operating AI agents who need durable, ex
 - The **79.4% LongMemEval_s (397/500)** figure is one historical run from
   2026-07-07 with per-question evidence. It is not a repeated-run estimate or a
   fresh v0.10.2 benchmark.
-- `main` plus the reviewed remediation tree form the `v0.10.3` candidate.
-  It is a release candidate only. Those changes are unreleased and publish only after exact-SHA
-  gates and independent review pass.
+- The fourth-audit remediation shipped in `v0.10.3` after exact-SHA gates
+  and independent review passed.
 - Alice is public-alpha, pre-1.0, single-user, and self-hosted. `alice-memory`
   is published on PyPI; `uvx alice-memory mcp` serves the core tools against a
   local SQLite file with no Docker or Postgres.

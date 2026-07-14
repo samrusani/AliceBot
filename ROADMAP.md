@@ -2,7 +2,7 @@
 
 ## Baseline (Not Roadmap Work)
 
-- `v0.10.2`: latest published release. It carries the third-audit remediation,
+- `v0.10.3`: latest published release. It carries the third-audit remediation,
   production-signed semantic-vector gate, atomic source capture deduplication,
   lifecycle-cycle repair, scoped retrieval improvements, pgvector 0.8+
   enforcement, full first-party typing, web quality gates, installed-artifact
@@ -26,12 +26,10 @@
 
 ## Current Remediation
 
-`main` plus the reviewed remediation tree form the `v0.10.3` candidate
-release. This work is not part of the published v0.10.2 artifacts. It closes
-the fourth audit's correctness, project/user isolation, lifecycle,
-large-corpus efficiency, import, scheduler, API-contract, documentation, and
-test-gate findings, and publishes only after the canonical exact-SHA gates
-pass.
+`v0.10.3` shipped the fourth audit's remediation: correctness, project/user
+isolation, lifecycle, large-corpus efficiency, import, scheduler,
+API-contract, documentation, and test-gate findings, published through the
+canonical exact-SHA gates.
 
 The next release gate must prove one exact clean SHA through role-separated
 Postgres/pgvector integration, all model-free LongMemEval tests and checked-in
