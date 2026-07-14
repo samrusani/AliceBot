@@ -7,8 +7,7 @@ memory, model-backed source-grounded synthesis, local connector-backed evidence
 capture, hardened connector settings/state/secrets, agent-facing context packs
 and context trees, governed agent proposals, and a local scheduler runtime.
 
-The vNext architecture is now the active Alice product line. `v0.10.2` is the latest published release; later changes on `main` form the unreleased
-`v0.10.3` remediation candidate. Alice remains local-first rather than a hosted launch; install the
+The vNext architecture is now the active Alice product line. `v0.10.3` is the latest published release. Alice remains local-first rather than a hosted launch; install the
 package entrypoints for normal use and use an editable checkout only for
 contributor workflows.
 
@@ -53,7 +52,7 @@ Alice vNext has three functional layers:
 10. Use the current [release runbook](../../RELEASING.md) before publishing or
     tagging. The older [vNext preview checklist](../release/vnext-public-release-checklist.md)
     is retained only as historical evidence.
-11. Review the [latest published release notes](../release/v0.10.2-release-notes.md)
+11. Review the [latest published release notes](../release/v0.10.3-release-notes.md)
     and [known limitations](../alpha/known-limitations.md).
 12. Review the [dogfood daily checklist](../runbooks/vnext-dogfood-daily-checklist.md) before daily local preview use.
 13. Historical build-process summaries are archived under [docs/archive/process/](../archive/process/README.md).

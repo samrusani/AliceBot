@@ -1,8 +1,7 @@
 # Releasing Alice
 
-`v0.10.2` is the latest published release. `main` plus the reviewed
-remediation tree form the `v0.10.3` candidate. Preparing a candidate does not
-authorize a tag, PyPI upload, or GitHub Release.
+`v0.10.3` is the latest published release. Preparing a future candidate does
+not authorize a tag, PyPI upload, or GitHub Release.
 
 ## One Release Identity
 

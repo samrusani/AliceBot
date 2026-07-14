@@ -136,8 +136,7 @@ search degrades to full-text only and says so explicitly in the retrieval trace.
 
 ## Status
 
-`v0.10.2` is the latest published release; the `v0.10.3` candidate is in
-release gating. Alice is a public-alpha, pre-1.0 project.
+`v0.10.3` is the latest published release. Alice is a public-alpha, pre-1.0 project.
 What that means in practice:
 
 - **Local-first, single-user.** One operator, one machine (or one headless server reached over SSH).
