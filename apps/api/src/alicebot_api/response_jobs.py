@@ -14,7 +14,6 @@ from alicebot_api.db import UserConnection
 from alicebot_api.store import JsonObject
 
 
-RESPONSE_JOB_ENDPOINT_V0 = "v0_responses"
 RESPONSE_JOB_ENDPOINT_RUNTIME = "v1_runtime_invoke"
 RESPONSE_JOB_LEASE_SECONDS = 30 * 60
 _IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9._~:+/=-]{1,200}$")
@@ -334,7 +333,6 @@ class ResponseGenerationJobStore:
 
 __all__ = [
     "RESPONSE_JOB_ENDPOINT_RUNTIME",
-    "RESPONSE_JOB_ENDPOINT_V0",
     "RESPONSE_JOB_LEASE_SECONDS",
     "ResponseGenerationJobRow",
     "ResponseGenerationJobStore",

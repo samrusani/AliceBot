@@ -63,6 +63,17 @@ describe("bounded vNext coverage", () => {
     expect(screen.getAllByText("Demo Brain Charter settings saved.").length).toBeGreaterThan(0);
   }, 30_000);
 
+  it("keeps the Telegram fixture on-demand without secret or poll state", () => {
+    const telegram = fixtureWorkspace().connectorHealth.items.find(
+      (connector) => connector.connector_name === "telegram",
+    );
+
+    expect(telegram).toEqual(expect.objectContaining({ sync_mode: "on_demand" }));
+    expect(telegram).not.toHaveProperty("secret_ref");
+    expect(telegram).not.toHaveProperty("secret_configured");
+    expect(telegram).not.toHaveProperty("poll_interval_seconds");
+  });
+
   it("executes the extracted model and overview surfaces", () => {
     const workspace = fixtureWorkspace();
     render(

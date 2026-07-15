@@ -1532,22 +1532,22 @@ def test_connector_settings_and_state_methods_use_dedicated_tables_and_audit_eve
         fetchone_results=[
             {
                 "id": setting_id,
-                "connector_name": "telegram",
+                "connector_name": "browser_clipper",
                 "enabled": True,
                 "configured": True,
                 "default_domain": "personal",
                 "default_sensitivity": "private",
-                "sync_mode": "polling",
-                "poll_interval_seconds": 60,
-                "secret_ref": "telegram.bot_token.default",
+                "sync_mode": "on_demand",
+                "poll_interval_seconds": None,
+                "secret_ref": "browser.capture_token.default",
                 "validation_errors_json": [],
             },
-            _event_row("telegram"),
-            {"id": setting_id, "connector_name": "telegram"},
+            _event_row("browser_clipper"),
+            {"id": setting_id, "connector_name": "browser_clipper"},
             {
                 "id": state_id,
                 "connector_id": setting_id,
-                "connector_name": "telegram",
+                "connector_name": "browser_clipper",
                 "cursor_type": "sync_cursor",
                 "cursor_value": "42",
                 "last_sync_at": "2026-05-11T12:00:00Z",
@@ -1558,33 +1558,33 @@ def test_connector_settings_and_state_methods_use_dedicated_tables_and_audit_eve
                 "items_deduped": 1,
                 "items_failed": 1,
             },
-            _event_row("telegram"),
-            {"id": state_id, "connector_name": "telegram", "cursor_value": "42"},
+            _event_row("browser_clipper"),
+            {"id": state_id, "connector_name": "browser_clipper", "cursor_value": "42"},
             {"connector_settings_exists": True, "connector_state_exists": True, "migration_revision": "20260511_0070"},
         ],
-        fetchall_result=[{"id": setting_id, "connector_name": "telegram"}],
+        fetchall_result=[{"id": setting_id, "connector_name": "browser_clipper"}],
     )
     store = PostgresVNextStore(RecordingConnection(cursor))
 
     setting = store.upsert_connector_setting(
         {
-            "connector_name": "telegram",
+            "connector_name": "browser_clipper",
             "enabled": True,
             "configured": True,
             "default_domain": "personal",
             "default_sensitivity": "private",
-            "sync_mode": "polling",
-            "poll_interval_seconds": 60,
-            "secret_ref": "telegram.bot_token.default",
+            "sync_mode": "on_demand",
+            "poll_interval_seconds": None,
+            "secret_ref": "browser.capture_token.default",
             "validation_errors_json": [],
-            "metadata_json": {"config_json": {"allowed_chat_ids": ["999001"]}},
+            "metadata_json": {"config_json": {"allowed_origins": ["http://localhost:3000"]}},
         }
     )
     settings = store.list_connector_settings()
-    fetched_setting = store.get_connector_setting("telegram")
+    fetched_setting = store.get_connector_setting("browser_clipper")
     state = store.upsert_connector_state(
         {
-            "connector_name": "telegram",
+            "connector_name": "browser_clipper",
             "cursor_value": "42",
             "last_sync_at": "2026-05-11T12:00:00Z",
             "last_success_at": "2026-05-11T12:00:00Z",
@@ -1596,11 +1596,11 @@ def test_connector_settings_and_state_methods_use_dedicated_tables_and_audit_eve
             "state_json": {"last_status": "partial"},
         }
     )
-    fetched_state = store.get_connector_state("telegram")
+    fetched_state = store.get_connector_state("browser_clipper")
     storage_status = store.connector_storage_status()
 
     assert setting["id"] == setting_id
-    assert settings == [{"id": setting_id, "connector_name": "telegram"}]
+    assert settings == [{"id": setting_id, "connector_name": "browser_clipper"}]
     assert fetched_setting is not None
     assert state["cursor_value"] == "42"
     assert fetched_state is not None
@@ -1613,7 +1613,7 @@ def test_connector_settings_and_state_methods_use_dedicated_tables_and_audit_eve
     assert isinstance(setting_params[8], Jsonb)
     assert setting_params[8].obj == []
     assert isinstance(setting_params[9], Jsonb)
-    assert setting_params[9].obj == {"config_json": {"allowed_chat_ids": ["999001"]}}
+    assert setting_params[9].obj == {"config_json": {"allowed_origins": ["http://localhost:3000"]}}
     state_query, state_params = cursor.executed[4]
     assert "INSERT INTO connector_state" in state_query
     assert "items_seen = connector_state.items_seen + EXCLUDED.items_seen" in state_query

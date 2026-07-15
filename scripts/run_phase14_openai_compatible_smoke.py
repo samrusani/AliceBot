@@ -2,9 +2,10 @@
 """Run an OpenAI-compatible provider smoke flow for P14-S1.
 
 Flow:
-1) Register an OpenAI-compatible provider through `/v1/providers`
-2) Run `/v1/providers/test`
-3) Run `/v1/runtime/invoke`
+1) Bootstrap the deterministic local workspace
+2) Register an OpenAI-compatible provider through `/v1/providers`
+3) Run `/v1/providers/test`
+4) Run `/v1/runtime/invoke`
 
 If `--provider-base-url` is omitted, the script starts a temporary local
 OpenAI-compatible stub endpoint for the smoke run.
@@ -15,7 +16,8 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import json
-from typing import Any, Iterator
+import os
+from typing import Any, Iterator, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -28,13 +30,13 @@ def _request_json(
     *,
     method: str,
     url: str,
-    bearer_token: str,
+    user_id: str,
     payload: dict[str, Any] | None = None,
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     body = None if payload is None else json.dumps(payload).encode("utf-8")
     headers = {
-        "Authorization": f"Bearer {bearer_token}",
+        "X-AliceBot-User-Id": user_id,
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
@@ -133,7 +135,7 @@ def _temporary_stub_server(*, model_name: str) -> Iterator[str]:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        host, port = server.server_address
+        host, port = cast(tuple[str, int], server.server_address)
         yield f"http://{host}:{port}/v1"
     finally:
         server.shutdown()
@@ -144,7 +146,7 @@ def _temporary_stub_server(*, model_name: str) -> Iterator[str]:
 def _run_flow(
     *,
     api_base_url: str,
-    session_token: str,
+    user_id: str,
     thread_id: str,
     provider_base_url: str,
     display_name: str,
@@ -152,10 +154,17 @@ def _run_flow(
     test_prompt: str,
     message: str,
 ) -> dict[str, object]:
+    _request_json(
+        method="POST",
+        url=f"{api_base_url.rstrip('/')}/v1/workspaces/bootstrap",
+        user_id=user_id,
+        payload={},
+    )
+
     register_response = _request_json(
         method="POST",
         url=f"{api_base_url.rstrip('/')}/v1/providers",
-        bearer_token=session_token,
+        user_id=user_id,
         payload={
             "provider_key": "openai_compatible",
             "display_name": display_name,
@@ -170,7 +179,7 @@ def _run_flow(
     test_response = _request_json(
         method="POST",
         url=f"{api_base_url.rstrip('/')}/v1/providers/test",
-        bearer_token=session_token,
+        user_id=user_id,
         payload={
             "provider_id": provider_id,
             "model": model,
@@ -181,7 +190,7 @@ def _run_flow(
     invoke_response = _request_json(
         method="POST",
         url=f"{api_base_url.rstrip('/')}/v1/runtime/invoke",
-        bearer_token=session_token,
+        user_id=user_id,
         idempotency_key=f"openai-compatible-smoke-{uuid4()}",
         payload={
             "provider_id": provider_id,
@@ -210,9 +219,9 @@ def main() -> int:
         help="Alice API base URL (default: http://127.0.0.1:8000).",
     )
     parser.add_argument(
-        "--session-token",
-        required=True,
-        help="Hosted session bearer token.",
+        "--user-id",
+        default=os.getenv("ALICEBOT_AUTH_USER_ID", ""),
+        help="Local Alice operator UUID (defaults to ALICEBOT_AUTH_USER_ID).",
     )
     parser.add_argument(
         "--thread-id",
@@ -245,11 +254,14 @@ def main() -> int:
         help="Message used for /v1/runtime/invoke.",
     )
     args = parser.parse_args()
+    user_id = args.user_id.strip()
+    if user_id == "":
+        parser.error("--user-id or ALICEBOT_AUTH_USER_ID is required")
 
     if args.provider_base_url is not None:
         result = _run_flow(
             api_base_url=args.api_base_url,
-            session_token=args.session_token,
+            user_id=user_id,
             thread_id=args.thread_id,
             provider_base_url=args.provider_base_url.strip(),
             display_name=args.display_name,
@@ -263,7 +275,7 @@ def main() -> int:
     with _temporary_stub_server(model_name=args.model) as stub_provider_base_url:
         result = _run_flow(
             api_base_url=args.api_base_url,
-            session_token=args.session_token,
+            user_id=user_id,
             thread_id=args.thread_id,
             provider_base_url=stub_provider_base_url,
             display_name=args.display_name,

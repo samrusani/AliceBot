@@ -33,26 +33,6 @@ def test_settings_defaults(monkeypatch):
         "GMAIL_SECRET_MANAGER_URL",
         "CALENDAR_SECRET_MANAGER_URL",
         "ALICEBOT_AUTH_USER_ID",
-        "RESPONSE_RATE_LIMIT_WINDOW_SECONDS",
-        "RESPONSE_RATE_LIMIT_MAX_REQUESTS",
-        "TELEGRAM_LINK_TTL_SECONDS",
-        "TELEGRAM_BOT_USERNAME",
-        "TELEGRAM_WEBHOOK_SECRET",
-        "TELEGRAM_BOT_TOKEN",
-        "HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS",
-        "HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS",
-        "HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS",
-        "HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS",
-        "HOSTED_ABUSE_WINDOW_SECONDS",
-        "HOSTED_ABUSE_BLOCK_THRESHOLD",
-        "HOSTED_RATE_LIMITS_ENABLED_BY_DEFAULT",
-        "HOSTED_ABUSE_CONTROLS_ENABLED_BY_DEFAULT",
-        "MAGIC_LINK_START_RATE_LIMIT_WINDOW_SECONDS",
-        "MAGIC_LINK_START_RATE_LIMIT_MAX_REQUESTS",
-        "MAGIC_LINK_VERIFY_RATE_LIMIT_WINDOW_SECONDS",
-        "MAGIC_LINK_VERIFY_RATE_LIMIT_MAX_REQUESTS",
-        "TELEGRAM_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS",
-        "TELEGRAM_WEBHOOK_RATE_LIMIT_MAX_REQUESTS",
         "CORS_ALLOWED_ORIGINS",
         "CORS_ALLOWED_METHODS",
         "CORS_ALLOWED_HEADERS",
@@ -63,7 +43,6 @@ def test_settings_defaults(monkeypatch):
         "SECURITY_HEADERS_HSTS_INCLUDE_SUBDOMAINS",
         "TRUST_PROXY_HEADERS",
         "TRUSTED_PROXY_IPS",
-        "ENTRYPOINT_RATE_LIMIT_BACKEND",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -89,33 +68,12 @@ def test_settings_defaults(monkeypatch):
     assert settings.gmail_secret_manager_url == ""
     assert settings.calendar_secret_manager_url == ""
     assert settings.auth_user_id == ""
-    assert settings.response_rate_limit_window_seconds == 60
-    assert settings.response_rate_limit_max_requests == 20
-    assert settings.telegram_link_ttl_seconds == 600
-    assert settings.telegram_bot_username == "alicebot"
-    assert settings.telegram_webhook_secret == ""
-    assert settings.telegram_bot_token == ""
-    assert settings.hosted_chat_rate_limit_window_seconds == 60
-    assert settings.hosted_chat_rate_limit_max_requests == 20
-    assert settings.hosted_scheduler_rate_limit_window_seconds == 300
-    assert settings.hosted_scheduler_rate_limit_max_requests == 20
-    assert settings.hosted_abuse_window_seconds == 600
-    assert settings.hosted_abuse_block_threshold == 5
-    assert settings.hosted_rate_limits_enabled_by_default is True
-    assert settings.hosted_abuse_controls_enabled_by_default is True
-    assert settings.magic_link_start_rate_limit_window_seconds == 300
-    assert settings.magic_link_start_rate_limit_max_requests == 5
-    assert settings.magic_link_verify_rate_limit_window_seconds == 300
-    assert settings.magic_link_verify_rate_limit_max_requests == 10
-    assert settings.telegram_webhook_rate_limit_window_seconds == 60
-    assert settings.telegram_webhook_rate_limit_max_requests == 120
     assert settings.cors_allowed_origins == ()
     assert settings.cors_allowed_methods == ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
     assert settings.cors_allowed_headers == (
         "Authorization",
         "Content-Type",
         "X-AliceBot-User-Id",
-        "X-Telegram-Bot-Api-Secret-Token",
     )
     assert settings.cors_allow_credentials is False
     assert settings.cors_preflight_max_age_seconds == 600
@@ -124,7 +82,6 @@ def test_settings_defaults(monkeypatch):
     assert settings.security_headers_hsts_include_subdomains is True
     assert settings.trust_proxy_headers is False
     assert settings.trusted_proxy_ips == ()
-    assert settings.entrypoint_rate_limit_backend == "redis"
 
 
 def test_settings_honor_environment_overrides(monkeypatch):
@@ -145,26 +102,6 @@ def test_settings_honor_environment_overrides(monkeypatch):
     monkeypatch.setenv("GMAIL_SECRET_MANAGER_URL", "file:///tmp/custom-gmail-secrets")
     monkeypatch.setenv("CALENDAR_SECRET_MANAGER_URL", "file:///tmp/custom-calendar-secrets")
     monkeypatch.setenv("ALICEBOT_AUTH_USER_ID", "00000000-0000-0000-0000-000000000001")
-    monkeypatch.setenv("RESPONSE_RATE_LIMIT_WINDOW_SECONDS", "120")
-    monkeypatch.setenv("RESPONSE_RATE_LIMIT_MAX_REQUESTS", "30")
-    monkeypatch.setenv("TELEGRAM_LINK_TTL_SECONDS", "900")
-    monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "alicebuilder_bot")
-    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "phase10-secret")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-bot-token")
-    monkeypatch.setenv("HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS", "75")
-    monkeypatch.setenv("HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS", "7")
-    monkeypatch.setenv("HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS", "900")
-    monkeypatch.setenv("HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS", "12")
-    monkeypatch.setenv("HOSTED_ABUSE_WINDOW_SECONDS", "1800")
-    monkeypatch.setenv("HOSTED_ABUSE_BLOCK_THRESHOLD", "6")
-    monkeypatch.setenv("HOSTED_RATE_LIMITS_ENABLED_BY_DEFAULT", "false")
-    monkeypatch.setenv("HOSTED_ABUSE_CONTROLS_ENABLED_BY_DEFAULT", "false")
-    monkeypatch.setenv("MAGIC_LINK_START_RATE_LIMIT_WINDOW_SECONDS", "360")
-    monkeypatch.setenv("MAGIC_LINK_START_RATE_LIMIT_MAX_REQUESTS", "8")
-    monkeypatch.setenv("MAGIC_LINK_VERIFY_RATE_LIMIT_WINDOW_SECONDS", "420")
-    monkeypatch.setenv("MAGIC_LINK_VERIFY_RATE_LIMIT_MAX_REQUESTS", "12")
-    monkeypatch.setenv("TELEGRAM_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS", "90")
-    monkeypatch.setenv("TELEGRAM_WEBHOOK_RATE_LIMIT_MAX_REQUESTS", "180")
     monkeypatch.setenv(
         "CORS_ALLOWED_ORIGINS",
         "https://app.example.com, https://staging.example.com",
@@ -178,7 +115,6 @@ def test_settings_honor_environment_overrides(monkeypatch):
     monkeypatch.setenv("SECURITY_HEADERS_HSTS_INCLUDE_SUBDOMAINS", "false")
     monkeypatch.setenv("TRUST_PROXY_HEADERS", "true")
     monkeypatch.setenv("TRUSTED_PROXY_IPS", "127.0.0.1,10.0.0.2")
-    monkeypatch.setenv("ENTRYPOINT_RATE_LIMIT_BACKEND", "memory")
 
     settings = Settings.from_env()
 
@@ -200,26 +136,6 @@ def test_settings_honor_environment_overrides(monkeypatch):
     assert settings.gmail_secret_manager_url == "file:///tmp/custom-gmail-secrets"
     assert settings.calendar_secret_manager_url == "file:///tmp/custom-calendar-secrets"
     assert settings.auth_user_id == "00000000-0000-0000-0000-000000000001"
-    assert settings.response_rate_limit_window_seconds == 120
-    assert settings.response_rate_limit_max_requests == 30
-    assert settings.telegram_link_ttl_seconds == 900
-    assert settings.telegram_bot_username == "alicebuilder_bot"
-    assert settings.telegram_webhook_secret == "phase10-secret"
-    assert settings.telegram_bot_token == "test-bot-token"
-    assert settings.hosted_chat_rate_limit_window_seconds == 75
-    assert settings.hosted_chat_rate_limit_max_requests == 7
-    assert settings.hosted_scheduler_rate_limit_window_seconds == 900
-    assert settings.hosted_scheduler_rate_limit_max_requests == 12
-    assert settings.hosted_abuse_window_seconds == 1800
-    assert settings.hosted_abuse_block_threshold == 6
-    assert settings.hosted_rate_limits_enabled_by_default is False
-    assert settings.hosted_abuse_controls_enabled_by_default is False
-    assert settings.magic_link_start_rate_limit_window_seconds == 360
-    assert settings.magic_link_start_rate_limit_max_requests == 8
-    assert settings.magic_link_verify_rate_limit_window_seconds == 420
-    assert settings.magic_link_verify_rate_limit_max_requests == 12
-    assert settings.telegram_webhook_rate_limit_window_seconds == 90
-    assert settings.telegram_webhook_rate_limit_max_requests == 180
     assert settings.cors_allowed_origins == ("https://app.example.com", "https://staging.example.com")
     assert settings.cors_allowed_methods == ("GET", "POST", "OPTIONS")
     assert settings.cors_allowed_headers == ("Authorization", "Content-Type")
@@ -230,7 +146,6 @@ def test_settings_honor_environment_overrides(monkeypatch):
     assert settings.security_headers_hsts_include_subdomains is False
     assert settings.trust_proxy_headers is True
     assert settings.trusted_proxy_ips == ("127.0.0.1", "10.0.0.2")
-    assert settings.entrypoint_rate_limit_backend == "memory"
 
 
 def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
@@ -257,26 +172,6 @@ def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
             "GMAIL_SECRET_MANAGER_URL": "file:///tmp/mapped-gmail-secrets",
             "CALENDAR_SECRET_MANAGER_URL": "file:///tmp/mapped-calendar-secrets",
             "ALICEBOT_AUTH_USER_ID": "00000000-0000-0000-0000-000000000001",
-            "RESPONSE_RATE_LIMIT_WINDOW_SECONDS": "75",
-            "RESPONSE_RATE_LIMIT_MAX_REQUESTS": "10",
-            "TELEGRAM_LINK_TTL_SECONDS": "700",
-            "TELEGRAM_BOT_USERNAME": "alicebot_phase10",
-            "TELEGRAM_WEBHOOK_SECRET": "secret-value",
-            "TELEGRAM_BOT_TOKEN": "bot-token",
-            "HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS": "90",
-            "HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS": "9",
-            "HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS": "600",
-            "HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS": "14",
-            "HOSTED_ABUSE_WINDOW_SECONDS": "1200",
-            "HOSTED_ABUSE_BLOCK_THRESHOLD": "4",
-            "HOSTED_RATE_LIMITS_ENABLED_BY_DEFAULT": "true",
-            "HOSTED_ABUSE_CONTROLS_ENABLED_BY_DEFAULT": "true",
-            "MAGIC_LINK_START_RATE_LIMIT_WINDOW_SECONDS": "360",
-            "MAGIC_LINK_START_RATE_LIMIT_MAX_REQUESTS": "8",
-            "MAGIC_LINK_VERIFY_RATE_LIMIT_WINDOW_SECONDS": "420",
-            "MAGIC_LINK_VERIFY_RATE_LIMIT_MAX_REQUESTS": "12",
-            "TELEGRAM_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS": "90",
-            "TELEGRAM_WEBHOOK_RATE_LIMIT_MAX_REQUESTS": "180",
             "CORS_ALLOWED_ORIGINS": "https://app.example.com,https://staging.example.com",
             "CORS_ALLOWED_METHODS": "GET,POST,OPTIONS",
             "CORS_ALLOWED_HEADERS": "Authorization,Content-Type",
@@ -287,7 +182,6 @@ def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
             "SECURITY_HEADERS_HSTS_INCLUDE_SUBDOMAINS": "false",
             "TRUST_PROXY_HEADERS": "true",
             "TRUSTED_PROXY_IPS": "127.0.0.1,10.0.0.2",
-            "ENTRYPOINT_RATE_LIMIT_BACKEND": "memory",
         }
     )
 
@@ -309,26 +203,6 @@ def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
     assert settings.gmail_secret_manager_url == "file:///tmp/mapped-gmail-secrets"
     assert settings.calendar_secret_manager_url == "file:///tmp/mapped-calendar-secrets"
     assert settings.auth_user_id == "00000000-0000-0000-0000-000000000001"
-    assert settings.response_rate_limit_window_seconds == 75
-    assert settings.response_rate_limit_max_requests == 10
-    assert settings.telegram_link_ttl_seconds == 700
-    assert settings.telegram_bot_username == "alicebot_phase10"
-    assert settings.telegram_webhook_secret == "secret-value"
-    assert settings.telegram_bot_token == "bot-token"
-    assert settings.hosted_chat_rate_limit_window_seconds == 90
-    assert settings.hosted_chat_rate_limit_max_requests == 9
-    assert settings.hosted_scheduler_rate_limit_window_seconds == 600
-    assert settings.hosted_scheduler_rate_limit_max_requests == 14
-    assert settings.hosted_abuse_window_seconds == 1200
-    assert settings.hosted_abuse_block_threshold == 4
-    assert settings.hosted_rate_limits_enabled_by_default is True
-    assert settings.hosted_abuse_controls_enabled_by_default is True
-    assert settings.magic_link_start_rate_limit_window_seconds == 360
-    assert settings.magic_link_start_rate_limit_max_requests == 8
-    assert settings.magic_link_verify_rate_limit_window_seconds == 420
-    assert settings.magic_link_verify_rate_limit_max_requests == 12
-    assert settings.telegram_webhook_rate_limit_window_seconds == 90
-    assert settings.telegram_webhook_rate_limit_max_requests == 180
     assert settings.cors_allowed_origins == ("https://app.example.com", "https://staging.example.com")
     assert settings.cors_allowed_methods == ("GET", "POST", "OPTIONS")
     assert settings.cors_allowed_headers == ("Authorization", "Content-Type")
@@ -339,7 +213,6 @@ def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
     assert settings.security_headers_hsts_include_subdomains is False
     assert settings.trust_proxy_headers is True
     assert settings.trusted_proxy_ips == ("127.0.0.1", "10.0.0.2")
-    assert settings.entrypoint_rate_limit_backend == "memory"
 
 
 def test_settings_raise_clear_error_for_invalid_integer_values() -> None:
@@ -349,8 +222,6 @@ def test_settings_raise_clear_error_for_invalid_integer_values() -> None:
     with pytest.raises(ValueError, match="MODEL_TIMEOUT_SECONDS must be an integer"):
         Settings.from_env({"MODEL_TIMEOUT_SECONDS": "not-an-integer"})
 
-    with pytest.raises(ValueError, match="RESPONSE_RATE_LIMIT_MAX_REQUESTS must be an integer"):
-        Settings.from_env({"RESPONSE_RATE_LIMIT_MAX_REQUESTS": "not-an-integer"})
 
 
 @pytest.mark.parametrize(
@@ -496,100 +367,21 @@ def test_settings_accept_vllm_workspace_provider_config_defaults() -> None:
     assert provider.invoke_path == "/v1/chat/completions"
 
 
-def test_settings_reject_non_positive_rate_limit_values() -> None:
-    with pytest.raises(
-        ValueError,
-        match="RESPONSE_RATE_LIMIT_WINDOW_SECONDS must be a positive integer",
-    ):
-        Settings.from_env({"RESPONSE_RATE_LIMIT_WINDOW_SECONDS": "0"})
+def test_removed_hosted_and_telegram_settings_are_not_loaded() -> None:
+    settings = Settings.from_env(
+        {
+            "TELEGRAM_BOT_TOKEN": "must-not-be-loaded",
+            "TELEGRAM_WEBHOOK_SECRET": "must-not-be-loaded",
+            "HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS": "1",
+        }
+    )
 
-    with pytest.raises(
-        ValueError,
-        match="RESPONSE_RATE_LIMIT_MAX_REQUESTS must be a positive integer",
-    ):
-        Settings.from_env({"RESPONSE_RATE_LIMIT_MAX_REQUESTS": "0"})
+    assert not hasattr(settings, "telegram_bot_token")
+    assert not hasattr(settings, "telegram_webhook_secret")
+    assert not hasattr(settings, "hosted_chat_rate_limit_window_seconds")
 
-    with pytest.raises(
-        ValueError,
-        match="TELEGRAM_LINK_TTL_SECONDS must be a positive integer",
-    ):
-        Settings.from_env({"TELEGRAM_LINK_TTL_SECONDS": "0"})
 
-    with pytest.raises(ValueError, match="TELEGRAM_BOT_USERNAME must be provided"):
-        Settings.from_env({"TELEGRAM_BOT_USERNAME": "   "})
-
-    with pytest.raises(
-        ValueError,
-        match="HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS must be a positive integer",
-    ):
-        Settings.from_env({"HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS": "0"})
-
-    with pytest.raises(
-        ValueError,
-        match="HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS must be a positive integer",
-    ):
-        Settings.from_env({"HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS": "0"})
-
-    with pytest.raises(
-        ValueError,
-        match="HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS must be a positive integer",
-    ):
-        Settings.from_env({"HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS": "0"})
-
-    with pytest.raises(
-        ValueError,
-        match="HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS must be a positive integer",
-    ):
-        Settings.from_env({"HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS": "0"})
-
-    with pytest.raises(
-        ValueError,
-        match="HOSTED_ABUSE_WINDOW_SECONDS must be a positive integer",
-    ):
-        Settings.from_env({"HOSTED_ABUSE_WINDOW_SECONDS": "0"})
-
-    with pytest.raises(
-        ValueError,
-        match="HOSTED_ABUSE_BLOCK_THRESHOLD must be a positive integer",
-    ):
-        Settings.from_env({"HOSTED_ABUSE_BLOCK_THRESHOLD": "0"})
-
-    with pytest.raises(
-        ValueError,
-        match="MAGIC_LINK_START_RATE_LIMIT_WINDOW_SECONDS must be a positive integer",
-    ):
-        Settings.from_env({"MAGIC_LINK_START_RATE_LIMIT_WINDOW_SECONDS": "0"})
-
-    with pytest.raises(
-        ValueError,
-        match="MAGIC_LINK_START_RATE_LIMIT_MAX_REQUESTS must be a positive integer",
-    ):
-        Settings.from_env({"MAGIC_LINK_START_RATE_LIMIT_MAX_REQUESTS": "0"})
-
-    with pytest.raises(
-        ValueError,
-        match="MAGIC_LINK_VERIFY_RATE_LIMIT_WINDOW_SECONDS must be a positive integer",
-    ):
-        Settings.from_env({"MAGIC_LINK_VERIFY_RATE_LIMIT_WINDOW_SECONDS": "0"})
-
-    with pytest.raises(
-        ValueError,
-        match="MAGIC_LINK_VERIFY_RATE_LIMIT_MAX_REQUESTS must be a positive integer",
-    ):
-        Settings.from_env({"MAGIC_LINK_VERIFY_RATE_LIMIT_MAX_REQUESTS": "0"})
-
-    with pytest.raises(
-        ValueError,
-        match="TELEGRAM_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS must be a positive integer",
-    ):
-        Settings.from_env({"TELEGRAM_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS": "0"})
-
-    with pytest.raises(
-        ValueError,
-        match="TELEGRAM_WEBHOOK_RATE_LIMIT_MAX_REQUESTS must be a positive integer",
-    ):
-        Settings.from_env({"TELEGRAM_WEBHOOK_RATE_LIMIT_MAX_REQUESTS": "0"})
-
+def test_settings_reject_invalid_deployment_limits() -> None:
     with pytest.raises(
         ValueError,
         match="CORS_PREFLIGHT_MAX_AGE_SECONDS must be a positive integer",
@@ -607,12 +399,6 @@ def test_settings_reject_non_positive_rate_limit_values() -> None:
         match="SECURITY_HEADERS_HSTS_MAX_AGE_SECONDS must be a positive integer",
     ):
         Settings.from_env({"SECURITY_HEADERS_HSTS_MAX_AGE_SECONDS": "0"})
-
-    with pytest.raises(
-        ValueError,
-        match="ENTRYPOINT_RATE_LIMIT_BACKEND must be either 'redis' or 'memory'",
-    ):
-        Settings.from_env({"ENTRYPOINT_RATE_LIMIT_BACKEND": "invalid"})
 
     with pytest.raises(
         ValueError,
@@ -638,21 +424,6 @@ def test_settings_require_hardened_non_dev_configuration() -> None:
 
     with pytest.raises(
         ValueError,
-        match="TELEGRAM_WEBHOOK_SECRET must be configured outside development/test environments",
-    ):
-        Settings.from_env(
-            {
-                "APP_ENV": "staging",
-                "ALICEBOT_AUTH_USER_ID": "00000000-0000-0000-0000-000000000001",
-                "DATABASE_URL": "postgresql://secure-app:secret@localhost:5432/alicebot_secure",
-                "DATABASE_ADMIN_URL": "postgresql://secure-admin:secret@localhost:5432/alicebot_secure",
-                "S3_ACCESS_KEY": "secure-access",
-                "S3_SECRET_KEY": "secure-secret",
-            }
-        )
-
-    with pytest.raises(
-        ValueError,
         match="CORS_ALLOWED_ORIGINS cannot include wildcard outside development/test environments",
     ):
         Settings.from_env(
@@ -661,9 +432,35 @@ def test_settings_require_hardened_non_dev_configuration() -> None:
                 "ALICEBOT_AUTH_USER_ID": "00000000-0000-0000-0000-000000000001",
                 "DATABASE_URL": "postgresql://secure-app:secret@localhost:5432/alicebot_secure",
                 "DATABASE_ADMIN_URL": "postgresql://secure-admin:secret@localhost:5432/alicebot_secure",
-                "S3_ACCESS_KEY": "secure-access",
-                "S3_SECRET_KEY": "secure-secret",
-                "TELEGRAM_WEBHOOK_SECRET": "secure-webhook-secret",
                 "CORS_ALLOWED_ORIGINS": "*",
             }
         )
+
+
+@pytest.mark.parametrize(
+    "s3_environment",
+    [
+        {},
+        {
+            "S3_ACCESS_KEY": "alicebot",
+            "S3_SECRET_KEY": "alicebot-secret",
+        },
+    ],
+)
+def test_core_only_production_settings_boot_without_s3_credentials(
+    s3_environment: dict[str, str],
+) -> None:
+    settings = Settings.from_env(
+        {
+            "APP_ENV": "production",
+            "ALICEBOT_AUTH_USER_ID": "00000000-0000-4000-8000-000000000001",
+            "DATABASE_URL": "postgresql://secure-app:secret@db/alicebot",
+            "DATABASE_ADMIN_URL": "postgresql://secure-admin:secret@db/alicebot",
+            "CORS_ALLOWED_ORIGINS": "https://alice.example",
+            **s3_environment,
+        }
+    )
+
+    assert settings.app_env == "production"
+    assert settings.s3_access_key == "alicebot"
+    assert settings.s3_secret_key == "alicebot-secret"

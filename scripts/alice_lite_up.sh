@@ -70,9 +70,9 @@ PY
 }
 
 export APP_RELOAD="${APP_RELOAD:-false}"
-export ENTRYPOINT_RATE_LIMIT_BACKEND="${ENTRYPOINT_RATE_LIMIT_BACKEND:-memory}"
 export APP_LOG_MODE="${APP_LOG_MODE:-stdout}"
 export APP_ACCESS_LOG="${APP_ACCESS_LOG:-false}"
+export ALICEBOT_AUTH_USER_ID="${ALICEBOT_AUTH_USER_ID:-00000000-0000-0000-0000-000000000001}"
 
 cd "${REPO_ROOT}"
 
@@ -114,7 +114,7 @@ PY
 "${REPO_ROOT}/scripts/load_sample_data.sh"
 
 echo "Alice Lite is ready on http://${APP_HOST:-127.0.0.1}:${APP_PORT:-8000}"
-echo "Next terminal:"
-echo "  ${PYTHON_BIN} ${REPO_ROOT}/scripts/bootstrap_alice_lite_workspace.py"
+echo "After the API is ready, run in another terminal:"
+echo "  ${PYTHON_BIN} ${REPO_ROOT}/scripts/bootstrap_alice_lite_workspace.py --user-id ${ALICEBOT_AUTH_USER_ID}"
 
 exec "${REPO_ROOT}/scripts/api_dev.sh"

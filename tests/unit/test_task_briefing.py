@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID, uuid4
+
+import pytest
 
 from alicebot_api.contracts import TaskBriefCompileRequestInput
 from alicebot_api.task_briefing import (
+    TaskBriefValidationError,
     compare_task_briefs,
     compile_and_persist_task_brief,
     compile_task_brief_record,
@@ -16,68 +21,9 @@ class TaskBriefStoreStub:
     def __init__(self, rows: list[dict[str, object]]) -> None:
         self._rows = rows
         self._task_briefs: dict[UUID, dict[str, object]] = {}
-        self._visible_workspaces: set[UUID] = set()
-        self._workspace_bindings: dict[UUID, dict[str, object]] = {}
-        self._packs_by_id: dict[tuple[UUID, UUID], dict[str, object]] = {}
-        self._packs_by_key: dict[tuple[UUID, str, str], dict[str, object]] = {}
 
     def list_continuity_recall_candidates(self):
         return list(self._rows)
-
-    def add_workspace_model_pack(
-        self,
-        *,
-        workspace_id: UUID,
-        pack_row_id: UUID,
-        pack_id: str,
-        pack_version: str,
-        briefing_strategy: str,
-        briefing_max_tokens: int | None,
-        bind_as_default: bool = False,
-    ) -> None:
-        self._visible_workspaces.add(workspace_id)
-        pack = {
-            "id": pack_row_id,
-            "workspace_id": workspace_id,
-            "created_by_user_account_id": UUID("11111111-1111-4111-8111-111111111111"),
-            "pack_id": pack_id,
-            "pack_version": pack_version,
-            "display_name": f"{pack_id}@{pack_version}",
-            "family": "custom",
-            "description": "stub",
-            "status": "active",
-            "briefing_strategy": briefing_strategy,
-            "briefing_max_tokens": briefing_max_tokens,
-            "contract": {"contract_version": "model_pack_contract_v1"},
-            "metadata": {},
-            "created_at": datetime(2026, 4, 14, 12, 0, tzinfo=UTC),
-            "updated_at": datetime(2026, 4, 14, 12, 0, tzinfo=UTC),
-        }
-        self._packs_by_id[(workspace_id, pack_row_id)] = pack
-        self._packs_by_key[(workspace_id, pack_id, pack_version)] = pack
-        if bind_as_default:
-            self._workspace_bindings[workspace_id] = {"model_pack_id": pack_row_id}
-
-    def workspace_visible_to_user_account(self, *, workspace_id: UUID, user_account_id: UUID) -> bool:
-        return workspace_id in self._visible_workspaces
-
-    def get_latest_workspace_model_pack_binding_optional(self, *, workspace_id: UUID):
-        return self._workspace_bindings.get(workspace_id)
-
-    def get_model_pack_for_workspace_optional(self, *, workspace_id: UUID, pack_id: str, pack_version: str | None):
-        if pack_version is None:
-            candidates = [
-                pack
-                for (candidate_workspace_id, candidate_pack_id, _), pack in self._packs_by_key.items()
-                if candidate_workspace_id == workspace_id and candidate_pack_id == pack_id
-            ]
-            if not candidates:
-                return None
-            return sorted(candidates, key=lambda pack: str(pack["pack_version"]), reverse=True)[0]
-        return self._packs_by_key.get((workspace_id, pack_id, pack_version))
-
-    def get_model_pack_for_workspace_by_row_id_optional(self, *, workspace_id: UUID, model_pack_id: UUID):
-        return self._packs_by_id.get((workspace_id, model_pack_id))
 
     def create_task_brief(self, **kwargs):
         task_brief_id = uuid4()
@@ -101,6 +47,14 @@ class TaskBriefStoreStub:
 
     def get_task_brief_optional(self, *, task_brief_id: UUID):
         return self._task_briefs.get(task_brief_id)
+
+    def replace_task_brief_payload(
+        self,
+        *,
+        task_brief_id: UUID,
+        payload: dict[str, object],
+    ) -> None:
+        self._task_briefs[task_brief_id]["payload"] = payload
 
 
 def _candidate(
@@ -255,6 +209,48 @@ def test_task_brief_compare_and_persistence_round_trip() -> None:
     ]
 
 
+def test_historical_persisted_task_brief_is_normalized_without_mutating_storage() -> None:
+    store = TaskBriefStoreStub([])
+    persisted = compile_and_persist_task_brief(
+        store,  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=TaskBriefCompileRequestInput(
+            mode="worker_subtask",
+            briefing_strategy="compact",
+        ),
+    )
+    task_brief_id = UUID(persisted["persistence"]["task_brief_id"])
+    historical_payload = cast(dict[str, object], deepcopy(persisted["task_brief"]))
+    historical_strategy = cast(dict[str, object], historical_payload["strategy"])
+    historical_strategy["model_pack_strategy"] = historical_strategy.pop(
+        "briefing_strategy"
+    )
+    historical_payload["workspace_id"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    historical_payload["pack_id"] = "legacy-pack"
+    historical_payload["pack_version"] = "1.0.0"
+    historical_strategy["workspace_id"] = historical_payload["workspace_id"]
+    historical_strategy["pack_id"] = historical_payload["pack_id"]
+    historical_strategy["pack_version"] = historical_payload["pack_version"]
+    stored_snapshot = deepcopy(historical_payload)
+    store.replace_task_brief_payload(
+        task_brief_id=task_brief_id,
+        payload=historical_payload,
+    )
+
+    loaded = get_persisted_task_brief(
+        store,  # type: ignore[arg-type]
+        task_brief_id=task_brief_id,
+    )
+
+    loaded_brief = loaded["task_brief"]
+    loaded_strategy = loaded_brief["strategy"]
+    stale_keys = {"workspace_id", "pack_id", "pack_version", "model_pack_strategy"}
+    assert loaded_strategy["briefing_strategy"] == "compact"
+    assert not stale_keys & loaded_brief.keys()
+    assert not stale_keys & loaded_strategy.keys()
+    assert store.get_task_brief_optional(task_brief_id=task_brief_id)["payload"] == stored_snapshot
+
+
 def test_worker_subtask_filters_non_promotable_facts_by_default() -> None:
     thread_id = UUID("12121212-1212-4212-8212-121212121212")
     rows = [
@@ -314,10 +310,8 @@ def test_worker_subtask_filters_non_promotable_facts_by_default() -> None:
     assert "Memory Fact: Draft summary is stale" in override_context_titles
 
 
-def test_task_brief_uses_workspace_selected_model_pack_defaults() -> None:
+def test_task_brief_uses_explicit_briefing_strategy_without_model_pack_vocabulary() -> None:
     thread_id = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
-    workspace_id = UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
-    pack_row_id = UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
     rows = [
         _candidate(
             title="Decision: Keep rollout compact",
@@ -333,33 +327,41 @@ def test_task_brief_uses_workspace_selected_model_pack_defaults() -> None:
         ),
     ]
     store = TaskBriefStoreStub(rows)
-    store.add_workspace_model_pack(
-        workspace_id=workspace_id,
-        pack_row_id=pack_row_id,
-        pack_id="compact-pack",
-        pack_version="1.0.0",
-        briefing_strategy="detailed",
-        briefing_max_tokens=144,
-        bind_as_default=True,
-    )
     user_id = UUID("11111111-1111-4111-8111-111111111111")
+    request = TaskBriefCompileRequestInput(
+        mode="agent_handoff",
+        thread_id=thread_id,
+        briefing_strategy="detailed",
+    )
 
     brief = compile_task_brief_record(
         store,  # type: ignore[arg-type]
         user_id=user_id,
-        request=TaskBriefCompileRequestInput(
-            mode="agent_handoff",
-            workspace_id=workspace_id,
-            thread_id=thread_id,
-        ),
+        request=request,
     )
 
     assert brief["mode"] == "agent_handoff"
-    assert brief["strategy"]["model_pack_strategy"] == "detailed"
-    assert brief["strategy"]["token_budget"] == 144
-    assert brief["strategy"]["budget_source"] == "model_pack_default"
+    assert brief["strategy"]["briefing_strategy"] == "detailed"
+    assert brief["strategy"]["token_budget"] == 216
+    assert brief["strategy"]["budget_source"] == "mode_default"
+    assert request.as_payload()["briefing_strategy"] == "detailed"
+    assert not {"workspace_id", "pack_id", "pack_version", "model_pack_strategy"} & request.as_payload().keys()
     assert [section["section_key"] for section in brief["sections"]] == [
         "handoff_focus",
         "handoff_open_loops",
         "handoff_recent_changes",
     ]
+
+
+def test_task_brief_rejects_unknown_briefing_strategy() -> None:
+    store = TaskBriefStoreStub([])
+
+    with pytest.raises(TaskBriefValidationError, match="briefing_strategy must be one of"):
+        compile_task_brief_record(
+            store,  # type: ignore[arg-type]
+            user_id=UUID("11111111-1111-4111-8111-111111111111"),
+            request=TaskBriefCompileRequestInput(
+                mode="user_recall",
+                briefing_strategy="verbose",  # type: ignore[arg-type]
+            ),
+        )

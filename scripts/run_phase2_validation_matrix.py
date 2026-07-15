@@ -1,58 +1,51 @@
 #!/usr/bin/env python3
+"""Run the bounded validation matrix for Alice's retained core surfaces."""
+
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 import shlex
 import subprocess
 import sys
 import time
-from typing import Callable, Literal
+from typing import Literal
+
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 WEB_DIR = ROOT_DIR / "apps" / "web"
-
 INDUCED_FAILURE_EXIT_CODE = 97
 
-StepStatus = Literal["PASS", "FAIL"]
-
 BACKEND_INTEGRATION_TEST_FILES: tuple[str, ...] = (
-    "tests/integration/test_continuity_api.py",
-    "tests/integration/test_responses_api.py",
-    "tests/integration/test_approval_api.py",
-    "tests/integration/test_proxy_execution_api.py",
-    "tests/integration/test_tasks_api.py",
-    "tests/integration/test_traces_api.py",
-    "tests/integration/test_memory_review_api.py",
-    "tests/integration/test_entities_api.py",
-    "tests/integration/test_task_artifacts_api.py",
-    "tests/integration/test_gmail_accounts_api.py",
-    "tests/integration/test_calendar_accounts_api.py",
+    "tests/integration/test_local_workspace_bootstrap_api.py",
+    "tests/integration/test_continuity_brief_api.py",
+    "tests/integration/test_memory_quality_gate_api.py",
+    "tests/integration/test_retrieval_evaluation_api.py",
+    "tests/integration/test_vnext_fts_fallback_postgres.py",
+    "tests/integration/test_vnext_retrieval_postgres_filters.py",
 )
 
 GATE_CONTRACT_TEST_FILES: tuple[str, ...] = (
-    "tests/integration/test_mvp_readiness_gates.py",
-    "tests/integration/test_mvp_validation_matrix.py",
+    "tests/unit/test_core_readiness_gates.py",
+    "tests/unit/test_core_validation_matrix.py",
 )
 
-WEB_OPERATOR_SURFACES: tuple[str, ...] = (
-    "/chat",
-    "/approvals",
-    "/tasks",
-    "/artifacts",
-    "/gmail",
-    "/calendar",
-    "/memories",
-    "/entities",
-    "/traces",
+WEB_CORE_CONTRACTS: tuple[str, ...] = (
+    "core shell",
+    "legacy mount gates",
+    "artifacts",
+    "memories",
+    "entities",
+    "traces",
 )
 
-STEP_READINESS_GATES = "readiness_gates"
-STEP_GATE_CONTRACT_TESTS = "gate_contract_tests"
-STEP_BACKEND_MATRIX = "backend_integration_matrix"
-STEP_WEB_MATRIX = "web_validation_matrix"
 STEP_CONTROL_DOC_TRUTH = "control_doc_truth"
+STEP_GATE_CONTRACT_TESTS = "gate_contract_tests"
+STEP_READINESS_GATES = "core_readiness_gates"
+STEP_BACKEND_MATRIX = "core_backend_matrix"
+STEP_WEB_MATRIX = "core_web_matrix"
 STEP_IDS: tuple[str, ...] = (
     STEP_CONTROL_DOC_TRUTH,
     STEP_GATE_CONTRACT_TESTS,
@@ -60,6 +53,8 @@ STEP_IDS: tuple[str, ...] = (
     STEP_BACKEND_MATRIX,
     STEP_WEB_MATRIX,
 )
+
+StepStatus = Literal["PASS", "FAIL"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,19 +86,13 @@ def _resolve_python_executable() -> str:
     return sys.executable
 
 
-def _build_backend_matrix_command(python_executable: str) -> tuple[str, ...]:
-    return (python_executable, "-m", "pytest", "-q", *BACKEND_INTEGRATION_TEST_FILES)
-
-
-def _build_gate_contract_tests_command(python_executable: str) -> tuple[str, ...]:
-    return (python_executable, "-m", "pytest", "-q", *GATE_CONTRACT_TEST_FILES)
-
-
-def _build_control_doc_truth_command(python_executable: str) -> tuple[str, ...]:
-    return (python_executable, "scripts/check_control_doc_truth.py")
+def _pytest_command(python_executable: str, test_files: tuple[str, ...]) -> tuple[str, ...]:
+    return (python_executable, "-m", "pytest", "-q", *test_files)
 
 
 def _build_web_matrix_command() -> tuple[str, ...]:
+    # This package script now covers the core shell plus explicit legacy mount
+    # gates. Its historical name remains a package-level compatibility alias.
     return ("npm", "--prefix", str(WEB_DIR), "run", "test:mvp:validation-matrix")
 
 
@@ -112,55 +101,42 @@ def build_validation_matrix_steps(*, python_executable: str | None = None) -> li
     return [
         MatrixStep(
             step=STEP_CONTROL_DOC_TRUTH,
-            description="Validate canonical control-doc truth markers and stale-marker exclusions.",
-            command=_build_control_doc_truth_command(resolved_python),
-            coverage=(
-                "ARCHITECTURE.md, ROADMAP.md, README.md, PRODUCT_BRIEF.md, RULES.md, "
-                ".ai/handoff/CURRENT_STATE.md baseline/ownership truth markers"
-            ),
+            description="Validate canonical control-document truth markers.",
+            command=(resolved_python, "scripts/check_control_doc_truth.py"),
+            coverage="architecture, roadmap, product brief, rules, and handoff truth",
         ),
         MatrixStep(
             step=STEP_GATE_CONTRACT_TESTS,
-            description=(
-                "Run canonical gate-runner contract tests for readiness/validation matrix ownership "
-                "and MVP alias compatibility behavior."
-            ),
-            command=_build_gate_contract_tests_command(resolved_python),
-            coverage=(
-                "tests/integration/test_mvp_readiness_gates.py, "
-                "tests/integration/test_mvp_validation_matrix.py"
-            ),
+            description="Run the core readiness and validation carrier contracts.",
+            command=_pytest_command(resolved_python, GATE_CONTRACT_TEST_FILES),
+            coverage=", ".join(GATE_CONTRACT_TEST_FILES),
         ),
         MatrixStep(
             step=STEP_READINESS_GATES,
-            description="Run deterministic readiness gates prerequisite chain.",
+            description="Run retrieval, provider-runtime, and local-bootstrap readiness contracts.",
             command=(resolved_python, "scripts/run_phase2_readiness_gates.py"),
-            coverage="acceptance_suite, latency_p95, cache_reuse, memory_quality",
+            coverage="retrieval, provider runtime, deterministic local bootstrap",
         ),
         MatrixStep(
             step=STEP_BACKEND_MATRIX,
-            description="Run bounded backend integration seams matrix.",
-            command=_build_backend_matrix_command(resolved_python),
+            description="Run bounded integration seams for the retained core.",
+            command=_pytest_command(resolved_python, BACKEND_INTEGRATION_TEST_FILES),
             coverage=(
-                "continuity, responses, approvals/execution, tasks/steps, traces, "
-                "memory/entities/artifacts, gmail/calendar account seams"
+                "local workspace bootstrap, continuity brief, memory quality, "
+                "retrieval evaluation, FTS fallback, vector filtering"
             ),
         ),
         MatrixStep(
             step=STEP_WEB_MATRIX,
-            description="Run bounded web operator shell matrix via explicit Vitest suites.",
+            description="Run the core web shell and legacy mount-gate contracts.",
             command=_build_web_matrix_command(),
-            coverage=", ".join(WEB_OPERATOR_SURFACES),
+            coverage=", ".join(WEB_CORE_CONTRACTS),
         ),
     ]
 
 
 def _execute_command(command: tuple[str, ...], cwd: Path) -> int:
-    completed = subprocess.run(
-        list(command),
-        cwd=cwd,
-        check=False,
-    )
+    completed = subprocess.run(list(command), cwd=cwd, check=False)
     return completed.returncode
 
 
@@ -170,7 +146,7 @@ def _build_induced_failure_command(*, step: str, python_executable: str) -> tupl
         "-c",
         (
             "import sys; "
-            f"print('Induced validation-matrix failure for step: {step}'); "
+            f"print('Induced core validation failure for step: {step}'); "
             f"sys.exit({INDUCED_FAILURE_EXIT_CODE})"
         ),
     )
@@ -182,33 +158,28 @@ def run_validation_matrix(
     execute_command: CommandExecutor = _execute_command,
 ) -> list[MatrixStepResult]:
     results: list[MatrixStepResult] = []
-    matrix_steps = build_validation_matrix_steps()
     python_executable = _resolve_python_executable()
 
-    for matrix_step in matrix_steps:
+    for matrix_step in build_validation_matrix_steps(python_executable=python_executable):
         induced_failure = induce_step == matrix_step.step
-        step_command = (
+        command = (
             _build_induced_failure_command(step=matrix_step.step, python_executable=python_executable)
             if induced_failure
             else matrix_step.command
         )
-
         started = time.perf_counter()
-        exit_code = execute_command(step_command, ROOT_DIR)
-        duration_seconds = time.perf_counter() - started
-        status: StepStatus = "PASS" if exit_code == 0 else "FAIL"
+        exit_code = execute_command(command, ROOT_DIR)
         results.append(
             MatrixStepResult(
                 step=matrix_step.step,
-                status=status,
+                status="PASS" if exit_code == 0 else "FAIL",
                 exit_code=exit_code,
-                duration_seconds=duration_seconds,
-                command=step_command,
+                duration_seconds=time.perf_counter() - started,
+                command=command,
                 coverage=matrix_step.coverage,
                 induced_failure=induced_failure,
             )
         )
-
     return results
 
 
@@ -217,7 +188,7 @@ def exit_code_for_step_results(step_results: list[MatrixStepResult]) -> int:
 
 
 def _print_step_results(step_results: list[MatrixStepResult]) -> None:
-    print("Phase 2 validation matrix results:")
+    print("Core validation matrix results:")
     for result in step_results:
         print(f" - {result.step}: {result.status}")
         print(f"   command: {shlex.join(result.command)}")
@@ -234,19 +205,13 @@ def _print_step_results(step_results: list[MatrixStepResult]) -> None:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Run deterministic Phase 2 validation matrix over control-doc truth, readiness "
-            "prerequisite, backend seams, and web operator shell suites."
-        ),
+        description="Run the bounded validation matrix for Alice's retained core.",
     )
     parser.add_argument(
         "--induce-step",
         choices=STEP_IDS,
         default=None,
-        help=(
-            "Force one matrix step to fail deterministically to validate "
-            "no-go signaling and failing-step reporting."
-        ),
+        help="Force one matrix step to fail to verify no-go signaling.",
     )
     return parser.parse_args(argv)
 
@@ -255,12 +220,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     step_results = run_validation_matrix(induce_step=args.induce_step)
     _print_step_results(step_results)
-
     exit_code = exit_code_for_step_results(step_results)
-    if exit_code == 0:
-        print("Phase 2 validation matrix result: PASS")
-    else:
-        print("Phase 2 validation matrix result: NO_GO")
+    print(f"Core validation matrix result: {'PASS' if exit_code == 0 else 'NO_GO'}")
     return exit_code
 
 

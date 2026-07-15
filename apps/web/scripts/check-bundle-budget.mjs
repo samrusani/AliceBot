@@ -5,7 +5,6 @@ const manifestPath = new URL("../.next/app-build-manifest.json", import.meta.url
 const nextRoot = new URL("../.next/", import.meta.url);
 const budgets = {
   "/page": 120_000,
-  "/chat/page": 140_000,
   "/continuity/page": 130_000,
   "/vnext/page": 155_000,
 };

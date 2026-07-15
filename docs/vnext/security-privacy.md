@@ -14,7 +14,13 @@ Alice vNext is built around private, correctable, inspectable continuity. This d
 
 ## Connector Safety
 
-The live capture connector slice is local-first and intentionally narrow. Alice can poll Telegram `getUpdates` with an operator-supplied token reference, scan or poll configured local folders, accept browser clipper captures through the local API, and ingest Hermes/OpenClaw-style agent output. It does not perform managed OAuth, packaged browser extension actions, OCR model execution, transcription model execution, hosted connector polling, or cloud sync.
+The live capture connector slice is local-first and intentionally narrow. Alice
+can scan or poll configured local folders, accept browser clipper captures
+through the local API, and ingest generic agent-output text. It may ingest
+screenshot text or voice transcripts produced by external tools; it does not
+poll channels, perform managed OAuth, package browser extension actions, execute
+OCR or transcription models, perform hosted connector polling, or sync to a
+cloud service.
 
 Connector invariants:
 
@@ -34,13 +40,16 @@ Connector invariants:
 
 Do not commit secrets, tokens, real personal exports, private chats, production credentials, or unredacted customer data.
 
-Connector secrets are referenced, not returned. Telegram and browser clipper can use `secret_ref` values such as `env:TELEGRAM_BOT_TOKEN` or `telegram.bot_token.default`. Local secret values are stored through the secret provider abstraction, with an encrypted local file fallback for alpha use and an environment-reference provider for operators who prefer env vars.
+Connector secrets are referenced, not returned. The browser clipper and other
+surviving local connectors may use `secret_ref` values. Local secret values are
+stored through the secret-provider abstraction, with an encrypted local file
+fallback for alpha use and an environment-reference provider for operators who
+prefer environment variables.
 
 Secret rules:
 
 - API, CLI, UI, event logs, source metadata, artifact metadata, and health responses must expose only the reference or configured/not-configured status.
 - Redaction applies before raw connector payloads are persisted.
-- Telegram token tests report whether the reference resolves without printing the token.
 - Browser clipper capture tokens are accepted only when configured and are redacted from source/event evidence.
 - The future OS keychain or hosted secret-provider implementation should satisfy the same interface without changing connector behavior.
 
@@ -55,7 +64,6 @@ Allowed public demo material:
 Disallowed public demo material:
 
 - real OAuth tokens
-- Telegram chat IDs tied to real users
 - real health, legal, financial, family, or customer records
 - real browser history
 - real voice transcripts

@@ -50,8 +50,8 @@ import {
   runVNextSchedulerWorkflowNow,
   setVNextOperatorAgentApiKey,
   syncVNextLocalFolderConnector,
-  syncVNextTelegramConnector,
   updateVNextConnectorConfig,
+  updateVNextTelegramConnectorConfig,
   upsertVNextBrainCharter,
 } from "../lib/api";
 import { memoryProvenanceLabel } from "../lib/memory-provenance";
@@ -210,7 +210,7 @@ export function VNextBrainWorkspace({
   const [connectorEnabled, setConnectorEnabled] = useState(true);
   const [connectorDomain, setConnectorDomain] = useState<Domain>("personal");
   const [connectorSensitivity, setConnectorSensitivity] = useState<Sensitivity>("private");
-  const [connectorSecretRef, setConnectorSecretRef] = useState("telegram.bot_token.default");
+  const [connectorSecretRef, setConnectorSecretRef] = useState("");
   const [telegramAllowedChats, setTelegramAllowedChats] = useState("999001");
   const [localFolderPath, setLocalFolderPath] = useState("~/Notes");
   const [localFolderExtensions, setLocalFolderExtensions] = useState(".md,.txt");
@@ -314,9 +314,7 @@ export function VNextBrainWorkspace({
     setConnectorEnabled(Boolean(health?.enabled ?? false));
     setConnectorDomain(asDomain(health?.default_domain ?? connector.defaultDomain));
     setConnectorSensitivity(asSensitivity(health?.default_sensitivity ?? connector.defaultSensitivity));
-    if (connector.id === "telegram") {
-      setConnectorSecretRef("telegram.bot_token.default");
-    } else if (connector.id === "browser_clipper") {
+    if (connector.id === "browser_clipper") {
       setConnectorSecretRef("browser.capture_token.default");
     } else {
       setConnectorSecretRef("");
@@ -1333,6 +1331,14 @@ export function VNextBrainWorkspace({
   function updateConnectorFixture(connectorId: string, message: string) {
     updateFixtureWorkspace((previous) => {
       const existing = connectorHealth(previous, connectorId);
+      const connectorMode =
+        connectorId === "local_folder"
+          ? { sync_mode: "watch", poll_interval_seconds: 30 }
+          : { sync_mode: "on_demand" };
+      const secretStatus =
+        connectorId === "browser_clipper"
+          ? { secret_configured: Boolean(connectorSecretRef.trim()) }
+          : {};
       const nextItem: VNextConnectorHealthRecord = {
         connector_name: connectorId,
         display_name: INITIAL_CONNECTORS.find((item) => item.id === connectorId)?.name ?? connectorId,
@@ -1340,10 +1346,9 @@ export function VNextBrainWorkspace({
         configured: true,
         default_domain: connectorDomain,
         default_sensitivity: connectorSensitivity,
-        sync_mode: connectorId === "telegram" ? "polling" : connectorId === "local_folder" ? "watch" : "on_demand",
-        poll_interval_seconds: connectorId === "telegram" ? 60 : connectorId === "local_folder" ? 30 : null,
         validation_errors: [],
-        secret_configured: Boolean(connectorSecretRef.trim()),
+        ...connectorMode,
+        ...secretStatus,
         last_sync_at: existing?.last_sync_at ?? null,
         last_success_at: existing?.last_success_at ?? null,
         last_failure_at: existing?.last_failure_at ?? null,
@@ -1408,14 +1413,31 @@ export function VNextBrainWorkspace({
     await runLiveAction(
       "Saving connector settings...",
       async () => {
+        if (selectedConnector.id === "telegram") {
+          await updateVNextTelegramConnectorConfig(apiBaseUrl, {
+            user_id: userId,
+            enabled: connectorEnabled,
+            default_domain: connectorDomain,
+            default_sensitivity: connectorSensitivity,
+            config_json: {
+              allowed_chat_ids: telegramAllowedChats
+                .split(/[,\n]/)
+                .map((value) => value.trim())
+                .filter(Boolean),
+            },
+          });
+          return;
+        }
         await updateVNextConnectorConfig(apiBaseUrl, selectedConnector.id, {
           user_id: userId,
           enabled: connectorEnabled,
           default_domain: connectorDomain,
           default_sensitivity: connectorSensitivity,
-          secret_ref: connectorSecretRef.trim() || null,
-          sync_mode: selectedConnector.id === "telegram" ? "polling" : selectedConnector.id === "local_folder" ? "watch" : "on_demand",
-          poll_interval_seconds: selectedConnector.id === "telegram" ? 60 : selectedConnector.id === "local_folder" ? 30 : null,
+          ...(selectedConnector.id === "browser_clipper"
+            ? { secret_ref: connectorSecretRef.trim() || null }
+            : {}),
+          sync_mode: selectedConnector.id === "local_folder" ? "watch" : "on_demand",
+          ...(selectedConnector.id === "local_folder" ? { poll_interval_seconds: 30 } : {}),
           config_json: configJson,
         });
       },
@@ -1432,17 +1454,7 @@ export function VNextBrainWorkspace({
     await runLiveAction(
       "Running connector sync...",
       async () => {
-        if (selectedConnector.id === "telegram") {
-          await syncVNextTelegramConnector(apiBaseUrl, {
-            user_id: userId,
-            allowed_chat_ids: telegramAllowedChats
-              .split(/[,\n]/)
-              .map((value) => value.trim())
-              .filter(Boolean),
-            default_domain: connectorDomain,
-            default_sensitivity: connectorSensitivity,
-          });
-        } else if (selectedConnector.id === "local_folder") {
+        if (selectedConnector.id === "local_folder") {
           await syncVNextLocalFolderConnector(apiBaseUrl, {
             user_id: userId,
             paths: localFolderPath.trim() ? [localFolderPath.trim()] : [],
@@ -3012,7 +3024,7 @@ export function VNextBrainWorkspace({
         <SectionCard
           eyebrow="Connectors"
           title="Connector settings"
-          description="Live capture connectors expose editable defaults, secret_ref status, cursors, failures, dedupe, and last sync posture."
+          description="On-demand ingestion exposes editable defaults, cursors, failures, dedupe, and the last capture posture."
         >
           <form className="detail-stack" onSubmit={handleSaveConnectorSettings}>
             <div className="form-grid">
@@ -3070,14 +3082,14 @@ export function VNextBrainWorkspace({
                 </select>
               </div>
             </div>
-            {(selectedConnector.id === "telegram" || selectedConnector.id === "browser_clipper") ? (
+            {selectedConnector.id === "browser_clipper" ? (
               <div className="form-field">
                 <label htmlFor="vnext-connector-secret-ref">Secret ref</label>
                 <input
                   id="vnext-connector-secret-ref"
                   value={connectorSecretRef}
                   onChange={(event) => setConnectorSecretRef(event.target.value)}
-                  placeholder="telegram.bot_token.default"
+                  placeholder="browser.capture_token.default"
                 />
               </div>
             ) : null}
@@ -3121,7 +3133,7 @@ export function VNextBrainWorkspace({
             ) : null}
             <div className="button-row">
               <button type="submit" className="primary-action">Save connector settings</button>
-              {(selectedConnector.id === "telegram" || selectedConnector.id === "local_folder") ? (
+              {selectedConnector.id === "local_folder" ? (
                 <button type="button" onClick={handleRunConnectorSync}>Run sync now</button>
               ) : null}
             </div>
@@ -3140,7 +3152,9 @@ export function VNextBrainWorkspace({
                   <span className="meta-pill">{connector.stage}</span>
                   <span className="meta-pill">Default domain: {domainLabel(connector.defaultDomain)}</span>
                   <span className="meta-pill">Default sensitivity: {sensitivityLabel(connector.defaultSensitivity)}</span>
-                  <span className="meta-pill">Secret: {connectorHealth(workspace, connector.id)?.secret_configured ? "Configured" : "No secret"}</span>
+                  {connector.id === "browser_clipper" ? (
+                    <span className="meta-pill">Secret: {connectorHealth(workspace, connector.id)?.secret_configured ? "Configured" : "No secret"}</span>
+                  ) : null}
                   <span className="meta-pill">Captured: {connectorHealth(workspace, connector.id)?.items_captured ?? 0}</span>
                   <span className="meta-pill">Failed: {connectorHealth(workspace, connector.id)?.items_failed ?? 0}</span>
                 </div>
@@ -3152,7 +3166,7 @@ export function VNextBrainWorkspace({
         <SectionCard
           eyebrow="Selected Connector"
           title="Connector details"
-          description="Cursor posture and evidence handling are visible before live polling is added."
+          description="Cursor posture and evidence handling are visible for caller-supplied ingestion."
         >
           <dl className="key-value-grid key-value-grid--compact">
             <div>
@@ -3166,6 +3180,10 @@ export function VNextBrainWorkspace({
             <div>
               <dt>Failure posture</dt>
               <dd>{connectorHealth(workspace, selectedConnector.id)?.last_error ?? selectedConnector.failureMode}</dd>
+            </div>
+            <div>
+              <dt>Evidence input</dt>
+              <dd>{selectedConnector.evidence}</dd>
             </div>
             <div>
               <dt>Sync mode</dt>

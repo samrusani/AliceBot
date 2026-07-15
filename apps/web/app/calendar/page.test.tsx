@@ -8,16 +8,20 @@ const {
   getApiConfigMock,
   getCalendarAccountDetailMock,
   hasLiveApiConfigMock,
+  legacySurfacesEnabledMock,
   listCalendarAccountsMock,
   listCalendarEventsMock,
   listTaskWorkspacesMock,
+  notFoundMock,
 } = vi.hoisted(() => ({
   getApiConfigMock: vi.fn(),
   getCalendarAccountDetailMock: vi.fn(),
   hasLiveApiConfigMock: vi.fn(),
+  legacySurfacesEnabledMock: vi.fn(),
   listCalendarAccountsMock: vi.fn(),
   listCalendarEventsMock: vi.fn(),
   listTaskWorkspacesMock: vi.fn(),
+  notFoundMock: vi.fn(),
 }));
 
 vi.mock("next/link", () => ({
@@ -39,10 +43,15 @@ vi.mock("next/link", () => ({
 }));
 
 vi.mock("next/navigation", () => ({
+  notFound: notFoundMock,
   useRouter: () => ({
     push: vi.fn(),
     refresh: vi.fn(),
   }),
+}));
+
+vi.mock("../../lib/legacy-surfaces.server", () => ({
+  legacySurfacesEnabled: legacySurfacesEnabledMock,
 }));
 
 vi.mock("../../lib/api", async () => {
@@ -63,9 +72,11 @@ describe("CalendarPage", () => {
     getApiConfigMock.mockReset();
     getCalendarAccountDetailMock.mockReset();
     hasLiveApiConfigMock.mockReset();
+    legacySurfacesEnabledMock.mockReset();
     listCalendarAccountsMock.mockReset();
     listCalendarEventsMock.mockReset();
     listTaskWorkspacesMock.mockReset();
+    notFoundMock.mockReset();
 
     getApiConfigMock.mockReturnValue({
       apiBaseUrl: "",
@@ -74,10 +85,24 @@ describe("CalendarPage", () => {
       defaultToolId: "",
     });
     hasLiveApiConfigMock.mockReturnValue(false);
+    legacySurfacesEnabledMock.mockReturnValue(true);
+    notFoundMock.mockImplementation(() => {
+      throw new Error("NEXT_NOT_FOUND");
+    });
   });
 
   afterEach(() => {
     cleanup();
+  });
+
+  it("returns not found before any reads when legacy surfaces are disabled", async () => {
+    legacySurfacesEnabledMock.mockReturnValue(false);
+
+    await expect(CalendarPage({ searchParams: Promise.resolve({}) })).rejects.toThrow(
+      "NEXT_NOT_FOUND",
+    );
+    expect(notFoundMock).toHaveBeenCalledOnce();
+    expect(listCalendarAccountsMock).not.toHaveBeenCalled();
   });
 
   it("uses fixture discovery state when live API configuration is absent", async () => {

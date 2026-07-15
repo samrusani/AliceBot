@@ -181,7 +181,9 @@ alicebot vnext connectors local-folder sync
 alicebot vnext connectors health
 ```
 
-All connector output lands as reviewable source evidence, never as automatic trusted memory. See the [dogfooding guide](dogfooding-guide.md) for Telegram and browser-clip capture.
+All connector output lands as reviewable source evidence, never as automatic
+trusted memory. See the [dogfooding guide](dogfooding-guide.md) for local-folder
+and browser-clip capture.
 
 ## Verify Your Setup
 

@@ -11,13 +11,37 @@ This guide covers the provider foundation paths:
 
 Scope note: this page documents the OpenAI-compatible foundation path.
 
+> **Upgrading from the hosted workspace model:** hosted-era provider rows are
+> tied to their old workspace identity and are orphaned from the deterministic
+> local workspace after upgrade. Bootstrap the local workspace and re-register
+> each provider; do not expect the retained provider API to adopt or rewrite
+> those historical rows.
+
+The smoke helper uses the same local identity and bootstraps its deterministic
+workspace before touching provider endpoints. With no provider URL it starts a
+temporary local OpenAI-compatible stub:
+
+```bash
+./.venv/bin/python scripts/run_phase14_openai_compatible_smoke.py \
+  --user-id "$ALICE_USER_ID" \
+  --thread-id "$THREAD_ID"
+```
+
 ## API Registration
 
 Register an OpenAI-compatible provider in the current workspace:
 
+Set `ALICE_USER_ID` to the local operator UUID. The retained provider routes use
+`X-AliceBot-User-Id` (or `ALICEBOT_AUTH_USER_ID`), not a hosted bearer session.
+
 ```bash
+curl -sS -X POST "http://127.0.0.1:8000/v1/workspaces/bootstrap" \
+  -H "X-AliceBot-User-Id: $ALICE_USER_ID" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
 curl -sS -X POST "http://127.0.0.1:8000/v1/providers" \
-  -H "Authorization: Bearer $SESSION_TOKEN" \
+  -H "X-AliceBot-User-Id: $ALICE_USER_ID" \
   -H "Content-Type: application/json" \
   -d '{
     "provider_key": "openai_compatible",
@@ -64,13 +88,13 @@ export WORKSPACE_PROVIDER_CONFIGS_JSON='[
 ]'
 ```
 
-Then bootstrap the workspace normally:
+Then bootstrap the deterministic local workspace normally:
 
 ```bash
 curl -sS -X POST "http://127.0.0.1:8000/v1/workspaces/bootstrap" \
-  -H "Authorization: Bearer $SESSION_TOKEN" \
+  -H "X-AliceBot-User-Id: $ALICE_USER_ID" \
   -H "Content-Type: application/json" \
-  -d '{"workspace_id": "'"$WORKSPACE_ID"'"}'
+  -d '{}'
 ```
 
 Providers from config are seeded once per workspace when bootstrap completes. Existing providers with the same `provider_key` and `display_name` are left in place.
@@ -81,7 +105,7 @@ Update provider configuration and refresh capability discovery:
 
 ```bash
 curl -sS -X PATCH "http://127.0.0.1:8000/v1/providers/$PROVIDER_ID" \
-  -H "Authorization: Bearer $SESSION_TOKEN" \
+  -H "X-AliceBot-User-Id: $ALICE_USER_ID" \
   -H "Content-Type: application/json" \
   -d '{
     "display_name": "Updated OpenAI-Compatible",
@@ -99,7 +123,7 @@ For bearer-auth OpenAI-compatible providers, send `api_key` when rotating creden
 
 ```bash
 curl -sS -X POST "http://127.0.0.1:8000/v1/providers/test" \
-  -H "Authorization: Bearer $SESSION_TOKEN" \
+  -H "X-AliceBot-User-Id: $ALICE_USER_ID" \
   -H "Content-Type: application/json" \
   -d '{
     "provider_id": "'"$PROVIDER_ID"'",
@@ -113,7 +137,7 @@ The provider-test flow persists normalized invocation telemetry with status, lat
 
 ```bash
 curl -sS -X POST "http://127.0.0.1:8000/v1/runtime/invoke" \
-  -H "Authorization: Bearer $SESSION_TOKEN" \
+  -H "X-AliceBot-User-Id: $ALICE_USER_ID" \
   -H "Idempotency-Key: provider-runtime-$(uuidgen)" \
   -H "Content-Type: application/json" \
   -d '{
@@ -123,25 +147,7 @@ curl -sS -X POST "http://127.0.0.1:8000/v1/runtime/invoke" \
   }'
 ```
 
-One-call continuity still runs through the normal continuity compiler and response trace path. The provider layer adds capability discovery plus invocation telemetry without changing continuity semantics.
-
-## Smoke Script
-
-Run the OpenAI-compatible smoke flow against a real endpoint:
-
-```bash
-./scripts/run_phase14_openai_compatible_smoke.py \
-  --session-token "$SESSION_TOKEN" \
-  --thread-id "$THREAD_ID" \
-  --provider-base-url "https://provider.example/v1" \
-  --model "gpt-5-mini"
-```
-
-Or let the script start a local compliant stub endpoint for the smoke run:
-
-```bash
-./scripts/run_phase14_openai_compatible_smoke.py \
-  --session-token "$SESSION_TOKEN" \
-  --thread-id "$THREAD_ID" \
-  --model "gpt-5-mini"
-```
+One-call continuity still runs through the normal continuity compiler and
+response trace path. The provider layer adds capability discovery, durable
+idempotency, and invocation telemetry without changing continuity semantics.
+The public `/v0/responses` chat endpoint is not part of this boundary.

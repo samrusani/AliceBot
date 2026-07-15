@@ -15,8 +15,12 @@ Agent developers — people building or operating AI agents who need durable, ex
 ## Current Posture
 - `v0.10.4` is the latest published release and immutable baseline. Its PyPI
   wheel and source distribution have Trusted Publishing provenance, with exact
-  digests in `docs/release/v0.10.4-checksums.txt`. It carries the fifth-audit
-  remediation and fixes forward from the sound v0.10.3 baseline.
+  digests in `docs/release/v0.10.4-checksums.txt`.
+- `v0.11.0` is the current unpublished candidate. It removes the Telegram,
+  hosted/control-plane, public chat/response, chief-of-staff, and model-pack
+  periphery so the default runtime matches the product described here. The
+  low-level response job machinery remains internal to retained provider
+  invocation.
 - The product baseline includes hybrid retrieval, the eleven-tool core MCP
   surface, the Memory Operations Protocol, per-agent API keys, Context API v2,
   temporal graph memory/entity resolution, and six live eval suites.
@@ -30,12 +34,16 @@ Agent developers — people building or operating AI agents who need durable, ex
   local SQLite file with no Docker or Postgres.
 
 ## Non-Goals (Now)
-- Hosted service, SLA, or managed cloud.
+- Hosted service, multi-tenant control plane, SLA, or managed cloud.
+- Telegram or other channel transports.
 - Managed OAuth consent/account-linking flows or automatic account syncing.
-  Manual operator-token Gmail and Calendar backends exist, but Alice does not
-  package managed consent or polling.
+  Temporary manual-token Gmail and Calendar compatibility is unmounted by
+  default behind `ALICE_LEGACY_SURFACES=1`.
+- A public bundled chat/response product, chief-of-staff product, or model-pack
+  catalog.
 - Automatic memory capture from arbitrary conversation.
 - Marketplace, channels, or vertical-agent products.
+- OCR or transcription execution; Alice ingests text extracted elsewhere.
 
 ## Success Criteria For The Overhaul
 - An agent developer can go from clone to a working MCP-connected memory in one quickstart path.

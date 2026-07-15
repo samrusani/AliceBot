@@ -1,7 +1,7 @@
 {
   "name": "@alicebot/web",
   "private": true,
-  "version": "0.10.4",
+  "version": "0.11.0",
   "packageManager": "pnpm@10.23.0",
   "scripts": {
     "dev": "next dev",
@@ -16,12 +16,13 @@
     "test:coverage:vnext": "vitest run --config vitest.vnext.config.ts --coverage",
     "setup:browser": "playwright install chromium",
     "setup:browser:linux": "playwright install --with-deps chromium",
-    "test:browser": "pnpm run test:browser:core && pnpm run test:browser:outage && pnpm run test:browser:partial-outage",
+    "test:browser": "pnpm run test:browser:core && pnpm run test:browser:legacy && pnpm run test:browser:outage && pnpm run test:browser:partial-outage",
     "test:browser:core": "playwright test",
+    "test:browser:legacy": "playwright test --config playwright.legacy.config.ts",
     "test:browser:outage": "playwright test --config playwright.outage.config.ts",
     "test:browser:partial-outage": "playwright test --config playwright.partial-outage.config.ts",
     "test:budget": "node scripts/check-bundle-budget.mjs",
-    "test:mvp:validation-matrix": "vitest run app/chat/page.test.tsx components/approval-actions.test.tsx components/approval-detail.test.tsx components/task-step-list.test.tsx components/thread-workflow-panel.test.tsx app/artifacts/page.test.tsx components/gmail-account-list.test.tsx components/gmail-message-ingest-form.test.tsx app/calendar/page.test.tsx app/memories/page.test.tsx app/entities/page.test.tsx components/trace-list.test.tsx lib/api.test.ts"
+    "test:mvp:validation-matrix": "vitest run test/periphery-cut.test.ts lib/legacy-surfaces.server.test.ts components/shell-basics.test.tsx app/approvals/page.test.tsx app/tasks/page.test.tsx app/artifacts/page.test.tsx app/gmail/page.test.tsx app/calendar/page.test.tsx app/memories/page.test.tsx app/entities/page.test.tsx components/trace-list.test.tsx lib/api.test.ts"
   },
   "dependencies": {
     "next": "15.5.20",

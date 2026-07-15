@@ -42,7 +42,7 @@ describe("ApprovalList", () => {
   it("renders an actionable empty state", () => {
     render(<ApprovalList items={[]} />);
     expect(screen.getByText("Approval inbox is empty")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open requests" })).toHaveAttribute("href", "/chat");
+    expect(screen.getByRole("link", { name: "Open continuity overview" })).toHaveAttribute("href", "/");
   });
 
   it("renders selection, task linkage, and risk metadata", () => {

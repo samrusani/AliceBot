@@ -31,8 +31,8 @@ export function ApprovalList({
         <EmptyState
           title="Approval inbox is empty"
           description="There are no approval records to review in the current mode."
-          actionHref="/chat"
-          actionLabel="Open requests"
+          actionHref="/"
+          actionLabel="Open continuity overview"
         />
       </SectionCard>
     );

@@ -1,76 +1,61 @@
-# MVP Readiness Gates Runbook
+# Core Readiness Gates Runbook
 
 ## Objective
-Run one deterministic command that produces quantitative MVP go/no-go evidence across acceptance, latency, cache reuse, and memory quality gates.
-Canonical implementation is Phase 2 (`run_phase2_readiness_gates.py`); `run_mvp_readiness_gates.py` is a compatibility alias.
 
-This readiness runner is also the first prerequisite step in `python3 scripts/run_phase2_validation_matrix.py`.
+Run one deterministic command that verifies the retained v0.11 core: retrieval,
+provider runtime, and local bootstrap. The historical filename remains as a
+compatibility path; this is not a bundled-chat or MVP acceptance runner.
+
+`scripts/run_phase2_readiness_gates.py` is the canonical implementation.
+`scripts/run_mvp_readiness_gates.py` and
+`scripts/run_phase3_readiness_gates.py` are compatibility aliases.
 
 ## Prerequisites
-- Local dependencies installed (`python3 -m venv .venv` and `./.venv/bin/python -m pip install -e '.[dev]'`).
-- Local Postgres available at the configured admin/app URLs.
-- No extra API keys required for this readiness runner: model calls are stubbed for deterministic probe evidence.
+
+- Install local dependencies with `make setup` or the equivalent project setup.
+- No API keys or running Postgres instance are required for this unit-contract
+  runner.
 
 ## Exact Command
+
 ```bash
 python3 scripts/run_phase2_readiness_gates.py
 ```
 
-Expected behavior:
-- Executes bounded gates in this order:
-  - `acceptance_suite` (runs `python3 scripts/run_phase2_acceptance.py`)
-  - `latency_p95` (`p95_seconds < 5.0`)
-  - `cache_reuse` (`cache_reuse_ratio >= 0.70` when cached-token telemetry is present)
-  - `memory_quality` (`precision > 0.80` and `adjudicated_sample >= 20`)
-- Prints explicit `PASS`, `FAIL`, or `BLOCKED` per gate with measured values and thresholds.
-- Returns exit code `0` only when every gate is `PASS`.
-- Returns non-zero on any `FAIL` or `BLOCKED` gate.
+The runner executes these fail-closed gates in order:
 
-## Gate Interpretation
-- `acceptance_suite`
-  - `PASS`: acceptance runner exit code is `0`.
-  - `FAIL`: acceptance runner returned non-zero.
+1. `retrieval_contracts`: deterministic retrieval, evaluation, and stability tests.
+2. `provider_runtime_contracts`: retained provider-runtime and AutoGen bridge tests.
+3. `local_bootstrap_contracts`: deterministic Alice Lite bootstrap asset tests.
 
-- `latency_p95`
-  - measured from repeated retrieval-plus-response probe calls.
-  - p95 uses deterministic nearest-rank math on probe durations.
-  - `PASS` requires strictly `< 5.0` seconds.
+Each gate reports `PASS`, `FAIL`, or `BLOCKED`. The command exits `0` only when
+all three gates pass; a failed test command or unavailable runner returns nonzero.
 
-- `cache_reuse`
-  - ratio = `sum(cached_input_tokens) / sum(input_tokens)`.
-  - `PASS` requires `>= 0.70`.
-  - `BLOCKED` when cached-token telemetry is missing/invalid for any probe sample.
+## Deterministic Negative Checks
 
-- `memory_quality`
-  - derived from `/v0/memories/evaluation-summary` semantics.
-  - `precision = correct / (correct + incorrect)` when denominator > 0.
-  - `adjudicated_sample = correct + incorrect`.
-  - `PASS` when precision and sample thresholds are met.
-  - `FAIL` when adjudicated sample is sufficient but precision is at-or-below target (`<= 0.80`).
-  - `BLOCKED` when adjudicated sample is below minimum or summary data is unavailable/invalid.
+Use one of these commands to prove the no-go signal:
 
-## Optional Deterministic Negative Checks
 ```bash
-python3 scripts/run_phase2_readiness_gates.py --induce-gate acceptance_fail
-python3 scripts/run_phase2_readiness_gates.py --induce-gate latency_fail
-python3 scripts/run_phase2_readiness_gates.py --induce-gate cache_fail
-python3 scripts/run_phase2_readiness_gates.py --induce-gate cache_blocked
-python3 scripts/run_phase2_readiness_gates.py --induce-gate memory_needs_review
-python3 scripts/run_phase2_readiness_gates.py --induce-gate memory_insufficient
+python3 scripts/run_phase2_readiness_gates.py --induce-gate retrieval_fail
+python3 scripts/run_phase2_readiness_gates.py --induce-gate runtime_fail
+python3 scripts/run_phase2_readiness_gates.py --induce-gate local_bootstrap_fail
 ```
 
-These options intentionally force deterministic gate outcomes to validate reviewer signaling.
+The selected gate exits through the induced-failure path while the other gates
+still run. The overall result must be `NO_GO` with a nonzero exit code.
 
-## Blocked-State Handling
-- Treat any `BLOCKED` gate as no-go until evidence gaps are resolved.
-- Do not treat blocked cache/memory gates as implicit pass.
-- Re-run the full command after resolving the blocked condition.
+## Broader Validation
 
-## Compatibility Alias Command
+`python3 scripts/run_phase2_validation_matrix.py` runs this readiness command,
+the retained PostgreSQL integration subset, documentation truth checks, and the
+current web matrix. Use that matrix for release-candidate evidence; this narrow
+runner is only the fast retained-core readiness layer.
+
+## Compatibility Alias
+
 ```bash
 python3 scripts/run_mvp_readiness_gates.py
 ```
 
-Expected behavior:
-- Prints explicit alias messaging and delegates to `scripts/run_phase2_readiness_gates.py`.
-- Preserves the same arguments, thresholds, and gate pass/fail/blocked semantics.
+The alias delegates to the canonical runner and preserves arguments and exit
+semantics. New automation should call the canonical script.

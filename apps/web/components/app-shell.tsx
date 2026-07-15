@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-const navigation = [
+const coreNavigation = [
   {
     href: "/",
     label: "Overview",
@@ -17,49 +17,9 @@ const navigation = [
     caption: "Second-brain dashboard, review, briefs, generated artifacts, and graph",
   },
   {
-    href: "/onboarding",
-    label: "Onboarding",
-    caption: "Instruction-only hosted setup guide",
-  },
-  {
-    href: "/settings",
-    label: "Settings",
-    caption: "Hosted preferences and device visibility",
-  },
-  {
-    href: "/admin",
-    label: "Admin",
-    caption: "Hosted workspace, delivery, rollout, and incident visibility",
-  },
-  {
-    href: "/chat",
-    label: "Requests",
-    caption: "Compose bounded operator requests",
-  },
-  {
-    href: "/approvals",
-    label: "Approvals",
-    caption: "Review approval queue and inspector",
-  },
-  {
-    href: "/tasks",
-    label: "Tasks",
-    caption: "Inspect lifecycle state and task steps",
-  },
-  {
     href: "/artifacts",
     label: "Artifacts",
-    caption: "Review task artifacts, workspaces, and chunks",
-  },
-  {
-    href: "/gmail",
-    label: "Gmail",
-    caption: "Review connected accounts and ingest one selected message",
-  },
-  {
-    href: "/calendar",
-    label: "Calendar",
-    caption: "Review connected accounts and ingest one selected event",
+    caption: "Review persisted artifacts and ordered chunk evidence",
   },
   {
     href: "/memories",
@@ -70,11 +30,6 @@ const navigation = [
     href: "/continuity",
     label: "Continuity",
     caption: "Capture, recall, review, and resume continuity state",
-  },
-  {
-    href: "/chief-of-staff",
-    label: "Chief-of-Staff",
-    caption: "Deterministic priorities, rationale, and next action",
   },
   {
     href: "/entities",
@@ -88,6 +43,29 @@ const navigation = [
   },
 ];
 
+const legacyNavigation = [
+  {
+    href: "/approvals",
+    label: "Approvals",
+    caption: "Legacy approval queue and execution inspector",
+  },
+  {
+    href: "/tasks",
+    label: "Tasks",
+    caption: "Legacy task lifecycle and step inspection",
+  },
+  {
+    href: "/gmail",
+    label: "Gmail",
+    caption: "Legacy manual account and message ingestion",
+  },
+  {
+    href: "/calendar",
+    label: "Calendar",
+    caption: "Legacy manual account and event ingestion",
+  },
+];
+
 function isActive(pathname: string, href: string) {
   if (href === "/") {
     return pathname === "/";
@@ -96,8 +74,17 @@ function isActive(pathname: string, href: string) {
   return pathname.startsWith(href);
 }
 
-export function AppShell({ children }: { children: ReactNode }) {
+export function AppShell({
+  children,
+  legacySurfacesEnabled,
+}: {
+  children: ReactNode;
+  legacySurfacesEnabled: boolean;
+}) {
   const pathname = usePathname();
+  const navigation = legacySurfacesEnabled
+    ? [...coreNavigation, ...legacyNavigation]
+    : coreNavigation;
 
   return (
     <div className="shell-chrome">
@@ -111,11 +98,10 @@ export function AppShell({ children }: { children: ReactNode }) {
               AB
             </span>
             <p className="eyebrow">AliceBot</p>
-            <p className="brand-title">Operator shell</p>
+            <p className="brand-title">Continuity console</p>
             <p className="brand-description">
-              Calm, governed views for hosted onboarding/settings plus requests, approvals, tasks,
-              hosted admin operations, artifacts, Gmail, Calendar, memories, chief-of-staff
-              priorities, continuity, vNext second-brain review, entities, and explainability.
+              Calm, local-first review for memory, continuity, artifacts, entity context,
+              retrieval quality, and explainability.
             </p>
           </div>
 
@@ -146,13 +132,15 @@ export function AppShell({ children }: { children: ReactNode }) {
           <header className="shell-topbar">
             <div className="shell-topbar__row">
               <div className="brand-copy">
-                <p className="eyebrow">MVP Web Shell</p>
-                <p className="shell-topbar__title">Governed operator interface</p>
+                <p className="eyebrow">Alice continuity layer</p>
+                <p className="shell-topbar__title">Evidence-first review console</p>
               </div>
 
               <div className="topbar-status" aria-label="Shell status">
-                <span className="subtle-chip">Single-user v1</span>
-                <span className="subtle-chip">Hosted bootstrap seams + operator shell</span>
+                <span className="subtle-chip">Local-first</span>
+                <span className="subtle-chip">
+                  {legacySurfacesEnabled ? "Legacy surfaces enabled" : "Core surfaces only"}
+                </span>
               </div>
             </div>
 

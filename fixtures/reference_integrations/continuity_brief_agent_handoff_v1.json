@@ -4,9 +4,6 @@
     "brief_type": "agent_handoff",
     "scope": {
       "thread_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      "task_id": null,
-      "project": null,
-      "person": null,
       "since": null,
       "until": null
     },
@@ -14,7 +11,7 @@
     "selection_strategy": {
       "task_brief_mode": "agent_handoff",
       "provider_strategy": "continuity_brief.agent_handoff",
-      "model_pack_strategy": null,
+      "briefing_strategy": "balanced",
       "token_budget": 1200,
       "budget_source": "default"
     },
@@ -85,8 +82,17 @@
       }
     },
     "next_suggested_action": {
+      "continuity_object_id": "obj-2",
       "title": "Next Action: Run release smoke",
-      "rationale": "The handoff bundle already isolates the next deterministic step."
+      "object_type": "NextAction",
+      "reason": "The handoff bundle already isolates the next deterministic step.",
+      "confidence_posture": "high",
+      "provenance_references": [
+        {
+          "source_kind": "runtime_capture",
+          "source_id": "capture-event-1"
+        }
+      ]
     },
     "provenance_bundle": {
       "source_object_ids": [
@@ -111,6 +117,10 @@
     },
     "trust_posture": {
       "confidence_posture": "high",
+      "average_confidence": 0.95,
+      "strongest_trust_class": "deterministic",
+      "weakest_provenance_posture": "strong",
+      "active_signal_count": 2,
       "positive_signal_count": 2,
       "negative_signal_count": 0,
       "neutral_signal_count": 0,

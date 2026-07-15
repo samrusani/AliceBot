@@ -105,11 +105,11 @@ describe("VNextPage", () => {
     expect(screen.getByText("Connector settings")).toBeInTheDocument();
     expect(screen.getByText("Readiness checks")).toBeInTheDocument();
     expect(screen.getByText("Brain Charter")).toBeInTheDocument();
-    expect(screen.getAllByText("Telegram capture").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Telegram raw-update ingestion").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Browser clipper").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("DOCX processing").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("CSV processing").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Screenshot processing").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("DOCX text-payload ingestion").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("CSV row-payload ingestion").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Screenshot text-payload ingestion").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Domain: Work").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Sensitivity: Private").length).toBeGreaterThan(0);
     expect(screen.getByText("Memory sources used")).toBeInTheDocument();
@@ -118,6 +118,32 @@ describe("VNextPage", () => {
     expect(screen.getByText("OpenClaw")).toBeInTheDocument();
     expect(screen.getByText("Hermes")).toBeInTheDocument();
     expect(screen.getByText("Recent scheduler runs")).toBeInTheDocument();
+  });
+
+  it("states the caller-supplied ingestion boundary without claiming transport or extraction execution", async () => {
+    await renderVNextPage();
+
+    expect(screen.getByText("Operator-supplied raw Telegram update JSON")).toBeInTheDocument();
+    expect(screen.getByText("Cursor posture and evidence handling are visible for caller-supplied ingestion.")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Connector"), { target: { value: "screenshot_ocr" } });
+    expect(screen.getByText("Text extracted outside Alice plus screenshot metadata")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Connector"), { target: { value: "voice_transcription" } });
+    expect(screen.getByText("Transcript text extracted outside Alice plus recording metadata")).toBeInTheDocument();
+
+    const renderedCopy = document.body.textContent ?? "";
+    for (const retiredClaim of [
+      "Phase 2",
+      "Webhook payloads",
+      "live polling",
+      "OCR text",
+      "OCR extraction",
+      "Voice transcription",
+      "logged for retry",
+    ]) {
+      expect(renderedCopy, retiredClaim).not.toContain(retiredClaim);
+    }
   });
 
   it("keeps fixture labels aligned to vNext schema values and connector contracts", () => {

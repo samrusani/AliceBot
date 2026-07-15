@@ -86,7 +86,7 @@ check-python-coverage:
 test-python:
 	$(PYTHON) -m pytest tests/unit -q --cov=alicebot_api --cov-report=term --cov-report=json:$(PYTHON_COVERAGE_JSON) --cov-fail-under=50
 	$(MAKE) check-python-coverage PYTHON_COVERAGE_JSON=$(PYTHON_COVERAGE_JSON) PYTHON_MAIN_COVERAGE_MIN=$(PYTHON_MAIN_COVERAGE_MIN)
-	$(PYTHON) -m pytest tests/integration -q
+	ALICE_LEGACY_SURFACES=1 $(PYTHON) -m pytest tests/integration -q
 
 test-web: setup-browser
 	$(PNPM) --dir $(WEB_DIR) test

@@ -44,29 +44,6 @@ DEFAULT_WORKSPACE_PROVIDER_CONFIGS_JSON = "[]"
 DEFAULT_GMAIL_SECRET_MANAGER_URL = ""
 DEFAULT_CALENDAR_SECRET_MANAGER_URL = ""
 DEFAULT_AUTH_USER_ID = ""
-DEFAULT_RESPONSE_RATE_LIMIT_WINDOW_SECONDS = 60
-DEFAULT_RESPONSE_RATE_LIMIT_MAX_REQUESTS = 20
-DEFAULT_MAGIC_LINK_TTL_SECONDS = 900
-DEFAULT_AUTH_SESSION_TTL_SECONDS = 2_592_000
-DEFAULT_DEVICE_LINK_TTL_SECONDS = 600
-DEFAULT_TELEGRAM_LINK_TTL_SECONDS = 600
-DEFAULT_TELEGRAM_BOT_USERNAME = "alicebot"
-DEFAULT_TELEGRAM_WEBHOOK_SECRET = ""
-DEFAULT_TELEGRAM_BOT_TOKEN = ""
-DEFAULT_HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS = 60
-DEFAULT_HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS = 20
-DEFAULT_HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS = 300
-DEFAULT_HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS = 20
-DEFAULT_HOSTED_ABUSE_WINDOW_SECONDS = 600
-DEFAULT_HOSTED_ABUSE_BLOCK_THRESHOLD = 5
-DEFAULT_HOSTED_RATE_LIMITS_ENABLED_BY_DEFAULT = True
-DEFAULT_HOSTED_ABUSE_CONTROLS_ENABLED_BY_DEFAULT = True
-DEFAULT_MAGIC_LINK_START_RATE_LIMIT_WINDOW_SECONDS = 300
-DEFAULT_MAGIC_LINK_START_RATE_LIMIT_MAX_REQUESTS = 5
-DEFAULT_MAGIC_LINK_VERIFY_RATE_LIMIT_WINDOW_SECONDS = 300
-DEFAULT_MAGIC_LINK_VERIFY_RATE_LIMIT_MAX_REQUESTS = 10
-DEFAULT_TELEGRAM_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS = 60
-DEFAULT_TELEGRAM_WEBHOOK_RATE_LIMIT_MAX_REQUESTS = 120
 DEFAULT_CORS_ALLOWED_ORIGINS: tuple[str, ...] = ()
 DEFAULT_CORS_ALLOWED_METHODS: tuple[str, ...] = (
     "GET",
@@ -80,7 +57,6 @@ DEFAULT_CORS_ALLOWED_HEADERS: tuple[str, ...] = (
     "Authorization",
     "Content-Type",
     "X-AliceBot-User-Id",
-    "X-Telegram-Bot-Api-Secret-Token",
 )
 DEFAULT_CORS_ALLOW_CREDENTIALS = False
 DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECONDS = 600
@@ -89,7 +65,6 @@ DEFAULT_SECURITY_HEADERS_HSTS_MAX_AGE_SECONDS = 31_536_000
 DEFAULT_SECURITY_HEADERS_HSTS_INCLUDE_SUBDOMAINS = True
 DEFAULT_TRUST_PROXY_HEADERS = False
 DEFAULT_TRUSTED_PROXY_IPS: tuple[str, ...] = ()
-DEFAULT_ENTRYPOINT_RATE_LIMIT_BACKEND = "redis"
 DEFAULT_RETRIEVAL_TRACE_RETENTION_DAYS = 14
 DEFAULT_LEGACY_V0_ENABLED_OUTSIDE_DEV = False
 
@@ -211,35 +186,6 @@ class Settings:
     gmail_secret_manager_url: str = DEFAULT_GMAIL_SECRET_MANAGER_URL
     calendar_secret_manager_url: str = DEFAULT_CALENDAR_SECRET_MANAGER_URL
     auth_user_id: str = DEFAULT_AUTH_USER_ID
-    response_rate_limit_window_seconds: int = DEFAULT_RESPONSE_RATE_LIMIT_WINDOW_SECONDS
-    response_rate_limit_max_requests: int = DEFAULT_RESPONSE_RATE_LIMIT_MAX_REQUESTS
-    magic_link_ttl_seconds: int = DEFAULT_MAGIC_LINK_TTL_SECONDS
-    auth_session_ttl_seconds: int = DEFAULT_AUTH_SESSION_TTL_SECONDS
-    device_link_ttl_seconds: int = DEFAULT_DEVICE_LINK_TTL_SECONDS
-    telegram_link_ttl_seconds: int = DEFAULT_TELEGRAM_LINK_TTL_SECONDS
-    telegram_bot_username: str = DEFAULT_TELEGRAM_BOT_USERNAME
-    telegram_webhook_secret: str = DEFAULT_TELEGRAM_WEBHOOK_SECRET
-    telegram_bot_token: str = DEFAULT_TELEGRAM_BOT_TOKEN
-    hosted_chat_rate_limit_window_seconds: int = DEFAULT_HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS
-    hosted_chat_rate_limit_max_requests: int = DEFAULT_HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS
-    hosted_scheduler_rate_limit_window_seconds: int = DEFAULT_HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS
-    hosted_scheduler_rate_limit_max_requests: int = DEFAULT_HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS
-    hosted_abuse_window_seconds: int = DEFAULT_HOSTED_ABUSE_WINDOW_SECONDS
-    hosted_abuse_block_threshold: int = DEFAULT_HOSTED_ABUSE_BLOCK_THRESHOLD
-    hosted_rate_limits_enabled_by_default: bool = DEFAULT_HOSTED_RATE_LIMITS_ENABLED_BY_DEFAULT
-    hosted_abuse_controls_enabled_by_default: bool = DEFAULT_HOSTED_ABUSE_CONTROLS_ENABLED_BY_DEFAULT
-    magic_link_start_rate_limit_window_seconds: int = (
-        DEFAULT_MAGIC_LINK_START_RATE_LIMIT_WINDOW_SECONDS
-    )
-    magic_link_start_rate_limit_max_requests: int = DEFAULT_MAGIC_LINK_START_RATE_LIMIT_MAX_REQUESTS
-    magic_link_verify_rate_limit_window_seconds: int = (
-        DEFAULT_MAGIC_LINK_VERIFY_RATE_LIMIT_WINDOW_SECONDS
-    )
-    magic_link_verify_rate_limit_max_requests: int = DEFAULT_MAGIC_LINK_VERIFY_RATE_LIMIT_MAX_REQUESTS
-    telegram_webhook_rate_limit_window_seconds: int = (
-        DEFAULT_TELEGRAM_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS
-    )
-    telegram_webhook_rate_limit_max_requests: int = DEFAULT_TELEGRAM_WEBHOOK_RATE_LIMIT_MAX_REQUESTS
     cors_allowed_origins: tuple[str, ...] = DEFAULT_CORS_ALLOWED_ORIGINS
     cors_allowed_methods: tuple[str, ...] = DEFAULT_CORS_ALLOWED_METHODS
     cors_allowed_headers: tuple[str, ...] = DEFAULT_CORS_ALLOWED_HEADERS
@@ -252,7 +198,6 @@ class Settings:
     )
     trust_proxy_headers: bool = DEFAULT_TRUST_PROXY_HEADERS
     trusted_proxy_ips: tuple[str, ...] = DEFAULT_TRUSTED_PROXY_IPS
-    entrypoint_rate_limit_backend: str = DEFAULT_ENTRYPOINT_RATE_LIMIT_BACKEND
     retrieval_trace_retention_days: int = DEFAULT_RETRIEVAL_TRACE_RETENTION_DAYS
     legacy_v0_enabled_outside_dev: bool = DEFAULT_LEGACY_V0_ENABLED_OUTSIDE_DEV
 
@@ -343,121 +288,6 @@ class Settings:
                 cls.calendar_secret_manager_url,
             ),
             auth_user_id=_get_env_value(current_env, "ALICEBOT_AUTH_USER_ID", cls.auth_user_id).strip(),
-            response_rate_limit_window_seconds=_get_env_int(
-                current_env,
-                "RESPONSE_RATE_LIMIT_WINDOW_SECONDS",
-                cls.response_rate_limit_window_seconds,
-            ),
-            response_rate_limit_max_requests=_get_env_int(
-                current_env,
-                "RESPONSE_RATE_LIMIT_MAX_REQUESTS",
-                cls.response_rate_limit_max_requests,
-            ),
-            magic_link_ttl_seconds=_get_env_int(
-                current_env,
-                "MAGIC_LINK_TTL_SECONDS",
-                cls.magic_link_ttl_seconds,
-            ),
-            auth_session_ttl_seconds=_get_env_int(
-                current_env,
-                "AUTH_SESSION_TTL_SECONDS",
-                cls.auth_session_ttl_seconds,
-            ),
-            device_link_ttl_seconds=_get_env_int(
-                current_env,
-                "DEVICE_LINK_TTL_SECONDS",
-                cls.device_link_ttl_seconds,
-            ),
-            telegram_link_ttl_seconds=_get_env_int(
-                current_env,
-                "TELEGRAM_LINK_TTL_SECONDS",
-                cls.telegram_link_ttl_seconds,
-            ),
-            telegram_bot_username=_get_env_value(
-                current_env,
-                "TELEGRAM_BOT_USERNAME",
-                cls.telegram_bot_username,
-            ).strip(),
-            telegram_webhook_secret=_get_env_value(
-                current_env,
-                "TELEGRAM_WEBHOOK_SECRET",
-                cls.telegram_webhook_secret,
-            ).strip(),
-            telegram_bot_token=_get_env_value(
-                current_env,
-                "TELEGRAM_BOT_TOKEN",
-                cls.telegram_bot_token,
-            ).strip(),
-            hosted_chat_rate_limit_window_seconds=_get_env_int(
-                current_env,
-                "HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS",
-                cls.hosted_chat_rate_limit_window_seconds,
-            ),
-            hosted_chat_rate_limit_max_requests=_get_env_int(
-                current_env,
-                "HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS",
-                cls.hosted_chat_rate_limit_max_requests,
-            ),
-            hosted_scheduler_rate_limit_window_seconds=_get_env_int(
-                current_env,
-                "HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS",
-                cls.hosted_scheduler_rate_limit_window_seconds,
-            ),
-            hosted_scheduler_rate_limit_max_requests=_get_env_int(
-                current_env,
-                "HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS",
-                cls.hosted_scheduler_rate_limit_max_requests,
-            ),
-            hosted_abuse_window_seconds=_get_env_int(
-                current_env,
-                "HOSTED_ABUSE_WINDOW_SECONDS",
-                cls.hosted_abuse_window_seconds,
-            ),
-            hosted_abuse_block_threshold=_get_env_int(
-                current_env,
-                "HOSTED_ABUSE_BLOCK_THRESHOLD",
-                cls.hosted_abuse_block_threshold,
-            ),
-            hosted_rate_limits_enabled_by_default=_get_env_bool(
-                current_env,
-                "HOSTED_RATE_LIMITS_ENABLED_BY_DEFAULT",
-                cls.hosted_rate_limits_enabled_by_default,
-            ),
-            hosted_abuse_controls_enabled_by_default=_get_env_bool(
-                current_env,
-                "HOSTED_ABUSE_CONTROLS_ENABLED_BY_DEFAULT",
-                cls.hosted_abuse_controls_enabled_by_default,
-            ),
-            magic_link_start_rate_limit_window_seconds=_get_env_int(
-                current_env,
-                "MAGIC_LINK_START_RATE_LIMIT_WINDOW_SECONDS",
-                cls.magic_link_start_rate_limit_window_seconds,
-            ),
-            magic_link_start_rate_limit_max_requests=_get_env_int(
-                current_env,
-                "MAGIC_LINK_START_RATE_LIMIT_MAX_REQUESTS",
-                cls.magic_link_start_rate_limit_max_requests,
-            ),
-            magic_link_verify_rate_limit_window_seconds=_get_env_int(
-                current_env,
-                "MAGIC_LINK_VERIFY_RATE_LIMIT_WINDOW_SECONDS",
-                cls.magic_link_verify_rate_limit_window_seconds,
-            ),
-            magic_link_verify_rate_limit_max_requests=_get_env_int(
-                current_env,
-                "MAGIC_LINK_VERIFY_RATE_LIMIT_MAX_REQUESTS",
-                cls.magic_link_verify_rate_limit_max_requests,
-            ),
-            telegram_webhook_rate_limit_window_seconds=_get_env_int(
-                current_env,
-                "TELEGRAM_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS",
-                cls.telegram_webhook_rate_limit_window_seconds,
-            ),
-            telegram_webhook_rate_limit_max_requests=_get_env_int(
-                current_env,
-                "TELEGRAM_WEBHOOK_RATE_LIMIT_MAX_REQUESTS",
-                cls.telegram_webhook_rate_limit_max_requests,
-            ),
             cors_allowed_origins=_normalize_csv_tokens(
                 _get_env_csv(current_env, "CORS_ALLOWED_ORIGINS", cls.cors_allowed_origins),
             ),
@@ -501,11 +331,6 @@ class Settings:
             trusted_proxy_ips=_normalize_csv_tokens(
                 _get_env_csv(current_env, "TRUSTED_PROXY_IPS", cls.trusted_proxy_ips),
             ),
-            entrypoint_rate_limit_backend=_get_env_value(
-                current_env,
-                "ENTRYPOINT_RATE_LIMIT_BACKEND",
-                cls.entrypoint_rate_limit_backend,
-            ).strip().lower(),
             retrieval_trace_retention_days=_get_env_int(
                 current_env,
                 "RETRIEVAL_TRACE_RETENTION_DAYS",
@@ -603,52 +428,12 @@ def _validate_settings(
         except ValueError as exc:
             raise ValueError("ALICEBOT_AUTH_USER_ID must be a valid UUID") from exc
 
-    if settings.response_rate_limit_window_seconds <= 0:
-        raise ValueError("RESPONSE_RATE_LIMIT_WINDOW_SECONDS must be a positive integer")
-    if settings.response_rate_limit_max_requests <= 0:
-        raise ValueError("RESPONSE_RATE_LIMIT_MAX_REQUESTS must be a positive integer")
-    if settings.magic_link_ttl_seconds <= 0:
-        raise ValueError("MAGIC_LINK_TTL_SECONDS must be a positive integer")
-    if settings.auth_session_ttl_seconds <= 0:
-        raise ValueError("AUTH_SESSION_TTL_SECONDS must be a positive integer")
-    if settings.device_link_ttl_seconds <= 0:
-        raise ValueError("DEVICE_LINK_TTL_SECONDS must be a positive integer")
-    if settings.telegram_link_ttl_seconds <= 0:
-        raise ValueError("TELEGRAM_LINK_TTL_SECONDS must be a positive integer")
-    if settings.telegram_bot_username == "":
-        raise ValueError("TELEGRAM_BOT_USERNAME must be provided")
-    if settings.hosted_chat_rate_limit_window_seconds <= 0:
-        raise ValueError("HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS must be a positive integer")
-    if settings.hosted_chat_rate_limit_max_requests <= 0:
-        raise ValueError("HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS must be a positive integer")
-    if settings.hosted_scheduler_rate_limit_window_seconds <= 0:
-        raise ValueError("HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS must be a positive integer")
-    if settings.hosted_scheduler_rate_limit_max_requests <= 0:
-        raise ValueError("HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS must be a positive integer")
-    if settings.hosted_abuse_window_seconds <= 0:
-        raise ValueError("HOSTED_ABUSE_WINDOW_SECONDS must be a positive integer")
-    if settings.hosted_abuse_block_threshold <= 0:
-        raise ValueError("HOSTED_ABUSE_BLOCK_THRESHOLD must be a positive integer")
-    if settings.magic_link_start_rate_limit_window_seconds <= 0:
-        raise ValueError("MAGIC_LINK_START_RATE_LIMIT_WINDOW_SECONDS must be a positive integer")
-    if settings.magic_link_start_rate_limit_max_requests <= 0:
-        raise ValueError("MAGIC_LINK_START_RATE_LIMIT_MAX_REQUESTS must be a positive integer")
-    if settings.magic_link_verify_rate_limit_window_seconds <= 0:
-        raise ValueError("MAGIC_LINK_VERIFY_RATE_LIMIT_WINDOW_SECONDS must be a positive integer")
-    if settings.magic_link_verify_rate_limit_max_requests <= 0:
-        raise ValueError("MAGIC_LINK_VERIFY_RATE_LIMIT_MAX_REQUESTS must be a positive integer")
-    if settings.telegram_webhook_rate_limit_window_seconds <= 0:
-        raise ValueError("TELEGRAM_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS must be a positive integer")
-    if settings.telegram_webhook_rate_limit_max_requests <= 0:
-        raise ValueError("TELEGRAM_WEBHOOK_RATE_LIMIT_MAX_REQUESTS must be a positive integer")
     if settings.cors_preflight_max_age_seconds <= 0:
         raise ValueError("CORS_PREFLIGHT_MAX_AGE_SECONDS must be a positive integer")
     if len(settings.cors_allowed_methods) == 0:
         raise ValueError("CORS_ALLOWED_METHODS must include at least one method")
     if settings.security_headers_hsts_max_age_seconds <= 0:
         raise ValueError("SECURITY_HEADERS_HSTS_MAX_AGE_SECONDS must be a positive integer")
-    if settings.entrypoint_rate_limit_backend not in {"redis", "memory"}:
-        raise ValueError("ENTRYPOINT_RATE_LIMIT_BACKEND must be either 'redis' or 'memory'")
     if settings.retrieval_trace_retention_days <= 0:
         raise ValueError("RETRIEVAL_TRACE_RETENTION_DAYS must be a positive integer")
     if settings.trust_proxy_headers and len(settings.trusted_proxy_ips) == 0:
@@ -694,15 +479,6 @@ def _validate_settings(
             raise ValueError(
                 "DATABASE_ADMIN_URL must be overridden outside development/test environments"
             )
-        if settings.s3_access_key == DEFAULT_S3_ACCESS_KEY:
-            raise ValueError("S3_ACCESS_KEY must be overridden outside development/test environments")
-        if settings.s3_secret_key == DEFAULT_S3_SECRET_KEY:
-            raise ValueError("S3_SECRET_KEY must be overridden outside development/test environments")
-        if settings.telegram_webhook_secret == "":
-            raise ValueError(
-                "TELEGRAM_WEBHOOK_SECRET must be configured outside development/test environments"
-            )
-
     return settings
 
 
@@ -712,7 +488,7 @@ def get_settings() -> Settings:
 
 
 def get_runtime_settings() -> Settings:
-    """Load settings for local CLI/MCP runtimes without hosted-service gates.
+    """Load settings for local CLI/MCP runtimes without API deployment gates.
 
     The API process still uses ``get_settings`` and enforces the complete
     production deployment contract. Local command and stdio runtimes require

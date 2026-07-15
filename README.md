@@ -60,7 +60,9 @@ SQLite mode is the trial and single-agent path: it serves the eleven core tools 
 
 ### Full stack (Postgres + review console)
 
-For the full experience — web review console, scheduler, legacy surfaces — run from a repo checkout. Requirements: Python 3.12+, Node 20+, pnpm, Docker, Git.
+For the full experience — Postgres/pgvector, the web review console, and core
+memory scheduler workflows — run from a repo checkout. Requirements: Python
+3.12+, Node 20+, pnpm, Docker, Git.
 
 ```bash
 git clone https://github.com/samrusani/AliceBot.git
@@ -116,7 +118,7 @@ The core MCP surface is eleven tools:
 
 Calling directly from a human client (Claude Desktop, an IDE)? `alice_memory_commit` needs only `title` and `canonical_text` — no identity fields. Agent integrations declare `agent_id` and `agent_type`; see [agent integration](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/agent-integration.md).
 
-The write verbs follow one contract — outcomes, audit guarantees, and honest boundaries per verb are documented in the [Memory Operations Protocol](https://github.com/samrusani/AliceBot/blob/main/docs/memory-operations-protocol.md). The legacy long-tail tool surface stays available for unauthenticated local operator compatibility behind `ALICE_MCP_LEGACY_TOOLS=1`; a server bound with `ALICE_AGENT_API_KEY` exposes only the policy-complete core surface.
+The write verbs follow one contract — outcomes, audit guarantees, and honest boundaries per verb are documented in the [Memory Operations Protocol](https://github.com/samrusani/AliceBot/blob/main/docs/memory-operations-protocol.md). Removed backing services no longer have MCP tools. Retained long-tail memory tools require `ALICE_MCP_LEGACY_TOOLS=1`; exactly `alice_task_brief`, `alice_task_brief_show`, and `alice_task_brief_compare` additionally require `ALICE_LEGACY_SURFACES=1`. All legacy tools require a deliberately keyless local-operator deployment; a server bound with `ALICE_AGENT_API_KEY` exposes only the policy-complete core surface.
 
 Custom agents calling the HTTP API authenticate with per-agent API keys. See [agent integration](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/agent-integration.md).
 
@@ -137,16 +139,24 @@ search degrades to full-text only and says so explicitly in the retrieval trace.
 ## Status
 
 `v0.10.4` is the latest published release.
+`v0.11.0` is the current unpublished candidate; it narrows the default runtime
+to the agent interface and retrieval/memory core.
 Alice is a public-alpha, pre-1.0 project.
 What that means in practice:
 
 - **Local-first, single-user.** One operator, one machine (or one headless server reached over SSH).
 - **Review-governed writes.** Agents propose or commit through policy; outcomes are commit, confirm, review, or reject. The review console is the trust boundary for durable memory.
 - **No hosted service.** There is no cloud offering yet; you run Alice yourself.
-- **No managed OAuth or automatic polling.** Manual operator-token Gmail and
-  Calendar backends exist, but Alice does not provide a managed consent/account-
-  linking flow or automatic email/calendar syncing.
+- **No channels or bundled chat runtime.** Telegram, hosted administration,
+  chief-of-staff/chat/model-pack features, and the public `/v0/responses` chat
+  endpoint are not part of the current product. Retained `/v1/runtime/invoke`
+  still uses internal durable response-job/provider machinery.
+- **No managed OAuth or automatic polling.** Temporary manual-token Gmail and
+  Calendar compatibility is unmounted by default behind
+  `ALICE_LEGACY_SURFACES=1`; Alice does not provide managed consent or syncing.
 - **No automatic capture from arbitrary conversation.** Durable memory comes from explicit commits, reviewable proposals, or captured sources, never from silent transcript mining.
+- **No OCR or transcription execution.** Alice accepts text extracted by an
+  external tool; it does not run OCR or transcription models.
 
 ## Docs
 
@@ -158,6 +168,7 @@ What that means in practice:
 - [Backup and restore](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/backup-and-restore.md)
 - [Security and privacy](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/security-and-privacy.md)
 - [v0.10.4 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.10.4-release-notes.md)
+- [v0.11.0 candidate notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.11.0-release-notes.md)
 - [Release procedure](https://github.com/samrusani/AliceBot/blob/main/RELEASING.md)
 - [Architecture](https://github.com/samrusani/AliceBot/blob/main/ARCHITECTURE.md)
 - [Roadmap](https://github.com/samrusani/AliceBot/blob/main/ROADMAP.md)

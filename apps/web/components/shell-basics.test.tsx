@@ -2,9 +2,9 @@ import React from "react";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import HomePage from "../app/page";
 import { AppShell } from "./app-shell";
 import { GmailAccountDetail } from "./gmail-account-detail";
+import { HomePageContent } from "./home-page-content";
 import { WorkspaceLoading } from "./workspace-loading";
 
 vi.mock("next/link", () => ({
@@ -12,32 +12,56 @@ vi.mock("next/link", () => ({
     href: string; children: React.ReactNode; className?: string; "aria-current"?: "page";
   }) => <a href={href} className={className} aria-current={ariaCurrent}>{children}</a>,
 }));
-vi.mock("next/navigation", () => ({ usePathname: () => "/gmail" }));
+vi.mock("next/navigation", () => ({ usePathname: () => "/continuity" }));
 
 describe("shell coverage", () => {
   afterEach(cleanup);
 
-  it("renders the public home route cards", () => {
-    render(<HomePage />);
-    expect(screen.getByRole("heading", { name: "Operator shell for governed work" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Gmail Review/i })).toHaveAttribute("href", "/gmail");
+  it("renders exactly the seven default views and no removed or legacy links", () => {
+    render(<HomePageContent legacyEnabled={false} />);
+    expect(screen.getByRole("heading", { name: "Continuity and memory review console" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Artifact Review/i })).toHaveAttribute("href", "/artifacts");
     expect(screen.getByRole("link", { name: /Continuity Workspace/i })).toHaveAttribute("href", "/continuity");
-    expect(screen.getByRole("link", { name: /Chief-of-Staff/i })).toHaveAttribute("href", "/chief-of-staff");
-    expect(screen.getByText("16")).toBeInTheDocument();
-    expect(screen.getByText("3")).toBeInTheDocument();
-    expect(screen.getByText(/live backend data, explicit fixtures, or a mixed state/i)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Hosted Onboarding Guide/i })).toHaveTextContent("Preview");
-    expect(screen.getByText("Governed by default")).toBeInTheDocument();
+    expect(screen.getByText("7")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Legacy Approval Inbox/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Hosted/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Chief-of-Staff/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Chat/i })).not.toBeInTheDocument();
+    expect(screen.getByText("Narrow by design")).toBeInTheDocument();
   });
 
   it("marks the current navigation item and exposes the skip target", () => {
-    render(<AppShell><p>content</p></AppShell>);
-    const gmailLinks = screen.getAllByRole("link", { name: /Gmail Review connected accounts/i });
-    expect(gmailLinks).toHaveLength(2);
-    expect(gmailLinks.every((link) => link.getAttribute("aria-current") === "page")).toBe(true);
+    render(<AppShell legacySurfacesEnabled={false}><p>content</p></AppShell>);
+    const continuityLinks = screen.getAllByRole("link", { name: /Continuity Capture, recall/i });
+    expect(continuityLinks).toHaveLength(2);
+    expect(continuityLinks.every((link) => link.getAttribute("aria-current") === "page")).toBe(true);
     expect(screen.getAllByRole("link", { name: /Continuity Capture, recall/i })).toHaveLength(2);
-    expect(screen.getAllByRole("link", { name: /Chief-of-Staff Deterministic priorities/i })).toHaveLength(2);
+    expect(screen.queryByRole("link", { name: /Gmail Legacy manual/i })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Skip to main content" })).toHaveAttribute("href", "#main-content");
+  });
+
+  it("renders the four compatibility links only from the resolved flag", () => {
+    const { rerender } = render(<HomePageContent legacyEnabled />);
+    expect(screen.getByRole("link", { name: /Legacy Approval Inbox/i })).toHaveAttribute(
+      "href",
+      "/approvals",
+    );
+    expect(screen.getByRole("link", { name: /Legacy Task Inspection/i })).toHaveAttribute(
+      "href",
+      "/tasks",
+    );
+    expect(screen.getByRole("link", { name: /Legacy Gmail Review/i })).toHaveAttribute(
+      "href",
+      "/gmail",
+    );
+    expect(screen.getByRole("link", { name: /Legacy Calendar Review/i })).toHaveAttribute(
+      "href",
+      "/calendar",
+    );
+
+    rerender(<AppShell legacySurfacesEnabled><p>content</p></AppShell>);
+    expect(screen.getAllByRole("link", { name: /Approvals Legacy approval queue/i })).toHaveLength(2);
+    expect(screen.getAllByRole("link", { name: /Calendar Legacy manual account/i })).toHaveLength(2);
   });
 
   it("renders bounded loading state and unavailable Gmail detail", () => {

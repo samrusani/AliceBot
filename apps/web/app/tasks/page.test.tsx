@@ -11,16 +11,20 @@ const {
   getTaskStepsMock,
   getToolExecutionMock,
   hasLiveApiConfigMock,
+  legacySurfacesEnabledMock,
   listTaskRunsMock,
   listTasksMock,
+  notFoundMock,
 } = vi.hoisted(() => ({
   getApiConfigMock: vi.fn(),
   getTaskDetailMock: vi.fn(),
   getTaskStepsMock: vi.fn(),
   getToolExecutionMock: vi.fn(),
   hasLiveApiConfigMock: vi.fn(),
+  legacySurfacesEnabledMock: vi.fn(),
   listTaskRunsMock: vi.fn(),
   listTasksMock: vi.fn(),
+  notFoundMock: vi.fn(),
 }));
 
 vi.mock("next/link", () => ({
@@ -39,6 +43,14 @@ vi.mock("next/link", () => ({
       {children}
     </a>
   ),
+}));
+
+vi.mock("next/navigation", () => ({
+  notFound: notFoundMock,
+}));
+
+vi.mock("../../lib/legacy-surfaces.server", () => ({
+  legacySurfacesEnabled: legacySurfacesEnabledMock,
 }));
 
 vi.mock("../../lib/api", async () => {
@@ -72,8 +84,10 @@ describe("TasksPage", () => {
     getTaskStepsMock.mockReset();
     getToolExecutionMock.mockReset();
     hasLiveApiConfigMock.mockReset();
+    legacySurfacesEnabledMock.mockReset();
     listTaskRunsMock.mockReset();
     listTasksMock.mockReset();
+    notFoundMock.mockReset();
 
     getApiConfigMock.mockReturnValue({
       apiBaseUrl: "",
@@ -82,10 +96,24 @@ describe("TasksPage", () => {
       defaultToolId: "",
     });
     hasLiveApiConfigMock.mockReturnValue(false);
+    legacySurfacesEnabledMock.mockReturnValue(true);
+    notFoundMock.mockImplementation(() => {
+      throw new Error("NEXT_NOT_FOUND");
+    });
   });
 
   afterEach(() => {
     cleanup();
+  });
+
+  it("returns not found before any reads when legacy surfaces are disabled", async () => {
+    legacySurfacesEnabledMock.mockReturnValue(false);
+
+    await expect(TasksPage({ searchParams: Promise.resolve({}) })).rejects.toThrow(
+      "NEXT_NOT_FOUND",
+    );
+    expect(notFoundMock).toHaveBeenCalledOnce();
+    expect(listTasksMock).not.toHaveBeenCalled();
   });
 
   it("shows fixture task-run review when live API config is absent", async () => {

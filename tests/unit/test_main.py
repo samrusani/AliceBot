@@ -228,12 +228,10 @@ def test_healthcheck_reports_ok_when_database_is_reachable(monkeypatch) -> None:
         "services": {
             "database": {"status": "ok"},
             "redis": {"status": "not_checked", "url": "redis://cache:6379/0"},
-            "object_storage": {
-                "status": "not_checked",
-                "endpoint_url": "http://object-store",
-            },
+            "object_storage": {"status": "not_checked"},
         },
     }
+    assert "endpoint_url" not in payload["services"]["object_storage"]
     assert ping_calls == [("postgresql://db", 7)]
 
 
@@ -258,12 +256,10 @@ def test_healthcheck_reports_degraded_when_database_is_unreachable(monkeypatch) 
         "services": {
             "database": {"status": "unreachable"},
             "redis": {"status": "not_checked", "url": "redis://cache:6379/0"},
-            "object_storage": {
-                "status": "not_checked",
-                "endpoint_url": "http://object-store",
-            },
+            "object_storage": {"status": "not_checked"},
         },
     }
+    assert "endpoint_url" not in json.loads(response.body)["services"]["object_storage"]
 
 
 def test_healthcheck_route_is_registered() -> None:
@@ -271,7 +267,8 @@ def test_healthcheck_route_is_registered() -> None:
 
     assert "/healthz" in route_paths
     assert "/v0/context/compile" in route_paths
-    assert "/v0/responses" in route_paths
+    assert "/v0/responses" not in route_paths
+    assert "/v1/runtime/invoke" in route_paths
     assert "/v0/memories/admit" in route_paths
     assert "/v0/open-loops" in route_paths
     assert "/v0/open-loops/{open_loop_id}" in route_paths
@@ -305,7 +302,7 @@ def test_openapi_has_concrete_success_contracts_and_accurate_statuses() -> None:
     }
     operations = list(operations_by_key.values())
 
-    assert len(operations) == 294
+    assert len(operations) == 182
     assert all(operation.get("tags") for operation in operations)
     assert all(operation.get("description") for operation in operations)
     assert all("default" in operation["responses"] for operation in operations)
@@ -316,16 +313,24 @@ def test_openapi_has_concrete_success_contracts_and_accurate_statuses() -> None:
         if status.startswith("2")
         for json_body in [response.get("content", {}).get("application/json", {})]
     ]
-    assert len(success_schemas) == 301
+    assert len(success_schemas) == 186
     assert "APIJsonDocument" not in components
     assert all(document.get("$ref", "").startswith("#/components/schemas/") for document in success_schemas)
     resolved_success_schemas = [components[document["$ref"].rsplit("/", 1)[-1]] for document in success_schemas]
     assert all(document.get("type") == "object" for document in resolved_success_schemas)
     assert all(document.get("properties") for document in resolved_success_schemas)
 
-    exact_keys = set(main_module._OPENAPI_EXACT_RESPONSE_CONTRACTS)
-    operation_registry = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS
-    polymorphic_operations = main_module.OPENAPI_INTENTIONALLY_POLYMORPHIC_OPERATIONS
+    exact_keys = set(main_module._OPENAPI_EXACT_RESPONSE_CONTRACTS) & set(operations_by_key)
+    operation_registry = {
+        key: value
+        for key, value in main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS.items()
+        if key in operations_by_key
+    }
+    polymorphic_operations = {
+        key: value
+        for key, value in main_module.OPENAPI_INTENTIONALLY_POLYMORPHIC_OPERATIONS.items()
+        if key in operations_by_key
+    }
     coverage_report = {
         "exact": sorted(exact_keys),
         "per_operation": sorted(operation_registry),
@@ -333,17 +338,18 @@ def test_openapi_has_concrete_success_contracts_and_accurate_statuses() -> None:
     }
     assert exact_keys | set(operation_registry) == set(operations_by_key), coverage_report
     assert exact_keys.isdisjoint(operation_registry), coverage_report
-    assert len(exact_keys) == 49
-    assert len(operation_registry) == 245
+    assert len(exact_keys) == 42
+    assert len(operation_registry) == 140
     assert 0 < len(polymorphic_operations) <= 3
     assert set(polymorphic_operations) <= set(operation_registry)
     assert all(reason.strip() for reason in polymorphic_operations.values())
 
-    source_verified_operations = main_module.OPENAPI_SOURCE_VERIFIED_OPERATIONS
-    open_response_operations = main_module.OPENAPI_OPEN_RESPONSE_OPERATIONS
+    source_verified_operations = main_module.OPENAPI_SOURCE_VERIFIED_OPERATIONS & set(operations_by_key)
+    open_response_operations = main_module.OPENAPI_OPEN_RESPONSE_OPERATIONS & set(operations_by_key)
     assert source_verified_operations | open_response_operations == set(operation_registry)
     assert source_verified_operations.isdisjoint(open_response_operations)
     assert set(polymorphic_operations) <= open_response_operations
+    assert not set(openapi_contracts.PERMANENTLY_REMOVED_OPENAPI_OPERATIONS) & set(operations_by_key)
 
     broad_components = {
         "OperationsResponse",
@@ -382,7 +388,8 @@ def test_openapi_has_concrete_success_contracts_and_accurate_statuses() -> None:
         assert operation_success_refs == {f"#/components/schemas/{component_name}"}
     assert len(registry_component_names) == len(set(registry_component_names))
 
-    for component_name, _contract in main_module._OPENAPI_EXACT_RESPONSE_CONTRACTS.values():
+    for operation_key in exact_keys:
+        component_name = main_module._OPENAPI_EXACT_RESPONSE_CONTRACTS[operation_key][0]
         exact_schema = components[component_name]
         assert exact_schema.get("required")
         assert exact_schema.get("additionalProperties") is False
@@ -417,16 +424,12 @@ def test_openapi_has_concrete_success_contracts_and_accurate_statuses() -> None:
         "trace_id",
     }
     assert operation_properties(("GET", "/v0/vnext/projects")) == {"count", "items", "order"}
-    assert operation_properties(("GET", "/v1/preferences")) == {"preferences"}
-    assert operation_properties(("PATCH", "/v1/preferences")) == {"preferences"}
     assert operation_properties(("POST", "/v1/providers")) == {"capabilities", "provider"}
-    assert operation_properties(("DELETE", "/v1/devices/{device_id}")) == {"device"}
-    assert operation_properties(("POST", "/v1/channels/telegram/webhook")) == {"ingest", "status"}
-    assert operation_properties(("POST", "/v1/channels/telegram/messages/{message_id}/dispatch")) == {
-        "message",
-        "receipt",
+    assert operation_properties(("POST", "/v1/workspaces/bootstrap")) == {
+        "bootstrap",
+        "seeded_provider_count",
+        "workspace",
     }
-    assert operation_properties(("GET", "/v1/channels/telegram/recall")) == {"recall", "workspace_id"}
 
     def operation_property_schema(operation_key: tuple[str, str], field: str) -> dict[str, object]:
         component_name = operation_registry[operation_key][0]
@@ -436,8 +439,9 @@ def test_openapi_has_concrete_success_contracts_and_accurate_statuses() -> None:
     assert operation_property_schema(("POST", "/v0/vnext/memory-proposals"), "review_required") == {"type": "boolean"}
     assert operation_property_schema(("POST", "/v0/vnext/open-loops/extract"), "created_count") == {"type": "integer"}
     assert operation_property_schema(("POST", "/v0/vnext/open-loops/extract"), "open_loops")["type"] == "array"
-    assert operation_property_schema(("POST", "/v1/workspaces/bootstrap"), "feature_flags")["type"] == "array"
-    assert operation_property_schema(("POST", "/v1/workspaces/bootstrap"), "telegram_state") == {"type": "string"}
+    assert operation_property_schema(("POST", "/v1/workspaces/bootstrap"), "seeded_provider_count") == {
+        "type": "integer"
+    }
     for operation_key in polymorphic_operations:
         component_name = operation_registry[operation_key][0]
         assert len(components[component_name]["oneOf"]) == 2
@@ -446,8 +450,6 @@ def test_openapi_has_concrete_success_contracts_and_accurate_statuses() -> None:
     for path in (
         "/v0/consents",
         "/v0/vnext/memories/commit",
-        "/v1/channels/telegram/daily-brief/deliver",
-        "/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver",
     ):
         assert {"200", "201"} <= schema["paths"][path]["post"]["responses"].keys()
     assert {"200", "503"} <= schema["paths"]["/healthz"]["get"]["responses"].keys()
@@ -490,43 +492,20 @@ def test_openapi_has_concrete_success_contracts_and_accurate_statuses() -> None:
     assert "/v0/task-artifact-chunk-embeddings/{task_artifact_chunk_embedding_id}" in route_paths
     assert "/v0/entities" in route_paths
     assert "/v0/entity-edges" in route_paths
-    assert "/v0/tools/route" in route_paths
-    assert "/v0/execution-budgets" in route_paths
-    assert "/v0/execution-budgets/{execution_budget_id}" in route_paths
-    assert "/v0/execution-budgets/{execution_budget_id}/deactivate" in route_paths
-    assert "/v0/execution-budgets/{execution_budget_id}/supersede" in route_paths
-    assert "/v0/tool-executions" in route_paths
-    assert "/v0/tool-executions/{execution_id}" in route_paths
-    assert "/v0/tasks" in route_paths
-    assert "/v0/tasks/{task_id}" in route_paths
-    assert "/v0/tasks/{task_id}/workspace" in route_paths
-    assert "/v0/tasks/{task_id}/steps" in route_paths
     assert "/v0/threads/health-dashboard" in route_paths
     assert "/v0/threads/{thread_id}/resumption-brief" in route_paths
-    assert "/v0/task-workspaces" in route_paths
-    assert "/v0/task-workspaces/{task_workspace_id}" in route_paths
-    assert "/v0/task-workspaces/{task_workspace_id}/artifacts" in route_paths
     assert "/v0/task-artifacts" in route_paths
     assert "/v0/task-artifacts/{task_artifact_id}" in route_paths
     assert "/v0/task-artifacts/{task_artifact_id}/ingest" in route_paths
     assert "/v0/task-artifacts/{task_artifact_id}/chunks" in route_paths
-    assert "/v0/tasks/{task_id}/artifact-chunks/semantic-retrieval" in route_paths
     assert "/v0/task-artifacts/{task_artifact_id}/chunks/semantic-retrieval" in route_paths
-    assert "/v0/task-steps/{task_step_id}" in route_paths
-    assert "/v0/task-steps/{task_step_id}/transition" in route_paths
     assert "/v0/entities/{entity_id}" in route_paths
     assert "/v0/entities/{entity_id}/edges" in route_paths
-    assert "/v1/channels/telegram/daily-brief" in route_paths
-    assert "/v1/channels/telegram/daily-brief/deliver" in route_paths
-    assert "/v1/channels/telegram/notification-preferences" in route_paths
-    assert "/v1/channels/telegram/open-loop-prompts" in route_paths
-    assert "/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver" in route_paths
-    assert "/v1/channels/telegram/scheduler/jobs" in route_paths
-    assert "/v1/admin/hosted/design-partners" in route_paths
-    assert "/v1/admin/hosted/design-partners/dashboard" in route_paths
-    assert "/v1/admin/hosted/design-partners/{design_partner_id}" in route_paths
-    assert "/v1/admin/hosted/design-partners/{design_partner_id}/workspaces" in route_paths
-    assert "/v1/admin/hosted/design-partners/{design_partner_id}/feedback" in route_paths
+    gated_paths = {path for _method, path in main_module.LEGACY_HTTP_OPERATION_KEYS}
+    assert route_paths.isdisjoint(gated_paths)
+    assert not any(path.startswith("/v1/channels/telegram/") for path in route_paths)
+    assert not any(path.startswith("/v1/admin/hosted/") for path in route_paths)
+    assert not any(path.startswith("/v1/model-packs") for path in route_paths)
 
 
 def test_openapi_direct_service_envelopes_do_not_publish_fabricated_wrappers() -> None:
@@ -620,7 +599,7 @@ def test_openapi_helper_backed_contracts_track_authoritative_response_types() ->
         **openapi_contracts._OPENAPI_OTHER_AUTHORITATIVE_RESPONSE_TYPES,
     }
 
-    assert len(authoritative_bindings) == 106
+    assert len(authoritative_bindings) == 102
     for operation_key, (module_name, type_name) in authoritative_bindings.items():
         response_type = getattr(import_module(module_name), type_name)
         response_schema = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[operation_key][1]
@@ -934,17 +913,18 @@ def test_openapi_typed_contracts_validate_representative_runtime_envelopes() -> 
     }
     bootstrap_payload = {
         "workspace": {"id": "workspace-1", "bootstrap_status": "ready"},
-        "bootstrap": {"status": "ready", "ready_for_next_phase_telegram_linkage": True},
-        "preferences": {"timezone": "Europe/Stockholm"},
-        "feature_flags": ["hosted_beta", "telegram_transport"],
-        "telegram_state": "available_in_p10_s2_transport",
+        "bootstrap": {"status": "ready"},
+        "seeded_provider_count": 0,
     }
-    bootstrap_status_payload = {key: value for key, value in bootstrap_payload.items() if key != "preferences"}
+    bootstrap_status_payload = {
+        "workspace": bootstrap_payload["workspace"],
+        "bootstrap": bootstrap_payload["bootstrap"],
+    }
     now = datetime.now(UTC)
     active_job = {
         "id": uuid4(),
         "state": "running",
-        "endpoint": main_module.RESPONSE_JOB_ENDPOINT_V0,
+        "endpoint": main_module.RESPONSE_JOB_ENDPOINT_RUNTIME,
         "request_fingerprint_sha256": "a" * 64,
         "created_at": now,
         "updated_at": now,
@@ -976,15 +956,13 @@ def test_openapi_typed_contracts_validate_representative_runtime_envelopes() -> 
         ("POST", "/v0/vnext/open-loops/extract"): extracted_loops_payload,
         ("POST", "/v1/workspaces/bootstrap"): bootstrap_payload,
         ("GET", "/v1/workspaces/bootstrap/status"): bootstrap_status_payload,
-        ("GET", "/v1/workspaces/{workspace_id}/model-pack-binding"): {"binding": None},
     }
     for operation_key, payload in payloads_by_operation.items():
         assert _openapi_schema_accepts(payload, response_schema(operation_key)), operation_key
 
-    for operation_key in (("POST", "/v0/responses"), ("POST", "/v1/runtime/invoke")):
-        operation_schema = response_schema(operation_key)
-        assert _openapi_schema_accepts(accepted_job_payload, operation_schema)
-        assert _openapi_schema_accepts(completed_job_payload, operation_schema)
+    operation_schema = response_schema(("POST", "/v1/runtime/invoke"))
+    assert _openapi_schema_accepts(accepted_job_payload, operation_schema)
+    assert _openapi_schema_accepts(completed_job_payload, operation_schema)
 
     assert not _openapi_schema_accepts(
         {**compile_payload, "trace_event_count": "5"},
@@ -1018,12 +996,13 @@ def test_build_healthcheck_payload_keeps_boundary_statuses_consistent() -> None:
         "services": {
             "database": {"status": "ok"},
             "redis": {"status": "not_checked", "url": "redis://cache:6379/0"},
-            "object_storage": {
-                "status": "not_checked",
-                "endpoint_url": "http://object-store",
-            },
+            "object_storage": {"status": "not_checked"},
         },
     }
+    assert "endpoint_url" not in main_module.build_healthcheck_payload(
+        settings,
+        database_ok=True,
+    )["services"]["object_storage"]
     assert main_module.build_healthcheck_payload(settings, database_ok=False)["services"]["database"] == {
         "status": "unreachable"
     }
@@ -1161,9 +1140,11 @@ def test_rewrite_user_id_query_param_rejects_mismatch() -> None:
 def test_rewrite_user_id_json_body_injects_missing_user_id() -> None:
     authenticated_user_id = uuid4()
     thread_id = uuid4()
+    retained_path = "/v1/runtime/invoke"
+    assert retained_path in {route.path for route in main_module.app.routes}
     request = _build_request(
         method="POST",
-        path="/v0/responses",
+        path=retained_path,
         body=json.dumps({"thread_id": str(thread_id), "message": "hello"}).encode("utf-8"),
         headers={"content-type": "application/json"},
     )
@@ -1179,9 +1160,11 @@ def test_rewrite_user_id_json_body_injects_missing_user_id() -> None:
 
 
 def test_rewrite_user_id_json_body_rejects_mismatch() -> None:
+    retained_path = "/v1/runtime/invoke"
+    assert retained_path in {route.path for route in main_module.app.routes}
     request = _build_request(
         method="POST",
-        path="/v0/responses",
+        path=retained_path,
         body=json.dumps(
             {
                 "user_id": "00000000-0000-0000-0000-000000000001",
@@ -1197,9 +1180,11 @@ def test_rewrite_user_id_json_body_rejects_mismatch() -> None:
 
 
 def test_request_client_identifier_ignores_forwarded_header_when_proxy_not_trusted() -> None:
+    retained_path = "/v1/continuity/brief"
+    assert retained_path in {route.path for route in main_module.app.routes}
     request = _build_request(
         method="POST",
-        path="/v1/auth/magic-link/start",
+        path=retained_path,
         headers={"x-forwarded-for": "203.0.113.9, 127.0.0.1"},
     )
 
@@ -1212,9 +1197,11 @@ def test_request_client_identifier_ignores_forwarded_header_when_proxy_not_trust
 
 
 def test_request_client_identifier_uses_forwarded_header_for_trusted_proxy() -> None:
+    retained_path = "/v1/continuity/brief"
+    assert retained_path in {route.path for route in main_module.app.routes}
     request = _build_request(
         method="POST",
-        path="/v1/auth/magic-link/start",
+        path=retained_path,
         headers={"x-forwarded-for": "203.0.113.9, 127.0.0.1"},
     )
 
@@ -1228,65 +1215,6 @@ def test_request_client_identifier_uses_forwarded_header_for_trusted_proxy() -> 
     )
 
     assert client_identifier == "203.0.113.9"
-
-
-def test_entrypoint_rate_limit_memory_backend_enforces_limits() -> None:
-    settings = Settings(
-        database_url="postgresql://app",
-        entrypoint_rate_limit_backend="memory",
-    )
-
-    main_module.entrypoint_rate_limiter.reset()
-    first_result = main_module._enforce_entrypoint_rate_limit(
-        settings=settings,
-        key="entrypoint-test-memory-backend",
-        max_requests=1,
-        window_seconds=60,
-        detail_code="entrypoint_test_limited",
-        message="entrypoint test limit exceeded",
-    )
-    second_result = main_module._enforce_entrypoint_rate_limit(
-        settings=settings,
-        key="entrypoint-test-memory-backend",
-        max_requests=1,
-        window_seconds=60,
-        detail_code="entrypoint_test_limited",
-        message="entrypoint test limit exceeded",
-    )
-    main_module.entrypoint_rate_limiter.reset()
-
-    assert first_result is None
-    assert second_result is not None
-    assert second_result.status_code == 429
-    assert json.loads(second_result.body)["detail"]["code"] == "entrypoint_test_limited"
-
-
-def test_entrypoint_rate_limit_returns_503_when_redis_backend_is_unavailable(monkeypatch) -> None:
-    settings = Settings(
-        app_env="staging",
-        database_url="postgresql://app",
-        entrypoint_rate_limit_backend="redis",
-    )
-    main_module.entrypoint_rate_limiter.reset()
-    monkeypatch.setattr(main_module, "redis", None)
-
-    limited = main_module._enforce_entrypoint_rate_limit(
-        settings=settings,
-        key="entrypoint-test-redis-unavailable",
-        max_requests=1,
-        window_seconds=60,
-        detail_code="entrypoint_test_limited",
-        message="entrypoint test limit exceeded",
-    )
-
-    assert limited is not None
-    assert limited.status_code == 503
-    assert json.loads(limited.body) == {
-        "detail": {
-            "code": "entrypoint_rate_limiter_unavailable",
-            "message": "entrypoint rate limiter backend is unavailable",
-        }
-    }
 
 
 def test_compile_context_returns_trace_and_context_pack(monkeypatch) -> None:
@@ -2022,435 +1950,6 @@ def test_compile_context_request_rejects_invalid_semantic_artifact_scope_shape()
     assert "task_id" in str(exc_info.value)
 
 
-def test_generate_assistant_response_returns_assistant_and_trace_payload(monkeypatch) -> None:
-    user_id = uuid4()
-    thread_id = uuid4()
-    settings = Settings(
-        database_url="postgresql://app",
-        model_provider="openai_responses",
-        model_name="gpt-5-mini",
-    )
-    captured: dict[str, object] = {"connection_depth": 0, "connection_count": 0}
-    prepared = type(
-        "Prepared",
-        (),
-        {
-            "agent_profile_id": "assistant_default",
-            "user_event_id": uuid4(),
-            "user_event_sequence_no": 4,
-        },
-    )()
-
-    @contextmanager
-    def fake_user_connection(database_url: str, current_user_id):
-        captured["database_url"] = database_url
-        captured["current_user_id"] = current_user_id
-        captured["connection_count"] = int(captured["connection_count"]) + 1
-        captured["connection_depth"] = int(captured["connection_depth"]) + 1
-        try:
-            yield object()
-        finally:
-            captured["connection_depth"] = int(captured["connection_depth"]) - 1
-
-    def fake_prepare_response(store, *, settings, user_id, thread_id, message_text, limits):
-        captured["store_type"] = type(store).__name__
-        captured["settings"] = settings
-        captured["user_id"] = user_id
-        captured["thread_id"] = thread_id
-        captured["message_text"] = message_text
-        captured["limits"] = limits
-        return prepared
-
-    def fake_invoke_response(actual_prepared, *, settings):
-        assert actual_prepared is prepared
-        assert settings is captured["settings"]
-        assert captured["connection_depth"] == 0
-        return object()
-
-    def fake_complete_response(*, store, prepared: object, model_response: object):
-        del store, model_response
-        assert prepared is not None
-        return {
-            "assistant": {
-                "event_id": "assistant-event-123",
-                "sequence_no": 5,
-                "text": "Hello back.",
-                "model_provider": "openai_responses",
-                "model": "gpt-5-mini",
-            },
-            "trace": {
-                "compile_trace_id": "compile-trace-123",
-                "compile_trace_event_count": 11,
-                "response_trace_id": "response-trace-123",
-                "response_trace_event_count": 2,
-            },
-        }
-
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    _FakeResponseGenerationJobStore.reset()
-    monkeypatch.setattr(
-        main_module,
-        "ResponseGenerationJobStore",
-        _FakeResponseGenerationJobStore,
-    )
-    monkeypatch.setattr(main_module, "prepare_response_generation", fake_prepare_response)
-    monkeypatch.setattr(main_module, "invoke_prepared_response", fake_invoke_response)
-    monkeypatch.setattr(main_module, "complete_response_generation", fake_complete_response)
-
-    response = main_module.generate_assistant_response(
-        main_module.GenerateResponseRequest(
-            user_id=user_id,
-            thread_id=thread_id,
-            message="Hello?",
-            max_sessions=2,
-            max_events=4,
-            max_memories=3,
-            max_entities=2,
-            max_entity_edges=6,
-        ),
-        idempotency_key="response-success-1",
-    )
-
-    assert response.status_code == 200
-    assert json.loads(response.body) == {
-        "assistant": {
-            "event_id": "assistant-event-123",
-            "sequence_no": 5,
-            "text": "Hello back.",
-            "model_provider": "openai_responses",
-            "model": "gpt-5-mini",
-        },
-        "trace": {
-            "compile_trace_id": "compile-trace-123",
-            "compile_trace_event_count": 11,
-            "response_trace_id": "response-trace-123",
-            "response_trace_event_count": 2,
-        },
-        "metadata": {
-            "agent_profile_id": "assistant_default",
-        },
-    }
-    assert captured["database_url"] == "postgresql://app"
-    assert captured["current_user_id"] == user_id
-    assert captured["connection_count"] == 2
-    assert captured["user_id"] == user_id
-    assert captured["thread_id"] == thread_id
-    assert captured["message_text"] == "Hello?"
-    assert captured["limits"].max_sessions == 2
-    assert captured["limits"].max_events == 4
-    assert captured["limits"].max_memories == 3
-    assert captured["limits"].max_entities == 2
-    assert captured["limits"].max_entity_edges == 6
-
-
-def test_generate_assistant_response_returns_502_with_trace_when_model_invocation_fails(
-    monkeypatch,
-) -> None:
-    user_id = uuid4()
-    thread_id = uuid4()
-    connection_depth = 0
-    prepared = type(
-        "Prepared",
-        (),
-        {
-            "agent_profile_id": "assistant_default",
-            "user_event_id": uuid4(),
-            "user_event_sequence_no": 1,
-        },
-    )()
-
-    @contextmanager
-    def fake_user_connection(_database_url: str, _current_user_id):
-        nonlocal connection_depth
-        connection_depth += 1
-        try:
-            yield object()
-        finally:
-            connection_depth -= 1
-
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    _FakeResponseGenerationJobStore.reset()
-    monkeypatch.setattr(
-        main_module,
-        "ResponseGenerationJobStore",
-        _FakeResponseGenerationJobStore,
-    )
-    monkeypatch.setattr(
-        main_module,
-        "prepare_response_generation",
-        lambda **_kwargs: prepared,
-    )
-
-    def fail_invoke(*_args, **_kwargs):
-        assert connection_depth == 0
-        raise main_module.ModelInvocationError("upstream timeout")
-
-    monkeypatch.setattr(main_module, "invoke_prepared_response", fail_invoke)
-    monkeypatch.setattr(
-        main_module,
-        "fail_response_generation",
-        lambda **_kwargs: ResponseFailure(
-            detail="upstream timeout",
-            trace={
-                "compile_trace_id": "compile-trace-123",
-                "compile_trace_event_count": 9,
-                "response_trace_id": "response-trace-123",
-                "response_trace_event_count": 2,
-            },
-        ),
-    )
-
-    response = main_module.generate_assistant_response(
-        main_module.GenerateResponseRequest(
-            user_id=user_id,
-            thread_id=thread_id,
-            message="Hello?",
-        ),
-        idempotency_key="response-failure-1",
-    )
-
-    assert response.status_code == 502
-    assert json.loads(response.body) == {
-        "detail": "upstream timeout",
-        "trace": {
-            "compile_trace_id": "compile-trace-123",
-            "compile_trace_event_count": 9,
-            "response_trace_id": "response-trace-123",
-            "response_trace_event_count": 2,
-        },
-        "metadata": {
-            "agent_profile_id": "assistant_default",
-        },
-    }
-
-
-def test_generate_assistant_response_enforces_rate_limit(monkeypatch) -> None:
-    user_id = uuid4()
-    thread_id = uuid4()
-    settings = Settings(
-        app_env="test",
-        database_url="postgresql://app",
-        response_rate_limit_max_requests=1,
-        response_rate_limit_window_seconds=60,
-    )
-    prepared = type(
-        "Prepared",
-        (),
-        {
-            "agent_profile_id": "assistant_default",
-            "user_event_id": uuid4(),
-            "user_event_sequence_no": 1,
-        },
-    )()
-
-    @contextmanager
-    def fake_user_connection(_database_url: str, _current_user_id):
-        yield object()
-
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    _FakeResponseGenerationJobStore.reset()
-    monkeypatch.setattr(
-        main_module,
-        "ResponseGenerationJobStore",
-        _FakeResponseGenerationJobStore,
-    )
-    monkeypatch.setattr(
-        main_module,
-        "prepare_response_generation",
-        lambda **_kwargs: prepared,
-    )
-    monkeypatch.setattr(
-        main_module,
-        "invoke_prepared_response",
-        lambda *_args, **_kwargs: object(),
-    )
-    monkeypatch.setattr(
-        main_module,
-        "complete_response_generation",
-        lambda **_kwargs: {
-            "assistant": {
-                "event_id": "assistant-event-123",
-                "sequence_no": 5,
-                "text": "Hello back.",
-                "model_provider": "openai_responses",
-                "model": "gpt-5-mini",
-            },
-            "trace": {
-                "compile_trace_id": "compile-trace-123",
-                "compile_trace_event_count": 11,
-                "response_trace_id": "response-trace-123",
-                "response_trace_event_count": 2,
-            },
-        },
-    )
-    main_module.response_rate_limiter.reset()
-
-    first_response = main_module.generate_assistant_response(
-        main_module.GenerateResponseRequest(
-            user_id=user_id,
-            thread_id=thread_id,
-            message="Hello?",
-        ),
-        idempotency_key="response-rate-1",
-    )
-    second_response = main_module.generate_assistant_response(
-        main_module.GenerateResponseRequest(
-            user_id=user_id,
-            thread_id=thread_id,
-            message="Hello again?",
-        ),
-        idempotency_key="response-rate-2",
-    )
-    main_module.response_rate_limiter.reset()
-
-    assert first_response.status_code == 200
-    assert second_response.status_code == 429
-    retry_after = int(second_response.headers["Retry-After"])
-    assert 1 <= retry_after <= 60
-    assert json.loads(second_response.body) == {
-        "detail": {
-            "code": "response_rate_limit_exceeded",
-            "message": "response generation rate limit exceeded; max 1 requests per 60 seconds",
-            "retry_after_seconds": retry_after,
-        }
-    }
-
-
-def test_generate_assistant_response_requires_idempotency_key(monkeypatch) -> None:
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
-
-    response = main_module.generate_assistant_response(
-        main_module.GenerateResponseRequest(
-            user_id=uuid4(),
-            thread_id=uuid4(),
-            message="Hello?",
-        )
-    )
-
-    assert response.status_code == 428
-    assert json.loads(response.body) == {"detail": "Idempotency-Key header is required"}
-
-
-def test_generate_assistant_response_replays_terminal_outcome_without_reinvoking_provider(
-    monkeypatch,
-) -> None:
-    user_id = uuid4()
-    thread_id = uuid4()
-    settings = Settings(database_url="postgresql://app")
-    prepared = type(
-        "Prepared",
-        (),
-        {
-            "agent_profile_id": "assistant_default",
-            "user_event_id": uuid4(),
-            "user_event_sequence_no": 1,
-        },
-    )()
-    counts = {"prepared": 0, "invoked": 0}
-
-    @contextmanager
-    def fake_user_connection(_database_url: str, _current_user_id):
-        yield object()
-
-    def fake_prepare(**_kwargs):
-        counts["prepared"] += 1
-        return prepared
-
-    def fake_invoke(*_args, **_kwargs):
-        counts["invoked"] += 1
-        return object()
-
-    result = {
-        "assistant": {
-            "event_id": "assistant-event-123",
-            "sequence_no": 2,
-            "text": "Hello back.",
-            "model_provider": "openai_responses",
-            "model": "gpt-5-mini",
-        },
-        "trace": {
-            "compile_trace_id": "compile-trace-123",
-            "compile_trace_event_count": 8,
-            "response_trace_id": "response-trace-123",
-            "response_trace_event_count": 2,
-        },
-    }
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    _FakeResponseGenerationJobStore.reset()
-    monkeypatch.setattr(main_module, "ResponseGenerationJobStore", _FakeResponseGenerationJobStore)
-    monkeypatch.setattr(main_module, "prepare_response_generation", fake_prepare)
-    monkeypatch.setattr(main_module, "invoke_prepared_response", fake_invoke)
-    monkeypatch.setattr(main_module, "complete_response_generation", lambda **_kwargs: result)
-    main_module.response_rate_limiter.reset()
-    request = main_module.GenerateResponseRequest(
-        user_id=user_id,
-        thread_id=thread_id,
-        message="Hello?",
-    )
-
-    first = main_module.generate_assistant_response(request, idempotency_key="stable-response-key")
-    replay = main_module.generate_assistant_response(request, idempotency_key="stable-response-key")
-    conflict = main_module.generate_assistant_response(
-        request.model_copy(update={"message": "A different turn"}),
-        idempotency_key="stable-response-key",
-    )
-    main_module.response_rate_limiter.reset()
-
-    assert first.status_code == replay.status_code == 200
-    assert first.body == replay.body
-    assert replay.headers["Idempotency-Replayed"] == "true"
-    assert first.headers["Response-Job-Id"] == replay.headers["Response-Job-Id"]
-    assert conflict.status_code == 409
-    assert json.loads(conflict.body)["detail"]["code"] == "idempotency_key_reused"
-    assert counts == {"prepared": 1, "invoked": 1}
-
-
-def test_generate_assistant_response_reports_active_job_without_reinvoking(monkeypatch) -> None:
-    user_id = uuid4()
-    request = main_module.GenerateResponseRequest(
-        user_id=user_id,
-        thread_id=uuid4(),
-        message="Hello?",
-    )
-
-    @contextmanager
-    def fake_user_connection(_database_url: str, _current_user_id):
-        yield object()
-
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    _FakeResponseGenerationJobStore.reset()
-    monkeypatch.setattr(main_module, "ResponseGenerationJobStore", _FakeResponseGenerationJobStore)
-    fingerprint = main_module.request_fingerprint({"body": request.model_dump(mode="json")})
-    lookup = _FakeResponseGenerationJobStore(object()).create_or_get_for_update(
-        user_id=user_id,
-        workspace_id=None,
-        endpoint=main_module.RESPONSE_JOB_ENDPOINT_V0,
-        idempotency_key="running-response-key",
-        request_fingerprint_sha256=fingerprint,
-    )
-    lookup.job["state"] = "running"
-    monkeypatch.setattr(
-        main_module,
-        "prepare_response_generation",
-        lambda **_kwargs: pytest.fail("an active job must not prepare or invoke another response"),
-    )
-
-    response = main_module.generate_assistant_response(
-        request,
-        idempotency_key="running-response-key",
-    )
-
-    assert response.status_code == 202
-    assert response.headers["Idempotency-Replayed"] == "true"
-    assert response.headers["Retry-After"] == "2"
-    assert json.loads(response.body)["detail"]["code"] == "response_generation_in_progress"
-
-
 def test_runtime_invoke_replays_terminal_job_before_provider_resolution(monkeypatch) -> None:
     user_id = uuid4()
     workspace_id = uuid4()
@@ -2467,17 +1966,6 @@ def test_runtime_invoke_replays_terminal_job_before_provider_resolution(monkeypa
             "body": body.model_dump(mode="json"),
         }
     )
-
-    class FakeAuthConnection:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        @contextmanager
-        def transaction(self):
-            yield
 
     @contextmanager
     def fake_user_connection(_database_url: str, _current_user_id):
@@ -2505,26 +1993,22 @@ def test_runtime_invoke_replays_terminal_job_before_provider_resolution(monkeypa
     )
 
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
-    monkeypatch.setattr(main_module.psycopg, "connect", lambda *_args, **_kwargs: FakeAuthConnection())
     monkeypatch.setattr(
         main_module,
-        "resolve_auth_session",
-        lambda *_args, **_kwargs: {
-            "user_account": {"id": user_id},
-            "session": {"workspace_id": workspace_id},
-        },
+        "_resolve_authenticated_v1_user_id",
+        lambda *_args, **_kwargs: user_id,
     )
     monkeypatch.setattr(
         main_module,
-        "get_current_workspace",
-        lambda *_args, **_kwargs: {"id": workspace_id},
+        "_require_local_provider_workspace",
+        lambda **_kwargs: (workspace_id, user_id),
     )
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
     monkeypatch.setattr(main_module, "set_current_user_account", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         main_module,
         "ContinuityStore",
-        lambda *_args, **_kwargs: pytest.fail("terminal replay must not read provider or model-pack state"),
+        lambda *_args, **_kwargs: pytest.fail("terminal replay must not read provider state"),
     )
     monkeypatch.setattr(
         main_module,
@@ -2537,7 +2021,7 @@ def test_runtime_invoke_replays_terminal_job_before_provider_resolution(monkeypa
             "method": "POST",
             "path": "/v1/runtime/invoke",
             "headers": [
-                (b"authorization", b"Bearer session-token"),
+                (b"x-alicebot-user-id", str(user_id).encode()),
                 (b"idempotency-key", idempotency_key.encode()),
             ],
         }
@@ -2613,7 +2097,7 @@ def test_provider_registration_stages_secret_outside_transaction_and_compensates
     with pytest.raises(RuntimeError, match="simulated database rejection"):
         main_module._create_workspace_provider_durable(
             settings=Settings(database_url="postgresql://app"),
-            session_token="session-token",
+            authenticated_user_id=user_id,
             provider_key="openai_compatible",
             display_name="Provider",
             base_url="https://provider.example",
@@ -2665,7 +2149,6 @@ def test_staged_provider_secret_is_not_deleted_when_database_references_it(
 
     main_module._discard_staged_provider_secret(
         settings=Settings(database_url="postgresql://app"),
-        session_token="session-token",
         workspace_id=workspace_id,
         user_account_id=user_id,
         staged_secret=main_module._StagedProviderSecret(

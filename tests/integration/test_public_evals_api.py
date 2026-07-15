@@ -66,33 +66,15 @@ def invoke_request(
     return start_message["status"], json.loads(body)
 
 
-def auth_header(session_token: str) -> dict[str, str]:
-    return {"authorization": f"Bearer {session_token}"}
+def identity_header(user_id: UUID | str) -> dict[str, str]:
+    return {"x-alicebot-user-id": str(user_id)}
 
 
-def bootstrap_authenticated_user(database_url: str, *, email: str) -> tuple[UUID, str]:
-    start_status, start_payload = invoke_request(
-        "POST",
-        "/v1/auth/magic-link/start",
-        payload={"email": email},
-    )
-    assert start_status == 200
-
-    verify_status, verify_payload = invoke_request(
-        "POST",
-        "/v1/auth/magic-link/verify",
-        payload={
-            "challenge_token": start_payload["challenge"]["challenge_token"],
-            "device_label": "Public Eval Test Device",
-            "device_key": f"device-{email}",
-        },
-    )
-    assert verify_status == 200
-
-    user_id = UUID(verify_payload["user_account"]["id"])
+def seed_user(database_url: str, *, email: str) -> UUID:
+    user_id = uuid4()
     with user_connection(database_url, user_id) as conn:
         ContinuityStore(conn).create_user(user_id, email, email.split("@", 1)[0].title())
-    return user_id, verify_payload["session_token"]
+    return user_id
 
 
 def test_public_eval_api_runs_lists_and_reads_persisted_report(
@@ -105,7 +87,7 @@ def test_public_eval_api_runs_lists_and_reads_persisted_report(
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
 
-    _user_id, session_token = bootstrap_authenticated_user(
+    user_id = seed_user(
         migrated_database_urls["app"],
         email="public-evals@example.com",
     )
@@ -113,7 +95,7 @@ def test_public_eval_api_runs_lists_and_reads_persisted_report(
     suites_status, suites_payload = invoke_request(
         "GET",
         "/v1/evals/suites",
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
     assert suites_status == 200
     assert suites_payload["summary"]["suite_count"] == 5
@@ -122,7 +104,7 @@ def test_public_eval_api_runs_lists_and_reads_persisted_report(
     run_status, run_payload = invoke_request(
         "POST",
         "/v1/evals/runs",
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
     assert run_status == 200
     assert run_payload["run"]["status"] == "pass"
@@ -134,7 +116,7 @@ def test_public_eval_api_runs_lists_and_reads_persisted_report(
         "GET",
         "/v1/evals/runs",
         query_params={"limit": "10"},
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
     assert runs_status == 200
     assert runs_payload["summary"]["returned_count"] == 1
@@ -143,7 +125,7 @@ def test_public_eval_api_runs_lists_and_reads_persisted_report(
     detail_status, detail_payload = invoke_request(
         "GET",
         f"/v1/evals/runs/{eval_run_id}",
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
     assert detail_status == 200
     assert detail_payload["run"]["report_digest"] == run_payload["run"]["report_digest"]
@@ -161,7 +143,7 @@ def test_public_eval_api_rejects_unknown_suite_key(
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
 
-    _user_id, session_token = bootstrap_authenticated_user(
+    user_id = seed_user(
         migrated_database_urls["app"],
         email="public-evals-invalid-suite@example.com",
     )
@@ -170,14 +152,14 @@ def test_public_eval_api_rejects_unknown_suite_key(
         "POST",
         "/v1/evals/runs",
         query_params={"suite_key": "missing_suite"},
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
 
     assert status == 400
     assert payload["detail"] == "unknown suite_key values: missing_suite"
 
 
-def test_public_eval_api_requires_bearer_auth(
+def test_public_eval_api_requires_valid_local_identity(
     migrated_database_urls,
     monkeypatch,
 ) -> None:
@@ -192,5 +174,15 @@ def test_public_eval_api_requires_bearer_auth(
         "/v1/evals/suites",
     )
 
-    assert status == 401
-    assert payload == {"detail": "authorization bearer token is required"}
+    assert status == 400
+    assert payload == {
+        "detail": "local identity is required; set ALICEBOT_AUTH_USER_ID or provide X-AliceBot-User-Id"
+    }
+
+    invalid_status, invalid_payload = invoke_request(
+        "GET",
+        "/v1/evals/suites",
+        headers=identity_header("not-a-uuid"),
+    )
+    assert invalid_status == 400
+    assert invalid_payload == {"detail": "X-AliceBot-User-Id must be a valid UUID"}

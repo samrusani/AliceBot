@@ -97,43 +97,6 @@ TaskRunRetryPosture = Literal[
     "awaiting_user",
 ]
 TaskWorkspaceStatus = Literal["active"]
-HostedAuthSessionStatus = Literal["active", "revoked", "expired"]
-HostedMagicLinkChallengeStatus = Literal["pending", "consumed", "expired"]
-HostedDeviceLinkChallengeStatus = Literal["pending", "confirmed", "expired"]
-HostedDeviceStatus = Literal["active", "revoked"]
-HostedWorkspaceBootstrapStatus = Literal["pending", "ready"]
-HostedWorkspaceMemberRole = Literal["owner", "member"]
-ChannelTransportType = Literal["telegram"]
-ChannelIdentityStatus = Literal["linked", "unlinked"]
-ChannelLinkChallengeStatus = Literal["pending", "confirmed", "expired", "cancelled"]
-ChannelMessageDirection = Literal["inbound", "outbound"]
-ChannelMessageRouteStatus = Literal["resolved", "unresolved"]
-ChatIntentKind = Literal[
-    "inbound_message",
-    "capture",
-    "recall",
-    "resume",
-    "correction",
-    "open_loops",
-    "open_loop_review",
-    "approvals",
-    "approval_approve",
-    "approval_reject",
-    "unknown",
-]
-ChatIntentStatus = Literal["pending", "recorded", "handled", "failed"]
-ChannelDeliveryReceiptStatus = Literal["delivered", "failed", "simulated", "suppressed"]
-TelegramSchedulerJobKind = Literal["daily_brief", "open_loop_prompt"]
-TelegramSchedulerPromptKind = Literal["waiting_for", "stale"]
-TelegramSchedulerJobStatus = Literal[
-    "scheduled",
-    "delivered",
-    "simulated",
-    "suppressed_quiet_hours",
-    "suppressed_disabled",
-    "suppressed_outside_window",
-    "failed",
-]
 TaskArtifactStatus = Literal["registered"]
 TaskArtifactIngestionStatus = Literal["pending", "ingested"]
 TaskArtifactChunkRetrievalScopeKind = Literal["task", "artifact"]
@@ -193,21 +156,9 @@ ModelProvider = Literal["openai_responses"]
 ProviderAdapterKey = Literal["openai_compatible", "ollama", "llamacpp", "vllm", "azure"]
 ModelProviderStatus = Literal["active"]
 ProviderCapabilityDiscoveryStatus = Literal["ready", "failed"]
-ModelPackFamily = Literal[
-    "llama",
-    "qwen",
-    "gemma",
-    "gpt-oss",
-    "deepseek",
-    "kimi",
-    "mistral",
-    "custom",
-]
-ModelPackStatus = Literal["active"]
-ModelPackBindingSource = Literal["manual", "runtime_override"]
-ModelPackBriefingStrategy = Literal["balanced", "compact", "detailed"]
 ModelFinishReason = Literal["completed", "incomplete"]
 TaskBriefMode = Literal["user_recall", "resume", "worker_subtask", "agent_handoff"]
+TaskBriefingStrategy = Literal["balanced", "compact", "detailed"]
 ContinuityBriefType = Literal[
     "general",
     "resume",
@@ -293,97 +244,7 @@ TrustSignalState = Literal["active", "inactive"]
 TrustSignalDirection = Literal["positive", "negative", "neutral"]
 ContinuityOpenLoopPosture = Literal["waiting_for", "blocker", "stale", "next_action"]
 ContinuityOpenLoopReviewAction = Literal["done", "deferred", "still_blocked"]
-ChiefOfStaffPriorityPosture = Literal["urgent", "important", "waiting", "blocked", "stale", "defer"]
-ChiefOfStaffRecommendationConfidencePosture = Literal["high", "medium", "low"]
-ChiefOfStaffRecommendedActionType = Literal[
-    "execute_next_action",
-    "progress_commitment",
-    "follow_up_waiting_for",
-    "unblock_blocker",
-    "refresh_stale_item",
-    "review_and_defer",
-    "capture_new_priority",
-]
-ChiefOfStaffFollowThroughPosture = Literal["overdue", "stale_waiting_for", "slipped_commitment"]
-ChiefOfStaffFollowThroughRecommendationAction = Literal[
-    "nudge",
-    "defer",
-    "escalate",
-    "close_loop_candidate",
-]
-ChiefOfStaffEscalationPosture = Literal["watch", "elevated", "critical"]
-ChiefOfStaffResumptionRecommendationAction = Literal[
-    "execute_next_action",
-    "progress_commitment",
-    "follow_up_waiting_for",
-    "unblock_blocker",
-    "refresh_stale_item",
-    "review_and_defer",
-    "capture_new_priority",
-    "nudge",
-    "defer",
-    "escalate",
-    "close_loop_candidate",
-    "review_scope",
-]
-ChiefOfStaffRecommendationOutcome = Literal["accept", "defer", "ignore", "rewrite"]
-ChiefOfStaffWeeklyReviewGuidanceAction = Literal["close", "defer", "escalate"]
-ChiefOfStaffPatternDriftPosture = Literal["improving", "stable", "drifting", "insufficient_signal"]
-ChiefOfStaffActionHandoffSourceKind = Literal[
-    "recommended_next_action",
-    "follow_through",
-    "prep_checklist",
-    "weekly_review",
-]
-ChiefOfStaffActionHandoffAction = Literal[
-    "execute_next_action",
-    "progress_commitment",
-    "follow_up_waiting_for",
-    "unblock_blocker",
-    "refresh_stale_item",
-    "review_and_defer",
-    "capture_new_priority",
-    "nudge",
-    "defer",
-    "escalate",
-    "close_loop_candidate",
-    "review_scope",
-    "weekly_review_close",
-    "weekly_review_defer",
-    "weekly_review_escalate",
-]
-ChiefOfStaffExecutionPosture = Literal["approval_bounded_artifact_only"]
-ChiefOfStaffExecutionReadinessPosture = Literal["approval_required_draft_only"]
-ChiefOfStaffExecutionRouteTarget = Literal[
-    "task_workflow_draft",
-    "approval_workflow_draft",
-    "follow_up_draft_only",
-]
-ChiefOfStaffExecutionRoutingTransition = Literal["routed", "reaffirmed"]
-ChiefOfStaffHandoffQueueLifecycleState = Literal[
-    "ready",
-    "pending_approval",
-    "executed",
-    "stale",
-    "expired",
-]
-ChiefOfStaffHandoffReviewAction = Literal[
-    "mark_ready",
-    "mark_pending_approval",
-    "mark_executed",
-    "mark_stale",
-    "mark_expired",
-]
-ChiefOfStaffHandoffOutcomeStatus = Literal[
-    "reviewed",
-    "approved",
-    "rejected",
-    "rewritten",
-    "executed",
-    "ignored",
-    "expired",
-]
-ChiefOfStaffClosureQualityPosture = Literal["insufficient_signal", "healthy", "watch", "critical"]
+RecommendationConfidencePosture = Literal["high", "medium", "low"]
 ExplicitCommitmentOpenLoopDecision = Literal[
     "CREATED",
     "NOOP_ACTIVE_EXISTS",
@@ -433,17 +294,12 @@ DEFAULT_CONTINUITY_DAILY_BRIEF_LIMIT = 3
 MAX_CONTINUITY_DAILY_BRIEF_LIMIT = 20
 DEFAULT_CONTINUITY_WEEKLY_REVIEW_LIMIT = 5
 MAX_CONTINUITY_WEEKLY_REVIEW_LIMIT = 50
-DEFAULT_CHIEF_OF_STAFF_PRIORITY_LIMIT = 12
-MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT = 100
 DEFAULT_CALENDAR_EVENT_LIST_LIMIT = 20
 MAX_CALENDAR_EVENT_LIST_LIMIT = 50
-DEFAULT_CHANNEL_MESSAGE_LIMIT = 50
-MAX_CHANNEL_MESSAGE_LIMIT = 200
 COMPILER_VERSION_V0 = "continuity_v0"
 PROMPT_ASSEMBLY_VERSION_V0 = "prompt_assembly_v0"
 RESPONSE_GENERATION_VERSION_V0 = "response_generation_v0"
 PROVIDER_CAPABILITY_VERSION_V1 = "provider_capability_v1"
-MODEL_PACK_CONTRACT_VERSION_V1 = "model_pack_contract_v1"
 TRACE_KIND_CONTEXT_COMPILE = "context.compile"
 TRACE_KIND_RESPONSE_GENERATE = "response.generate"
 TRACE_REVIEW_LIST_ORDER = ["created_at_desc", "id_desc"]
@@ -453,7 +309,6 @@ AGENT_PROFILE_LIST_ORDER = ["id_asc"]
 THREAD_SESSION_LIST_ORDER = ["started_at_asc", "created_at_asc", "id_asc"]
 THREAD_EVENT_LIST_ORDER = ["sequence_no_asc"]
 PROVIDER_LIST_ORDER = ["created_at_asc", "id_asc"]
-MODEL_PACK_LIST_ORDER = ["pack_id_asc", "created_at_desc", "id_desc"]
 DEFAULT_AGENT_PROFILE_ID = "assistant_default"
 RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "resumption_brief_v0"
 CONTINUITY_RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_resumption_brief_v0"
@@ -462,7 +317,6 @@ TASK_BRIEF_COMPARISON_VERSION_V0 = "task_brief_comparison_v0"
 CONTINUITY_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_brief_v0"
 CONTINUITY_DAILY_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_daily_brief_v0"
 CONTINUITY_WEEKLY_REVIEW_ASSEMBLY_VERSION_V0 = "continuity_weekly_review_v0"
-CHIEF_OF_STAFF_PRIORITY_BRIEF_ASSEMBLY_VERSION_V0 = "chief_of_staff_priority_brief_v0"
 RESUMPTION_BRIEF_CONVERSATION_EVENT_KINDS = ["message.user", "message.assistant"]
 RESUMPTION_BRIEF_CONVERSATION_ORDER = ["sequence_no_asc"]
 RESUMPTION_BRIEF_MEMORY_ORDER = ["updated_at_asc", "created_at_asc", "id_asc"]
@@ -491,7 +345,7 @@ CONTINUITY_BRIEF_TYPE_ORDER: list[ContinuityBriefType] = [
     "operator_context",
 ]
 TASK_BRIEF_SECTION_ITEM_ORDER = ["created_at_desc", "id_desc"]
-MODEL_PACK_BRIEFING_STRATEGIES: list[ModelPackBriefingStrategy] = [
+TASK_BRIEFING_STRATEGIES: list[TaskBriefingStrategy] = [
     "balanced",
     "compact",
     "detailed",
@@ -614,11 +468,6 @@ TASK_WORKSPACE_LIST_ORDER = ["created_at_asc", "id_asc"]
 GMAIL_ACCOUNT_LIST_ORDER = ["created_at_asc", "id_asc"]
 CALENDAR_ACCOUNT_LIST_ORDER = ["created_at_asc", "id_asc"]
 CALENDAR_EVENT_LIST_ORDER = ["start_time_asc", "provider_event_id_asc"]
-CHANNEL_IDENTITY_LIST_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
-CHANNEL_LINK_CHALLENGE_LIST_ORDER = ["created_at_desc", "id_desc"]
-CHANNEL_THREAD_LIST_ORDER = ["last_message_at_desc", "id_desc"]
-CHANNEL_MESSAGE_LIST_ORDER = ["created_at_desc", "id_desc"]
-CHANNEL_DELIVERY_RECEIPT_LIST_ORDER = ["recorded_at_desc", "id_desc"]
 TASK_ARTIFACT_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_ARTIFACT_CHUNK_LIST_ORDER = ["sequence_no_asc", "id_asc"]
 TASK_ARTIFACT_CHUNK_EMBEDDING_LIST_ORDER = [
@@ -690,120 +539,6 @@ CONTINUITY_RESUMPTION_RECENT_CHANGE_ORDER = ["created_at_desc", "id_desc"]
 CONTINUITY_RESUMPTION_OPEN_LOOP_ORDER = ["created_at_desc", "id_desc"]
 CONTINUITY_OPEN_LOOP_POSTURE_ORDER = ["waiting_for", "blocker", "stale", "next_action"]
 CONTINUITY_OPEN_LOOP_ITEM_ORDER = ["created_at_desc", "id_desc"]
-CHIEF_OF_STAFF_PRIORITY_POSTURE_ORDER = ["urgent", "important", "waiting", "blocked", "stale", "defer"]
-CHIEF_OF_STAFF_PRIORITY_ITEM_ORDER = ["score_desc", "created_at_desc", "id_desc"]
-CHIEF_OF_STAFF_RECOMMENDATION_CONFIDENCE_ORDER = ["high", "medium", "low"]
-CHIEF_OF_STAFF_RECOMMENDED_ACTION_TYPES = [
-    "execute_next_action",
-    "progress_commitment",
-    "follow_up_waiting_for",
-    "unblock_blocker",
-    "refresh_stale_item",
-    "review_and_defer",
-    "capture_new_priority",
-]
-CHIEF_OF_STAFF_FOLLOW_THROUGH_POSTURE_ORDER = [
-    "overdue",
-    "stale_waiting_for",
-    "slipped_commitment",
-]
-CHIEF_OF_STAFF_FOLLOW_THROUGH_ITEM_ORDER = [
-    "recommendation_action_desc",
-    "age_hours_desc",
-    "created_at_desc",
-    "id_desc",
-]
-CHIEF_OF_STAFF_FOLLOW_THROUGH_RECOMMENDATION_ACTIONS = [
-    "nudge",
-    "defer",
-    "escalate",
-    "close_loop_candidate",
-]
-CHIEF_OF_STAFF_ESCALATION_POSTURE_ORDER = ["watch", "elevated", "critical"]
-CHIEF_OF_STAFF_PREPARATION_ITEM_ORDER = ["rank_asc", "created_at_desc", "id_desc"]
-CHIEF_OF_STAFF_RESUMPTION_SUPERVISION_ITEM_ORDER = ["rank_asc"]
-CHIEF_OF_STAFF_RESUMPTION_RECOMMENDATION_ACTIONS = [
-    "execute_next_action",
-    "progress_commitment",
-    "follow_up_waiting_for",
-    "unblock_blocker",
-    "refresh_stale_item",
-    "review_and_defer",
-    "capture_new_priority",
-    "nudge",
-    "defer",
-    "escalate",
-    "close_loop_candidate",
-    "review_scope",
-]
-CHIEF_OF_STAFF_RECOMMENDATION_OUTCOMES = ["accept", "defer", "ignore", "rewrite"]
-CHIEF_OF_STAFF_WEEKLY_REVIEW_GUIDANCE_ACTIONS = ["close", "defer", "escalate"]
-CHIEF_OF_STAFF_RECOMMENDATION_OUTCOME_ORDER = ["created_at_desc", "id_desc"]
-CHIEF_OF_STAFF_OUTCOME_HOTSPOT_ORDER = ["count_desc", "key_asc"]
-CHIEF_OF_STAFF_ACTION_HANDOFF_SOURCE_ORDER = [
-    "recommended_next_action",
-    "follow_through",
-    "prep_checklist",
-    "weekly_review",
-]
-CHIEF_OF_STAFF_ACTION_HANDOFF_ITEM_ORDER = ["score_desc", "source_order_asc", "source_reference_id_asc"]
-CHIEF_OF_STAFF_ACTION_HANDOFF_ACTIONS = [
-    "execute_next_action",
-    "progress_commitment",
-    "follow_up_waiting_for",
-    "unblock_blocker",
-    "refresh_stale_item",
-    "review_and_defer",
-    "capture_new_priority",
-    "nudge",
-    "defer",
-    "escalate",
-    "close_loop_candidate",
-    "review_scope",
-    "weekly_review_close",
-    "weekly_review_defer",
-    "weekly_review_escalate",
-]
-CHIEF_OF_STAFF_EXECUTION_POSTURE_ORDER = ["approval_bounded_artifact_only"]
-CHIEF_OF_STAFF_EXECUTION_READINESS_POSTURE_ORDER = ["approval_required_draft_only"]
-CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER = [
-    "task_workflow_draft",
-    "approval_workflow_draft",
-    "follow_up_draft_only",
-]
-CHIEF_OF_STAFF_EXECUTION_ROUTED_ITEM_ORDER = ["handoff_rank_asc", "handoff_item_id_asc"]
-CHIEF_OF_STAFF_EXECUTION_ROUTING_AUDIT_ORDER = ["created_at_desc", "id_desc"]
-CHIEF_OF_STAFF_EXECUTION_ROUTING_TRANSITIONS = ["routed", "reaffirmed"]
-CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER = [
-    "ready",
-    "pending_approval",
-    "executed",
-    "stale",
-    "expired",
-]
-CHIEF_OF_STAFF_HANDOFF_QUEUE_ITEM_ORDER = [
-    "queue_rank_asc",
-    "handoff_rank_asc",
-    "score_desc",
-    "handoff_item_id_asc",
-]
-CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS = [
-    "mark_ready",
-    "mark_pending_approval",
-    "mark_executed",
-    "mark_stale",
-    "mark_expired",
-]
-CHIEF_OF_STAFF_HANDOFF_OUTCOME_STATUSES = [
-    "reviewed",
-    "approved",
-    "rejected",
-    "rewritten",
-    "executed",
-    "ignored",
-    "expired",
-]
-CHIEF_OF_STAFF_HANDOFF_OUTCOME_ORDER = ["created_at_desc", "id_desc"]
 TASK_WORKSPACE_STATUSES = ["active"]
 TASK_ARTIFACT_STATUSES = ["registered"]
 TASK_ARTIFACT_INGESTION_STATUSES = ["pending", "ingested"]
@@ -1803,54 +1538,6 @@ class ProviderTestResponse(TypedDict):
     result: ProviderTestResultRecord
 
 
-class ModelPackRecord(TypedDict):
-    id: str
-    workspace_id: str
-    created_by_user_account_id: str
-    pack_id: str
-    pack_version: str
-    display_name: str
-    family: ModelPackFamily
-    description: str
-    status: ModelPackStatus
-    briefing_strategy: ModelPackBriefingStrategy
-    briefing_max_tokens: int | None
-    contract: JsonObject
-    metadata: JsonObject
-    created_at: str
-    updated_at: str
-
-
-class ModelPackListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class ModelPackListResponse(TypedDict):
-    items: list[ModelPackRecord]
-    summary: ModelPackListSummary
-
-
-class ModelPackDetailResponse(TypedDict):
-    model_pack: ModelPackRecord
-
-
-class WorkspaceModelPackBindingRecord(TypedDict):
-    id: str
-    workspace_id: str
-    provider_id: str | None
-    model_pack_id: str
-    bound_by_user_account_id: str
-    binding_source: ModelPackBindingSource
-    metadata: JsonObject
-    created_at: str
-    model_pack: ModelPackRecord
-
-
-class WorkspaceModelPackBindingResponse(TypedDict):
-    binding: WorkspaceModelPackBindingRecord | None
-
-
 class RuntimeInvokeAssistantRecord(TypedDict):
     event_id: str
     sequence_no: int
@@ -2281,9 +1968,6 @@ class ContinuityBriefRequestInput:
 class TaskBriefCompileRequestInput:
     mode: TaskBriefMode
     query: str | None = None
-    workspace_id: UUID | None = None
-    pack_id: str | None = None
-    pack_version: str | None = None
     thread_id: UUID | None = None
     task_id: UUID | None = None
     project: str | None = None
@@ -2292,23 +1976,20 @@ class TaskBriefCompileRequestInput:
     until: datetime | None = None
     include_non_promotable_facts: bool = False
     provider_strategy: str | None = None
-    model_pack_strategy: str | None = None
+    briefing_strategy: TaskBriefingStrategy | None = None
     token_budget: int | None = None
 
     def as_payload(self) -> JsonObject:
         payload: JsonObject = {
             "mode": self.mode,
             "query": self.query,
-            "workspace_id": None if self.workspace_id is None else str(self.workspace_id),
-            "pack_id": self.pack_id,
-            "pack_version": self.pack_version,
             "thread_id": None if self.thread_id is None else str(self.thread_id),
             "task_id": None if self.task_id is None else str(self.task_id),
             "project": self.project,
             "person": self.person,
             "include_non_promotable_facts": self.include_non_promotable_facts,
             "provider_strategy": self.provider_strategy,
-            "model_pack_strategy": self.model_pack_strategy,
+            "briefing_strategy": self.briefing_strategy,
             "token_budget": self.token_budget,
         }
         payload["since"] = isoformat_or_none(self.since)
@@ -2413,123 +2094,14 @@ class ContinuityWeeklyReviewRequestInput:
         return payload
 
 
-@dataclass(frozen=True, slots=True)
-class ChiefOfStaffPriorityBriefRequestInput:
-    query: str | None = None
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = None
-    person: str | None = None
-    since: datetime | None = None
-    until: datetime | None = None
-    limit: int = DEFAULT_CHIEF_OF_STAFF_PRIORITY_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "query": self.query,
-            "thread_id": None if self.thread_id is None else str(self.thread_id),
-            "task_id": None if self.task_id is None else str(self.task_id),
-            "project": self.project,
-            "person": self.person,
-            "limit": self.limit,
-        }
-        payload["since"] = isoformat_or_none(self.since)
-        payload["until"] = isoformat_or_none(self.until)
-        return payload
 
 
-@dataclass(frozen=True, slots=True)
-class ChiefOfStaffRecommendationOutcomeCaptureInput:
-    outcome: ChiefOfStaffRecommendationOutcome
-    recommendation_action_type: ChiefOfStaffRecommendedActionType
-    recommendation_title: str
-    rationale: str | None = None
-    rewritten_title: str | None = None
-    target_priority_id: UUID | None = None
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = None
-    person: str | None = None
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "outcome": self.outcome,
-            "recommendation_action_type": self.recommendation_action_type,
-            "recommendation_title": self.recommendation_title,
-            "rationale": self.rationale,
-            "rewritten_title": self.rewritten_title,
-            "target_priority_id": None if self.target_priority_id is None else str(self.target_priority_id),
-            "thread_id": None if self.thread_id is None else str(self.thread_id),
-            "task_id": None if self.task_id is None else str(self.task_id),
-            "project": self.project,
-            "person": self.person,
-        }
 
 
-@dataclass(frozen=True, slots=True)
-class ChiefOfStaffHandoffReviewActionInput:
-    handoff_item_id: str
-    review_action: ChiefOfStaffHandoffReviewAction
-    note: str | None = None
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = None
-    person: str | None = None
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "handoff_item_id": self.handoff_item_id,
-            "review_action": self.review_action,
-            "note": self.note,
-            "thread_id": None if self.thread_id is None else str(self.thread_id),
-            "task_id": None if self.task_id is None else str(self.task_id),
-            "project": self.project,
-            "person": self.person,
-        }
 
 
-@dataclass(frozen=True, slots=True)
-class ChiefOfStaffExecutionRoutingActionInput:
-    handoff_item_id: str
-    route_target: ChiefOfStaffExecutionRouteTarget
-    note: str | None = None
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = None
-    person: str | None = None
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "handoff_item_id": self.handoff_item_id,
-            "route_target": self.route_target,
-            "note": self.note,
-            "thread_id": None if self.thread_id is None else str(self.thread_id),
-            "task_id": None if self.task_id is None else str(self.task_id),
-            "project": self.project,
-            "person": self.person,
-        }
 
 
-@dataclass(frozen=True, slots=True)
-class ChiefOfStaffHandoffOutcomeCaptureInput:
-    handoff_item_id: str
-    outcome_status: ChiefOfStaffHandoffOutcomeStatus
-    note: str | None = None
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = None
-    person: str | None = None
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "handoff_item_id": self.handoff_item_id,
-            "outcome_status": self.outcome_status,
-            "note": self.note,
-            "thread_id": None if self.thread_id is None else str(self.thread_id),
-            "task_id": None if self.task_id is None else str(self.task_id),
-            "project": self.project,
-            "person": self.person,
-        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -3788,14 +3360,14 @@ class ContinuityBriefSuggestedActionRecord(TypedDict):
     title: str
     object_type: ContinuityObjectType | None
     reason: str
-    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    confidence_posture: RecommendationConfidencePosture
     provenance_references: list[ContinuityRecallProvenanceReference]
 
 
 class ContinuityBriefSelectionStrategyRecord(TypedDict):
     task_brief_mode: TaskBriefMode
     provider_strategy: str
-    model_pack_strategy: str
+    briefing_strategy: TaskBriefingStrategy
     token_budget: int
     budget_source: str
 
@@ -3813,7 +3385,7 @@ class ContinuityBriefProvenanceBundle(TypedDict):
 
 
 class ContinuityBriefTrustPostureRecord(TypedDict):
-    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    confidence_posture: RecommendationConfidencePosture
     average_confidence: float
     strongest_trust_class: MemoryTrustClass | None
     weakest_provenance_posture: ContinuityRecallProvenancePosture | None
@@ -3872,7 +3444,7 @@ class TaskBriefSectionRecord(TypedDict):
 
 class TaskBriefStrategyRecord(TypedDict):
     provider_strategy: str
-    model_pack_strategy: str
+    briefing_strategy: TaskBriefingStrategy
     token_budget: int
     budget_source: str
 
@@ -4038,640 +3610,118 @@ class ContinuityWeeklyReviewResponse(TypedDict):
     review: ContinuityWeeklyReviewRecord
 
 
-class ChiefOfStaffPriorityRankingInputs(TypedDict):
-    posture: ChiefOfStaffPriorityPosture
-    open_loop_posture: ContinuityOpenLoopPosture | None
-    recency_rank: int | None
-    age_hours_relative_to_latest: float
-    recall_relevance: float
-    scope_match_count: int
-    query_term_match_count: int
-    freshness_posture: ContinuityRecallFreshnessPosture
-    provenance_posture: ContinuityRecallProvenancePosture
-    supersession_posture: ContinuityRecallSupersessionPosture
-
-
-class ChiefOfStaffPriorityTrustSignals(TypedDict):
-    quality_gate_status: MemoryQualityGateStatus
-    retrieval_status: RetrievalEvaluationStatus
-    trust_confidence_cap: ChiefOfStaffRecommendationConfidencePosture
-    downgraded_by_trust: bool
-    reason: str
-
-
-class ChiefOfStaffPriorityRationale(TypedDict):
-    reasons: list[str]
-    ranking_inputs: ChiefOfStaffPriorityRankingInputs
-    provenance_references: list[ContinuityRecallProvenanceReference]
-    trust_signals: ChiefOfStaffPriorityTrustSignals
-
-
-class ChiefOfStaffPriorityItem(TypedDict):
-    rank: int
-    id: str
-    capture_event_id: str
-    object_type: ContinuityObjectType
-    status: str
-    title: str
-    priority_posture: ChiefOfStaffPriorityPosture
-    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
-    confidence: float
-    score: float
-    provenance: JsonObject
-    created_at: str
-    updated_at: str
-    rationale: ChiefOfStaffPriorityRationale
-
-
-class ChiefOfStaffFollowThroughItem(TypedDict):
-    rank: int
-    id: str
-    capture_event_id: str
-    object_type: ContinuityObjectType
-    status: str
-    title: str
-    current_priority_posture: ChiefOfStaffPriorityPosture
-    follow_through_posture: ChiefOfStaffFollowThroughPosture
-    recommendation_action: ChiefOfStaffFollowThroughRecommendationAction
-    reason: str
-    age_hours: float
-    provenance_references: list[ContinuityRecallProvenanceReference]
-    created_at: str
-    updated_at: str
-
-
-class ChiefOfStaffEscalationPostureRecord(TypedDict):
-    posture: ChiefOfStaffEscalationPosture
-    reason: str
-    total_follow_through_count: int
-    nudge_count: int
-    defer_count: int
-    escalate_count: int
-    close_loop_candidate_count: int
-
-
-class ChiefOfStaffDraftFollowUpTargetMetadata(TypedDict):
-    continuity_object_id: str | None
-    capture_event_id: str | None
-    object_type: ContinuityObjectType | None
-    priority_posture: ChiefOfStaffPriorityPosture | None
-    follow_through_posture: ChiefOfStaffFollowThroughPosture | None
-    recommendation_action: ChiefOfStaffFollowThroughRecommendationAction | None
-    thread_id: str | None
-
-
-class ChiefOfStaffDraftFollowUpContent(TypedDict):
-    subject: str
-    body: str
-
-
-class ChiefOfStaffDraftFollowUpRecord(TypedDict):
-    status: Literal["drafted", "none"]
-    mode: Literal["draft_only"]
-    approval_required: bool
-    auto_send: bool
-    reason: str
-    target_metadata: ChiefOfStaffDraftFollowUpTargetMetadata
-    content: ChiefOfStaffDraftFollowUpContent
-
-
-class ChiefOfStaffRecommendedNextAction(TypedDict):
-    action_type: ChiefOfStaffRecommendedActionType
-    title: str
-    target_priority_id: str | None
-    priority_posture: ChiefOfStaffPriorityPosture | None
-    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
-    reason: str
-    provenance_references: list[ContinuityRecallProvenanceReference]
-    deterministic_rank_key: str
-
-
-class ChiefOfStaffActionHandoffRequestTarget(TypedDict):
-    thread_id: str | None
-    task_id: str | None
-    project: str | None
-    person: str | None
-
-
-class ChiefOfStaffActionHandoffRequestDraft(TypedDict):
-    action: str
-    scope: str
-    domain_hint: str | None
-    risk_hint: str | None
-    attributes: JsonObject
-
-
-class ChiefOfStaffActionHandoffTaskDraftRecord(TypedDict):
-    status: Literal["draft"]
-    mode: Literal["governed_request_draft"]
-    approval_required: bool
-    auto_execute: bool
-    source_handoff_item_id: str
-    title: str
-    summary: str
-    target: ChiefOfStaffActionHandoffRequestTarget
-    request: ChiefOfStaffActionHandoffRequestDraft
-    rationale: str
-    provenance_references: list[ContinuityRecallProvenanceReference]
-
-
-class ChiefOfStaffActionHandoffApprovalDraftRecord(TypedDict):
-    status: Literal["draft_only"]
-    mode: Literal["approval_request_draft"]
-    decision: ToolRoutingDecision
-    approval_required: bool
-    auto_submit: bool
-    source_handoff_item_id: str
-    request: ChiefOfStaffActionHandoffRequestDraft
-    reason: str
-    required_checks: list[str]
-    provenance_references: list[ContinuityRecallProvenanceReference]
-
-
-class ChiefOfStaffActionHandoffItem(TypedDict):
-    rank: int
-    handoff_item_id: str
-    source_kind: ChiefOfStaffActionHandoffSourceKind
-    source_reference_id: str | None
-    title: str
-    recommendation_action: ChiefOfStaffActionHandoffAction
-    priority_posture: ChiefOfStaffPriorityPosture | None
-    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
-    rationale: str
-    provenance_references: list[ContinuityRecallProvenanceReference]
-    score: float
-    task_draft: ChiefOfStaffActionHandoffTaskDraftRecord
-    approval_draft: ChiefOfStaffActionHandoffApprovalDraftRecord
-
-
-class ChiefOfStaffActionHandoffBriefRecord(TypedDict):
-    summary: str
-    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
-    non_autonomous_guarantee: str
-    order: list[str]
-    source_order: list[ChiefOfStaffActionHandoffSourceKind]
-    provenance_references: list[ContinuityRecallProvenanceReference]
-
-
-class ChiefOfStaffExecutionPostureRecord(TypedDict):
-    posture: ChiefOfStaffExecutionPosture
-    approval_required: bool
-    autonomous_execution: bool
-    external_side_effects_allowed: bool
-    default_routing_decision: ToolRoutingDecision
-    required_operator_actions: list[str]
-    non_autonomous_guarantee: str
-    reason: str
-
-
-class ChiefOfStaffExecutionReadinessPostureRecord(TypedDict):
-    posture: ChiefOfStaffExecutionReadinessPosture
-    approval_required: bool
-    autonomous_execution: bool
-    external_side_effects_allowed: bool
-    approval_path_visible: bool
-    route_target_order: list[ChiefOfStaffExecutionRouteTarget]
-    required_route_targets: list[ChiefOfStaffExecutionRouteTarget]
-    transition_order: list[ChiefOfStaffExecutionRoutingTransition]
-    non_autonomous_guarantee: str
-    reason: str
-
-
-class ChiefOfStaffExecutionRoutingAuditRecord(TypedDict):
-    id: str
-    capture_event_id: str
-    handoff_item_id: str
-    route_target: ChiefOfStaffExecutionRouteTarget
-    transition: ChiefOfStaffExecutionRoutingTransition
-    previously_routed: bool
-    route_state: bool
-    reason: str
-    note: str | None
-    provenance_references: list[ContinuityRecallProvenanceReference]
-    created_at: str
-    updated_at: str
-
-
-class ChiefOfStaffRoutedHandoffItemRecord(TypedDict):
-    handoff_rank: int
-    handoff_item_id: str
-    title: str
-    source_kind: ChiefOfStaffActionHandoffSourceKind
-    recommendation_action: ChiefOfStaffActionHandoffAction
-    route_target_order: list[ChiefOfStaffExecutionRouteTarget]
-    available_route_targets: list[ChiefOfStaffExecutionRouteTarget]
-    routed_targets: list[ChiefOfStaffExecutionRouteTarget]
-    is_routed: bool
-    task_workflow_draft_routed: bool
-    approval_workflow_draft_routed: bool
-    follow_up_draft_only_routed: bool
-    follow_up_draft_only_applicable: bool
-    task_draft: ChiefOfStaffActionHandoffTaskDraftRecord
-    approval_draft: ChiefOfStaffActionHandoffApprovalDraftRecord
-    follow_up_draft: NotRequired[ChiefOfStaffDraftFollowUpRecord]
-    last_routing_transition: ChiefOfStaffExecutionRoutingAuditRecord | None
-
-
-class ChiefOfStaffExecutionRoutingSummary(TypedDict):
-    total_handoff_count: int
-    routed_handoff_count: int
-    unrouted_handoff_count: int
-    task_workflow_draft_count: int
-    approval_workflow_draft_count: int
-    follow_up_draft_only_count: int
-    route_target_order: list[ChiefOfStaffExecutionRouteTarget]
-    routed_item_order: list[str]
-    audit_order: list[str]
-    transition_order: list[ChiefOfStaffExecutionRoutingTransition]
-    approval_required: bool
-    non_autonomous_guarantee: str
-    reason: str
-
-
-class ChiefOfStaffHandoffReviewActionRecord(TypedDict):
-    id: str
-    capture_event_id: str
-    handoff_item_id: str
-    review_action: ChiefOfStaffHandoffReviewAction
-    previous_lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState | None
-    next_lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState
-    reason: str
-    note: str | None
-    provenance_references: list[ContinuityRecallProvenanceReference]
-    created_at: str
-    updated_at: str
-
-
-class ChiefOfStaffHandoffOutcomeRecord(TypedDict):
-    id: str
-    capture_event_id: str
-    handoff_item_id: str
-    outcome_status: ChiefOfStaffHandoffOutcomeStatus
-    previous_outcome_status: ChiefOfStaffHandoffOutcomeStatus | None
-    is_latest_outcome: bool
-    reason: str
-    note: str | None
-    provenance_references: list[ContinuityRecallProvenanceReference]
-    created_at: str
-    updated_at: str
-
-
-class ChiefOfStaffHandoffOutcomeSummary(TypedDict):
-    returned_count: int
-    total_count: int
-    latest_total_count: int
-    status_counts: dict[ChiefOfStaffHandoffOutcomeStatus, int]
-    latest_status_counts: dict[ChiefOfStaffHandoffOutcomeStatus, int]
-    status_order: list[ChiefOfStaffHandoffOutcomeStatus]
-    order: list[str]
-
-
-class ChiefOfStaffClosureQualitySummaryRecord(TypedDict):
-    posture: ChiefOfStaffClosureQualityPosture
-    reason: str
-    closed_loop_count: int
-    unresolved_count: int
-    rejected_count: int
-    ignored_count: int
-    expired_count: int
-    closure_rate: float
-    explanation: str
-
-
-class ChiefOfStaffConversionSignalSummaryRecord(TypedDict):
-    total_handoff_count: int
-    latest_outcome_count: int
-    executed_count: int
-    approved_count: int
-    reviewed_count: int
-    rewritten_count: int
-    rejected_count: int
-    ignored_count: int
-    expired_count: int
-    recommendation_to_execution_conversion_rate: float
-    recommendation_to_closure_conversion_rate: float
-    capture_coverage_rate: float
-    explanation: str
-
-
-class ChiefOfStaffStaleIgnoredEscalationPostureRecord(TypedDict):
-    posture: ChiefOfStaffEscalationPosture
-    reason: str
-    stale_queue_count: int
-    ignored_count: int
-    expired_count: int
-    trigger_count: int
-    guidance_posture_explanation: str
-    supporting_signals: list[str]
-
-
-class ChiefOfStaffHandoffQueueItem(TypedDict):
-    queue_rank: int
-    handoff_rank: int
-    handoff_item_id: str
-    lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState
-    state_reason: str
-    source_kind: ChiefOfStaffActionHandoffSourceKind
-    source_reference_id: str | None
-    title: str
-    recommendation_action: ChiefOfStaffActionHandoffAction
-    priority_posture: ChiefOfStaffPriorityPosture | None
-    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
-    score: float
-    age_hours_relative_to_latest: float | None
-    review_action_order: list[ChiefOfStaffHandoffReviewAction]
-    available_review_actions: list[ChiefOfStaffHandoffReviewAction]
-    last_review_action: ChiefOfStaffHandoffReviewActionRecord | None
-    provenance_references: list[ContinuityRecallProvenanceReference]
-
-
-class ChiefOfStaffHandoffQueueGroupSummary(TypedDict):
-    lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState
-    returned_count: int
-    total_count: int
-    order: list[str]
-
-
-class ChiefOfStaffHandoffQueueGroupEmptyState(TypedDict):
-    is_empty: bool
-    message: str
-
-
-class ChiefOfStaffHandoffQueueGroup(TypedDict):
-    items: list[ChiefOfStaffHandoffQueueItem]
-    summary: ChiefOfStaffHandoffQueueGroupSummary
-    empty_state: ChiefOfStaffHandoffQueueGroupEmptyState
-
-
-class ChiefOfStaffHandoffQueueGroups(TypedDict):
-    ready: ChiefOfStaffHandoffQueueGroup
-    pending_approval: ChiefOfStaffHandoffQueueGroup
-    executed: ChiefOfStaffHandoffQueueGroup
-    stale: ChiefOfStaffHandoffQueueGroup
-    expired: ChiefOfStaffHandoffQueueGroup
-
-
-class ChiefOfStaffHandoffQueueSummary(TypedDict):
-    total_count: int
-    ready_count: int
-    pending_approval_count: int
-    executed_count: int
-    stale_count: int
-    expired_count: int
-    state_order: list[ChiefOfStaffHandoffQueueLifecycleState]
-    group_order: list[ChiefOfStaffHandoffQueueLifecycleState]
-    item_order: list[str]
-    review_action_order: list[ChiefOfStaffHandoffReviewAction]
-
-
-class ChiefOfStaffPrioritySummary(TypedDict):
-    limit: int
-    returned_count: int
-    total_count: int
-    posture_order: list[ChiefOfStaffPriorityPosture]
-    order: list[str]
-    follow_through_posture_order: list[ChiefOfStaffFollowThroughPosture]
-    follow_through_item_order: list[str]
-    follow_through_total_count: int
-    overdue_count: int
-    stale_waiting_for_count: int
-    slipped_commitment_count: int
-    trust_confidence_posture: ChiefOfStaffRecommendationConfidencePosture
-    trust_confidence_reason: str
-    quality_gate_status: MemoryQualityGateStatus
-    retrieval_status: RetrievalEvaluationStatus
-    handoff_item_count: int
-    handoff_item_order: list[str]
-    execution_posture_order: list[ChiefOfStaffExecutionPosture]
-    handoff_queue_total_count: int
-    handoff_queue_ready_count: int
-    handoff_queue_pending_approval_count: int
-    handoff_queue_executed_count: int
-    handoff_queue_stale_count: int
-    handoff_queue_expired_count: int
-    handoff_queue_state_order: list[ChiefOfStaffHandoffQueueLifecycleState]
-    handoff_queue_group_order: list[ChiefOfStaffHandoffQueueLifecycleState]
-    handoff_queue_item_order: list[str]
-    handoff_outcome_total_count: int
-    handoff_outcome_latest_count: int
-    handoff_outcome_executed_count: int
-    handoff_outcome_ignored_count: int
-    closure_quality_posture: ChiefOfStaffClosureQualityPosture
-    stale_ignored_escalation_posture: ChiefOfStaffEscalationPosture
-
-
-class ChiefOfStaffPreparationArtifactItem(TypedDict):
-    rank: int
-    id: str
-    capture_event_id: str
-    object_type: ContinuityObjectType
-    status: str
-    title: str
-    reason: str
-    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
-    provenance_references: list[ContinuityRecallProvenanceReference]
-    created_at: str
-
-
-class ChiefOfStaffPreparationSectionSummary(TypedDict):
-    limit: int
-    returned_count: int
-    total_count: int
-    order: list[str]
-
-
-class ChiefOfStaffPreparationBriefRecord(TypedDict):
-    scope: ContinuityRecallScopeFilters
-    context_items: list[ChiefOfStaffPreparationArtifactItem]
-    last_decision: ChiefOfStaffPreparationArtifactItem | None
-    open_loops: list[ChiefOfStaffPreparationArtifactItem]
-    next_action: ChiefOfStaffPreparationArtifactItem | None
-    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
-    confidence_reason: str
-    summary: ChiefOfStaffPreparationSectionSummary
-
-
-class ChiefOfStaffWhatChangedSummaryRecord(TypedDict):
-    items: list[ChiefOfStaffPreparationArtifactItem]
-    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
-    confidence_reason: str
-    summary: ChiefOfStaffPreparationSectionSummary
-
-
-class ChiefOfStaffPrepChecklistRecord(TypedDict):
-    items: list[ChiefOfStaffPreparationArtifactItem]
-    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
-    confidence_reason: str
-    summary: ChiefOfStaffPreparationSectionSummary
-
-
-class ChiefOfStaffSuggestedTalkingPointsRecord(TypedDict):
-    items: list[ChiefOfStaffPreparationArtifactItem]
-    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
-    confidence_reason: str
-    summary: ChiefOfStaffPreparationSectionSummary
-
-
-class ChiefOfStaffResumptionSupervisionRecommendation(TypedDict):
-    rank: int
-    action: ChiefOfStaffResumptionRecommendationAction
-    title: str
-    reason: str
-    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
-    target_priority_id: str | None
-    provenance_references: list[ContinuityRecallProvenanceReference]
-
-
-class ChiefOfStaffResumptionSupervisionRecord(TypedDict):
-    recommendations: list[ChiefOfStaffResumptionSupervisionRecommendation]
-    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
-    confidence_reason: str
-    summary: ChiefOfStaffPreparationSectionSummary
-
-
-class ChiefOfStaffWeeklyReviewGuidanceItem(TypedDict):
-    rank: int
-    action: ChiefOfStaffWeeklyReviewGuidanceAction
-    signal_count: int
-    rationale: str
-
-
-class ChiefOfStaffWeeklyReviewBriefSummary(TypedDict):
-    guidance_order: list[ChiefOfStaffWeeklyReviewGuidanceAction]
-    guidance_item_order: list[str]
-
-
-class ChiefOfStaffWeeklyReviewBriefRecord(TypedDict):
-    scope: ContinuityRecallScopeFilters
-    rollup: ContinuityWeeklyReviewRollup
-    guidance: list[ChiefOfStaffWeeklyReviewGuidanceItem]
-    summary: ChiefOfStaffWeeklyReviewBriefSummary
-
-
-class ChiefOfStaffRecommendationOutcomeRecord(TypedDict):
-    id: str
-    capture_event_id: str
-    outcome: ChiefOfStaffRecommendationOutcome
-    recommendation_action_type: ChiefOfStaffRecommendedActionType
-    recommendation_title: str
-    rewritten_title: str | None
-    target_priority_id: str | None
-    rationale: str | None
-    provenance_references: list[ContinuityRecallProvenanceReference]
-    created_at: str
-    updated_at: str
-
-
-class ChiefOfStaffRecommendationOutcomeSummary(TypedDict):
-    returned_count: int
-    total_count: int
-    outcome_counts: dict[ChiefOfStaffRecommendationOutcome, int]
-    order: list[str]
-
-
-class ChiefOfStaffRecommendationOutcomeSection(TypedDict):
-    items: list[ChiefOfStaffRecommendationOutcomeRecord]
-    summary: ChiefOfStaffRecommendationOutcomeSummary
-
-
-class ChiefOfStaffOutcomeHotspotRecord(TypedDict):
-    key: str
-    count: int
-
-
-class ChiefOfStaffPriorityLearningSummaryRecord(TypedDict):
-    total_count: int
-    accept_count: int
-    defer_count: int
-    ignore_count: int
-    rewrite_count: int
-    acceptance_rate: float
-    override_rate: float
-    defer_hotspots: list[ChiefOfStaffOutcomeHotspotRecord]
-    ignore_hotspots: list[ChiefOfStaffOutcomeHotspotRecord]
-    priority_shift_explanation: str
-    hotspot_order: list[str]
-
-
-class ChiefOfStaffPatternDriftSummaryRecord(TypedDict):
-    posture: ChiefOfStaffPatternDriftPosture
-    reason: str
-    supporting_signals: list[str]
-
-
-class ChiefOfStaffPriorityBriefRecord(TypedDict):
-    assembly_version: str
-    scope: ContinuityRecallScopeFilters
-    ranked_items: list[ChiefOfStaffPriorityItem]
-    overdue_items: list[ChiefOfStaffFollowThroughItem]
-    stale_waiting_for_items: list[ChiefOfStaffFollowThroughItem]
-    slipped_commitments: list[ChiefOfStaffFollowThroughItem]
-    escalation_posture: ChiefOfStaffEscalationPostureRecord
-    draft_follow_up: ChiefOfStaffDraftFollowUpRecord
-    recommended_next_action: ChiefOfStaffRecommendedNextAction
-    preparation_brief: ChiefOfStaffPreparationBriefRecord
-    what_changed_summary: ChiefOfStaffWhatChangedSummaryRecord
-    prep_checklist: ChiefOfStaffPrepChecklistRecord
-    suggested_talking_points: ChiefOfStaffSuggestedTalkingPointsRecord
-    resumption_supervision: ChiefOfStaffResumptionSupervisionRecord
-    weekly_review_brief: ChiefOfStaffWeeklyReviewBriefRecord
-    recommendation_outcomes: ChiefOfStaffRecommendationOutcomeSection
-    priority_learning_summary: ChiefOfStaffPriorityLearningSummaryRecord
-    pattern_drift_summary: ChiefOfStaffPatternDriftSummaryRecord
-    action_handoff_brief: ChiefOfStaffActionHandoffBriefRecord
-    handoff_items: list[ChiefOfStaffActionHandoffItem]
-    handoff_queue_summary: ChiefOfStaffHandoffQueueSummary
-    handoff_queue_groups: ChiefOfStaffHandoffQueueGroups
-    handoff_review_actions: list[ChiefOfStaffHandoffReviewActionRecord]
-    handoff_outcome_summary: ChiefOfStaffHandoffOutcomeSummary
-    handoff_outcomes: list[ChiefOfStaffHandoffOutcomeRecord]
-    closure_quality_summary: ChiefOfStaffClosureQualitySummaryRecord
-    conversion_signal_summary: ChiefOfStaffConversionSignalSummaryRecord
-    stale_ignored_escalation_posture: ChiefOfStaffStaleIgnoredEscalationPostureRecord
-    execution_routing_summary: ChiefOfStaffExecutionRoutingSummary
-    routed_handoff_items: list[ChiefOfStaffRoutedHandoffItemRecord]
-    routing_audit_trail: list[ChiefOfStaffExecutionRoutingAuditRecord]
-    execution_readiness_posture: ChiefOfStaffExecutionReadinessPostureRecord
-    task_draft: ChiefOfStaffActionHandoffTaskDraftRecord
-    approval_draft: ChiefOfStaffActionHandoffApprovalDraftRecord
-    execution_posture: ChiefOfStaffExecutionPostureRecord
-    summary: ChiefOfStaffPrioritySummary
-    sources: list[str]
-
-
-class ChiefOfStaffPriorityBriefResponse(TypedDict):
-    brief: ChiefOfStaffPriorityBriefRecord
-
-
-class ChiefOfStaffRecommendationOutcomeCaptureResponse(TypedDict):
-    outcome: ChiefOfStaffRecommendationOutcomeRecord
-    recommendation_outcomes: ChiefOfStaffRecommendationOutcomeSection
-    priority_learning_summary: ChiefOfStaffPriorityLearningSummaryRecord
-    pattern_drift_summary: ChiefOfStaffPatternDriftSummaryRecord
-
-
-class ChiefOfStaffHandoffReviewActionCaptureResponse(TypedDict):
-    review_action: ChiefOfStaffHandoffReviewActionRecord
-    handoff_queue_summary: ChiefOfStaffHandoffQueueSummary
-    handoff_queue_groups: ChiefOfStaffHandoffQueueGroups
-    handoff_review_actions: list[ChiefOfStaffHandoffReviewActionRecord]
-
-
-class ChiefOfStaffExecutionRoutingActionCaptureResponse(TypedDict):
-    routing_action: ChiefOfStaffExecutionRoutingAuditRecord
-    execution_routing_summary: ChiefOfStaffExecutionRoutingSummary
-    routed_handoff_items: list[ChiefOfStaffRoutedHandoffItemRecord]
-    routing_audit_trail: list[ChiefOfStaffExecutionRoutingAuditRecord]
-    execution_readiness_posture: ChiefOfStaffExecutionReadinessPostureRecord
-
-
-class ChiefOfStaffHandoffOutcomeCaptureResponse(TypedDict):
-    handoff_outcome: ChiefOfStaffHandoffOutcomeRecord
-    handoff_outcome_summary: ChiefOfStaffHandoffOutcomeSummary
-    handoff_outcomes: list[ChiefOfStaffHandoffOutcomeRecord]
-    closure_quality_summary: ChiefOfStaffClosureQualitySummaryRecord
-    conversion_signal_summary: ChiefOfStaffConversionSignalSummaryRecord
-    stale_ignored_escalation_posture: ChiefOfStaffStaleIgnoredEscalationPostureRecord
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class ContinuityOpenLoopReviewActionResponse(TypedDict):
@@ -6863,309 +5913,3 @@ def isoformat_or_none(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.isoformat()
-
-
-class HostedUserAccountRecord(TypedDict):
-    id: str
-    email: str
-    display_name: str | None
-    beta_cohort_key: str | None
-    created_at: str
-
-
-class HostedAuthSessionRecord(TypedDict):
-    id: str
-    user_account_id: str
-    workspace_id: str | None
-    device_id: str | None
-    status: HostedAuthSessionStatus
-    expires_at: str
-    revoked_at: str | None
-    last_seen_at: str | None
-    created_at: str
-
-
-class HostedMagicLinkChallengeRecord(TypedDict):
-    id: str
-    email: str
-    challenge_token_hash: str
-    status: HostedMagicLinkChallengeStatus
-    expires_at: str
-    consumed_at: str | None
-    created_at: str
-
-
-class HostedWorkspaceRecord(TypedDict):
-    id: str
-    owner_user_account_id: str
-    slug: str
-    name: str
-    bootstrap_status: HostedWorkspaceBootstrapStatus
-    bootstrapped_at: str | None
-    support_status: Literal["healthy", "needs_attention", "blocked"]
-    support_notes: JsonObject
-    onboarding_last_error_code: str | None
-    onboarding_last_error_detail: str | None
-    onboarding_last_error_at: str | None
-    onboarding_error_count: int
-    rollout_evidence: JsonObject
-    rate_limit_evidence: JsonObject
-    incident_evidence: JsonObject
-    created_at: str
-    updated_at: str
-
-
-class HostedBootstrapStatusRecord(TypedDict):
-    workspace_id: str
-    status: HostedWorkspaceBootstrapStatus
-    bootstrapped_at: str | None
-    ready_for_next_phase_telegram_linkage: bool
-    telegram_state: Literal["available_in_p10_s2_transport"]
-
-
-class HostedDeviceRecord(TypedDict):
-    id: str
-    user_account_id: str
-    workspace_id: str | None
-    device_key: str
-    device_label: str
-    status: HostedDeviceStatus
-    last_seen_at: str | None
-    revoked_at: str | None
-    created_at: str
-    updated_at: str
-
-
-class HostedDeviceLinkChallengeRecord(TypedDict):
-    id: str
-    user_account_id: str
-    workspace_id: str | None
-    device_key: str
-    device_label: str
-    challenge_token_hash: str
-    status: HostedDeviceLinkChallengeStatus
-    expires_at: str
-    confirmed_at: str | None
-    device_id: str | None
-    created_at: str
-
-
-class HostedUserPreferencesRecord(TypedDict):
-    id: str
-    user_account_id: str
-    timezone: str
-    brief_preferences: JsonObject
-    quiet_hours: JsonObject
-    created_at: str
-    updated_at: str
-
-
-class NotificationSubscriptionRecord(TypedDict):
-    id: str
-    workspace_id: str
-    channel_type: ChannelTransportType
-    channel_identity_id: str
-    notifications_enabled: bool
-    daily_brief_enabled: bool
-    daily_brief_window_start: str
-    open_loop_prompts_enabled: bool
-    waiting_for_prompts_enabled: bool
-    stale_prompts_enabled: bool
-    timezone: str
-    quiet_hours_enabled: bool
-    quiet_hours_start: str
-    quiet_hours_end: str
-    created_at: str
-    updated_at: str
-
-
-class ChannelIdentityRecord(TypedDict):
-    id: str
-    user_account_id: str
-    workspace_id: str
-    channel_type: ChannelTransportType
-    external_user_id: str
-    external_chat_id: str
-    external_username: str | None
-    status: ChannelIdentityStatus
-    linked_at: str
-    unlinked_at: str | None
-    created_at: str
-    updated_at: str
-
-
-class ChannelLinkChallengeRecord(TypedDict):
-    id: str
-    user_account_id: str
-    workspace_id: str
-    channel_type: ChannelTransportType
-    link_code: str
-    status: ChannelLinkChallengeStatus
-    expires_at: str
-    confirmed_at: str | None
-    channel_identity_id: str | None
-    created_at: str
-    challenge_token: NotRequired[str]
-
-
-class ChannelThreadRecord(TypedDict):
-    id: str
-    workspace_id: str
-    channel_type: ChannelTransportType
-    external_thread_key: str
-    channel_identity_id: str | None
-    last_message_at: str | None
-    created_at: str
-    updated_at: str
-
-
-class ChannelMessageRecord(TypedDict):
-    id: str
-    workspace_id: str | None
-    channel_thread_id: str | None
-    channel_identity_id: str | None
-    channel_type: ChannelTransportType
-    direction: ChannelMessageDirection
-    provider_update_id: str | None
-    provider_message_id: str | None
-    external_chat_id: str | None
-    external_user_id: str | None
-    message_text: str | None
-    normalized_payload: JsonObject
-    route_status: ChannelMessageRouteStatus
-    idempotency_key: str
-    created_at: str
-    received_at: str
-
-
-class ChatIntentRecord(TypedDict):
-    id: str
-    workspace_id: str
-    channel_message_id: str
-    channel_thread_id: str | None
-    intent_kind: ChatIntentKind
-    status: ChatIntentStatus
-    intent_payload: JsonObject
-    result_payload: JsonObject
-    handled_at: str | None
-    created_at: str
-
-
-class ChannelDeliveryReceiptRecord(TypedDict):
-    id: str
-    workspace_id: str
-    channel_message_id: str
-    channel_type: ChannelTransportType
-    status: ChannelDeliveryReceiptStatus
-    provider_receipt_id: str | None
-    failure_code: str | None
-    failure_detail: str | None
-    scheduled_job_id: str | None
-    scheduler_job_kind: TelegramSchedulerJobKind | None
-    scheduled_for: str | None
-    schedule_slot: str | None
-    notification_policy: JsonObject
-    rollout_flag_state: Literal["enabled", "blocked"]
-    support_evidence: JsonObject
-    rate_limit_evidence: JsonObject
-    incident_evidence: JsonObject
-    recorded_at: str
-    created_at: str
-
-
-class TelegramContinuityBriefRecord(TypedDict):
-    id: str
-    workspace_id: str
-    channel_type: ChannelTransportType
-    channel_identity_id: str
-    brief_kind: Literal["daily_brief"]
-    assembly_version: str
-    summary: JsonObject
-    brief_payload: JsonObject
-    message_text: str
-    compiled_at: str
-    created_at: str
-
-
-class TelegramDailyBriefJobRecord(TypedDict):
-    id: str
-    workspace_id: str
-    channel_type: ChannelTransportType
-    channel_identity_id: str
-    job_kind: TelegramSchedulerJobKind
-    prompt_kind: TelegramSchedulerPromptKind | None
-    prompt_id: str | None
-    continuity_object_id: str | None
-    continuity_brief_id: str | None
-    schedule_slot: str
-    idempotency_key: str
-    due_at: str
-    status: TelegramSchedulerJobStatus
-    suppression_reason: str | None
-    attempt_count: int
-    delivery_receipt_id: str | None
-    payload: JsonObject
-    result_payload: JsonObject
-    rollout_flag_state: Literal["enabled", "blocked"]
-    support_evidence: JsonObject
-    rate_limit_evidence: JsonObject
-    incident_evidence: JsonObject
-    attempted_at: str | None
-    completed_at: str | None
-    created_at: str
-    updated_at: str
-
-
-class ChatTelemetryRecord(TypedDict):
-    id: str
-    user_account_id: str
-    workspace_id: str | None
-    channel_message_id: str | None
-    daily_brief_job_id: str | None
-    delivery_receipt_id: str | None
-    flow_kind: Literal["chat_handle", "scheduler_daily_brief", "scheduler_open_loop_prompt"]
-    event_kind: Literal["attempt", "result", "rollout_block", "rate_limited", "abuse_block", "incident"]
-    status: Literal[
-        "ok",
-        "failed",
-        "blocked_rollout",
-        "rate_limited",
-        "abuse_blocked",
-        "suppressed",
-        "simulated",
-        "delivered",
-    ]
-    route_path: str
-    rollout_flag_key: str | None
-    rollout_flag_state: str | None
-    rate_limit_key: str | None
-    rate_limit_window_seconds: int | None
-    rate_limit_max_requests: int | None
-    retry_after_seconds: int | None
-    abuse_signal: str | None
-    evidence: JsonObject
-    created_at: str
-
-
-class ApprovalChallengeRecord(TypedDict):
-    id: str
-    workspace_id: str
-    approval_id: str
-    channel_message_id: str | None
-    status: Literal["pending", "approved", "rejected", "dismissed"]
-    challenge_prompt: str
-    challenge_payload: JsonObject
-    resolved_at: str | None
-    created_at: str
-    updated_at: str
-
-
-class OpenLoopReviewRecord(TypedDict):
-    id: str
-    workspace_id: str
-    continuity_object_id: str
-    channel_message_id: str | None
-    correction_event_id: str | None
-    review_action: ContinuityOpenLoopReviewAction
-    note: str | None
-    created_at: str

@@ -16,13 +16,12 @@ from alicebot_api.continuity_resumption import (
     compile_continuity_resumption_brief,
 )
 from alicebot_api.contracts import (
-    DEFAULT_TASK_BRIEF_TOKEN_BUDGET,
     DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     MAX_CONTINUITY_RECALL_LIMIT,
     MAX_TASK_BRIEF_TOKEN_BUDGET,
-    MODEL_PACK_BRIEFING_STRATEGIES,
     TASK_BRIEF_ASSEMBLY_VERSION_V0,
+    TASK_BRIEFING_STRATEGIES,
     TASK_BRIEF_COMPARISON_VERSION_V0,
     TASK_BRIEF_MODE_ORDER,
     TASK_BRIEF_SECTION_ITEM_ORDER,
@@ -39,13 +38,9 @@ from alicebot_api.contracts import (
     TaskBriefResponse,
     TaskBriefSectionRecord,
     TaskBriefSectionSummary,
+    TaskBriefingStrategy,
     TaskBriefStrategyRecord,
     TaskBriefSummary,
-)
-from alicebot_api.model_packs import (
-    ModelPackNotFoundError,
-    ModelPackValidationError,
-    resolve_workspace_model_pack_selection,
 )
 from alicebot_api.store import ContinuityStore, TaskBriefRow
 
@@ -61,7 +56,7 @@ class TaskBriefNotFoundError(LookupError):
 @dataclass(frozen=True, slots=True)
 class _ModeConfig:
     token_budget: int
-    default_model_pack_strategy: str
+    default_briefing_strategy: TaskBriefingStrategy
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,10 +71,10 @@ class _SectionPlan:
 
 
 _MODE_CONFIGS: dict[str, _ModeConfig] = {
-    "user_recall": _ModeConfig(token_budget=320, default_model_pack_strategy="balanced"),
-    "resume": _ModeConfig(token_budget=220, default_model_pack_strategy="balanced"),
-    "worker_subtask": _ModeConfig(token_budget=128, default_model_pack_strategy="compact"),
-    "agent_handoff": _ModeConfig(token_budget=180, default_model_pack_strategy="balanced"),
+    "user_recall": _ModeConfig(token_budget=320, default_briefing_strategy="balanced"),
+    "resume": _ModeConfig(token_budget=220, default_briefing_strategy="balanced"),
+    "worker_subtask": _ModeConfig(token_budget=128, default_briefing_strategy="compact"),
+    "agent_handoff": _ModeConfig(token_budget=180, default_briefing_strategy="balanced"),
 }
 _MODE_TOKEN_ESTIMATE_MULTIPLIER = {
     "user_recall": 1.2,
@@ -118,15 +113,13 @@ def _validate_request(request: TaskBriefCompileRequestInput) -> None:
         raise TaskBriefValidationError(
             f"token_budget must be between 1 and {MAX_TASK_BRIEF_TOKEN_BUDGET}"
         )
-    if request.model_pack_strategy is not None and request.model_pack_strategy not in MODEL_PACK_BRIEFING_STRATEGIES:
+    if (
+        request.briefing_strategy is not None
+        and request.briefing_strategy not in TASK_BRIEFING_STRATEGIES
+    ):
         raise TaskBriefValidationError(
-            "model_pack_strategy must be one of: "
-            + ", ".join(MODEL_PACK_BRIEFING_STRATEGIES)
+            "briefing_strategy must be one of: " + ", ".join(TASK_BRIEFING_STRATEGIES)
         )
-    if request.workspace_id is None and (request.pack_id is not None or request.pack_version is not None):
-        raise TaskBriefValidationError("workspace_id is required when resolving model-pack defaults")
-    if request.pack_version is not None and request.pack_id is None:
-        raise TaskBriefValidationError("pack_id is required when pack_version is provided")
 
 
 def _estimate_tokens(payload: object) -> int:
@@ -275,59 +268,17 @@ def _single_item_candidates(
     return [] if item is None else [item]
 
 
-def _resolve_model_pack_defaults(
-    store: ContinuityStore,
-    *,
-    user_id: UUID,
-    request: TaskBriefCompileRequestInput,
-) -> tuple[str | None, int | None]:
-    if request.workspace_id is None:
-        return (None, None)
-    if not store.workspace_visible_to_user_account(
-        workspace_id=request.workspace_id,
-        user_account_id=user_id,
-    ):
-        raise TaskBriefValidationError(f"workspace {request.workspace_id} was not found")
-    try:
-        selection = resolve_workspace_model_pack_selection(
-            store=store,
-            workspace_id=request.workspace_id,
-            requested_pack_id=request.pack_id,
-            requested_pack_version=request.pack_version,
-        )
-    except (ModelPackNotFoundError, ModelPackValidationError) as exc:
-        raise TaskBriefValidationError(str(exc)) from exc
-    pack = selection.pack
-    if pack is None:
-        return (None, None)
-    return (pack["briefing_strategy"], pack["briefing_max_tokens"])
-
-
 def _resolve_strategy(
-    store: ContinuityStore,
     *,
-    user_id: UUID,
     request: TaskBriefCompileRequestInput,
 ) -> TaskBriefStrategyRecord:
     mode_defaults = _MODE_CONFIGS[request.mode]
-    resolved_pack_strategy, resolved_pack_budget = _resolve_model_pack_defaults(
-        store,
-        user_id=user_id,
-        request=request,
-    )
-    model_pack_strategy = (
-        request.model_pack_strategy
-        or resolved_pack_strategy
-        or mode_defaults.default_model_pack_strategy
-    )
+    briefing_strategy = request.briefing_strategy or mode_defaults.default_briefing_strategy
     if request.token_budget is not None:
         resolved_budget = request.token_budget
         budget_source = "request"
-    elif resolved_pack_budget is not None:
-        resolved_budget = resolved_pack_budget
-        budget_source = "model_pack_default"
     else:
-        strategy_multiplier = _STRATEGY_MULTIPLIER.get(model_pack_strategy, 1.0)
+        strategy_multiplier = _STRATEGY_MULTIPLIER[briefing_strategy]
         resolved_budget = min(
             MAX_TASK_BRIEF_TOKEN_BUDGET,
             max(1, int(round(mode_defaults.token_budget * strategy_multiplier))),
@@ -335,7 +286,7 @@ def _resolve_strategy(
         budget_source = "mode_default"
     return {
         "provider_strategy": request.provider_strategy or "deterministic_default",
-        "model_pack_strategy": model_pack_strategy,
+        "briefing_strategy": briefing_strategy,
         "token_budget": resolved_budget,
         "budget_source": budget_source,
     }
@@ -688,11 +639,7 @@ def compile_task_brief_record(
     request: TaskBriefCompileRequestInput,
 ) -> TaskBriefRecord:
     _validate_request(request)
-    strategy = _resolve_strategy(
-        store,
-        user_id=user_id,
-        request=request,
-    )
+    strategy = _resolve_strategy(request=request)
     sections, scope, candidate_count = _compile_sections_for_request(
         store,
         user_id=user_id,
@@ -734,7 +681,8 @@ def compile_and_persist_task_brief(
         query_text=request.query,
         scope=cast(JsonObject, brief["scope"]),
         provider_strategy=brief["strategy"]["provider_strategy"],
-        model_pack_strategy=brief["strategy"]["model_pack_strategy"],
+        # The persisted schema keeps this historical SQL column name for migration compatibility.
+        model_pack_strategy=brief["strategy"]["briefing_strategy"],
         token_budget=brief["summary"]["token_budget"],
         estimated_tokens=brief["summary"]["estimated_tokens"],
         item_count=brief["summary"]["selected_item_count"],
@@ -744,9 +692,32 @@ def compile_and_persist_task_brief(
     return _serialize_task_brief_row(row)
 
 
+def _normalize_persisted_task_brief_payload(payload: JsonObject) -> TaskBriefRecord:
+    """Translate historical task-brief vocabulary without mutating stored JSON."""
+    normalized_payload = dict(payload)
+    root_legacy_strategy = normalized_payload.pop("model_pack_strategy", None)
+    for stale_key in ("workspace_id", "pack_id", "pack_version"):
+        normalized_payload.pop(stale_key, None)
+
+    raw_strategy = normalized_payload.get("strategy")
+    if isinstance(raw_strategy, dict):
+        normalized_strategy = dict(raw_strategy)
+        legacy_strategy = normalized_strategy.pop(
+            "model_pack_strategy",
+            root_legacy_strategy,
+        )
+        for stale_key in ("workspace_id", "pack_id", "pack_version"):
+            normalized_strategy.pop(stale_key, None)
+        if "briefing_strategy" not in normalized_strategy and legacy_strategy is not None:
+            normalized_strategy["briefing_strategy"] = legacy_strategy
+        normalized_payload["strategy"] = normalized_strategy
+
+    return cast(TaskBriefRecord, normalized_payload)
+
+
 def _serialize_task_brief_row(row: TaskBriefRow) -> TaskBriefResponse:
     return {
-        "task_brief": cast(TaskBriefRecord, row["payload"]),
+        "task_brief": _normalize_persisted_task_brief_payload(row["payload"]),
         "persistence": {
             "task_brief_id": str(row["id"]),
             "created_at": row["created_at"].isoformat(),

@@ -25,7 +25,8 @@ This starts the Lite Postgres profile, runs migrations, loads the sample fixture
 
 ```bash
 curl -sS http://127.0.0.1:8000/healthz
-./.venv/bin/python scripts/bootstrap_alice_lite_workspace.py
+curl -sS -X POST http://127.0.0.1:8000/v1/workspaces/bootstrap \
+  -H "X-AliceBot-User-Id: ${ALICEBOT_AUTH_USER_ID:-00000000-0000-0000-0000-000000000001}"
 ./.venv/bin/python -m alicebot_api brief --brief-type general --query "local-first startup path"
 ./.venv/bin/python scripts/run_alice_lite_smoke.py
 ```

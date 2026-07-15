@@ -60,7 +60,7 @@ def redact_secret_fields(value: object) -> object:
 
 @dataclass(slots=True)
 class EnvironmentSecretProvider:
-    """Resolve refs such as env:TELEGRAM_BOT_TOKEN without persisting values."""
+    """Resolve refs such as env:CONNECTOR_API_TOKEN without persisting values."""
 
     def get_secret(self, secret_ref: str) -> str | None:
         if not secret_ref.startswith("env:"):

@@ -1,5 +1,5 @@
 import React from "react";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ArtifactsPage from "./page";
@@ -8,14 +8,12 @@ import { taskArtifactFixtures } from "../../lib/fixtures";
 const {
   getApiConfigMock,
   getTaskArtifactDetailMock,
-  getTaskWorkspaceDetailMock,
   hasLiveApiConfigMock,
   listTaskArtifactChunksMock,
   listTaskArtifactsMock,
 } = vi.hoisted(() => ({
   getApiConfigMock: vi.fn(),
   getTaskArtifactDetailMock: vi.fn(),
-  getTaskWorkspaceDetailMock: vi.fn(),
   hasLiveApiConfigMock: vi.fn(),
   listTaskArtifactChunksMock: vi.fn(),
   listTaskArtifactsMock: vi.fn(),
@@ -45,28 +43,16 @@ vi.mock("../../lib/api", async () => {
     ...actual,
     getApiConfig: getApiConfigMock,
     getTaskArtifactDetail: getTaskArtifactDetailMock,
-    getTaskWorkspaceDetail: getTaskWorkspaceDetailMock,
     hasLiveApiConfig: hasLiveApiConfigMock,
     listTaskArtifactChunks: listTaskArtifactChunksMock,
     listTaskArtifacts: listTaskArtifactsMock,
   };
 });
 
-function deferred<T = never>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, reject, resolve };
-}
-
 describe("ArtifactsPage", () => {
   beforeEach(() => {
     getApiConfigMock.mockReset();
     getTaskArtifactDetailMock.mockReset();
-    getTaskWorkspaceDetailMock.mockReset();
     hasLiveApiConfigMock.mockReset();
     listTaskArtifactChunksMock.mockReset();
     listTaskArtifactsMock.mockReset();
@@ -84,7 +70,7 @@ describe("ArtifactsPage", () => {
     cleanup();
   });
 
-  it("keeps route state explicit when live reads partially fail and workspace/chunks fall back to fixture", async () => {
+  it("keeps route state explicit when live chunks fall back to fixture", async () => {
     const fixtureArtifact = taskArtifactFixtures[0];
     if (!fixtureArtifact) {
       throw new Error("Expected at least one task artifact fixture.");
@@ -132,7 +118,6 @@ describe("ArtifactsPage", () => {
       },
     });
 
-    getTaskWorkspaceDetailMock.mockRejectedValue(new Error("workspace down"));
     listTaskArtifactChunksMock.mockRejectedValue(new Error("chunks down"));
 
     render(
@@ -146,20 +131,15 @@ describe("ArtifactsPage", () => {
     expect(screen.getByText("Mixed fallback")).toBeInTheDocument();
     expect(screen.getByText("Live list")).toBeInTheDocument();
     expect(screen.getByText("Live detail")).toBeInTheDocument();
-    expect(screen.getByText("Fixture workspace")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Persisted identity" })).toBeInTheDocument();
+    expect(screen.getAllByText(fixtureArtifact.task_workspace_id)).toHaveLength(2);
     expect(screen.getByText("Fixture chunks")).toBeInTheDocument();
-    expect(screen.getByText(/Live workspace read failed:\s*workspace down/i)).toBeInTheDocument();
     expect(screen.getByText(/Live chunk read failed:\s*chunks down/i)).toBeInTheDocument();
 
     expect(listTaskArtifactsMock).toHaveBeenCalledWith("https://api.example.com", "user-1");
     expect(getTaskArtifactDetailMock).toHaveBeenCalledWith(
       "https://api.example.com",
       fixtureArtifact.id,
-      "user-1",
-    );
-    expect(getTaskWorkspaceDetailMock).toHaveBeenCalledWith(
-      "https://api.example.com",
-      fixtureArtifact.task_workspace_id,
       "user-1",
     );
     expect(listTaskArtifactChunksMock).toHaveBeenCalledWith(
@@ -169,7 +149,7 @@ describe("ArtifactsPage", () => {
     );
   });
 
-  it("starts workspace and chunk reads in the same request wave", async () => {
+  it("loads chunk evidence without calling the legacy task-workspace client", async () => {
     const artifact = taskArtifactFixtures[0];
     if (!artifact) {
       throw new Error("Expected at least one task artifact fixture.");
@@ -188,22 +168,25 @@ describe("ArtifactsPage", () => {
     });
     getTaskArtifactDetailMock.mockResolvedValue({ artifact });
 
-    const workspace = deferred();
-    const chunks = deferred();
-    getTaskWorkspaceDetailMock.mockReturnValue(workspace.promise);
-    listTaskArtifactChunksMock.mockReturnValue(chunks.promise);
-
-    const pagePromise = ArtifactsPage({
-      searchParams: Promise.resolve({ artifact: artifact.id }),
+    listTaskArtifactChunksMock.mockResolvedValue({
+      items: [],
+      summary: {
+        total_count: 0,
+        total_characters: 0,
+        media_type: artifact.media_type_hint,
+        chunking_rule: "artifact_ingestion_v0",
+        order: ["sequence_no_asc", "id_asc"],
+      },
     });
 
-    await waitFor(() => {
-      expect(getTaskWorkspaceDetailMock).toHaveBeenCalledTimes(1);
-      expect(listTaskArtifactChunksMock).toHaveBeenCalledTimes(1);
-    });
+    render(
+      await ArtifactsPage({
+        searchParams: Promise.resolve({ artifact: artifact.id }),
+      }),
+    );
 
-    workspace.reject(new Error("workspace unavailable"));
-    chunks.reject(new Error("chunks unavailable"));
-    await pagePromise;
+    expect(listTaskArtifactChunksMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("heading", { name: "Persisted identity" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "No persisted chunks" })).toBeInTheDocument();
   });
 });

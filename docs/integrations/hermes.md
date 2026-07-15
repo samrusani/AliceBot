@@ -18,13 +18,11 @@ Hermes does not create a second Alice runtime contract.
   MCP `alice_brief` is a legacy, keyless-local compatibility path; key-bound
   integrations use the core `alice_recall` / `alice_resume` tools instead.
 - provider registration and runtime shaping stay on the shipped Alice provider surface
-- model packs stay Alice-side defaults layered on top of the shipped provider/runtime baseline
 
 Use these docs when you need the underlying Alice runtime controls:
 
 - `docs/integrations/one-call-continuity.md`
 - `docs/integrations/phase14-provider-configuration.md`
-- `docs/integrations/phase11-model-pack-compatibility.md`
 
 ## Choose A Mode
 
@@ -95,12 +93,12 @@ mode with `ALICE_AGENT_API_KEY`. The core review path is:
 - `alice_resume` (core) for a structured resumption brief
 - `alice_memory_review` and `alice_memory_correct` (core) for explicit review and correction
 
-## Provider And Pack Guidance
+## Provider Guidance
 
-Hermes should treat Alice provider and model-pack decisions as Alice runtime configuration, not Hermes configuration.
+Hermes should treat Alice provider decisions as Alice runtime configuration,
+not Hermes configuration.
 
 - register or update provider connections through the Alice provider endpoints documented in `docs/integrations/phase14-provider-configuration.md`
-- bind model packs in Alice when you want provider-aware defaults without changing Hermes orchestration
 - keep Hermes focused on when to call Alice, not on reproducing Alice runtime policy
 
 ## Fallback Path

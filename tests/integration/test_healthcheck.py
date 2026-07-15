@@ -72,6 +72,7 @@ def test_healthcheck_endpoint_returns_ok_response(monkeypatch) -> None:
     assert payload["services"]["redis"]["status"] == "not_checked"
     assert payload["services"]["redis"]["url"] == "redis://cache:6379/0"
     assert payload["services"]["object_storage"]["status"] == "not_checked"
+    assert "endpoint_url" not in payload["services"]["object_storage"]
 
 
 def test_healthcheck_endpoint_returns_degraded_response(monkeypatch) -> None:
@@ -94,6 +95,7 @@ def test_healthcheck_endpoint_returns_degraded_response(monkeypatch) -> None:
     assert payload["services"]["redis"]["status"] == "not_checked"
     assert payload["services"]["redis"]["url"] == "redis://cache:6379/0"
     assert payload["services"]["object_storage"]["status"] == "not_checked"
+    assert "endpoint_url" not in payload["services"]["object_storage"]
 
 
 def test_api_dev_script_serves_live_healthcheck() -> None:
@@ -167,9 +169,7 @@ def test_api_dev_script_serves_live_healthcheck() -> None:
         "services": {
             "database": {"status": "unreachable"},
             "redis": {"status": "not_checked", "url": "redis://localhost:6379/0"},
-            "object_storage": {
-                "status": "not_checked",
-                "endpoint_url": "http://localhost:9000",
-            },
+            "object_storage": {"status": "not_checked"},
         },
     }
+    assert "endpoint_url" not in payload["services"]["object_storage"]

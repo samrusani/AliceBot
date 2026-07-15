@@ -115,7 +115,7 @@ def test_doctor_fix_safe_initializes_missing_connector_defaults() -> None:
     assert any(check["name"] == "connector_settings" and check["status"] == "pass" for check in payload["checks"])
 
 
-def test_doctor_detects_enabled_telegram_missing_secret_as_blocking() -> None:
+def test_doctor_accepts_on_demand_telegram_without_a_secret() -> None:
     store = DoctorStore()
     store.settings.append(
         {
@@ -125,7 +125,7 @@ def test_doctor_detects_enabled_telegram_missing_secret_as_blocking() -> None:
             "configured": True,
             "default_domain": "personal",
             "default_sensitivity": "private",
-            "sync_mode": "polling",
+            "sync_mode": "on_demand",
             "metadata_json": {"config_json": {"allowed_chat_ids": ["999001"]}},
         }
     )
@@ -147,8 +147,8 @@ def test_doctor_detects_enabled_telegram_missing_secret_as_blocking() -> None:
 
     payload = VNextDoctorService(store, secret_provider=InMemorySecretProvider()).run(ci=True)
 
-    assert payload["blocking_failure_count"] == 1
-    assert any(check["name"] == "telegram_secret_ref" and check["status"] == "fail" for check in payload["checks"])
+    assert payload["blocking_failure_count"] == 0
+    assert all(check["name"] != "telegram_secret_ref" for check in payload["checks"])
 
 
 def test_doctor_blocks_pgvector_older_than_required_version() -> None:

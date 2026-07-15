@@ -100,7 +100,9 @@ NEXT_PUBLIC_ALICEBOT_USER_ID=00000000-0000-0000-0000-000000000001
 ALICE_MCP_COMMAND="~/alicebot/.venv/bin/python -m alicebot_api.mcp_server"
 ```
 
-Secrets are referenced, not printed. Store real connector secrets through the configured secret-provider path, then configure connectors with `secret_ref` values such as `telegram.bot_token.default`.
+Secrets are referenced, not printed. Store real connector secrets through the
+configured secret-provider path, and pass only `secret_ref` identifiers through
+connector configuration.
 
 ## Manual Install Fallback
 

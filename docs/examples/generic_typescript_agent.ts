@@ -47,7 +47,7 @@ function compactAgentView(payload: Record<string, any>): AgentView {
 
 async function main(): Promise<number> {
   const apiBaseUrl = envOrDefault("ALICE_API_BASE_URL", "http://127.0.0.1:8000");
-  const sessionToken = requiredEnv("ALICE_SESSION_TOKEN");
+  const userId = requiredEnv("ALICE_USER_ID");
   const briefType = envOrDefault("ALICE_BRIEF_TYPE", "agent_handoff");
   const threadId = process.env.ALICE_THREAD_ID;
   const query = envOrDefault("ALICE_QUERY", "release handoff");
@@ -68,7 +68,7 @@ async function main(): Promise<number> {
   const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/continuity/brief`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${sessionToken}`,
+      "X-AliceBot-User-Id": userId,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),

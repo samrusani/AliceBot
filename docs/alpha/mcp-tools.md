@@ -254,12 +254,19 @@ for the full verb contract see the
 
 ## Legacy tool surface
 
-Earlier releases exposed a much larger surface. The long tail — 65 legacy
-tools, listed alongside the eleven core tools for 76 total — remains
-available behind an environment flag for integrations that depend on it:
+Earlier releases exposed a much larger surface. The retained long tail has 62
+memory tools, listed alongside the eleven core tools for 73 total, behind an
+environment flag for integrations that depend on it:
 
 ```bash
 ALICE_MCP_LEGACY_TOOLS=1
+```
+
+Exactly three task-brief tools are added only when the separate mount-time
+compatibility flag is also set (76 total):
+
+```bash
+ALICE_MCP_LEGACY_TOOLS=1 ALICE_LEGACY_SURFACES=1
 ```
 
 This compatibility mode is local-operator-only and requires
@@ -277,6 +284,8 @@ granular queue/graph/belief tools. `alice_vnext_commit_memory`,
 `alice_vnext_forget_memory` remain as aliases of the same handlers that now
 power `alice_memory_commit` and `alice_memory_manage` on the core surface.
 Calling a legacy tool without the flag returns an error naming the flag.
+The task-brief tools name both flags when either one is missing. Permanently
+deleted hosted, channel, chat, chief-of-staff, and model-pack tools never list.
 New integrations should stay on the eleven core tools; the legacy surface
 is frozen and will not gain new capabilities.
 

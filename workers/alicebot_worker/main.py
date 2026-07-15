@@ -7,6 +7,7 @@ from uuid import UUID
 from alicebot_api.config import get_settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
+from alicebot_api.surface_flags import LEGACY_SURFACES_ENV, legacy_surfaces_enabled
 
 from alicebot_worker.task_runs import acquire_and_tick_one_task_run
 
@@ -35,6 +36,13 @@ def _read_worker_user_id() -> UUID | None:
 
 
 def run() -> None:
+    if not legacy_surfaces_enabled():
+        LOGGER.info(
+            "Worker tick skipped because %s is not set to exactly 1.",
+            LEGACY_SURFACES_ENV,
+        )
+        return
+
     worker_user_id = _read_worker_user_id()
     if worker_user_id is None:
         return

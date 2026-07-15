@@ -2,15 +2,17 @@
 """Run a local-provider e2e flow for P11-S2.
 
 Flow:
-1) Register local or self-hosted provider (Ollama, llama.cpp, or vLLM)
-2) Run provider test
-3) Run runtime invoke
+1) Bootstrap the deterministic local workspace
+2) Register local or self-hosted provider (Ollama, llama.cpp, or vLLM)
+3) Run provider test
+4) Run runtime invoke
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -21,13 +23,13 @@ def _request_json(
     *,
     method: str,
     url: str,
-    bearer_token: str,
+    user_id: str,
     payload: dict[str, Any] | None = None,
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     body = None if payload is None else json.dumps(payload).encode("utf-8")
     headers = {
-        "Authorization": f"Bearer {bearer_token}",
+        "X-AliceBot-User-Id": user_id,
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
@@ -76,9 +78,9 @@ def main() -> int:
         help="Alice API base URL (default: http://127.0.0.1:8000).",
     )
     parser.add_argument(
-        "--session-token",
-        required=True,
-        help="Hosted session bearer token.",
+        "--user-id",
+        default=os.getenv("ALICEBOT_AUTH_USER_ID", ""),
+        help="Local Alice operator UUID (defaults to ALICEBOT_AUTH_USER_ID).",
     )
     parser.add_argument(
         "--thread-id",
@@ -117,28 +119,39 @@ def main() -> int:
         help="Message used for /v1/runtime/invoke.",
     )
     args = parser.parse_args()
+    user_id = args.user_id.strip()
+    if user_id == "":
+        parser.error("--user-id or ALICEBOT_AUTH_USER_ID is required")
 
     default_provider_base_url, register_path = _provider_defaults(args.provider)
     provider_base_url = (args.provider_base_url or default_provider_base_url).strip()
+    api_base_url = args.api_base_url.rstrip("/")
+
+    _request_json(
+        method="POST",
+        url=f"{api_base_url}/v1/workspaces/bootstrap",
+        user_id=user_id,
+        payload={},
+    )
 
     register_payload = {
         "display_name": args.display_name,
         "base_url": provider_base_url,
         "default_model": args.model,
-        "metadata": {"source": "phase14_local_self_hosted_e2e"},
+        "metadata": {"source": "local_self_hosted_e2e"},
     }
     register_response = _request_json(
         method="POST",
-        url=f"{args.api_base_url.rstrip('/')}{register_path}",
-        bearer_token=args.session_token,
+        url=f"{api_base_url}{register_path}",
+        user_id=user_id,
         payload=register_payload,
     )
     provider_id = register_response["provider"]["id"]
 
     test_response = _request_json(
         method="POST",
-        url=f"{args.api_base_url.rstrip('/')}/v1/providers/test",
-        bearer_token=args.session_token,
+        url=f"{api_base_url}/v1/providers/test",
+        user_id=user_id,
         payload={
             "provider_id": provider_id,
             "model": args.model,
@@ -148,8 +161,8 @@ def main() -> int:
 
     invoke_response = _request_json(
         method="POST",
-        url=f"{args.api_base_url.rstrip('/')}/v1/runtime/invoke",
-        bearer_token=args.session_token,
+        url=f"{api_base_url}/v1/runtime/invoke",
+        user_id=user_id,
         idempotency_key=f"local-provider-e2e-{uuid4()}",
         payload={
             "provider_id": provider_id,

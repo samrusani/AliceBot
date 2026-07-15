@@ -8,7 +8,6 @@ import {
   combinePageModes,
   getApiConfig,
   getTaskArtifactDetail,
-  getTaskWorkspaceDetail,
   hasLiveApiConfig,
   listTaskArtifactChunks,
   listTaskArtifacts,
@@ -18,7 +17,6 @@ import {
   getFixtureTaskArtifact,
   getFixtureTaskArtifactChunkSummary,
   getFixtureTaskArtifactChunks,
-  getFixtureTaskWorkspace,
   taskArtifactFixtures,
   taskArtifactListSummaryFixture,
 } from "../../lib/fixtures";
@@ -99,52 +97,22 @@ export default async function ArtifactsPage({
     }
   }
 
-  let workspace = selectedArtifact ? getFixtureTaskWorkspace(selectedArtifact.task_workspace_id) : null;
-  let workspaceSource: ApiSource | "unavailable" | null = selectedArtifact
-    ? workspace
-      ? "fixture"
-      : "unavailable"
-    : null;
-  let workspaceUnavailableReason: string | undefined;
-
   let chunks = selectedArtifact ? getFixtureTaskArtifactChunks(selectedArtifact.id) : [];
   let chunkSummary = selectedArtifact ? getFixtureTaskArtifactChunkSummary(selectedArtifact.id) : null;
   let chunkSource: ApiSource | "unavailable" | null = selectedArtifact ? "fixture" : null;
   let chunkUnavailableReason: string | undefined;
 
   if (selectedArtifact && liveModeReady && selectedArtifactSource === "live") {
-    const [workspaceResult, chunkResult] = await Promise.allSettled([
-      getTaskWorkspaceDetail(
+    try {
+      const chunkResult = await listTaskArtifactChunks(
         apiConfig.apiBaseUrl,
-        selectedArtifact.task_workspace_id,
+        selectedArtifact.id,
         apiConfig.userId,
-      ),
-      listTaskArtifactChunks(apiConfig.apiBaseUrl, selectedArtifact.id, apiConfig.userId),
-    ]);
-
-    if (workspaceResult.status === "fulfilled") {
-      workspace = workspaceResult.value.workspace;
-      workspaceSource = "live";
-    } else {
-      const fixtureWorkspace = getFixtureTaskWorkspace(selectedArtifact.task_workspace_id);
-      if (fixtureWorkspace) {
-        workspace = fixtureWorkspace;
-        workspaceSource = "fixture";
-      } else {
-        workspace = null;
-        workspaceSource = "unavailable";
-      }
-      workspaceUnavailableReason =
-        workspaceResult.reason instanceof Error
-          ? workspaceResult.reason.message
-          : "Linked task workspace detail could not be loaded.";
-    }
-
-    if (chunkResult.status === "fulfilled") {
-      chunks = chunkResult.value.items;
-      chunkSummary = chunkResult.value.summary;
+      );
+      chunks = chunkResult.items;
+      chunkSummary = chunkResult.summary;
       chunkSource = "live";
-    } else {
+    } catch (error) {
       const fixtureArtifact = getFixtureTaskArtifact(selectedArtifact.id);
       if (fixtureArtifact) {
         chunks = getFixtureTaskArtifactChunks(selectedArtifact.id);
@@ -156,8 +124,8 @@ export default async function ArtifactsPage({
         chunkSource = "unavailable";
       }
       chunkUnavailableReason =
-        chunkResult.reason instanceof Error
-          ? chunkResult.reason.message
+        error instanceof Error
+          ? error.message
           : "Artifact chunk rows could not be loaded.";
     }
   }
@@ -165,7 +133,6 @@ export default async function ArtifactsPage({
   const pageMode = combinePageModes(
     artifactListSource,
     selectedArtifactSource,
-    workspaceSource === "unavailable" ? null : workspaceSource,
     chunkSource === "unavailable" ? null : chunkSource,
   );
 
@@ -174,7 +141,7 @@ export default async function ArtifactsPage({
       <PageHeader
         eyebrow="Artifacts"
         title="Artifact review workspace"
-        description="Inspect persisted task artifacts in a bounded sequence: list first, selected detail second, then linked workspace and ordered chunk evidence."
+        description="Inspect persisted artifacts in a bounded sequence: list first, selected detail second, then storage identity and ordered chunk evidence."
         meta={
           <div className="header-meta">
             <span className="subtle-chip">{pageModeLabel(pageMode)}</span>
@@ -202,9 +169,6 @@ export default async function ArtifactsPage({
       <div className="artifact-review-grid">
         <ArtifactWorkspaceSummary
           artifact={selectedArtifact}
-          workspace={workspace}
-          source={workspaceSource}
-          unavailableReason={workspaceUnavailableReason}
         />
         <ArtifactChunkList
           artifactId={selectedArtifact?.id ?? null}

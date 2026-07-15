@@ -66,33 +66,15 @@ def invoke_request(
     return start_message["status"], json.loads(body)
 
 
-def auth_header(session_token: str) -> dict[str, str]:
-    return {"authorization": f"Bearer {session_token}"}
+def identity_header(user_id: UUID | str) -> dict[str, str]:
+    return {"x-alicebot-user-id": str(user_id)}
 
 
-def bootstrap_authenticated_user(database_url: str, *, email: str) -> tuple[UUID, str]:
-    start_status, start_payload = invoke_request(
-        "POST",
-        "/v1/auth/magic-link/start",
-        payload={"email": email},
-    )
-    assert start_status == 200
-
-    verify_status, verify_payload = invoke_request(
-        "POST",
-        "/v1/auth/magic-link/verify",
-        payload={
-            "challenge_token": start_payload["challenge"]["challenge_token"],
-            "device_label": "Memory Mutation Test Device",
-            "device_key": f"device-{email}",
-        },
-    )
-    assert verify_status == 200
-
-    user_id = UUID(verify_payload["user_account"]["id"])
+def seed_user(database_url: str, *, email: str) -> UUID:
+    user_id = uuid4()
     with user_connection(database_url, user_id) as conn:
         ContinuityStore(conn).create_user(user_id, email, email.split("@", 1)[0].title())
-    return user_id, verify_payload["session_token"]
+    return user_id
 
 
 def test_memory_mutation_api_generates_commits_and_replays_idempotently(
@@ -105,7 +87,7 @@ def test_memory_mutation_api_generates_commits_and_replays_idempotently(
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
 
-    user_id, session_token = bootstrap_authenticated_user(
+    user_id = seed_user(
         migrated_database_urls["app"],
         email="mutations@example.com",
     )
@@ -139,7 +121,7 @@ def test_memory_mutation_api_generates_commits_and_replays_idempotently(
             "sync_fingerprint": "mutation-api-sync-001",
             "thread_id": str(thread_id),
         },
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
     assert generate_status == 200
     assert generate_payload["summary"] == {
@@ -158,7 +140,7 @@ def test_memory_mutation_api_generates_commits_and_replays_idempotently(
         payload={
             "candidate_ids": [candidate_id],
         },
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
     assert commit_status == 200
     assert commit_payload["summary"]["applied_count"] == 1
@@ -175,7 +157,7 @@ def test_memory_mutation_api_generates_commits_and_replays_idempotently(
             "sync_fingerprint": "mutation-api-sync-001",
             "limit": "20",
         },
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
     assert operations_status == 200
     assert operations_payload["summary"]["returned_count"] == 1
@@ -191,7 +173,7 @@ def test_memory_mutation_api_generates_commits_and_replays_idempotently(
             "sync_fingerprint": "mutation-api-sync-001",
             "thread_id": str(thread_id),
         },
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
     assert second_generate_status == 200
     assert second_generate_payload["items"][0]["id"] == candidate_id
@@ -202,7 +184,7 @@ def test_memory_mutation_api_generates_commits_and_replays_idempotently(
         payload={
             "candidate_ids": [candidate_id],
         },
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
     assert second_commit_status == 200
     assert second_commit_payload["summary"]["duplicate_count"] == 1
@@ -232,7 +214,7 @@ def test_memory_mutation_add_commit_preserves_scope_for_recall(
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
 
-    user_id, session_token = bootstrap_authenticated_user(
+    user_id = seed_user(
         migrated_database_urls["app"],
         email="mutations-add@example.com",
     )
@@ -250,7 +232,7 @@ def test_memory_mutation_add_commit_preserves_scope_for_recall(
             "project": "apollo",
             "person": "alex",
         },
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
     assert generate_status == 200
     assert generate_payload["summary"]["operation_types"] == ["ADD"]
@@ -262,7 +244,7 @@ def test_memory_mutation_add_commit_preserves_scope_for_recall(
         payload={
             "candidate_ids": [candidate_id],
         },
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
     assert commit_status == 200
     assert commit_payload["summary"]["applied_count"] == 1
@@ -301,7 +283,7 @@ def test_memory_mutation_api_rejects_unknown_mode(
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
 
-    _user_id, session_token = bootstrap_authenticated_user(
+    user_id = seed_user(
         migrated_database_urls["app"],
         email="mutations-invalid-mode@example.com",
     )
@@ -314,14 +296,14 @@ def test_memory_mutation_api_rejects_unknown_mode(
             "assistant_content": "",
             "mode": "banana",
         },
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
 
     assert status == 400
     assert payload == {"detail": "mode must be one of: manual, assist, auto"}
 
 
-def test_memory_mutation_api_requires_bearer_auth(
+def test_memory_mutation_api_requires_local_identity(
     migrated_database_urls,
     monkeypatch,
 ) -> None:
@@ -337,5 +319,7 @@ def test_memory_mutation_api_requires_bearer_auth(
         query_params={"limit": "20"},
     )
 
-    assert status == 401
-    assert payload == {"detail": "authorization bearer token is required"}
+    assert status == 400
+    assert payload == {
+        "detail": "local identity is required; set ALICEBOT_AUTH_USER_ID or provide X-AliceBot-User-Id"
+    }

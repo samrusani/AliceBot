@@ -10,7 +10,7 @@ These examples show the narrow default adoption path for a generic external agen
 Both examples:
 
 - call `POST /v1/continuity/brief`
-- accept `ALICE_API_BASE_URL` and `ALICE_SESSION_TOKEN`
+- accept `ALICE_API_BASE_URL` and `ALICE_USER_ID`
 - optionally accept `ALICE_THREAD_ID`, `ALICE_QUERY`, and `ALICE_BRIEF_TYPE`
 - print a compact JSON summary that a host runtime can consume directly
 
@@ -23,7 +23,7 @@ Both examples:
 
 ```bash
 ALICE_API_BASE_URL="http://127.0.0.1:8000" \
-ALICE_SESSION_TOKEN="<session-token>" \
+ALICE_USER_ID="00000000-0000-0000-0000-000000000001" \
 ./.venv/bin/python docs/examples/generic_python_agent.py
 ```
 
@@ -31,7 +31,7 @@ ALICE_SESSION_TOKEN="<session-token>" \
 
 ```bash
 ALICE_API_BASE_URL="http://127.0.0.1:8000" \
-ALICE_SESSION_TOKEN="<session-token>" \
+ALICE_USER_ID="00000000-0000-0000-0000-000000000001" \
 node --experimental-strip-types docs/examples/generic_typescript_agent.ts
 ```
 

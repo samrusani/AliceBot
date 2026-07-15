@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 import json
 from typing import Any
 from urllib.parse import urlencode
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import anyio
 import psycopg
@@ -70,33 +70,15 @@ def invoke_request(
     return start_message["status"], json.loads(body)
 
 
-def auth_header(session_token: str) -> dict[str, str]:
-    return {"authorization": f"Bearer {session_token}"}
+def identity_header(user_id: UUID | str) -> dict[str, str]:
+    return {"x-alicebot-user-id": str(user_id)}
 
 
-def bootstrap_authenticated_user(database_url: str, *, email: str) -> tuple[UUID, str]:
-    start_status, start_payload = invoke_request(
-        "POST",
-        "/v1/auth/magic-link/start",
-        payload={"email": email},
-    )
-    assert start_status == 200
-
-    verify_status, verify_payload = invoke_request(
-        "POST",
-        "/v1/auth/magic-link/verify",
-        payload={
-            "challenge_token": start_payload["challenge"]["challenge_token"],
-            "device_label": "Continuity Brief Test Device",
-            "device_key": f"device-{email}",
-        },
-    )
-    assert verify_status == 200
-
-    user_id = UUID(verify_payload["user_account"]["id"])
+def seed_user(database_url: str, *, email: str) -> UUID:
+    user_id = uuid4()
     with user_connection(database_url, user_id) as conn:
         ContinuityStore(conn).create_user(user_id, email, email.split("@", 1)[0].title())
-    return user_id, verify_payload["session_token"]
+    return user_id
 
 
 def set_continuity_timestamps(
@@ -123,7 +105,7 @@ def test_continuity_brief_api_returns_one_call_bundle(
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
 
-    user_id, session_token = bootstrap_authenticated_user(
+    user_id = seed_user(
         migrated_database_urls["app"],
         email="continuity-brief@example.com",
     )
@@ -242,7 +224,7 @@ def test_continuity_brief_api_returns_one_call_bundle(
             "max_conflicts": 3,
             "max_timeline_highlights": 4,
         },
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
 
     assert status == 200

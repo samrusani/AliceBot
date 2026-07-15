@@ -42,7 +42,7 @@ export function ArtifactList({
       >
         <EmptyState
           title="No persisted artifacts"
-          description="Artifacts will appear here once task workspaces register and persist reviewable files."
+          description="Artifacts will appear here once the runtime registers and persists reviewable files."
         />
       </SectionCard>
     );
@@ -52,7 +52,7 @@ export function ArtifactList({
     <SectionCard
       eyebrow="Artifact list"
       title="Persisted task artifacts"
-      description="Select one artifact to inspect detail, linked workspace context, and ordered chunk evidence."
+      description="Select one artifact to inspect detail, storage identity, and ordered chunk evidence."
     >
       <div className="list-panel">
         <div className="list-panel__header">
@@ -92,7 +92,7 @@ export function ArtifactList({
               <div className="list-row__meta">
                 <span className="meta-pill mono">{artifact.id}</span>
                 <span className="meta-pill">Task {artifact.task_id}</span>
-                <span className="meta-pill">Workspace {artifact.task_workspace_id}</span>
+                <span className="meta-pill">Storage scope {artifact.task_workspace_id}</span>
               </div>
             </Link>
           ))}

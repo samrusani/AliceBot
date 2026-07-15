@@ -3,6 +3,8 @@ import { TaskList } from "../../components/task-list";
 import { TaskRunList } from "../../components/task-run-list";
 import { TaskStepList } from "../../components/task-step-list";
 import { TaskSummary } from "../../components/task-summary";
+import { legacySurfacesEnabled } from "../../lib/legacy-surfaces.server";
+import { notFound } from "next/navigation";
 import {
   combinePageModes,
   getApiConfig,
@@ -163,6 +165,10 @@ export default async function TasksPage({
 }: {
   searchParams?: SearchParams;
 }) {
+  if (!legacySurfacesEnabled()) {
+    notFound();
+  }
+
   const params = (searchParams ? await searchParams : {}) as Record<
     string,
     string | string[] | undefined

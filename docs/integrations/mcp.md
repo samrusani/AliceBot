@@ -30,7 +30,13 @@ Optional:
 - `ALICE_EMBEDDINGS_BASE_URL`, `ALICE_EMBEDDINGS_MODEL`,
   `ALICE_EMBEDDINGS_API_KEY` — enable semantic vector search in
   `alice_recall` and `alice_context_pack` (full-text-only without them)
-- `ALICE_MCP_LEGACY_TOOLS=1` — expose the legacy long-tail tool surface only for an unbound local-operator server; ignored when `ALICE_AGENT_API_KEY` is set
+- `ALICE_MCP_LEGACY_TOOLS=1` — expose 62 retained long-tail memory tools only
+  for an unbound local-operator server; ignored when `ALICE_AGENT_API_KEY` is set
+- `ALICE_LEGACY_SURFACES=1` — additionally expose the three task-brief tools.
+  Both flags are read at process start (routes are mounted at import time), so
+  changing them requires restarting the server
+  when the MCP legacy flag is also set; this mount-time compatibility flag is
+  deprecated for removal before `1.0`
 
 ## Default Tool Surface
 
@@ -53,8 +59,9 @@ Details and examples: [docs/alpha/mcp-tools.md](../alpha/mcp-tools.md).
 
 ## Legacy Tool Surface
 
-With `ALICE_MCP_LEGACY_TOOLS=1`, the 65 legacy tools are listed alongside
-the eleven core tools (76 total). The legacy surface requires Postgres —
+With `ALICE_MCP_LEGACY_TOOLS=1`, 62 retained legacy memory tools are listed
+alongside the eleven core tools (73 total). With both flags, the three task-
+brief tools are added (76 total). The legacy surface requires Postgres —
 on the SQLite backend the legacy tools are listed but their calls fail.
 It also requires `ALICE_AGENT_API_KEY` to be unset. Key-bound servers list
 and accept only the policy-complete core tools.
@@ -65,8 +72,9 @@ queue/graph/belief/scheduler controls, provider runtime tools, and the
 evidence) and `alice_vnext_commit_memory` (explicit policy-checked memory
 writes with commit / confirmation / review / reject outcomes).
 
-The legacy surface is frozen: existing integrations keep working, new
-capabilities land on the core eleven.
+Permanently deleted hosted, Telegram-channel, chat, chief-of-staff, and model-
+pack tools are absent under every flag combination. The retained legacy surface
+is frozen: new capabilities land on the core eleven.
 
 For first-run memory expectations and a deterministic way to prove memory
 is working, see [../alpha/first-memory.md](../alpha/first-memory.md).

@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## v0.11.0 — 2026-07-15
+
+- **Phase-1 product boundary.** The default runtime is narrowed to Alice's
+  eleven-tool agent interface and retrieval/memory-quality core. Telegram,
+  hosted administration/design-partner and hosted identity/device surfaces,
+  chief-of-staff/chat/model-pack features, and the public `/v0/responses` chat
+  endpoint are
+  removed with their HTTP, MCP, CLI, scheduler, web, OpenAPI, and surface-test
+  registrations. Low-level response jobs/provider invocation remain as internal
+  durability machinery for `/v1/runtime/invoke`. Historical migrations remain
+  immutable and inert.
+- **Fail-closed legacy mount.** Task, approval, execution, Gmail, and Calendar
+  compatibility surfaces are unmounted by default and require the explicit
+  `ALICE_LEGACY_SURFACES=1` local-operator flag. Retained long-tail memory MCP
+  tools require `ALICE_MCP_LEGACY_TOOLS=1`; exactly the three task-brief tools
+  require both flags. All legacy tools remain unavailable to key-bound servers.
+- **Identity and documentation reconciliation.** Architecture, rules, product,
+  roadmap, current-state, sprint, connector, and release documentation now
+  describe the post-cut local-first boundary. Repair-batch ledgers are archived
+  under `docs/handoff/history/`, the v0.10.4 truth receipt no longer silently
+  deactivates or pins future production code, and OCR/transcription wording now
+  says Alice ingests externally extracted text rather than executing either
+  model class.
+- **API truth.** The OpenAPI operation registry is regenerated for the post-cut
+  mounted surface while preserving exact closure and phantom-key rejection.
+
 ## v0.10.4 — 2026-07-15
 
 - **Deterministic embedding CAS whitespace.** PostgreSQL now computes the

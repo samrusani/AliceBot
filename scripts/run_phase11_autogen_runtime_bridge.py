@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AutoGen-style bridge to Alice P11-S5 runtime invoke endpoints.
+"""AutoGen-style bridge to Alice's provider runtime invoke endpoint.
 
 This script demonstrates a minimal model-client shape that external frameworks
 can call while Alice remains the continuity and provider runtime surface.
@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
+import os
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -20,14 +21,14 @@ def _request_json(
     *,
     method: str,
     url: str,
-    bearer_token: str,
+    user_id: str,
     payload: dict[str, Any] | None = None,
     timeout_seconds: int = 30,
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     body = None if payload is None else json.dumps(payload).encode("utf-8")
     headers = {
-        "Authorization": f"Bearer {bearer_token}",
+        "X-AliceBot-User-Id": user_id,
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
@@ -69,12 +70,10 @@ def _latest_user_message(messages: list[dict[str, str]]) -> str:
 @dataclass(frozen=True, slots=True)
 class AutoGenAliceRuntimeClient:
     api_base_url: str
-    session_token: str
+    user_id: str
     provider_id: str
     thread_id: str
     model: str | None = None
-    pack_id: str | None = None
-    pack_version: str | None = None
     timeout_seconds: int = 30
 
     def create(self, *, messages: list[dict[str, str]]) -> dict[str, Any]:
@@ -86,15 +85,11 @@ class AutoGenAliceRuntimeClient:
         }
         if self.model is not None and self.model.strip() != "":
             payload["model"] = self.model.strip()
-        if self.pack_id is not None and self.pack_id.strip() != "":
-            payload["pack_id"] = self.pack_id.strip()
-        if self.pack_version is not None and self.pack_version.strip() != "":
-            payload["pack_version"] = self.pack_version.strip()
 
         runtime_response = _request_json(
             method="POST",
             url=f"{self.api_base_url.rstrip('/')}/v1/runtime/invoke",
-            bearer_token=self.session_token,
+            user_id=self.user_id,
             payload=payload,
             timeout_seconds=self.timeout_seconds,
             idempotency_key=f"autogen-runtime-{uuid4()}",
@@ -118,7 +113,7 @@ def main() -> int:
         prog="run_phase11_autogen_runtime_bridge.py",
         description=(
             "Send an AutoGen-style message list through Alice /v1/runtime/invoke "
-            "with provider/model-pack seams preserved."
+            "using a configured provider."
         ),
     )
     parser.add_argument(
@@ -126,13 +121,15 @@ def main() -> int:
         default="http://127.0.0.1:8000",
         help="Alice API base URL (default: http://127.0.0.1:8000).",
     )
-    parser.add_argument("--session-token", required=True, help="Hosted session bearer token.")
-    parser.add_argument("--provider-id", required=True, help="Registered provider ID (Azure for P11-S5).")
+    parser.add_argument(
+        "--user-id",
+        default=os.getenv("ALICEBOT_AUTH_USER_ID", ""),
+        help="Local Alice operator UUID (defaults to ALICEBOT_AUTH_USER_ID).",
+    )
+    parser.add_argument("--provider-id", required=True, help="Registered provider ID.")
     parser.add_argument("--thread-id", required=True, help="Thread ID used for runtime invoke continuity.")
     parser.add_argument("--user-message", required=True, help="Latest user message content.")
     parser.add_argument("--model", default=None, help="Optional runtime model override.")
-    parser.add_argument("--pack-id", default=None, help="Optional model-pack ID.")
-    parser.add_argument("--pack-version", default=None, help="Optional model-pack version.")
     parser.add_argument("--timeout-seconds", type=int, default=30, help="Request timeout in seconds.")
     parser.add_argument(
         "--show-raw",
@@ -140,15 +137,15 @@ def main() -> int:
         help="Print full runtime payload instead of content-only shape.",
     )
     args = parser.parse_args()
+    if args.user_id.strip() == "":
+        parser.error("--user-id or ALICEBOT_AUTH_USER_ID is required")
 
     client = AutoGenAliceRuntimeClient(
         api_base_url=args.api_base_url,
-        session_token=args.session_token,
+        user_id=args.user_id.strip(),
         provider_id=args.provider_id,
         thread_id=args.thread_id,
         model=args.model,
-        pack_id=args.pack_id,
-        pack_version=args.pack_version,
         timeout_seconds=args.timeout_seconds,
     )
     result = client.create(messages=[{"role": "user", "content": args.user_message}])

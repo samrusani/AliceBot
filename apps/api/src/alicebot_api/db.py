@@ -15,10 +15,6 @@ from psycopg.rows import Row, dict_row
 PING_DATABASE_SQL = "SELECT 1"
 SET_CURRENT_USER_SQL = "SELECT set_config('app.current_user_id', %s, true)"
 SET_CURRENT_USER_ACCOUNT_SQL = "SELECT set_config('app.current_user_account_id', %s, true)"
-SET_HOSTED_ADMIN_BYPASS_SQL = "SELECT set_config('app.hosted_admin_bypass', %s, true)"
-SET_HOSTED_SERVICE_BYPASS_SQL = "SELECT set_config('app.hosted_service_bypass', %s, true)"
-ENABLED_SESSION_FLAG = "true"
-DISABLED_SESSION_FLAG = "false"
 ConnectionRow = dict[str, object]
 UserConnection: TypeAlias = psycopg.Connection[ConnectionRow]
 DEFAULT_POOL_MAX_SIZE = 10
@@ -55,24 +51,12 @@ def _set_connection_context(conn: psycopg.Connection[Row], sql: str, value: str)
         cur.execute(sql, (value,))
 
 
-def _session_flag(enabled: bool) -> str:
-    return ENABLED_SESSION_FLAG if enabled else DISABLED_SESSION_FLAG
-
-
 def set_current_user(conn: psycopg.Connection[Row], user_id: UUID) -> None:
     _set_connection_context(conn, SET_CURRENT_USER_SQL, str(user_id))
 
 
 def set_current_user_account(conn: psycopg.Connection[Row], user_account_id: UUID) -> None:
     _set_connection_context(conn, SET_CURRENT_USER_ACCOUNT_SQL, str(user_account_id))
-
-
-def set_hosted_admin_bypass(conn: psycopg.Connection[Row], enabled: bool) -> None:
-    _set_connection_context(conn, SET_HOSTED_ADMIN_BYPASS_SQL, _session_flag(enabled))
-
-
-def set_hosted_service_bypass(conn: psycopg.Connection[Row], enabled: bool) -> None:
-    _set_connection_context(conn, SET_HOSTED_SERVICE_BYPASS_SQL, _session_flag(enabled))
 
 
 @contextmanager
@@ -158,8 +142,6 @@ __all__ = [
     "pooled_user_connection",
     "set_current_user",
     "set_current_user_account",
-    "set_hosted_admin_bypass",
-    "set_hosted_service_bypass",
     "user_connection",
 ]
 

@@ -20,9 +20,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Alice API base URL.",
     )
     parser.add_argument(
-        "--session-token",
-        default=os.getenv("ALICE_SESSION_TOKEN"),
-        help="Alice session token used as a Bearer token.",
+        "--user-id",
+        default=os.getenv("ALICE_USER_ID"),
+        help="Local Alice operator UUID sent as X-AliceBot-User-Id.",
     )
     parser.add_argument(
         "--brief-type",
@@ -60,8 +60,8 @@ def _compact_agent_view(payload: dict[str, Any]) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    if not args.session_token:
-        print("Missing Alice session token. Set ALICE_SESSION_TOKEN or pass --session-token.", file=sys.stderr)
+    if not args.user_id:
+        print("Missing Alice user id. Set ALICE_USER_ID or pass --user-id.", file=sys.stderr)
         return 1
 
     request_body: dict[str, Any] = {
@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         data=encoded_body,
         method="POST",
         headers={
-            "Authorization": f"Bearer {args.session_token}",
+            "X-AliceBot-User-Id": args.user_id,
             "Content-Type": "application/json",
         },
     )

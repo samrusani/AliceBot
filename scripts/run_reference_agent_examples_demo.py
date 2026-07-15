@@ -20,6 +20,7 @@ CANONICAL_BRIEF_FIXTURE = (
     REPO_ROOT / "fixtures" / "reference_integrations" / "continuity_brief_agent_handoff_v1.json"
 )
 TYPESCRIPT_PACKAGE = REPO_ROOT / "apps" / "web" / "node_modules" / "typescript"
+DEMO_USER_ID = "00000000-0000-0000-0000-000000000001"
 
 
 def _brief_payload() -> dict[str, Any]:
@@ -35,9 +36,9 @@ class _DemoHandler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
 
-        authorization = self.headers.get("Authorization")
-        if authorization != "Bearer demo-session-token":
-            self._write_json(401, {"detail": "invalid session token"})
+        user_id = self.headers.get("X-AliceBot-User-Id")
+        if user_id != DEMO_USER_ID:
+            self._write_json(401, {"detail": "invalid local user identity"})
             return
 
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -169,7 +170,7 @@ def main() -> int:
     env.update(
         {
             "ALICE_API_BASE_URL": base_url,
-            "ALICE_SESSION_TOKEN": "demo-session-token",
+            "ALICE_USER_ID": DEMO_USER_ID,
             "ALICE_BRIEF_TYPE": "agent_handoff",
             "ALICE_QUERY": "release handoff",
         }

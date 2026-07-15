@@ -1,177 +1,213 @@
 # Architecture
 
 ## Scope Boundary
-- **Shipped baseline:** `v0.10.4` is the latest published pre-1.0 release. It
-  is tagged and immutable, with Trusted Publishing provenance and artifact
-  digests in `docs/release/v0.10.4-checksums.txt`.
-- **Current execution posture:** `v0.10.4` shipped the fifth-audit
-  remediation on top of the sound v0.10.3 boundary; `main` matches the
-  published release.
+
+- **Published boundary:** `v0.10.4` is the latest published release. It is
+  tagged and immutable, with artifact digests in
+  `docs/release/v0.10.4-checksums.txt`.
+- **Candidate boundary:** `v0.11.0` is the current unpublished candidate. Its
+  default runtime is the continuity/memory layer for external AI agents, not a
+  hosted product, channel platform, or bundled chat runtime.
+- **Product priorities:** (1) a small, easy-to-integrate agent interface over
+  MCP, HTTP, and CLI; and (2) high-quality retrieval with provenance, review,
+  correction, and honest evaluation.
 
 ## Current System Overview
-Alice is the continuity layer for AI agents: a modular continuity platform with shared continuity semantics across local, hosted, provider-runtime, CLI, MCP, Hermes-integrated, and imported-workflow surfaces.
 
-## Technical Stack
-- API/runtime: Python + FastAPI in [`apps/api/src/alicebot_api`](apps/api/src/alicebot_api)
-- Persistence: Postgres (with `pgvector` for semantic retrieval) and Alembic migrations in [`apps/api/alembic/versions`](apps/api/alembic/versions)
-- Optional cache/runtime support: Redis
-- Web/admin: Next.js app in [`apps/web`](apps/web)
-- CLI + MCP: the `alice-memory` wheel/sdist installs four public entrypoints:
-  `alice-memory`, `alicebot`, `alice`, and `alicebot-mcp`; editable checkout
-  installation is only the contributor variant.
-- Ops/demo/test scripts: [`scripts`](scripts) are checkout-level maintenance,
-  release, evaluation, and demonstration utilities; runtime users should use
-  the packaged entrypoints above.
+Alice stores durable agent memory and continuity state, retrieves the most
+relevant evidence for new work, and makes every durable write reviewable and
+explainable. The local runtime has one workspace bootstrap identity. PostgreSQL
+is the full-stack store; SQLite is the zero-infrastructure single-agent store.
+Both implement the same core memory contracts.
 
-## Shipped Module Boundaries
+```text
+external agent / operator
+        |
+        +-- MCP (11 core tools)
+        +-- HTTP (agent-key authenticated core routes)
+        +-- CLI (core memory and continuity commands)
+        |
+continuity + memory services
+        |
+        +-- capture / review / correction / lifecycle
+        +-- recall / resume / context / explain
+        +-- projects / open loops / provenance / entities / artifacts
+        +-- core scheduler workflows
+        |
+retrieval and evidence pipeline
+        |
+        +-- full-text search
+        +-- signed provider embeddings + pgvector when configured
+        +-- fusion / ranking / traces / evals
+        |
+PostgreSQL + pgvector  |  SQLite
+```
 
-### Continuity Core
-- Capture, review, lifecycle, explainability, recall, resumption, open-loop workflows, and one-call continuity assembly.
+## Runtime Boundaries
 
-### Retrieval And Evidence Foundations
-- Hybrid retrieval over Postgres full-text search plus `pgvector` (HNSW) vector search, fused with reciprocal-rank fusion; embeddings come from any OpenAI-compatible endpoint via `ALICE_EMBEDDINGS_BASE_URL` / `ALICE_EMBEDDINGS_MODEL` / `ALICE_EMBEDDINGS_API_KEY`, and retrieval degrades to full-text-only (stated in traces) when no endpoint is configured.
-- Entity/entity-edge support, reranking, trust-aware evidence shaping, and persisted retrieval traces.
+### Agent interface
 
-### Mutation, Trust, And Briefing Foundations
-- Explicit memory operations, contradiction cases, trust signals, public eval persistence, and task-adaptive briefing.
+- The default MCP server exposes eleven tools: `alice_capture`, `alice_recall`,
+  `alice_resume`, `alice_context_pack`, `alice_open_loops`,
+  `alice_recent_decisions`, `alice_memory_review`, `alice_memory_correct`,
+  `alice_explain`, `alice_memory_commit`, and `alice_memory_manage`.
+- HTTP and CLI adapters expose equivalent core workflows. Agent HTTP calls use
+  per-agent API keys; key records are authoritative for identity and policy.
+- Remaining HTTP/CLI compatibility adapters are not part of the default product;
+  a keyless local operator must explicitly mount them with
+  `ALICE_LEGACY_SURFACES=1`. Retained long-tail memory MCP tools require
+  `ALICE_MCP_LEGACY_TOOLS=1`; exactly the three task-brief MCP tools require both
+  flags. Key-bound MCP remains core-only.
 
-### Hosted/Product Layer
-- Workspace, identity, devices, preferences, telemetry, web/admin, and channel surfaces.
+### Continuity and memory core
 
-### Provider Runtime Foundation
-- Workspace-scoped provider records, capability snapshots, runtime invocation boundaries, model-pack primitives, and secret handling.
+- Typed memories, decisions, open loops, resumption briefs, revisions, review
+  labels, corrections, supersession, contradictions, trust signals, and memory
+  operations share one canonical lifecycle model.
+- Sources, source chunks, provenance links, generated artifacts, artifact
+  ratings, events, project scope, and agent identities preserve evidence around
+  that lifecycle.
+- Human review is the trust boundary. Agent and scheduler proposals cannot
+  silently become trusted memory.
 
-### Integration Surfaces
-- CLI, MCP, Hermes bridge/provider flows, OpenClaw import/augmentation, deployment profiles such as Alice Lite, and generic external-builder reference examples.
-- The MCP server exposes eleven core tools by default (`alice_capture`, `alice_recall`, `alice_resume`, `alice_context_pack`, `alice_open_loops`, `alice_recent_decisions`, `alice_memory_review`, `alice_memory_correct`, `alice_explain`, `alice_memory_commit`, `alice_memory_manage`). The 65-tool legacy surface is available only for deliberately keyless local-operator compatibility behind `ALICE_MCP_LEGACY_TOOLS=1`; setting `ALICE_AGENT_API_KEY` hides and rejects it.
-- Agent HTTP calls authenticate with per-agent API keys (`alicebot agent keys create --agent-id <id> --profile <profile>`, sent as `Authorization: Bearer`); the key record overrides payload identity, payloads may only downgrade the profile, and keyless agent calls work only while zero active keys exist.
+### Retrieval and quality
 
-### vNext Preview Surfaces
-- local-first vNext memory kernel with sources, source chunks, provenance links, generated artifacts, artifact quality ratings, event log, agent identities, scheduler workflows, and connector evidence
-- live local capture connectors for allowlisted Telegram sync, local folder/Obsidian scan and watch, browser clip captures, and Hermes/OpenClaw-style agent output ingestion
-- dedicated connector settings/state storage for connector defaults, sync modes, cursors, counters, failures, and restart-safe health posture
-- local connector secret-provider abstraction with environment references, encrypted local fallback, and redaction before persistence
-- research-informed memory ergonomics: review-only `memory_consolidation` scheduler workflow, first-class `procedure` memories in the existing memory/revision model, benchmark-aligned eval suites, and read-only agent context tree over existing records
-- `/vnext` operator workspace with live/fixture-backed review, Ask Alice, generated artifacts, model comparison, scheduler controls, live connector configuration, connector health, dogfooding telemetry, and privacy settings
+- PostgreSQL retrieval fuses full-text search and pgvector 0.8+ vector search
+  through reciprocal-rank fusion. SQLite provides the documented local search
+  path and shares scope, lifecycle, and trust admission rules.
+- Embeddings come from a configured OpenAI-compatible endpoint. With no usable
+  embedding endpoint, retrieval degrades explicitly to full-text only and says
+  so in its trace.
+- Retrieval runs, candidates, traces, public eval cases/results, and benchmark
+  receipts make quality claims inspectable. A historical 79.4% result is not a
+  substitute for repeated measurements on the current candidate.
 
-## Current Data Model Summary
+### Provider support
 
-### Continuity And Memory
-- `memories`, `memory_revisions`, `memory_review_labels`
-- `continuity_capture_events`, `continuity_objects`, `continuity_correction_events`
-- `open_loops`
-- `memory_operation_candidates`, `memory_operations`
-- `contradiction_cases`, `trust_signals`
-- `procedure` is a canonical `memories.memory_type` for repeatable playbooks; it uses the same review, revision, provenance, correction, and supersession model as other memories
+- Provider configuration, secret references, capability discovery, and the
+  invocation boundary remain adjacent because the core needs real embeddings
+  and optional model-backed memory operations.
+- Provider-specific behavior may change capabilities, latency, or error
+  handling, but may not fork memory, provenance, review, or trust semantics.
+- Chat-only endpoints and model-pack policy are not part of the current
+  provider boundary.
 
-### Retrieval And Evaluation
-- `embedding_configs`, `memory_embeddings` (pgvector-backed)
-- `entities`, `entity_edges`
-- `retrieval_runs`, `retrieval_candidates`
-- `eval_suites`, `eval_cases`, `eval_runs`, `eval_results`
-- the eval harness ships six live suites — `retrieval_quality`, `correction_suppression`, `decision_recovery`, `provenance_explanation`, `entity_resolution`, and `graph_hop_retrieval` (see `eval/README.md`); live runs require `ALICEBOT_EVAL_DATABASE_URL` and are otherwise reported as skipped
+### Scheduler and connectors
 
-### Product / Runtime
-- `workspaces`, `workspace_members`, `auth_sessions`, `devices`
-- `model_providers`, `provider_capabilities`, `model_packs`, `workspace_model_pack_bindings`
-- `provider_invocation_telemetry`
-- pilot launch/admin tables
-- `task_briefs`
-- `agent_api_keys` (hashed per-agent API keys for agent HTTP/MCP authentication)
-- `connector_settings`, `connector_state`
-- channel, task, trace, approval, and execution tables
+- Core scheduler workflows cover memory lifecycle, synthesis, and maintenance;
+  they use durable idempotency and project/user scope.
+- Local source connectors ingest explicit text or files. PDF/DOCX text,
+  screenshot text, and voice transcripts must already have been extracted by an
+  external tool. Alice does not execute OCR or transcription.
+- Gmail and Calendar compatibility adapters are unmounted by default behind
+  `ALICE_LEGACY_SURFACES=1`; they use manual operator credentials and do not
+  provide managed OAuth or automatic polling.
 
-## Key Flows In Force
+### Web review console
 
-### Capture And Review
-1. Raw content enters continuity capture.
-2. Alice creates capture events and candidate continuity objects.
-3. Review/correction can confirm, edit, supersede, or delete.
-4. Explainability preserves provenance and lifecycle state.
+- The maintained web pages are the review console and its memory, continuity,
+  vNext, trace, entity, and artifact views.
+- The web app is an operator trust surface, not a hosted control plane or a
+  consumer knowledge-management application.
 
-### Recall, Resumption, And Briefing
-1. Recall loads continuity candidates.
-2. Ranking considers semantic similarity, lexical/entity signals, trust, freshness, provenance, and supersession.
-3. Resumption and one-call continuity compose ranked recall into decisions, open loops, recent changes, provenance, trust posture, and next action.
+## Persistence
 
-### Consolidation And Context Navigation
-1. The governed scheduler can run `memory_consolidation` over accepted memories, reviewed sources, generated artifacts, recent events, corrections, and artifact ratings.
-2. Consolidation creates reviewable artifacts and optional candidate memories only; it never promotes trusted memory automatically.
-3. Agents can request a read-only context tree over projects, memories, sources, open loops, artifacts, and recent traces without receiving direct write access to the memory store.
+### Active core records
 
-### Provider Runtime
-1. Workspace binds provider and optional model-pack configuration.
-2. Runtime invokes through provider adapter boundaries.
-3. Invocation telemetry and capability snapshots remain inspectable.
+- memories, revisions, review labels, operations, and embeddings;
+- continuity capture/correction events, continuity objects, and open loops;
+- sources, chunks, provenance, artifacts, ratings, and event log;
+- projects, project scope, agent identities/keys, entities, and entity edges;
+- retrieval/eval runs and candidates; and
+- provider/embedding configuration needed by surviving core workflows.
 
-### External Builder Runtime
-1. External runtimes use one-call continuity, MCP, Hermes provider-plus-MCP, or OpenClaw import/augmentation paths.
-2. Provider and model-pack controls remain Alice-side supporting configuration.
-3. Generic examples and reproducible demos package the shipped surface rather than defining a second runtime contract.
+PostgreSQL and SQLite receive parity tests whenever a store-level core contract
+changes. Project scope is authoritative, and reads must apply scope and lifecycle
+admission before bounded limits.
 
-## Provider Runtime And Integration Baseline
+### Historical schema
 
-### Provider Abstraction + OpenAI-Compatible Adapter
-- Stabilized the provider adapter contract.
-- Shipped workspace-scoped provider registration and update flows.
-- Shipped capability discovery and capability snapshots.
-- Shipped OpenAI-compatible adapter hardening.
-- Shipped provider invocation telemetry persistence and hosted RLS posture for the telemetry table.
+Alembic migrations are immutable history. Tables for removed features may remain
+after an upgrade, but their services do not mount or write them by default. The
+periphery cut does not rewrite or delete historical migrations and does not use a
+destructive table-drop migration.
 
-### Ollama + llama.cpp + vLLM Adapters
-- Hardened the local/self-hosted runtime paths onto the stabilized provider contract.
-- Added the dedicated `vllm` provider path with provider-native health semantics and registration/config support.
-- Extended provider/runtime and pack-compatibility coverage for the local/self-hosted provider surface.
+## Core Flows
 
-### Model Packs
-- Added provider-aware workspace model-pack bindings on top of the shipped provider surface.
-- Shipped the first-party `llama`, `qwen`, `gemma`, and `gpt-oss` pack catalog.
-- Added pack-aware runtime and briefing defaults plus declarative compatibility enforcement.
+### Capture and review
 
-### Reference Integrations
-- Packaged the shipped continuity, provider, and pack surface into polished external-builder paths.
-- Refreshed Hermes and OpenClaw documentation around the shipped one-call continuity and provider/pack baseline.
-- Added generic Python and TypeScript reference agent examples plus reproducible demos.
+1. An explicit source, agent proposal, or operator command enters through a core
+   adapter.
+2. Alice preserves source evidence and creates a candidate or policy-governed
+   commit outcome.
+3. Review can accept, edit, reject, correct, supersede, forget, or redact under
+   the documented lifecycle rules.
+4. Revisions and events preserve the admissible explanation chain.
 
-### Logging Safety And Disk Guardrails
-- Added explicit logging configuration and moved local/Lite defaults to stdout.
-- Disabled access logs by default in Lite/local profile.
-- Added bounded rotation when file logging is explicitly enabled.
-- Documented the recommended `systemd`/`journald` posture for managed environments.
-- Added smoke coverage proving no unbounded local log file is created in `/tmp`.
+### Recall and resume
 
-## Security And Reliability Rules
-- Keep user/workspace isolation intact for continuity, provider, runtime, and pilot data.
-- Keep agent API keys hashed at rest; raw keys are printed exactly once at creation and never logged.
-- Keep provider credentials and secret references out of logs and outward-facing errors.
-- Keep connector secrets out of settings rows, event logs, source metadata, artifact metadata, API responses, CLI output, and UI state.
-- Keep connector cursors restart-safe and do not advance past failed data unless the skipped item is explicitly safe.
-- Preserve approval-bounded execution for consequential side effects.
-- Keep capture, mutation, provider, and Hermes sync paths idempotent.
-- Preserve append-only evidence where the system depends on auditability.
-- Do not let provider-specific behavior fork continuity semantics.
-- Do not let model packs bypass provenance, trust, or contradiction rules already enforced by the baseline.
-- Keep local/Lite logging bounded and operationally safe by default.
+1. Scope, status, sensitivity, time, person, and project constraints are
+   normalized.
+2. Full-text and optional signed-vector candidates are retrieved and admitted
+   before bounded limits.
+3. Fusion/ranking selects evidence while traces record which stages ran.
+4. Recall, context packs, and resumption briefs return bounded evidence with
+   provenance and explicit degradation notes.
+
+### Agentic writes
+
+1. The caller's key/profile and requested operation enter policy evaluation.
+2. The outcome is commit, confirmation-required, review-required, or reject.
+3. Every accepted durable mutation records provenance and lifecycle evidence.
+4. Retries use stable idempotency identities and cannot silently duplicate a
+   durable side effect.
+
+## Removed Legacy Surfaces
+
+The v0.11 periphery cut removes these active product surfaces. Their history is
+available from the immutable v0.10.4 tag and release artifacts; they are not
+roadmap commitments.
+
+- Telegram transport, polling, delivery, notification, and channel APIs. The
+  allowlist-aware import of an operator-supplied raw update remains a source-
+  ingestion adapter, not a channel runtime.
+- Hosted administration, rollout/design-partner, preferences, rate-limit,
+  telemetry, authentication/session, device, and multi-workspace control-plane
+  APIs. The single local workspace bootstrap remains an internal core utility.
+- Chief-of-staff and bundled chat pages/services.
+- Model-pack catalog and workspace binding APIs.
+- The public OpenAI-compatible `/v0/responses` chat endpoint. Low-level response
+  generation/jobs and provider proxy machinery remain internal dependencies of
+  retained `/v1/runtime/invoke` and are not a public chat product.
+- Legacy MCP and CLI commands whose backing service was removed.
+
+Tasks, approvals, executions, Gmail, and Calendar are a separate temporary
+compatibility category: unmounted by default, explicitly enabled only through
+`ALICE_LEGACY_SURFACES=1`, and scheduled for removal before `1.0` unless real
+usage justifies a separately reviewed boundary.
 
 ## Testing Strategy
-- unit/integration tests for continuity, provider runtime, and API behavior
-- provider smoke tests and provider-capability parity checks
-- model-pack smoke tests and compatibility-matrix validation
-- integration smoke tests for Hermes, OpenClaw, Python example, and TypeScript example paths
-- pilot onboarding, linkage, usage-summary, and feedback-flow validation
-- logging configuration and `/tmp` safety validation
-- vNext live-capture connector smoke and capture-to-brief smoke validation
-- vNext connector-hardening, secret-redaction, and dogfood-doctor smoke validation
-- release gates remain green across Python, web, Alice Lite, Hermes smoke, and public eval harness
-- docs verification is part of feature completion, not cleanup work
+
+- Fail-on-old inventory tests cover HTTP, MCP, CLI, scheduler, web, PostgreSQL,
+  and SQLite surface disposition.
+- Default-mode tests prove removed and compatibility routes/tools are absent;
+  explicit compatibility-mode tests prove only the documented surviving subset
+  mounts.
+- Store contracts run with PostgreSQL and SQLite parity where applicable.
+- OpenAPI closure, phantom-key rejection, route counts, full Python/web
+  coverage, static checks, reproducible packages, installed-artifact smokes,
+  semantic evidence, and independent review remain release gates.
+- Historical migration tests stay even when the product surface that created a
+  table has been removed.
 
 ## Current Architectural Posture
-- `v0.10.4` is the active published release boundary and latest published
-  release. Later `main` commits are not part of that immutable artifact set.
-- `v0.10.4` shipped the release-hardening remediation. Unrelated feature
-  work stayed paused until the repaired tree, independent re-review,
-  canonical gates, and
-  protected semantic evidence pass against one exact clean source SHA and its
-  installed artifacts.
-- Alice is now a broader continuity platform with provider/runtime portability, model packs, runnable external-builder integrations, pilot launch/admin support, and safe local logging defaults.
-- The continuity substrate remains the same system of record; the delivered work packages that substrate into practical adoption paths without changing the core continuity semantics.
+
+- `v0.10.4` remains the latest published release; later candidate changes are
+  not part of its immutable artifacts.
+- `v0.11.0` is an unpublished candidate that reconciles runtime and product
+  identity around the agent interface plus retrieval/memory quality.
+- The default deployment is local-first and single-workspace. A future hosted
+  offering is a clean-sheet roadmap decision, not dormant product code.
+- Release and review evidence for prior repair batches lives under
+  `docs/handoff/`; it does not constrain legitimate future production trees or
+  approve them automatically.

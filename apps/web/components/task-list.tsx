@@ -31,8 +31,8 @@ export function TaskList({
         <EmptyState
           title="Task list is empty"
           description="No task lifecycle records are available in the current mode."
-          actionHref="/chat"
-          actionLabel="Open requests"
+          actionHref="/"
+          actionLabel="Open continuity overview"
         />
       </SectionCard>
     );

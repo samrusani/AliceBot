@@ -1,73 +1,92 @@
 # Sprint Packet
 
+<!-- alice-sprint-scope: phase-1-only -->
+
 ## Sprint
 
-Alice v0.10.0 audit remediation and release-evidence repair.
+Alice v0.11.0 Phase 1 periphery cut and product-identity reconciliation.
 
 ## Status
 
-Mandatory repair pass active on `codex/v0.10-audit-remediation`, based on
-`68d6bf2`. The first independent review returned **REJECT**; its 16-item
-checklist is binding and all affected matrix rows are reopened. The published
-`v0.9.4` tag remains immutable. This sprint does not authorize a tag, merge,
-push, GitHub release, or PyPI publication.
+Implementation and review are active on `codex/v011-phase1-periphery-cut`,
+based on published/post-publication `main` at `8520f29`. This packet authorizes
+Phase 1 only. It does not authorize a commit, push, merge, tag, PyPI upload, or
+GitHub Release.
 
 ## Reason
 
-A third independent audit found that several v0.9.4 remediations were partial
-and that the endpoint-signature change broke eval and backfill vector
-compatibility. It also confirmed substantial P2 correctness, performance,
-typing, web, backup, packaging, and documentation debt. The branch is
-release-blocked until the builder and an independent reviewer close the matrix
-under `docs/handoff/2026-07-13-v0.10-audit-remediation/`.
+Alice's default runtime had accumulated hosted, channel, chat, and product
+surfaces outside the owner-set thesis: a small interface for existing agents and
+top-quality retrieval/memory. The cut removes that periphery before later debt,
+refactor, benchmark, or enterprise work, reducing maintenance and making docs,
+tests, OpenAPI, and product identity agree.
 
 ## In scope
 
-- one production-compatible signed-embedding contract for every vector writer;
-- exact-SHA semantic release evidence with nonzero signed-vector candidates;
-- complete people/time filters, query-vector reuse, and bulk graph/provenance reads;
-- scoped, status-aware, classification-aware, atomic capture dedupe;
-- fail-closed lifecycle graphs, correct lock order, confirmation auditing, and migration repair;
-- truthful/cohesive/bounded-memory rollups and consolidation;
-- pgvector 0.8+ installer, migration, and doctor enforcement;
-- immutable single-parse backup restore and future-table rejection;
-- thread-safe web drafts, independent outage degradation, SSR parallelism,
-  full TypeScript, browser navigation, accessibility, coverage, and budgets;
-- full first-party Python typing, portable package documentation, and active-doc truth;
-- focused regression tests plus the complete release-equivalent verification set.
+- delete Telegram channels and transport;
+- delete hosted admin/design-partner and hosted auth/session/device/workspace
+  control-plane surfaces while retaining the single local workspace bootstrap;
+- delete chief-of-staff, bundled chat/model-pack, and the public response
+  surface; retain internal response jobs for `/v1/runtime/invoke` idempotency
+  and gate the surviving proxy/execution compatibility surface;
+- mount task/approval/execution and Gmail/Calendar compatibility only when
+  `ALICE_LEGACY_SURFACES=1` is explicitly enabled;
+- delete legacy MCP/CLI/web/OpenAPI surfaces with their backing services;
+  retain long-tail memory MCP tools behind `ALICE_MCP_LEGACY_TOOLS=1`, with
+  only the three task-brief tools additionally gated by
+  `ALICE_LEGACY_SURFACES=1`;
+- retain provider support needed for embeddings, discovery, secrets, and
+  surviving model-backed memory operations;
+- retire surface-era tests while preserving immutable migration tests;
+- rewrite architecture, rules, roadmap, current-state, release, extracted-text,
+  and control-document truth;
+- Text extraction happens outside Alice.
+  Alice does not perform OCR or transcription.
+- update the fail-closed OpenAPI registry to the post-cut mounted inventory;
+- produce an uncommitted builder handoff and independent review.
 
 ## Out of scope
 
-- cybersecurity analysis beyond preserving existing controls;
-- new product features unrelated to an audited finding;
-- provider credentials in CI or deterministic fake evidence presented as a release result;
-- publication, tagging, pushing, merging, or changing repository settings.
+- Phase 2 correctness/debt items, even if nearby;
+- the Phase 3 structural router/store refactor;
+- new retrieval features or benchmark tuning;
+- cybersecurity review;
+- destructive migration edits or changes to immutable v0.10.2/v0.10.3/v0.10.4
+  tags, release notes, checksums, or published artifacts;
+- publication, tagging, pushing, merging, or repository-setting changes.
 
 ## Required gates
 
-1. Focused regressions listed in `FIX_MATRIX.md` pass.
-2. Python unit coverage, PostgreSQL integration, LongMemEval, backup, and scale tests pass.
-3. Ruff and full first-party `mypy` pass with zero errors.
-4. Web tests, lint, full TypeScript, production build, browser navigation,
-   accessibility, coverage, and bundle/performance budgets pass.
-5. Wheel and sdist pass metadata, Twine, portable-link, and installed-artifact smokes.
-6. The no-provider eval fails closed.
-7. An operator-supplied configured provider eval on the exact candidate SHA
-   reports nonzero production-signed vector candidates and meets every quality target.
-8. Publication accepts only an attested semantic-eval report bound to the exact SHA.
-9. Control-document and release-finalization truth checks pass.
-10. An independent reviewer reports no remaining blocker.
+1. A written all-surface inventory covers HTTP, MCP, CLI, scheduler, web,
+   PostgreSQL, and SQLite before implementation claims closure.
+2. Default-mode fail-on-old tests prove every removed or compatibility surface
+   is absent; explicit-flag tests prove only the documented compatibility subset
+   mounts.
+3. Existing migrations remain byte-identical and their migration tests remain.
+4. OpenAPI closure, phantom-key rejection, and the exact post-cut operation
+   count pass.
+5. Python unit/integration/coverage/static gates, both-store contracts,
+   LongMemEval model-free/evidence gates, and the full web matrix pass without
+   lowering thresholds.
+6. Reproducible wheel/sdist, archive parity, release-check, and installed-
+   artifact smokes pass for the same frozen tree.
+7. Documentation and runtime inventories agree on the caller-supplied
+   extracted-text boundary and archived repair history.
+8. An independent reviewer approves the exact uncommitted carrier.
 
 ## Handoff
 
-- `docs/handoff/2026-07-13-v0.10-audit-remediation/FIX_MATRIX.md`
-- `docs/handoff/2026-07-13-v0.10-audit-remediation/BUILD_REPORT.md`
-- `docs/handoff/2026-07-13-v0.10-audit-remediation/ENGINEER_HANDOFF.md`
-- `docs/handoff/2026-07-13-v0.10-audit-remediation/REVIEW_REPORT.md` (reviewer-owned)
+- `docs/handoff/2026-07-15-v0.11.0-phase1-periphery-cut/SURFACE_INVENTORY.md`
+- `docs/handoff/2026-07-15-v0.11.0-phase1-periphery-cut/FIX_MATRIX.md`
+- `docs/handoff/2026-07-15-v0.11.0-phase1-periphery-cut/BUILD_REPORT.md`
+- `docs/handoff/2026-07-15-v0.11.0-phase1-periphery-cut/ENGINEER_HANDOFF.md`
+- `docs/handoff/2026-07-15-v0.11.0-phase1-periphery-cut/REVIEW_REPORT.md`
+  (reviewer-owned)
 
 ## Exit condition
 
-The sprint is complete only when every matrix row is closed or explicitly
-returned as a release blocker, all runnable gates have exact command evidence,
-the configured semantic report is bound to the reviewed clean SHA, and the
-independent reviewer signs off. Until then, v0.10.0 remains unpublishable.
+Phase 1 is complete only when every scoped disposition is implemented and
+documented, the required matrix is green on one frozen uncommitted tree, and the
+independent reviewer reports no blocker.
+
+Stop after that handoff; do not begin Phase 2.

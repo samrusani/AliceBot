@@ -11,8 +11,7 @@ This alpha is intentionally limited.
   storage exists
 - no live email polling
 - no live calendar polling
-- Telegram webhook automation is not packaged
-- Telegram voice transcription is not packaged
+- no Telegram polling, delivery, or channel transport
 - OCR execution is not packaged
 - PDF OCR is not packaged
 - voice transcription execution is not packaged
@@ -29,7 +28,8 @@ This alpha is intentionally limited.
 
 SQLite mode (`alice-memory mcp`) is the trial/single-agent path and carries extra boundaries:
 
-- core MCP tools only (11 as of this release); the legacy continuity surfaces are Postgres-only
+- core MCP tools only (11 as of this release); optional long-tail memory tools
+  require `ALICE_MCP_LEGACY_TOOLS=1` and remain Postgres-only
 - no web console review — review runs through `alice_memory_review` / `alice_memory_correct`
 - no scheduler
 - agent API keys cannot be created (`alicebot agent keys create` requires Postgres); leave `ALICE_AGENT_API_KEY` unset — agent identity is still honored and audited as `unauthenticated_local`, while a set key fails closed and rejects every write

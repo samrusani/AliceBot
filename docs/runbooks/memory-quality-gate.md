@@ -64,10 +64,12 @@ Use `/memories` to read a deterministic ship-gate signal for memory quality befo
 - If data is unavailable, fix source availability first; do not infer readiness from stale assumptions.
 
 ## Readiness Runner Alignment
-- `python3 scripts/run_mvp_readiness_gates.py` uses this same summary math and thresholds.
-- Runner mapping:
-  - `on_track` -> gate `PASS`
-  - `needs_review` -> gate `FAIL`
-  - `insufficient_evidence` or unavailable data -> gate `BLOCKED`
-- Boundary behavior:
-  - `precision == 0.80` is `needs_review` and does not pass.
+- This summary is an operator-facing quality signal, not a gate in the v0.11
+  core readiness runner.
+- `python3 scripts/run_phase2_readiness_gates.py` verifies deterministic
+  retrieval/evaluation contracts, provider runtime, and local bootstrap. It
+  does not read live label counts or convert this card's status into a release
+  result.
+- Release decisions that cite memory-label quality must record the summary
+  counts and boundary math above separately; `precision == 0.80` remains
+  `needs_review` and does not satisfy this runbook's quality target.

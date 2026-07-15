@@ -4,6 +4,8 @@ import { CalendarAccountList } from "../../components/calendar-account-list";
 import { CalendarEventIngestForm } from "../../components/calendar-event-ingest-form";
 import { CalendarEventList } from "../../components/calendar-event-list";
 import { PageHeader } from "../../components/page-header";
+import { legacySurfacesEnabled } from "../../lib/legacy-surfaces.server";
+import { notFound } from "next/navigation";
 import type {
   ApiSource,
   CalendarAccountListSummary,
@@ -82,6 +84,10 @@ export default async function CalendarPage({
 }: {
   searchParams?: SearchParams;
 }) {
+  if (!legacySurfacesEnabled()) {
+    notFound();
+  }
+
   const params = (searchParams ? await searchParams : {}) as Record<
     string,
     string | string[] | undefined

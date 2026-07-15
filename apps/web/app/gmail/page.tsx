@@ -3,6 +3,8 @@ import { GmailAccountDetail } from "../../components/gmail-account-detail";
 import { GmailAccountList } from "../../components/gmail-account-list";
 import { GmailMessageIngestForm } from "../../components/gmail-message-ingest-form";
 import { PageHeader } from "../../components/page-header";
+import { legacySurfacesEnabled } from "../../lib/legacy-surfaces.server";
+import { notFound } from "next/navigation";
 import type { ApiSource, GmailAccountRecord } from "../../lib/api";
 import {
   combinePageModes,
@@ -49,6 +51,10 @@ export default async function GmailPage({
 }: {
   searchParams?: SearchParams;
 }) {
+  if (!legacySurfacesEnabled()) {
+    notFound();
+  }
+
   const params = (searchParams ? await searchParams : {}) as Record<
     string,
     string | string[] | undefined

@@ -20,7 +20,7 @@ def _resolve_python_executable() -> str:
 
 def main() -> int:
     command = [_resolve_python_executable(), str(TARGET_SCRIPT), *sys.argv[1:]]
-    print("Phase 3 validation matrix entrypoint -> scripts/run_phase2_validation_matrix.py", flush=True)
+    print("Compatibility validation entrypoint -> scripts/run_phase2_validation_matrix.py", flush=True)
     print(shlex.join(command), flush=True)
     completed = subprocess.run(
         command,

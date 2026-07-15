@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-from collections import defaultdict, deque
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-import hmac
-import hashlib
 import ipaddress
 import json
 import logging
 import re
-import threading
 import time
-from typing import TYPE_CHECKING, Annotated, Any, Awaitable, Callable, Literal, TypedDict, cast
+from typing import Annotated, Any, Awaitable, Callable, Literal, TypedDict, cast
 from uuid import UUID, uuid4
 from fastapi import FastAPI, Header, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
@@ -25,21 +21,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.routing import Match
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-if TYPE_CHECKING:
-    import redis
-    from redis.exceptions import RedisError as _RedisError
-else:
-    try:
-        import redis
-        from redis.exceptions import RedisError as _RedisError
-    except Exception:  # pragma: no cover - optional dependency for local-only test environments
-        redis = None
-
-        class _RedisError(Exception):
-            """Fallback Redis error used when redis package is unavailable."""
-
-
 from alicebot_api import __version__
+from alicebot_api.surface_flags import legacy_surfaces_enabled
 from alicebot_api.compiler import compile_and_persist_trace, compile_resumption_brief
 from alicebot_api.config import Settings, get_settings
 from alicebot_api.continuity_brief import (
@@ -56,7 +39,6 @@ from alicebot_api.contracts import (
     ArtifactScopedSemanticArtifactChunkRetrievalInput,
     CompileContextArtifactScopedSemanticArtifactRetrievalInput,
     CompileContextArtifactScopedArtifactRetrievalInput,
-    CompileContextSemanticArtifactRetrievalInput,
     CompileContextTaskScopedArtifactRetrievalInput,
     CompileContextTaskScopedSemanticArtifactRetrievalInput,
     ConsentStatus,
@@ -78,10 +60,8 @@ from alicebot_api.contracts import (
     DEFAULT_CONTINUITY_WEEKLY_REVIEW_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
-    DEFAULT_TASK_BRIEF_TOKEN_BUDGET,
     DEFAULT_TEMPORAL_TIMELINE_LIMIT,
     DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT,
-    DEFAULT_CHIEF_OF_STAFF_PRIORITY_LIMIT,
     DEFAULT_MAX_EVENTS,
     DEFAULT_MAX_ENTITY_EDGES,
     DEFAULT_MAX_ENTITIES,
@@ -117,7 +97,6 @@ from alicebot_api.contracts import (
     MAX_TASK_BRIEF_TOKEN_BUDGET,
     MAX_TEMPORAL_TIMELINE_LIMIT,
     MAX_TRUSTED_FACT_PROMOTION_LIMIT,
-    MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT,
     MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     ContextCompilerLimits,
     ContinuityArtifactDetailResponse,
@@ -152,7 +131,6 @@ from alicebot_api.contracts import (
     ContinuityReviewQueueResponse,
     ContinuityResumptionBriefRequestInput,
     ContinuityResumptionBriefResponse,
-    TaskBriefComparisonRequestInput,
     TaskBriefComparisonResponse,
     TaskBriefCompileRequestInput,
     TaskBriefResponse,
@@ -171,16 +149,6 @@ from alicebot_api.contracts import (
     TrustedFactPlaybookExplainResponse,
     TrustedFactPlaybookListQueryInput,
     TrustedFactPlaybookListResponse,
-    ChiefOfStaffPriorityBriefRequestInput,
-    ChiefOfStaffPriorityBriefResponse,
-    ChiefOfStaffExecutionRoutingActionInput,
-    ChiefOfStaffExecutionRoutingActionCaptureResponse,
-    ChiefOfStaffHandoffOutcomeCaptureInput,
-    ChiefOfStaffHandoffOutcomeCaptureResponse,
-    ChiefOfStaffHandoffReviewActionInput,
-    ChiefOfStaffHandoffReviewActionCaptureResponse,
-    ChiefOfStaffRecommendationOutcomeCaptureInput,
-    ChiefOfStaffRecommendationOutcomeCaptureResponse,
     ContinuityWeeklyReviewRequestInput,
     ContinuityWeeklyReviewResponse,
     MemoryHygieneDashboardResponse,
@@ -202,8 +170,6 @@ from alicebot_api.contracts import (
     ExplicitCommitmentExtractionRequestInput,
     ExplicitPreferenceExtractionRequestInput,
     ExplicitSignalCaptureRequestInput,
-    CALENDAR_READONLY_SCOPE,
-    GMAIL_READONLY_SCOPE,
     CalendarAccountConnectInput,
     CalendarEventListInput,
     CalendarEventIngestInput,
@@ -217,7 +183,6 @@ from alicebot_api.contracts import (
     MemoryEmbeddingUpsertInput,
     THREAD_EVENT_LIST_ORDER,
     PROVIDER_LIST_ORDER,
-    MODEL_PACK_LIST_ORDER,
     THREAD_LIST_ORDER,
     THREAD_SESSION_LIST_ORDER,
     MemoryReviewLabelValue,
@@ -305,9 +270,12 @@ from alicebot_api.approvals import (
 from alicebot_api.db import (
     ping_database,
     set_current_user_account,
-    set_hosted_admin_bypass,
-    set_hosted_service_bypass,
     user_connection,
+)
+from alicebot_api.local_workspace import (
+    ensure_local_workspace,
+    get_local_workspace,
+    serialize_local_workspace,
 )
 from alicebot_api.executions import (
     ToolExecutionNotFoundError,
@@ -510,7 +478,6 @@ from alicebot_api.vnext_connectors import (
     VNextConnectorService,
     VNextConnectorValidationError,
     list_connector_definitions,
-    poll_telegram_updates,
     scan_local_folder,
 )
 from alicebot_api.vnext_context_tree import (
@@ -552,8 +519,6 @@ from alicebot_api.vnext_scheduler import (
     SchedulerRunRequest,
     VNextSchedulerService,
     VNextSchedulerValidationError,
-    WORKFLOW_TYPES,
-    default_schedule,
     validate_schedule,
 )
 from alicebot_api.vnext_scheduler_runtime import (
@@ -582,128 +547,6 @@ from alicebot_api.public_evals import (
     run_public_evals,
 )
 from alicebot_api.retrieval_evaluation import get_retrieval_evaluation_summary
-from alicebot_api.hosted_auth import (
-    AuthSessionExpiredError,
-    AuthSessionInvalidError,
-    AuthSessionRevokedDeviceError,
-    MagicLinkTokenExpiredError,
-    MagicLinkTokenInvalidError,
-    UserAccountRow,
-    ensure_user_preferences_row,
-    list_feature_flags_for_user,
-    logout_auth_session,
-    resolve_auth_session,
-    serialize_auth_session,
-    serialize_magic_link_challenge,
-    serialize_user_account,
-    start_magic_link_challenge,
-    verify_magic_link_challenge,
-)
-from alicebot_api.hosted_devices import (
-    DeviceLinkTokenExpiredError,
-    DeviceLinkTokenInvalidError,
-    HostedDeviceNotFoundError,
-    confirm_device_link_challenge,
-    list_devices as list_hosted_devices,
-    revoke_device as revoke_hosted_device,
-    serialize_device,
-    serialize_device_link_challenge,
-    start_device_link_challenge,
-)
-from alicebot_api.hosted_preferences import (
-    HostedPreferencesValidationError,
-    ensure_user_preferences,
-    patch_user_preferences,
-    serialize_user_preferences,
-)
-from alicebot_api.hosted_workspace import (
-    HostedWorkspaceBootstrapConflictError,
-    HostedWorkspaceNotFoundError,
-    complete_workspace_bootstrap,
-    create_workspace,
-    get_bootstrap_status,
-    get_current_workspace,
-    get_workspace_for_member,
-    serialize_workspace,
-    set_session_workspace,
-)
-from alicebot_api.hosted_rollout import (
-    list_rollout_flags_for_admin,
-    patch_rollout_flags,
-    resolve_rollout_flag,
-)
-from alicebot_api.hosted_telemetry import (
-    HostedTelemetryStatus,
-    aggregate_chat_telemetry,
-    record_chat_telemetry,
-)
-from alicebot_api.hosted_rate_limits import evaluate_hosted_flow_limits
-from alicebot_api.hosted_admin import (
-    get_hosted_overview_for_admin,
-    get_hosted_rate_limits_for_admin,
-    list_hosted_delivery_receipts_for_admin,
-    list_hosted_incidents_for_admin,
-    list_hosted_workspaces_for_admin,
-)
-from alicebot_api.design_partners import (
-    DesignPartnerFeedbackValidationError,
-    DesignPartnerNotFoundError,
-    DesignPartnerWorkspaceConflictError,
-    create_design_partner,
-    get_design_partner_dashboard,
-    get_design_partner_detail,
-    link_design_partner_workspace,
-    list_design_partners,
-    record_design_partner_feedback,
-    update_design_partner,
-)
-from alicebot_api.telegram_channels import (
-    TelegramIdentityNotFoundError,
-    TelegramLinkPendingError,
-    TelegramLinkTokenExpiredError,
-    TelegramLinkTokenInvalidError,
-    TelegramMessageNotFoundError,
-    TelegramRoutingError,
-    TelegramWebhookIngestResult,
-    TelegramWebhookValidationError,
-    confirm_telegram_link_challenge,
-    dispatch_telegram_message,
-    get_telegram_link_status,
-    ingest_telegram_webhook,
-    list_workspace_telegram_delivery_receipts,
-    list_workspace_telegram_messages,
-    list_workspace_telegram_threads,
-    serialize_channel_identity,
-    serialize_channel_link_challenge,
-    serialize_channel_message,
-    serialize_channel_thread,
-    serialize_delivery_receipt,
-    serialize_webhook_ingest_result,
-    start_telegram_link_challenge,
-    unlink_telegram_identity,
-)
-from alicebot_api.telegram_continuity import (
-    HostedUserAccountNotFoundError,
-    TelegramMessageResultNotFoundError,
-    apply_telegram_open_loop_review_with_log,
-    approve_telegram_approval,
-    get_telegram_message_result,
-    handle_telegram_message,
-    list_telegram_approvals,
-    prepare_telegram_continuity_context,
-    reject_telegram_approval,
-)
-from alicebot_api.telegram_notifications import (
-    TelegramNotificationPreferenceValidationError,
-    TelegramOpenLoopPromptNotFoundError,
-    deliver_workspace_daily_brief,
-    deliver_workspace_open_loop_prompt,
-    get_workspace_daily_brief_preview,
-    get_workspace_notification_preferences,
-    list_workspace_open_loop_prompts,
-    list_workspace_scheduler_jobs,
-    patch_workspace_notification_subscription,
-)
 from alicebot_api.continuity_review import (
     ContinuityReviewNotFoundError,
     ContinuityReviewValidationError,
@@ -714,14 +557,6 @@ from alicebot_api.continuity_review import (
 from alicebot_api.continuity_resumption import (
     ContinuityResumptionValidationError,
     compile_continuity_resumption_brief,
-)
-from alicebot_api.chief_of_staff import (
-    ChiefOfStaffValidationError,
-    capture_chief_of_staff_execution_routing_action,
-    capture_chief_of_staff_handoff_outcome,
-    capture_chief_of_staff_handoff_review_action,
-    capture_chief_of_staff_recommendation_outcome,
-    compile_chief_of_staff_priority_brief,
 )
 from alicebot_api.continuity_open_loops import (
     ContinuityOpenLoopNotFoundError,
@@ -792,24 +627,16 @@ from alicebot_api.response_generation import (
     SYSTEM_INSTRUCTION,
     complete_response_generation,
     fail_response_generation,
-    invoke_prepared_response,
     prepare_response_generation,
 )
 from alicebot_api.response_jobs import (
     RESPONSE_JOB_ENDPOINT_RUNTIME,
-    RESPONSE_JOB_ENDPOINT_V0,
     RESPONSE_JOB_LEASE_SECONDS,
     ResponseGenerationJobRow,
     ResponseGenerationJobStore,
     ResponseJobFenceLostError,
     normalize_idempotency_key,
     request_fingerprint,
-)
-from alicebot_api.proxy_execution import (
-    ProxyExecutionApprovalStateError,
-    ProxyExecutionHandlerNotFoundError,
-    ProxyExecutionIdempotencyError,
-    execute_approved_proxy_request,
 )
 from alicebot_api.azure_provider_helpers import (
     AZURE_AUTH_MODE_AD_TOKEN,
@@ -820,7 +647,6 @@ from alicebot_api.provider_runtime import (
     AZURE_ADAPTER_KEY,
     LLAMACPP_ADAPTER_KEY,
     OLLAMA_ADAPTER_KEY,
-    OPENAI_COMPATIBLE_ADAPTER_KEY,
     VLLM_ADAPTER_KEY,
     OPENAI_RESPONSES_PROVIDER,
     ProviderAdapter,
@@ -833,26 +659,6 @@ from alicebot_api.provider_runtime import (
     resolve_runtime_provider_config_secrets,
 )
 from alicebot_api.provider_configuration import provider_config_fingerprint
-from alicebot_api.model_packs import (
-    MODEL_PACK_BINDING_SOURCE_MANUAL,
-    MODEL_PACK_STATUS_ACTIVE,
-    ModelPackCompatibilityError,
-    ModelPackNotFoundError,
-    ModelPackValidationError,
-    append_instruction,
-    apply_runtime_limit_caps,
-    assert_model_pack_runtime_compatibility,
-    build_model_pack_runtime_shape,
-    ensure_tier1_model_packs_for_workspace,
-    is_reserved_tier1_pack_key,
-    normalize_briefing_max_tokens,
-    normalize_briefing_strategy,
-    normalize_model_pack_contract,
-    normalize_pack_family,
-    normalize_pack_id,
-    normalize_pack_version,
-    resolve_workspace_model_pack_selection,
-)
 from alicebot_api.openapi_operation_contracts import (
     OPENAPI_INTENTIONALLY_POLYMORPHIC_OPERATIONS,
     OPENAPI_OPEN_RESPONSE_OPERATIONS,
@@ -885,12 +691,10 @@ from alicebot_api.store import (
     EventRow,
     JsonObject,
     JsonValue,
-    ModelPackRow,
     ModelProviderRow,
     ProviderCapabilityRow,
     SessionRow,
     ThreadRow,
-    WorkspaceModelPackBindingDetailRow,
 )
 from alicebot_api.traces import (
     TraceNotFoundError,
@@ -915,13 +719,9 @@ def _openapi_tag_for_path(path: str) -> str:
         return "vNext memory"
     if path.startswith("/v0"):
         return "Continuity v0"
-    if path.startswith("/v1/auth") or path.startswith("/v1/device"):
-        return "Authentication"
-    if path.startswith("/v1/channels"):
-        return "Channels"
-    if path.startswith("/v1/providers") or path.startswith("/v1/model-packs"):
+    if path.startswith("/v1/providers") or path.startswith("/v1/workspaces") or path.startswith("/v1/runtime"):
         return "Providers"
-    return "Hosted API"
+    return "Alice API"
 
 
 _OPENAPI_EXACT_RESPONSE_CONTRACTS: dict[tuple[str, str], tuple[str, object]] = {
@@ -1009,23 +809,6 @@ _OPENAPI_EXACT_RESPONSE_CONTRACTS: dict[tuple[str, str], tuple[str, object]] = {
     ("POST", "/v1/continuity/brief"): ("ContinuityBriefResponse", ContinuityBriefResponse),
     ("POST", "/v0/task-briefs/compile"): ("TaskBriefResponse", TaskBriefResponse),
     ("POST", "/v0/task-briefs/compare"): ("TaskBriefComparisonResponse", TaskBriefComparisonResponse),
-    ("GET", "/v0/chief-of-staff"): ("ChiefOfStaffPriorityBriefResponse", ChiefOfStaffPriorityBriefResponse),
-    ("POST", "/v0/chief-of-staff/recommendation-outcomes"): (
-        "ChiefOfStaffRecommendationOutcomeCaptureResponse",
-        ChiefOfStaffRecommendationOutcomeCaptureResponse,
-    ),
-    ("POST", "/v0/chief-of-staff/handoff-review-actions"): (
-        "ChiefOfStaffHandoffReviewActionCaptureResponse",
-        ChiefOfStaffHandoffReviewActionCaptureResponse,
-    ),
-    ("POST", "/v0/chief-of-staff/execution-routing-actions"): (
-        "ChiefOfStaffExecutionRoutingActionCaptureResponse",
-        ChiefOfStaffExecutionRoutingActionCaptureResponse,
-    ),
-    ("POST", "/v0/chief-of-staff/handoff-outcomes"): (
-        "ChiefOfStaffHandoffOutcomeCaptureResponse",
-        ChiefOfStaffHandoffOutcomeCaptureResponse,
-    ),
     ("GET", "/v0/memories/trust-dashboard"): ("MemoryTrustDashboardResponse", MemoryTrustDashboardResponse),
     ("GET", "/v0/memories/hygiene-dashboard"): ("MemoryHygieneDashboardResponse", MemoryHygieneDashboardResponse),
 }
@@ -1071,31 +854,76 @@ _OPENAPI_CREATED_ONLY_OPERATIONS = {
     ("POST", "/v0/task-artifact-chunk-embeddings"),
     ("POST", "/v0/entities"),
     ("POST", "/v0/entity-edges"),
-    ("POST", "/v1/workspaces"),
     ("POST", "/v1/providers"),
     ("POST", "/v1/providers/ollama/register"),
     ("POST", "/v1/providers/llamacpp/register"),
     ("POST", "/v1/providers/vllm/register"),
     ("POST", "/v1/providers/azure/register"),
-    ("POST", "/v1/model-packs"),
-    ("POST", "/v1/devices/link/confirm"),
-    ("POST", "/v1/admin/hosted/design-partners"),
-    ("POST", "/v1/admin/hosted/design-partners/{design_partner_id}/workspaces"),
-    ("POST", "/v1/admin/hosted/design-partners/{design_partner_id}/feedback"),
-    ("POST", "/v1/channels/telegram/link/confirm"),
-    ("POST", "/v1/channels/telegram/messages/{message_id}/dispatch"),
 }
 
 
 _OPENAPI_CONDITIONAL_SUCCESS_OPERATIONS: dict[tuple[str, str], tuple[int, ...]] = {
     ("POST", "/v0/consents"): (200, 201),
     ("POST", "/v0/vnext/memories/commit"): (200, 201),
-    ("POST", "/v1/channels/telegram/daily-brief/deliver"): (200, 201),
-    ("POST", "/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver"): (200, 201),
     ("POST", "/v0/vnext/connectors/{connector_name}/sync"): (201, 207),
-    ("POST", "/v0/responses"): (200, 202),
     ("POST", "/v1/runtime/invoke"): (200, 202),
 }
+
+
+LEGACY_HTTP_OPERATION_KEYS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("POST", "/v0/tools"),
+        ("GET", "/v0/tools"),
+        ("GET", "/v0/tools/{tool_id}"),
+        ("POST", "/v0/tools/allowlist/evaluate"),
+        ("POST", "/v0/tools/route"),
+        ("POST", "/v0/approvals/requests"),
+        ("GET", "/v0/approvals"),
+        ("GET", "/v0/approvals/{approval_id}"),
+        ("POST", "/v0/approvals/{approval_id}/approve"),
+        ("POST", "/v0/approvals/{approval_id}/reject"),
+        ("POST", "/v0/approvals/{approval_id}/execute"),
+        ("GET", "/v0/tasks"),
+        ("GET", "/v0/tasks/{task_id}"),
+        ("POST", "/v0/tasks/{task_id}/runs"),
+        ("GET", "/v0/tasks/{task_id}/runs"),
+        ("POST", "/v0/tasks/{task_id}/workspace"),
+        ("GET", "/v0/tasks/{task_id}/steps"),
+        ("POST", "/v0/tasks/{task_id}/artifact-chunks/retrieve"),
+        ("POST", "/v0/tasks/{task_id}/artifact-chunks/semantic-retrieval"),
+        ("POST", "/v0/tasks/{task_id}/steps"),
+        ("GET", "/v0/task-runs/{task_run_id}"),
+        ("POST", "/v0/task-runs/{task_run_id}/tick"),
+        ("POST", "/v0/task-runs/{task_run_id}/pause"),
+        ("POST", "/v0/task-runs/{task_run_id}/resume"),
+        ("POST", "/v0/task-runs/{task_run_id}/cancel"),
+        ("GET", "/v0/task-workspaces"),
+        ("GET", "/v0/task-workspaces/{task_workspace_id}"),
+        ("POST", "/v0/task-workspaces/{task_workspace_id}/artifacts"),
+        ("GET", "/v0/task-steps/{task_step_id}"),
+        ("POST", "/v0/task-steps/{task_step_id}/transition"),
+        ("POST", "/v0/execution-budgets"),
+        ("GET", "/v0/execution-budgets"),
+        ("GET", "/v0/execution-budgets/{execution_budget_id}"),
+        ("POST", "/v0/execution-budgets/{execution_budget_id}/deactivate"),
+        ("POST", "/v0/execution-budgets/{execution_budget_id}/supersede"),
+        ("GET", "/v0/tool-executions"),
+        ("GET", "/v0/tool-executions/{execution_id}"),
+        ("POST", "/v0/task-briefs/compile"),
+        ("GET", "/v0/task-briefs/{task_brief_id}"),
+        ("POST", "/v0/task-briefs/compare"),
+        ("POST", "/v0/gmail-accounts"),
+        ("GET", "/v0/gmail-accounts"),
+        ("GET", "/v0/gmail-accounts/{gmail_account_id}"),
+        ("POST", "/v0/gmail-accounts/{gmail_account_id}/messages/{provider_message_id}/ingest"),
+        ("POST", "/v0/calendar-accounts"),
+        ("GET", "/v0/calendar-accounts"),
+        ("GET", "/v0/calendar-accounts/{calendar_account_id}"),
+        ("GET", "/v0/calendar-accounts/{calendar_account_id}/events"),
+        ("POST", "/v0/calendar-accounts/{calendar_account_id}/events/{provider_event_id}/ingest"),
+    }
+)
+LEGACY_SURFACES_ENABLED = legacy_surfaces_enabled()
 
 
 def _openapi_live_operation_keys(schema: dict[str, Any]) -> set[tuple[str, str]]:
@@ -1124,34 +952,54 @@ class AliceFastAPI(FastAPI):
         components = schema.setdefault("components", {}).setdefault("schemas", {})
         live_operation_keys = _openapi_live_operation_keys(schema)
         registered_operation_keys = set(_OPENAPI_EXACT_RESPONSE_CONTRACTS) | set(OPENAPI_OPERATION_RESPONSE_SCHEMAS)
-        if live_operation_keys != registered_operation_keys:
-            missing = sorted(live_operation_keys - registered_operation_keys)
-            extra = sorted(registered_operation_keys - live_operation_keys)
+        expected_live_operation_keys = (
+            registered_operation_keys
+            if LEGACY_SURFACES_ENABLED
+            else registered_operation_keys - LEGACY_HTTP_OPERATION_KEYS
+        )
+        if live_operation_keys != expected_live_operation_keys:
+            missing = sorted(live_operation_keys - expected_live_operation_keys)
+            extra = sorted(expected_live_operation_keys - live_operation_keys)
             raise RuntimeError(
                 f"OpenAPI success-contract registry drifted from live routes; missing={missing}, extra={extra}"
             )
+        if not LEGACY_HTTP_OPERATION_KEYS <= registered_operation_keys:
+            missing_legacy = sorted(LEGACY_HTTP_OPERATION_KEYS - registered_operation_keys)
+            raise RuntimeError(f"legacy OpenAPI operation inventory is incomplete: {missing_legacy}")
+        live_registry = {
+            operation_key: contract
+            for operation_key, contract in OPENAPI_OPERATION_RESPONSE_SCHEMAS.items()
+            if operation_key in live_operation_keys
+        }
+        live_exact_contracts = {
+            operation_key: contract
+            for operation_key, contract in _OPENAPI_EXACT_RESPONSE_CONTRACTS.items()
+            if operation_key in live_operation_keys
+        }
         component_names = [
-            component_name for component_name, _component_schema in OPENAPI_OPERATION_RESPONSE_SCHEMAS.values()
+            component_name for component_name, _component_schema in live_registry.values()
         ]
         if len(component_names) != len(set(component_names)):
             raise RuntimeError("OpenAPI per-operation success component names must be unique")
         non_closed_operation_keys = {
             operation_key
-            for operation_key, (_component_name, component_schema) in OPENAPI_OPERATION_RESPONSE_SCHEMAS.items()
+            for operation_key, (_component_name, component_schema) in live_registry.items()
             if component_schema.get("additionalProperties") is not False
         }
-        closed_operation_keys = set(OPENAPI_OPERATION_RESPONSE_SCHEMAS) - non_closed_operation_keys
-        if closed_operation_keys != set(OPENAPI_SOURCE_VERIFIED_OPERATIONS):
+        closed_operation_keys = set(live_registry) - non_closed_operation_keys
+        expected_closed_operation_keys = set(OPENAPI_SOURCE_VERIFIED_OPERATIONS) & live_operation_keys
+        if closed_operation_keys != expected_closed_operation_keys:
             raise RuntimeError("OpenAPI source-verified operation inventory drifted from closed schemas")
-        if non_closed_operation_keys != set(OPENAPI_OPEN_RESPONSE_OPERATIONS):
+        expected_open_operation_keys = set(OPENAPI_OPEN_RESPONSE_OPERATIONS) & live_operation_keys
+        if non_closed_operation_keys != expected_open_operation_keys:
             raise RuntimeError("OpenAPI open operation inventory drifted from permissive schemas")
         if not set(OPENAPI_INTENTIONALLY_POLYMORPHIC_OPERATIONS) <= non_closed_operation_keys:
             raise RuntimeError("OpenAPI polymorphic operations must use permissive schemas")
         if any(not justification.strip() for justification in OPENAPI_INTENTIONALLY_POLYMORPHIC_OPERATIONS.values()):
             raise RuntimeError("OpenAPI polymorphic operations require individual justifications")
-        for component_name, component_schema in OPENAPI_OPERATION_RESPONSE_SCHEMAS.values():
+        for component_name, component_schema in live_registry.values():
             components[component_name] = component_schema
-        for component_name, contract in _OPENAPI_EXACT_RESPONSE_CONTRACTS.values():
+        for component_name, contract in live_exact_contracts.values():
             contract_schema = TypeAdapter(contract).json_schema(
                 ref_template="#/components/schemas/{model}",
             )
@@ -1180,10 +1028,8 @@ class AliceFastAPI(FastAPI):
             "Operations": "Health, readiness, and build identity.",
             "vNext memory": "Agentic memory, retrieval, project, and scheduler workflows.",
             "Continuity v0": "Deterministic continuity and memory APIs.",
-            "Authentication": "Hosted account, session, workspace, and device-link operations.",
-            "Channels": "Hosted Telegram and channel integrations.",
             "Providers": "Model-provider discovery, configuration, and invocation.",
-            "Hosted API": "Hosted application workflows.",
+            "Alice API": "Local-first agent interface and continuity operations.",
         }
         schema["tags"] = [{"name": name, "description": description} for name, description in tag_descriptions.items()]
         for path, path_item in schema.get("paths", {}).items():
@@ -1218,7 +1064,7 @@ class AliceFastAPI(FastAPI):
                 if exact_contract is not None:
                     schema_name = exact_contract[0]
                 else:
-                    operation_contract = OPENAPI_OPERATION_RESPONSE_SCHEMAS.get(operation_key)
+                    operation_contract = live_registry.get(operation_key)
                     if operation_contract is None:  # pragma: no cover - inventory fence above
                         raise RuntimeError(f"OpenAPI operation {operation_key!r} has no success contract")
                     schema_name = operation_contract[0]
@@ -1251,7 +1097,7 @@ class AliceFastAPI(FastAPI):
 app = AliceFastAPI(
     title="AliceBot API",
     version=__version__,
-    description="AliceBot continuity, hosted workspace, and agentic-memory API.",
+    description="AliceBot local-first continuity, retrieval, and agentic-memory API.",
 )
 provider_adapter_registry = make_provider_adapter_registry()
 HealthStatus = Literal["ok", "degraded"]
@@ -1302,7 +1148,6 @@ class RedisServicePayload(TypedDict):
 
 class ObjectStorageServicePayload(TypedDict):
     status: Literal["not_checked"]
-    endpoint_url: str
 
 
 class HealthServicesPayload(TypedDict):
@@ -1318,112 +1163,6 @@ class HealthcheckPayload(TypedDict):
 
 
 AUTH_USER_HEADER = "X-AliceBot-User-Id"
-
-
-class ResponseRateLimiter:
-    def __init__(self) -> None:
-        self._events_by_key: dict[str, deque[float]] = defaultdict(deque)
-        self._lock = threading.Lock()
-
-    def allow(self, *, key: str, max_requests: int, window_seconds: int) -> tuple[bool, int]:
-        now = time.monotonic()
-
-        with self._lock:
-            events = self._events_by_key[key]
-            cutoff = now - window_seconds
-            while events and events[0] <= cutoff:
-                events.popleft()
-
-            if len(events) >= max_requests:
-                retry_after_seconds = max(1, int(events[0] + window_seconds - now))
-                return False, retry_after_seconds
-
-            events.append(now)
-            return True, 0
-
-    def reset(self) -> None:
-        with self._lock:
-            self._events_by_key.clear()
-
-
-response_rate_limiter = ResponseRateLimiter()
-
-
-class EntrypointRateLimiterUnavailableError(RuntimeError):
-    """Raised when the configured entrypoint rate limiter backend is unavailable."""
-
-
-class EntrypointRateLimiter:
-    def __init__(self) -> None:
-        self._memory_fallback = ResponseRateLimiter()
-        self._redis_clients_by_url: dict[str, object] = {}
-        self._lock = threading.Lock()
-
-    def _get_redis_client(self, redis_url: str):
-        with self._lock:
-            cached_client = self._redis_clients_by_url.get(redis_url)
-            if cached_client is not None:
-                return cached_client
-
-            if redis is None:
-                raise EntrypointRateLimiterUnavailableError(
-                    "redis backend is unavailable; install redis client dependency"
-                )
-
-            redis_client = redis.Redis.from_url(
-                redis_url,
-                decode_responses=True,
-                socket_connect_timeout=1,
-                socket_timeout=1,
-            )
-            self._redis_clients_by_url[redis_url] = redis_client
-            return redis_client
-
-    def allow(
-        self,
-        *,
-        settings: Settings,
-        key: str,
-        max_requests: int,
-        window_seconds: int,
-    ) -> tuple[bool, int]:
-        if settings.entrypoint_rate_limit_backend == "memory":
-            return self._memory_fallback.allow(
-                key=key,
-                max_requests=max_requests,
-                window_seconds=window_seconds,
-            )
-
-        try:
-            redis_client = self._get_redis_client(settings.redis_url)
-            redis_key = f"entrypoint_rate:{key}"
-            count = int(redis_client.incr(redis_key))
-            ttl = int(redis_client.ttl(redis_key))
-
-            if count == 1 or ttl <= 0:
-                redis_client.expire(redis_key, window_seconds)
-                ttl = window_seconds
-
-            if count > max_requests:
-                return False, max(1, ttl if ttl > 0 else window_seconds)
-            return True, 0
-        except (_RedisError, EntrypointRateLimiterUnavailableError) as exc:
-            # Local and test workflows can continue deterministically with in-memory fallback.
-            if settings.app_env in {"development", "test"}:
-                return self._memory_fallback.allow(
-                    key=key,
-                    max_requests=max_requests,
-                    window_seconds=window_seconds,
-                )
-            raise EntrypointRateLimiterUnavailableError("redis-backed entrypoint rate limiter is unavailable") from exc
-
-    def reset(self) -> None:
-        self._memory_fallback.reset()
-        with self._lock:
-            self._redis_clients_by_url.clear()
-
-
-entrypoint_rate_limiter = EntrypointRateLimiter()
 
 
 def _resolve_authenticated_user_id(settings: Settings, request: Request) -> UUID | None:
@@ -1583,17 +1322,6 @@ class CompileContextRequest(BaseModel):
     semantic_artifact_retrieval: CompileContextSemanticArtifactRetrievalRequest | None = None
 
 
-class GenerateResponseRequest(BaseModel):
-    user_id: UUID
-    thread_id: UUID
-    message: str = Field(min_length=1, max_length=8000)
-    max_sessions: int = Field(default=DEFAULT_MAX_SESSIONS, ge=0, le=25)
-    max_events: int = Field(default=DEFAULT_MAX_EVENTS, ge=0, le=200)
-    max_memories: int = Field(default=DEFAULT_MAX_MEMORIES, ge=0, le=50)
-    max_entities: int = Field(default=DEFAULT_MAX_ENTITIES, ge=0, le=50)
-    max_entity_edges: int = Field(default=DEFAULT_MAX_ENTITY_EDGES, ge=0, le=100)
-
-
 class CreateThreadRequest(BaseModel):
     user_id: UUID
     title: str = Field(min_length=1, max_length=200)
@@ -1743,8 +1471,8 @@ class VNextConnectorConfigRequest(VNextAgentRequest):
 
 class VNextTelegramSyncRequest(VNextAgentRequest):
     user_id: UUID
-    updates: list[dict[str, object]] = Field(default_factory=list)
-    allowed_chat_ids: list[str] = Field(default_factory=list)
+    updates: list[dict[str, object]] = Field(min_length=1)
+    allowed_chat_ids: list[str] = Field(min_length=1)
     default_domain: VNextDomain | None = None
     default_sensitivity: VNextSensitivity | None = None
 
@@ -3315,53 +3043,6 @@ class ContinuityOpenLoopReviewActionRequest(BaseModel):
     note: str | None = Field(default=None, min_length=1, max_length=500)
 
 
-class ChiefOfStaffRecommendationOutcomeCaptureRequest(BaseModel):
-    user_id: UUID
-    outcome: str = Field(min_length=1, max_length=40)
-    recommendation_action_type: str = Field(min_length=1, max_length=60)
-    recommendation_title: str = Field(min_length=1, max_length=280)
-    rationale: str | None = Field(default=None, min_length=1, max_length=500)
-    rewritten_title: str | None = Field(default=None, min_length=1, max_length=280)
-    target_priority_id: UUID | None = None
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = Field(default=None, min_length=1, max_length=200)
-    person: str | None = Field(default=None, min_length=1, max_length=200)
-
-
-class ChiefOfStaffHandoffReviewActionCaptureRequest(BaseModel):
-    user_id: UUID
-    handoff_item_id: str = Field(min_length=1, max_length=200)
-    review_action: str = Field(min_length=1, max_length=60)
-    note: str | None = Field(default=None, min_length=1, max_length=500)
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = Field(default=None, min_length=1, max_length=200)
-    person: str | None = Field(default=None, min_length=1, max_length=200)
-
-
-class ChiefOfStaffExecutionRoutingActionCaptureRequest(BaseModel):
-    user_id: UUID
-    handoff_item_id: str = Field(min_length=1, max_length=200)
-    route_target: str = Field(min_length=1, max_length=80)
-    note: str | None = Field(default=None, min_length=1, max_length=500)
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = Field(default=None, min_length=1, max_length=200)
-    person: str | None = Field(default=None, min_length=1, max_length=200)
-
-
-class ChiefOfStaffHandoffOutcomeCaptureRequest(BaseModel):
-    user_id: UUID
-    handoff_item_id: str = Field(min_length=1, max_length=200)
-    outcome_status: str = Field(min_length=1, max_length=60)
-    note: str | None = Field(default=None, min_length=1, max_length=500)
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = Field(default=None, min_length=1, max_length=200)
-    person: str | None = Field(default=None, min_length=1, max_length=200)
-
-
 class CreateMemoryReviewLabelRequest(BaseModel):
     user_id: UUID
     label: MemoryReviewLabelValue
@@ -3776,59 +3457,6 @@ def _serialize_provider_capability(capability: ProviderCapabilityRow) -> dict[st
     }
 
 
-def _serialize_model_pack(pack: ModelPackRow) -> dict[str, object]:
-    return {
-        "id": str(pack["id"]),
-        "workspace_id": str(pack["workspace_id"]),
-        "created_by_user_account_id": str(pack["created_by_user_account_id"]),
-        "pack_id": pack["pack_id"],
-        "pack_version": pack["pack_version"],
-        "display_name": pack["display_name"],
-        "family": pack["family"],
-        "description": pack["description"],
-        "status": pack["status"],
-        "briefing_strategy": pack["briefing_strategy"],
-        "briefing_max_tokens": pack["briefing_max_tokens"],
-        "contract": pack["contract"],
-        "metadata": pack["metadata"],
-        "created_at": pack["created_at"].isoformat(),
-        "updated_at": pack["updated_at"].isoformat(),
-    }
-
-
-def _serialize_workspace_model_pack_binding(
-    binding: WorkspaceModelPackBindingDetailRow,
-) -> dict[str, object]:
-    model_pack: ModelPackRow = {
-        "id": binding["model_pack_id"],
-        "workspace_id": binding["workspace_id"],
-        "created_by_user_account_id": binding["pack_created_by_user_account_id"],
-        "pack_id": binding["pack_id"],
-        "pack_version": binding["pack_version"],
-        "display_name": binding["pack_display_name"],
-        "family": binding["pack_family"],
-        "description": binding["pack_description"],
-        "status": binding["pack_status"],
-        "briefing_strategy": binding["pack_briefing_strategy"],
-        "briefing_max_tokens": binding["pack_briefing_max_tokens"],
-        "contract": binding["pack_contract"],
-        "metadata": binding["pack_metadata"],
-        "created_at": binding["pack_created_at"],
-        "updated_at": binding["pack_updated_at"],
-    }
-    return {
-        "id": str(binding["id"]),
-        "workspace_id": str(binding["workspace_id"]),
-        "provider_id": None if binding["provider_id"] is None else str(binding["provider_id"]),
-        "model_pack_id": str(binding["model_pack_id"]),
-        "bound_by_user_account_id": str(binding["bound_by_user_account_id"]),
-        "binding_source": binding["binding_source"],
-        "metadata": binding["metadata"],
-        "created_at": binding["created_at"].isoformat(),
-        "model_pack": _serialize_model_pack(model_pack),
-    }
-
-
 def _runtime_provider_config_or_none(
     *,
     store: ContinuityStore,
@@ -3984,7 +3612,7 @@ def _discover_provider_capability(
 def _persist_discovered_provider_capability(
     *,
     settings: Settings,
-    session_token: str,
+    user_account_id: UUID,
     workspace_id: UUID,
     provider: ModelProviderRow,
     outcome: _ProviderDiscoveryOutcome,
@@ -3993,22 +3621,13 @@ def _persist_discovered_provider_capability(
 
     with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
         with conn.transaction():
-            resolution = resolve_auth_session(conn, session_token=session_token)
-            workspace = get_workspace_for_member(
-                conn,
-                workspace_id=workspace_id,
-                user_account_id=resolution["user_account"]["id"],
-            )
-            if workspace is None:
+            context = get_local_workspace(conn, user_account_id=user_account_id)
+            if context is None or context["workspace"]["id"] != workspace_id:
                 return None
-            _ensure_workspace_owner_access(
-                workspace=workspace,
-                user_account_id=resolution["user_account"]["id"],
-            )
             return ContinuityStore(conn).upsert_provider_capability_if_current(
                 workspace_id=workspace_id,
                 provider_id=provider["id"],
-                discovered_by_user_account_id=resolution["user_account"]["id"],
+                discovered_by_user_account_id=user_account_id,
                 adapter_key=outcome.adapter_key,
                 discovery_status=outcome.discovery_status,
                 capability_snapshot=outcome.capability_snapshot,
@@ -4140,7 +3759,6 @@ def _stage_provider_secret(
 def _retire_provider_secret_if_unreferenced(
     *,
     settings: Settings,
-    session_token: str,
     workspace_id: UUID,
     user_account_id: UUID,
     encoded_reference: str,
@@ -4157,7 +3775,6 @@ def _retire_provider_secret_if_unreferenced(
             with conn.transaction():
                 _assert_provider_write_context(
                     conn=conn,
-                    session_token=session_token,
                     expected_workspace_id=workspace_id,
                     expected_user_account_id=user_account_id,
                 )
@@ -4186,7 +3803,6 @@ def _retire_provider_secret_if_unreferenced(
 def _discard_staged_provider_secret(
     *,
     settings: Settings,
-    session_token: str,
     workspace_id: UUID,
     user_account_id: UUID,
     staged_secret: _StagedProviderSecret | None,
@@ -4195,7 +3811,6 @@ def _discard_staged_provider_secret(
         return
     _retire_provider_secret_if_unreferenced(
         settings=settings,
-        session_token=session_token,
         workspace_id=workspace_id,
         user_account_id=user_account_id,
         encoded_reference=staged_secret.encoded_reference,
@@ -4205,56 +3820,28 @@ def _discard_staged_provider_secret(
 def _resolve_owned_provider_workspace(
     *,
     settings: Settings,
-    session_token: str,
+    user_account_id: UUID,
 ) -> tuple[UUID, UUID]:
-    with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-        with conn.transaction():
-            resolution = resolve_auth_session(conn, session_token=session_token)
-            user_account_id = resolution["user_account"]["id"]
-            workspace = get_current_workspace(
-                conn,
-                user_account_id=user_account_id,
-                preferred_workspace_id=resolution["session"]["workspace_id"],
-            )
-            if workspace is None:
-                raise HostedWorkspaceNotFoundError("no workspace is currently selected")
-            _ensure_workspace_owner_access(
-                workspace=workspace,
-                user_account_id=user_account_id,
-            )
-            return workspace["id"], user_account_id
+    return _require_local_provider_workspace(settings=settings, user_account_id=user_account_id)
 
 
 def _assert_provider_write_context(
     *,
     conn: Any,
-    session_token: str,
     expected_workspace_id: UUID,
     expected_user_account_id: UUID,
 ) -> None:
-    resolution = resolve_auth_session(conn, session_token=session_token)
-    user_account_id = resolution["user_account"]["id"]
-    workspace = get_current_workspace(
-        conn,
-        user_account_id=user_account_id,
-        preferred_workspace_id=resolution["session"]["workspace_id"],
-    )
-    if workspace is None:
-        raise HostedWorkspaceNotFoundError("no workspace is currently selected")
-    if user_account_id != expected_user_account_id or workspace["id"] != expected_workspace_id:
+    context = get_local_workspace(conn, user_account_id=expected_user_account_id)
+    if context is None or context["workspace"]["id"] != expected_workspace_id:
         raise ProviderConfigurationChangedError(
             "provider write context changed while credential storage was being prepared"
         )
-    _ensure_workspace_owner_access(
-        workspace=workspace,
-        user_account_id=user_account_id,
-    )
 
 
 def _create_workspace_provider_durable(
     *,
     settings: Settings,
-    session_token: str,
+    authenticated_user_id: UUID,
     provider_key: str,
     display_name: str,
     base_url: str,
@@ -4268,7 +3855,7 @@ def _create_workspace_provider_durable(
 ) -> tuple[ModelProviderRow, ProviderCapabilityRow]:
     workspace_id, user_account_id = _resolve_owned_provider_workspace(
         settings=settings,
-        session_token=session_token,
+        user_account_id=authenticated_user_id,
     )
     normalized_base_url = validate_provider_base_url(base_url)
     normalized_auth_mode = auth_mode.strip().lower()
@@ -4294,7 +3881,6 @@ def _create_workspace_provider_durable(
             with conn.transaction():
                 _assert_provider_write_context(
                     conn=conn,
-                    session_token=session_token,
                     expected_workspace_id=workspace_id,
                     expected_user_account_id=user_account_id,
                 )
@@ -4319,7 +3905,6 @@ def _create_workspace_provider_durable(
         if not provider_persisted:
             _discard_staged_provider_secret(
                 settings=settings,
-                session_token=session_token,
                 workspace_id=workspace_id,
                 user_account_id=user_account_id,
                 staged_secret=staged_secret,
@@ -4566,7 +4151,7 @@ def _register_workspace_azure_provider(
 def _create_workspace_azure_provider_durable(
     *,
     settings: Settings,
-    session_token: str,
+    authenticated_user_id: UUID,
     display_name: str,
     base_url: str,
     credential: str,
@@ -4580,7 +4165,7 @@ def _create_workspace_azure_provider_durable(
 ) -> tuple[ModelProviderRow, ProviderCapabilityRow]:
     workspace_id, user_account_id = _resolve_owned_provider_workspace(
         settings=settings,
-        session_token=session_token,
+        user_account_id=authenticated_user_id,
     )
     normalized_base_url = validate_provider_base_url(base_url)
     staged_secret = _stage_provider_secret(
@@ -4594,7 +4179,6 @@ def _create_workspace_azure_provider_durable(
             with conn.transaction():
                 _assert_provider_write_context(
                     conn=conn,
-                    session_token=session_token,
                     expected_workspace_id=workspace_id,
                     expected_user_account_id=user_account_id,
                 )
@@ -4619,7 +4203,6 @@ def _create_workspace_azure_provider_durable(
         if not provider_persisted:
             _discard_staged_provider_secret(
                 settings=settings,
-                session_token=session_token,
                 workspace_id=workspace_id,
                 user_account_id=user_account_id,
                 staged_secret=staged_secret,
@@ -4789,7 +4372,7 @@ def _update_workspace_provider(
 def _update_workspace_provider_durable(
     *,
     settings: Settings,
-    session_token: str,
+    authenticated_user_id: UUID,
     provider_id: UUID,
     display_name: str | None,
     base_url: str | None,
@@ -4805,13 +4388,12 @@ def _update_workspace_provider_durable(
 ) -> tuple[ModelProviderRow, ProviderCapabilityRow]:
     workspace_id, user_account_id = _resolve_owned_provider_workspace(
         settings=settings,
-        session_token=session_token,
+        user_account_id=authenticated_user_id,
     )
     with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
         with conn.transaction():
             _assert_provider_write_context(
                 conn=conn,
-                session_token=session_token,
                 expected_workspace_id=workspace_id,
                 expected_user_account_id=user_account_id,
             )
@@ -4820,7 +4402,7 @@ def _update_workspace_provider_durable(
                 workspace_id=workspace_id,
             )
             if existing_provider is None:
-                raise HostedWorkspaceNotFoundError(f"provider {provider_id} was not found")
+                raise LookupError(f"provider {provider_id} was not found")
 
     validated_base_url = validate_provider_base_url(existing_provider["base_url"] if base_url is None else base_url)
 
@@ -4873,7 +4455,6 @@ def _update_workspace_provider_durable(
             with conn.transaction():
                 _assert_provider_write_context(
                     conn=conn,
-                    session_token=session_token,
                     expected_workspace_id=workspace_id,
                     expected_user_account_id=user_account_id,
                 )
@@ -4883,7 +4464,7 @@ def _update_workspace_provider_durable(
                     workspace_id=workspace_id,
                 )
                 if current_provider is None:
-                    raise HostedWorkspaceNotFoundError(f"provider {provider_id} was not found")
+                    raise LookupError(f"provider {provider_id} was not found")
                 if (
                     current_provider["config_revision"] != existing_provider["config_revision"]
                     or current_provider["config_fingerprint_sha256"] != existing_provider["config_fingerprint_sha256"]
@@ -4915,7 +4496,6 @@ def _update_workspace_provider_durable(
         if old_secret_reference != new_secret_reference:
             _retire_provider_secret_if_unreferenced(
                 settings=settings,
-                session_token=session_token,
                 workspace_id=workspace_id,
                 user_account_id=user_account_id,
                 encoded_reference=old_secret_reference,
@@ -4925,7 +4505,6 @@ def _update_workspace_provider_durable(
         if not provider_persisted:
             _discard_staged_provider_secret(
                 settings=settings,
-                session_token=session_token,
                 workspace_id=workspace_id,
                 user_account_id=user_account_id,
                 staged_secret=staged_secret,
@@ -4935,14 +4514,14 @@ def _update_workspace_provider_durable(
 def _seed_workspace_provider_configs(
     *,
     settings: Settings,
-    session_token: str,
+    user_account_id: UUID,
     workspace_id: UUID,
 ) -> list[ModelProviderRow]:
     if len(settings.workspace_provider_configs) == 0:
         return []
-    resolved_workspace_id, user_account_id = _resolve_owned_provider_workspace(
+    resolved_workspace_id, resolved_user_account_id = _resolve_owned_provider_workspace(
         settings=settings,
-        session_token=session_token,
+        user_account_id=user_account_id,
     )
     if resolved_workspace_id != workspace_id:
         raise ProviderConfigurationChangedError("workspace selection changed before provider bootstrap")
@@ -4950,9 +4529,8 @@ def _seed_workspace_provider_configs(
         with conn.transaction():
             _assert_provider_write_context(
                 conn=conn,
-                session_token=session_token,
                 expected_workspace_id=workspace_id,
-                expected_user_account_id=user_account_id,
+                expected_user_account_id=resolved_user_account_id,
             )
             existing_provider_keys = {
                 (provider["provider_key"], provider["display_name"])
@@ -4966,7 +4544,7 @@ def _seed_workspace_provider_configs(
             continue
         provider, _capability = _create_workspace_provider_durable(
             settings=settings,
-            session_token=session_token,
+            authenticated_user_id=resolved_user_account_id,
             provider_key=provider_config.provider_key,
             display_name=provider_config.display_name,
             base_url=provider_config.base_url,
@@ -5017,46 +4595,9 @@ def build_healthcheck_payload(settings: Settings, database_ok: bool) -> Healthch
             },
             "object_storage": {
                 "status": "not_checked",
-                "endpoint_url": settings.s3_endpoint_url,
             },
         },
     }
-
-
-def _response_rate_limit_error(
-    *,
-    max_requests: int,
-    window_seconds: int,
-    retry_after_seconds: int,
-) -> JSONResponse:
-    return JSONResponse(
-        status_code=429,
-        headers={"Retry-After": str(retry_after_seconds)},
-        content={
-            "detail": {
-                "code": "response_rate_limit_exceeded",
-                "message": (
-                    f"response generation rate limit exceeded; max {max_requests} requests per {window_seconds} seconds"
-                ),
-                "retry_after_seconds": retry_after_seconds,
-            }
-        },
-    )
-
-
-def _enforce_response_rate_limit(settings: Settings, user_id: UUID) -> JSONResponse | None:
-    allowed, retry_after_seconds = response_rate_limiter.allow(
-        key=f"responses:{user_id}",
-        max_requests=settings.response_rate_limit_max_requests,
-        window_seconds=settings.response_rate_limit_window_seconds,
-    )
-    if allowed:
-        return None
-    return _response_rate_limit_error(
-        max_requests=settings.response_rate_limit_max_requests,
-        window_seconds=settings.response_rate_limit_window_seconds,
-        retry_after_seconds=retry_after_seconds,
-    )
 
 
 def _response_job_headers(
@@ -5174,66 +4715,6 @@ def _request_client_is_loopback(request: Request, settings: Settings) -> bool:
     except ValueError:
         return client_identifier in {"localhost", "localhost.localdomain"}
     return client_ip.is_loopback
-
-
-def _entrypoint_rate_limit_error(
-    *,
-    detail_code: str,
-    message: str,
-    max_requests: int,
-    window_seconds: int,
-    retry_after_seconds: int,
-) -> JSONResponse:
-    return JSONResponse(
-        status_code=429,
-        headers={"Retry-After": str(retry_after_seconds)},
-        content={
-            "detail": {
-                "code": detail_code,
-                "message": message,
-                "retry_after_seconds": retry_after_seconds,
-                "window_seconds": window_seconds,
-                "max_requests": max_requests,
-            }
-        },
-    )
-
-
-def _enforce_entrypoint_rate_limit(
-    *,
-    settings: Settings,
-    key: str,
-    max_requests: int,
-    window_seconds: int,
-    detail_code: str,
-    message: str,
-) -> JSONResponse | None:
-    try:
-        allowed, retry_after_seconds = entrypoint_rate_limiter.allow(
-            settings=settings,
-            key=key,
-            max_requests=max_requests,
-            window_seconds=window_seconds,
-        )
-    except EntrypointRateLimiterUnavailableError:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "detail": {
-                    "code": "entrypoint_rate_limiter_unavailable",
-                    "message": "entrypoint rate limiter backend is unavailable",
-                }
-            },
-        )
-    if allowed:
-        return None
-    return _entrypoint_rate_limit_error(
-        detail_code=detail_code,
-        message=message,
-        max_requests=max_requests,
-        window_seconds=window_seconds,
-        retry_after_seconds=retry_after_seconds,
-    )
 
 
 def _append_vary_header(response: Response, value: str) -> None:
@@ -5369,193 +4850,6 @@ async def enforce_authenticated_user_identity(
     return await call_next(request)
 
 
-class MagicLinkStartRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    email: str = Field(min_length=3, max_length=320)
-
-
-class MagicLinkVerifyRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    challenge_token: str = Field(min_length=16, max_length=256)
-    device_label: str = Field(default="Primary device", min_length=1, max_length=120)
-    device_key: str | None = Field(default=None, min_length=1, max_length=160)
-
-
-class HostedWorkspaceCreateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(min_length=1, max_length=160)
-    slug: str | None = Field(default=None, min_length=1, max_length=120)
-
-
-class HostedWorkspaceBootstrapRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    workspace_id: UUID | None = None
-
-
-class DeviceLinkStartRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    device_key: str = Field(min_length=1, max_length=160)
-    device_label: str = Field(min_length=1, max_length=120)
-    workspace_id: UUID | None = None
-
-
-class DeviceLinkConfirmRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    challenge_token: str = Field(min_length=16, max_length=256)
-
-
-class HostedPreferencesPatchRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    timezone: str | None = Field(default=None, min_length=1, max_length=120)
-    brief_preferences: dict[str, object] | None = None
-    quiet_hours: dict[str, object] | None = None
-
-
-class TelegramLinkStartRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    workspace_id: UUID | None = None
-
-
-class TelegramLinkConfirmRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    challenge_token: str = Field(min_length=16, max_length=256)
-
-
-class TelegramUnlinkRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    workspace_id: UUID | None = None
-
-
-class TelegramDispatchRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    text: str = Field(min_length=1, max_length=4096)
-    idempotency_key: str | None = Field(default=None, min_length=16, max_length=160)
-
-
-class TelegramMessageHandleRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    intent_hint: str | None = Field(default=None, min_length=1, max_length=40)
-
-
-class TelegramOpenLoopReviewActionBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    action: str = Field(min_length=1, max_length=40)
-    note: str | None = Field(default=None, min_length=1, max_length=500)
-
-
-class TelegramApprovalResolveBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    note: str | None = Field(default=None, min_length=1, max_length=500)
-
-
-class TelegramNotificationPreferencesPatchRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    notifications_enabled: bool | None = None
-    daily_brief_enabled: bool | None = None
-    daily_brief_window_start: str | None = Field(default=None, min_length=5, max_length=5)
-    open_loop_prompts_enabled: bool | None = None
-    waiting_for_prompts_enabled: bool | None = None
-    stale_prompts_enabled: bool | None = None
-    timezone: str | None = Field(default=None, min_length=1, max_length=120)
-    quiet_hours_enabled: bool | None = None
-    quiet_hours_start: str | None = Field(default=None, min_length=5, max_length=5)
-    quiet_hours_end: str | None = Field(default=None, min_length=5, max_length=5)
-
-
-class TelegramScheduledDeliveryRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    force: bool = False
-    idempotency_key: str | None = Field(default=None, min_length=8, max_length=200)
-
-
-class HostedRolloutFlagPatchItemRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    flag_key: str = Field(min_length=1, max_length=120)
-    enabled: bool
-    cohort_key: str | None = Field(default=None, min_length=1, max_length=120)
-    description: str | None = Field(default=None, min_length=1, max_length=500)
-
-
-class HostedRolloutFlagsPatchRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    updates: list[HostedRolloutFlagPatchItemRequest] = Field(min_length=1, max_length=100)
-
-
-class DesignPartnerCreateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(min_length=1, max_length=160)
-    partner_key: str | None = Field(default=None, min_length=1, max_length=120)
-    lifecycle_stage: Literal["onboarding", "pilot", "active", "paused", "completed"] = "onboarding"
-    onboarding_status: Literal["pending", "in_progress", "completed", "blocked"] = "pending"
-    support_status: Literal["green", "watch", "needs_attention", "blocked"] = "green"
-    instrumentation_status: Literal["not_ready", "partial", "ready"] = "not_ready"
-    case_study_status: Literal["not_started", "candidate", "drafting", "approved", "published"] = "not_started"
-    target_outcome: str | None = Field(default=None, min_length=1, max_length=500)
-    launch_notes: str | None = Field(default=None, min_length=1, max_length=2000)
-    onboarding_checklist: dict[str, object] | None = None
-    support_checklist: dict[str, object] | None = None
-    success_metrics: dict[str, object] | None = None
-
-
-class DesignPartnerPatchRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    lifecycle_stage: Literal["onboarding", "pilot", "active", "paused", "completed"] | None = None
-    onboarding_status: Literal["pending", "in_progress", "completed", "blocked"] | None = None
-    support_status: Literal["green", "watch", "needs_attention", "blocked"] | None = None
-    instrumentation_status: Literal["not_ready", "partial", "ready"] | None = None
-    case_study_status: Literal["not_started", "candidate", "drafting", "approved", "published"] | None = None
-    target_outcome: str | None = Field(default=None, min_length=1, max_length=500)
-    launch_notes: str | None = Field(default=None, min_length=1, max_length=2000)
-    onboarding_checklist: dict[str, object] | None = None
-    support_checklist: dict[str, object] | None = None
-    success_metrics: dict[str, object] | None = None
-
-
-class DesignPartnerWorkspaceLinkRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    workspace_id: UUID
-    linkage_status: Literal["pilot", "active", "paused"] = "pilot"
-    environment_label: str = Field(default="pilot", min_length=1, max_length=80)
-    instrumentation_ready: bool = False
-    notes: str | None = Field(default=None, min_length=1, max_length=1000)
-
-
-class DesignPartnerFeedbackCreateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    workspace_id: UUID | None = None
-    source_kind: Literal["partner_call", "email", "slack", "operator_note", "survey", "support_review"]
-    category: Literal["bug", "ux", "capability_gap", "onboarding", "support", "win"]
-    sentiment: Literal["positive", "neutral", "negative"]
-    urgency: Literal["low", "medium", "high"]
-    feedback_status: Literal["new", "triaged", "actioned", "closed"] = "new"
-    case_study_signal: bool = False
-    summary: str = Field(min_length=1, max_length=400)
-    detail: str | None = Field(default=None, min_length=1, max_length=2000)
-    metadata: dict[str, object] = Field(default_factory=dict)
-
-
 class RegisterProviderRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -5675,36 +4969,11 @@ class UpdateProviderRequest(BaseModel):
     metadata: dict[str, object] | None = None
 
 
-class CreateModelPackRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    pack_id: str = Field(min_length=1, max_length=80)
-    pack_version: str = Field(min_length=1, max_length=40)
-    display_name: str = Field(min_length=1, max_length=120)
-    family: str = Field(min_length=1, max_length=40)
-    description: str = Field(default="", max_length=1000)
-    briefing_strategy: str = Field(default="balanced", min_length=1, max_length=40)
-    briefing_max_tokens: int | None = Field(default=None, ge=32, le=4000)
-    contract: dict[str, object]
-    metadata: dict[str, object] = Field(default_factory=dict)
-
-
-class BindModelPackRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    provider_id: UUID | None = None
-    pack_version: str | None = Field(default=None, min_length=1, max_length=40)
-    metadata: dict[str, object] = Field(default_factory=dict)
-
-
 class TaskBriefCompileSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: Literal["user_recall", "resume", "worker_subtask", "agent_handoff"]
     query: str | None = Field(default=None, min_length=1, max_length=4000)
-    workspace_id: UUID | None = None
-    pack_id: str | None = Field(default=None, min_length=1, max_length=80)
-    pack_version: str | None = Field(default=None, min_length=1, max_length=40)
     thread_id: UUID | None = None
     task_id: UUID | None = None
     project: str | None = Field(default=None, min_length=1, max_length=200)
@@ -5713,7 +4982,7 @@ class TaskBriefCompileSpec(BaseModel):
     until: datetime | None = None
     include_non_promotable_facts: bool = False
     provider_strategy: str | None = Field(default=None, min_length=1, max_length=80)
-    model_pack_strategy: str | None = Field(default=None, min_length=1, max_length=40)
+    briefing_strategy: Literal["balanced", "compact", "detailed"] | None = None
     token_budget: int | None = Field(default=None, ge=1, le=MAX_TASK_BRIEF_TOKEN_BUDGET)
 
 
@@ -5736,8 +5005,6 @@ class RuntimeInvokeRequest(BaseModel):
     thread_id: UUID
     message: str = Field(min_length=1, max_length=4000)
     model: str | None = Field(default=None, min_length=1, max_length=200)
-    pack_id: str | None = Field(default=None, min_length=1, max_length=80)
-    pack_version: str | None = Field(default=None, min_length=1, max_length=40)
     max_sessions: int = Field(default=DEFAULT_MAX_SESSIONS, ge=1, le=50)
     max_events: int = Field(default=DEFAULT_MAX_EVENTS, ge=1, le=200)
     max_memories: int = Field(default=DEFAULT_MAX_MEMORIES, ge=1, le=200)
@@ -5745,88 +5012,26 @@ class RuntimeInvokeRequest(BaseModel):
     max_entity_edges: int = Field(default=DEFAULT_MAX_ENTITY_EDGES, ge=1, le=400)
 
 
-def _extract_bearer_token(request: Request) -> str:
-    raw_authorization = request.headers.get("authorization", "").strip()
-    if raw_authorization == "":
-        raise AuthSessionInvalidError("authorization bearer token is required")
-
-    scheme, _, token = raw_authorization.partition(" ")
-    if scheme.lower() != "bearer" or token.strip() == "":
-        raise AuthSessionInvalidError("authorization header must use Bearer token format")
-    return token.strip()
-
-
 def _resolve_authenticated_v1_user_id(settings: Settings, request: Request) -> UUID:
-    session_token = _extract_bearer_token(request)
-    with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-        with conn.transaction():
-            resolution = resolve_auth_session(conn, session_token=session_token)
-    user_account_id = resolution["user_account"]["id"]
-    if not isinstance(user_account_id, UUID):
-        raise RuntimeError("authenticated hosted user context is invalid")
+    user_account_id = _resolve_authenticated_user_id(settings, request)
+    if user_account_id is None:
+        raise ValueError(
+            "local identity is required; set ALICEBOT_AUTH_USER_ID or provide X-AliceBot-User-Id"
+        )
     return user_account_id
 
 
-def _serialize_hosted_session_payload(
+def _require_local_provider_workspace(
     *,
-    session: dict[str, object],
-    user_account: dict[str, object],
-    workspace: dict[str, object] | None,
-    preferences: dict[str, object],
-    feature_flags: list[str],
-) -> dict[str, object]:
-    return {
-        "session": session,
-        "user_account": user_account,
-        "workspace": workspace,
-        "preferences": preferences,
-        "feature_flags": feature_flags,
-        "telegram_state": "available_in_p10_s2_transport",
-    }
-
-
-def _resolve_workspace_for_hosted_channel_request(
-    conn,
-    *,
+    settings: Settings,
     user_account_id: UUID,
-    session_id: UUID,
-    preferred_workspace_id: UUID | None,
-    requested_workspace_id: UUID | None,
-):
-    # Hosted channel operations may target any workspace visible to the
-    # authenticated account, but selecting one for a request must not silently
-    # change the session's current workspace. Keep session_id in the internal
-    # call contract so callers remain explicit about the session context.
-    del session_id
-    if requested_workspace_id is not None:
-        workspace = get_workspace_for_member(
-            conn,
-            workspace_id=requested_workspace_id,
-            user_account_id=user_account_id,
-        )
-        if workspace is None:
-            raise HostedWorkspaceNotFoundError(f"workspace {requested_workspace_id} was not found")
-        return workspace
-
-    return get_current_workspace(
-        conn,
-        user_account_id=user_account_id,
-        preferred_workspace_id=preferred_workspace_id,
-    )
-
-
-def _ensure_hosted_admin_access(conn, *, user_account_id: UUID) -> None:
-    enabled_flags = set(list_feature_flags_for_user(conn, user_account_id=user_account_id))
-    required_flags = {"hosted_admin_read", "hosted_admin_operator"}
-    missing_flags = sorted(required_flags - enabled_flags)
-    if missing_flags:
-        raise PermissionError("hosted admin access requires hosted_admin_read and hosted_admin_operator flags")
-    set_hosted_admin_bypass(conn, True)
-
-
-def _ensure_workspace_owner_access(*, workspace, user_account_id: UUID) -> None:
-    if workspace["owner_user_account_id"] != user_account_id:
-        raise PermissionError("workspace owner access is required")
+) -> tuple[UUID, UUID]:
+    with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+        with conn.transaction():
+            context = get_local_workspace(conn, user_account_id=user_account_id)
+    if context is None:
+        raise LookupError("local workspace is not bootstrapped; POST /v1/workspaces/bootstrap first")
+    return context["workspace"]["id"], user_account_id
 
 
 def _allow_raw_evidence_debug_access(settings: Settings) -> bool:
@@ -5845,91 +5050,6 @@ def _audit_raw_evidence_access(
         route,
         user_id,
         _request_client_identifier(request, settings),
-    )
-
-
-def _record_workspace_onboarding_failure(
-    conn,
-    *,
-    workspace_id: UUID,
-    error_code: str,
-    error_detail: str,
-) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE workspaces
-            SET support_status = CASE WHEN support_status = 'blocked' THEN support_status ELSE 'needs_attention' END,
-                onboarding_last_error_code = %s,
-                onboarding_last_error_detail = %s,
-                onboarding_last_error_at = clock_timestamp(),
-                onboarding_error_count = onboarding_error_count + 1,
-                support_notes = COALESCE(support_notes, '{}'::jsonb) || jsonb_build_object(
-                    'last_onboarding_error_code', %s::text,
-                    'last_onboarding_error_detail', %s::text,
-                    'last_onboarding_error_at', clock_timestamp()
-                ),
-                incident_evidence = COALESCE(incident_evidence, '{}'::jsonb) || jsonb_build_object(
-                    'last_onboarding_error_code', %s::text,
-                    'last_onboarding_error_detail', %s::text
-                )
-            WHERE id = %s
-            """,
-            (
-                error_code,
-                error_detail,
-                error_code,
-                error_detail,
-                error_code,
-                error_detail,
-                workspace_id,
-            ),
-        )
-
-
-def _hosted_rollout_block_error(
-    *,
-    flag_key: str,
-) -> JSONResponse:
-    return JSONResponse(
-        status_code=403,
-        content={
-            "detail": {
-                "code": "hosted_rollout_blocked",
-                "message": f"hosted flow is blocked by rollout flag {flag_key}",
-                "flag_key": flag_key,
-            }
-        },
-    )
-
-
-def _hosted_rate_limit_error(
-    *,
-    detail_code: str,
-    message: str,
-    retry_after_seconds: int,
-    rate_limit_key: str,
-    window_seconds: int,
-    max_requests: int,
-    observed_requests: int,
-    abuse_signal: str | None,
-) -> JSONResponse:
-    payload: dict[str, object] = {
-        "code": detail_code,
-        "message": message,
-        "retry_after_seconds": retry_after_seconds,
-        "rate_limit_key": rate_limit_key,
-        "window_seconds": window_seconds,
-        "max_requests": max_requests,
-        "observed_requests": observed_requests,
-    }
-    if abuse_signal is not None:
-        payload["abuse_signal"] = abuse_signal
-
-    return JSONResponse(
-        status_code=429,
-        headers={"Retry-After": str(retry_after_seconds)},
-        content={"detail": payload},
     )
 
 
@@ -6062,166 +5182,6 @@ def compile_context(request: CompileContextRequest) -> JSONResponse:
                 "metadata": {"agent_profile_id": _thread_agent_profile_id(thread)},
             }
         ),
-    )
-
-
-@app.post("/v0/responses")
-def generate_assistant_response(
-    request: GenerateResponseRequest,
-    idempotency_key: Annotated[
-        str | None,
-        Header(alias="Idempotency-Key"),
-    ] = None,
-) -> JSONResponse:
-    settings = get_settings()
-    if idempotency_key is None or idempotency_key.strip() == "":
-        return JSONResponse(
-            status_code=428,
-            content={"detail": "Idempotency-Key header is required"},
-        )
-    try:
-        normalized_idempotency_key = normalize_idempotency_key(idempotency_key)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-    fingerprint = request_fingerprint(cast(JsonObject, {"body": request.model_dump(mode="json")}))
-
-    try:
-        with user_connection(settings.database_url, request.user_id) as conn:
-            store = ContinuityStore(conn)
-            job_store = ResponseGenerationJobStore(conn)
-            lookup = job_store.create_or_get_for_update(
-                user_id=request.user_id,
-                workspace_id=None,
-                endpoint=RESPONSE_JOB_ENDPOINT_V0,
-                idempotency_key=normalized_idempotency_key,
-                request_fingerprint_sha256=fingerprint,
-            )
-            replay = _response_job_replay_or_in_progress(
-                store=job_store,
-                job=lookup.job,
-                expected_request_fingerprint=fingerprint,
-            )
-            if replay is not None:
-                return replay
-
-            rate_limit_error = _enforce_response_rate_limit(settings, request.user_id)
-            if rate_limit_error is not None:
-                error_payload = cast(
-                    JsonObject,
-                    json.loads(bytes(rate_limit_error.body).decode("utf-8")),
-                )
-                failed_job = job_store.fail_pending(
-                    job_id=lookup.job["id"],
-                    status_code=429,
-                    error_payload=error_payload,
-                )
-                return JSONResponse(
-                    status_code=429,
-                    headers={
-                        **dict(rate_limit_error.headers),
-                        **_response_job_headers(failed_job, replayed=False),
-                    },
-                    content=jsonable_encoder(error_payload),
-                )
-
-            prepared = prepare_response_generation(
-                store=store,
-                settings=settings,
-                user_id=request.user_id,
-                thread_id=request.thread_id,
-                message_text=request.message,
-                limits=ContextCompilerLimits(
-                    max_sessions=request.max_sessions,
-                    max_events=request.max_events,
-                    max_memories=request.max_memories,
-                    max_entities=request.max_entities,
-                    max_entity_edges=request.max_entity_edges,
-                ),
-            )
-            lease_token = uuid4()
-            claimed_job = job_store.claim_pending(
-                job_id=lookup.job["id"],
-                lease_token=lease_token,
-                lease_seconds=RESPONSE_JOB_LEASE_SECONDS,
-                user_event_id=prepared.user_event_id,
-                user_event_sequence_no=prepared.user_event_sequence_no,
-            )
-    except ContinuityStoreInvariantError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except ResponseJobFenceLostError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-
-    try:
-        model_response = invoke_prepared_response(prepared, settings=settings)
-        model_error: ModelInvocationError | None = None
-    except ModelInvocationError as exc:
-        model_response = None
-        model_error = exc
-
-    try:
-        with user_connection(settings.database_url, request.user_id) as conn:
-            store = ContinuityStore(conn)
-            response_conflict = False
-            result: GenerateResponseSuccess | ResponseFailure
-            if model_error is not None:
-                result = fail_response_generation(
-                    store=store,
-                    prepared=prepared,
-                    error=model_error,
-                )
-            else:
-                if model_response is None:  # pragma: no cover - invocation invariant
-                    raise ModelInvocationError("model provider returned no outcome")
-                try:
-                    result = complete_response_generation(
-                        store=store,
-                        prepared=prepared,
-                        model_response=model_response,
-                    )
-                except ResponseGenerationConflictError as exc:
-                    response_conflict = True
-                    result = fail_response_generation(
-                        store=store,
-                        prepared=prepared,
-                        error=ModelInvocationError(str(exc)),
-                    )
-
-            if isinstance(result, ResponseFailure):
-                status_code = 409 if response_conflict else 502
-                response_payload = cast(
-                    JsonObject,
-                    jsonable_encoder(
-                        {
-                            "detail": result.detail,
-                            "trace": result.trace,
-                            "metadata": {"agent_profile_id": prepared.agent_profile_id},
-                        }
-                    ),
-                )
-                terminal_state = "failed"
-            else:
-                response_payload_dict = dict(result)
-                response_payload_dict["metadata"] = {"agent_profile_id": prepared.agent_profile_id}
-                response_payload = cast(
-                    JsonObject,
-                    jsonable_encoder(response_payload_dict),
-                )
-                status_code = 200
-                terminal_state = "succeeded"
-
-            terminal_job = ResponseGenerationJobStore(conn).finalize(
-                job_id=claimed_job["id"],
-                lease_token=lease_token,
-                state=terminal_state,
-                status_code=status_code,
-                payload=response_payload,
-            )
-    except ResponseJobFenceLostError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-    return JSONResponse(
-        status_code=status_code,
-        headers=_response_job_headers(terminal_job, replayed=False),
-        content=response_payload,
     )
 
 
@@ -7013,20 +5973,15 @@ def reject_approval(approval_id: UUID, request: ResolveApprovalRequest) -> JSONR
 
 @app.post("/v0/approvals/{approval_id}/execute")
 def execute_approved_proxy(approval_id: UUID, request: ExecuteApprovedProxyRequest) -> JSONResponse:
+    from alicebot_api import proxy_execution
+
     settings = get_settings()
-    execution_error: (
-        ProxyExecutionApprovalStateError
-        | ProxyExecutionHandlerNotFoundError
-        | ProxyExecutionIdempotencyError
-        | TaskStepApprovalLinkageError
-        | TaskStepExecutionLinkageError
-        | None
-    ) = None
+    execution_error: Exception | None = None
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             try:
-                payload = execute_approved_proxy_request(
+                payload = proxy_execution.execute_approved_proxy_request(
                     ContinuityStore(conn),
                     user_id=request.user_id,
                     request=ProxyExecutionRequestInput(
@@ -7035,9 +5990,9 @@ def execute_approved_proxy(approval_id: UUID, request: ExecuteApprovedProxyReque
                     ),
                 )
             except (
-                ProxyExecutionApprovalStateError,
-                ProxyExecutionHandlerNotFoundError,
-                ProxyExecutionIdempotencyError,
+                proxy_execution.ProxyExecutionApprovalStateError,
+                proxy_execution.ProxyExecutionHandlerNotFoundError,
+                proxy_execution.ProxyExecutionIdempotencyError,
                 TaskStepApprovalLinkageError,
                 TaskStepExecutionLinkageError,
             ) as exc:
@@ -8364,6 +7319,15 @@ def get_vnext_connector_status(connector_name: str, user_id: UUID) -> JSONRespon
 @app.patch("/v0/vnext/connectors/{connector_name}/config")
 def update_vnext_connector_config(connector_name: str, request: VNextConnectorConfigRequest) -> JSONResponse:
     settings = get_settings()
+    if connector_name == "telegram" and (
+        request.secret_ref is not None
+        or request.poll_interval_seconds is not None
+        or request.sync_mode not in {None, "on_demand"}
+    ):
+        return _vnext_public_error_response(
+            status_code=400,
+            detail="Telegram source ingestion is on-demand and does not accept polling or secret configuration",
+        )
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             payload = VNextConnectorService(PostgresVNextStore(conn)).update_config(
@@ -8384,6 +7348,11 @@ def update_vnext_connector_config(connector_name: str, request: VNextConnectorCo
 @app.post("/v0/vnext/connectors/{connector_name}/sync")
 def sync_vnext_connector(connector_name: str, request: VNextConnectorSyncRequest) -> JSONResponse:
     settings = get_settings()
+    if connector_name == "telegram":
+        return _vnext_public_error_response(
+            status_code=400,
+            detail="use /v0/vnext/connectors/telegram/sync for allowlist-aware Telegram ingestion",
+        )
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -8414,32 +7383,11 @@ def sync_vnext_connector(connector_name: str, request: VNextConnectorSyncRequest
 def sync_vnext_telegram_connector(request: VNextTelegramSyncRequest) -> JSONResponse:
     settings = get_settings()
     try:
-        poll_context = None
-        with user_connection(settings.database_url, request.user_id) as conn:
-            store = PostgresVNextStore(conn)
-            service = VNextConnectorService(store)
-            config = service.get_config("telegram")
-            config_json_value = config.get("config_json")
-            config_json: dict[str, object] = config_json_value if isinstance(config_json_value, dict) else {}
-            configured_allowed_value = config_json.get("allowed_chat_ids")
-            configured_allowed = configured_allowed_value if isinstance(configured_allowed_value, list) else []
-            allowed_chat_ids = request.allowed_chat_ids or [
-                str(value) for value in configured_allowed if isinstance(value, (str, int))
-            ]
-            if not request.updates:
-                poll_context = service.prepare_telegram_poll()
-
-        # Telegram can hold the request open for several seconds. Never retain a
-        # database connection while waiting on the remote API.
-        updates = request.updates
-        if poll_context is not None:
-            updates = poll_telegram_updates(poll_context, timeout=10, limit=100)
-
         with user_connection(settings.database_url, request.user_id) as conn:
             service = VNextConnectorService(PostgresVNextStore(conn), defer_embeddings=True)
             result = service.sync_telegram_updates(
-                updates,
-                allowed_chat_ids=allowed_chat_ids,
+                request.updates,
+                allowed_chat_ids=request.allowed_chat_ids,
                 default_domain=request.default_domain,
                 default_sensitivity=request.default_sensitivity,
             )
@@ -11086,8 +10034,8 @@ def generate_memory_operation_candidates_endpoint(
                     target_continuity_object_id=request.target_continuity_object_id,
                 ),
             )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     except MemoryMutationValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ContinuityCaptureValidationError as exc:
@@ -11122,8 +10070,8 @@ def list_memory_operation_candidates_endpoint(
                     sync_fingerprint=sync_fingerprint,
                 ),
             )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     except MemoryMutationValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -11152,8 +10100,8 @@ def commit_memory_operations_endpoint(
                     include_review_required=request.include_review_required,
                 ),
             )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     except MemoryMutationValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -11182,8 +10130,8 @@ def list_memory_operations_endpoint(
                     sync_fingerprint=sync_fingerprint,
                 ),
             )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     except MemoryMutationValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -11379,8 +10327,8 @@ def detect_contradictions_endpoint(
                     limit=request.limit,
                 ),
             )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ContinuityContradictionValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -11412,8 +10360,8 @@ def list_contradiction_cases_endpoint(
                     continuity_object_id=continuity_object_id,
                 ),
             )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ContinuityContradictionValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -11435,8 +10383,8 @@ def get_contradiction_case_endpoint(
                 user_id=user_id,
                 contradiction_case_id=contradiction_case_id,
             )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ContinuityContradictionNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
@@ -11463,8 +10411,8 @@ def resolve_contradiction_case_endpoint(
                     note=request.note,
                 ),
             )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ContinuityContradictionValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ContinuityContradictionNotFoundError as exc:
@@ -11500,8 +10448,8 @@ def list_trust_signals_endpoint(
                     signal_type=signal_type,  # type: ignore[arg-type]
                 ),
             )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -12027,8 +10975,8 @@ def get_public_eval_suites(request: Request) -> JSONResponse:
                 ContinuityStore(conn),
                 user_id=user_id,
             )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     return JSONResponse(
         status_code=200,
@@ -12051,8 +10999,8 @@ def create_public_eval_run(
                 user_id=user_id,
                 suite_keys=suite_key,
             )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -12077,8 +11025,8 @@ def get_public_eval_runs(
                 user_id=user_id,
                 limit=limit,
             )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     return JSONResponse(
         status_code=200,
@@ -12101,8 +11049,8 @@ def get_public_eval_run_detail(
                 user_id=user_id,
                 eval_run_id=eval_run_id,
             )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     except LookupError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
@@ -12197,8 +11145,8 @@ def post_continuity_brief(
                     include_non_promotable_facts=request.include_non_promotable_facts,
                 ),
             )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     except (
         ContinuityBriefValidationError,
         ContinuityRecallValidationError,
@@ -12225,9 +11173,6 @@ def post_v0_task_brief_compile(body: TaskBriefCompileRequest) -> JSONResponse:
                 request=TaskBriefCompileRequestInput(
                     mode=body.mode,
                     query=body.query,
-                    workspace_id=body.workspace_id,
-                    pack_id=body.pack_id,
-                    pack_version=body.pack_version,
                     thread_id=body.thread_id,
                     task_id=body.task_id,
                     project=body.project,
@@ -12236,7 +11181,7 @@ def post_v0_task_brief_compile(body: TaskBriefCompileRequest) -> JSONResponse:
                     until=body.until,
                     include_non_promotable_facts=body.include_non_promotable_facts,
                     provider_strategy=body.provider_strategy,
-                    model_pack_strategy=body.model_pack_strategy,
+                    briefing_strategy=body.briefing_strategy,
                     token_budget=body.token_budget,
                 ),
             )
@@ -12284,9 +11229,6 @@ def post_v0_task_brief_compare(body: TaskBriefCompareRequest) -> JSONResponse:
                 primary_request=TaskBriefCompileRequestInput(
                     mode=body.primary.mode,
                     query=body.primary.query,
-                    workspace_id=body.primary.workspace_id,
-                    pack_id=body.primary.pack_id,
-                    pack_version=body.primary.pack_version,
                     thread_id=body.primary.thread_id,
                     task_id=body.primary.task_id,
                     project=body.primary.project,
@@ -12295,15 +11237,12 @@ def post_v0_task_brief_compare(body: TaskBriefCompareRequest) -> JSONResponse:
                     until=body.primary.until,
                     include_non_promotable_facts=body.primary.include_non_promotable_facts,
                     provider_strategy=body.primary.provider_strategy,
-                    model_pack_strategy=body.primary.model_pack_strategy,
+                    briefing_strategy=body.primary.briefing_strategy,
                     token_budget=body.primary.token_budget,
                 ),
                 secondary_request=TaskBriefCompileRequestInput(
                     mode=body.secondary.mode,
                     query=body.secondary.query,
-                    workspace_id=body.secondary.workspace_id,
-                    pack_id=body.secondary.pack_id,
-                    pack_version=body.secondary.pack_version,
                     thread_id=body.secondary.thread_id,
                     task_id=body.secondary.task_id,
                     project=body.secondary.project,
@@ -12312,7 +11251,7 @@ def post_v0_task_brief_compare(body: TaskBriefCompareRequest) -> JSONResponse:
                     until=body.secondary.until,
                     include_non_promotable_facts=body.secondary.include_non_promotable_facts,
                     provider_strategy=body.secondary.provider_strategy,
-                    model_pack_strategy=body.secondary.model_pack_strategy,
+                    briefing_strategy=body.secondary.briefing_strategy,
                     token_budget=body.secondary.token_budget,
                 ),
             )
@@ -12321,176 +11260,6 @@ def post_v0_task_brief_compare(body: TaskBriefCompareRequest) -> JSONResponse:
         ContinuityRecallValidationError,
         ContinuityResumptionValidationError,
     ) as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(payload),
-    )
-
-
-@app.get("/v0/chief-of-staff")
-def get_chief_of_staff_priority_brief(
-    user_id: UUID,
-    query_text: str | None = Query(default=None, alias="query", min_length=1, max_length=4000),
-    thread_id: UUID | None = None,
-    task_id: UUID | None = None,
-    project: str | None = Query(default=None, min_length=1, max_length=200),
-    person: str | None = Query(default=None, min_length=1, max_length=200),
-    since: datetime | None = None,
-    until: datetime | None = None,
-    limit: int = Query(
-        default=DEFAULT_CHIEF_OF_STAFF_PRIORITY_LIMIT,
-        ge=0,
-        le=MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT,
-    ),
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        with user_connection(settings.database_url, user_id) as conn:
-            payload: ChiefOfStaffPriorityBriefResponse = compile_chief_of_staff_priority_brief(
-                ContinuityStore(conn),
-                user_id=user_id,
-                request=ChiefOfStaffPriorityBriefRequestInput(
-                    query=query_text,
-                    thread_id=thread_id,
-                    task_id=task_id,
-                    project=project,
-                    person=person,
-                    since=since,
-                    until=until,
-                    limit=limit,
-                ),
-            )
-    except ChiefOfStaffValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-    except ContinuityRecallValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(payload),
-    )
-
-
-@app.post("/v0/chief-of-staff/recommendation-outcomes")
-def capture_chief_of_staff_recommendation_outcome_endpoint(
-    request: ChiefOfStaffRecommendationOutcomeCaptureRequest,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        with user_connection(settings.database_url, request.user_id) as conn:
-            payload: ChiefOfStaffRecommendationOutcomeCaptureResponse = capture_chief_of_staff_recommendation_outcome(
-                ContinuityStore(conn),
-                user_id=request.user_id,
-                request=ChiefOfStaffRecommendationOutcomeCaptureInput(
-                    outcome=request.outcome,  # type: ignore[arg-type]
-                    recommendation_action_type=request.recommendation_action_type,  # type: ignore[arg-type]
-                    recommendation_title=request.recommendation_title,
-                    rationale=request.rationale,
-                    rewritten_title=request.rewritten_title,
-                    target_priority_id=request.target_priority_id,
-                    thread_id=request.thread_id,
-                    task_id=request.task_id,
-                    project=request.project,
-                    person=request.person,
-                ),
-            )
-    except ChiefOfStaffValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(payload),
-    )
-
-
-@app.post("/v0/chief-of-staff/handoff-review-actions")
-def capture_chief_of_staff_handoff_review_action_endpoint(
-    request: ChiefOfStaffHandoffReviewActionCaptureRequest,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        with user_connection(settings.database_url, request.user_id) as conn:
-            payload: ChiefOfStaffHandoffReviewActionCaptureResponse = capture_chief_of_staff_handoff_review_action(
-                ContinuityStore(conn),
-                user_id=request.user_id,
-                request=ChiefOfStaffHandoffReviewActionInput(
-                    handoff_item_id=request.handoff_item_id,
-                    review_action=request.review_action,  # type: ignore[arg-type]
-                    note=request.note,
-                    thread_id=request.thread_id,
-                    task_id=request.task_id,
-                    project=request.project,
-                    person=request.person,
-                ),
-            )
-    except ChiefOfStaffValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(payload),
-    )
-
-
-@app.post("/v0/chief-of-staff/execution-routing-actions")
-def capture_chief_of_staff_execution_routing_action_endpoint(
-    request: ChiefOfStaffExecutionRoutingActionCaptureRequest,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        with user_connection(settings.database_url, request.user_id) as conn:
-            payload: ChiefOfStaffExecutionRoutingActionCaptureResponse = (
-                capture_chief_of_staff_execution_routing_action(
-                    ContinuityStore(conn),
-                    user_id=request.user_id,
-                    request=ChiefOfStaffExecutionRoutingActionInput(
-                        handoff_item_id=request.handoff_item_id,
-                        route_target=request.route_target,  # type: ignore[arg-type]
-                        note=request.note,
-                        thread_id=request.thread_id,
-                        task_id=request.task_id,
-                        project=request.project,
-                        person=request.person,
-                    ),
-                )
-            )
-    except ChiefOfStaffValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(payload),
-    )
-
-
-@app.post("/v0/chief-of-staff/handoff-outcomes")
-def capture_chief_of_staff_handoff_outcome_endpoint(
-    request: ChiefOfStaffHandoffOutcomeCaptureRequest,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        with user_connection(settings.database_url, request.user_id) as conn:
-            payload: ChiefOfStaffHandoffOutcomeCaptureResponse = capture_chief_of_staff_handoff_outcome(
-                ContinuityStore(conn),
-                user_id=request.user_id,
-                request=ChiefOfStaffHandoffOutcomeCaptureInput(
-                    handoff_item_id=request.handoff_item_id,
-                    outcome_status=request.outcome_status,  # type: ignore[arg-type]
-                    note=request.note,
-                    thread_id=request.thread_id,
-                    task_id=request.task_id,
-                    project=request.project,
-                    person=request.person,
-                ),
-            )
-    except ChiefOfStaffValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     return JSONResponse(
@@ -13036,365 +11805,49 @@ def get_entity(entity_id: UUID, user_id: UUID) -> JSONResponse:
     )
 
 
-@app.post("/v1/auth/magic-link/start")
-def start_v1_magic_link(http_request: Request, request: MagicLinkStartRequest) -> JSONResponse:
-    settings = get_settings()
-    email_fingerprint = hashlib.sha256(request.email.strip().lower().encode("utf-8")).hexdigest()[:20]
-    rate_limit_error = _enforce_entrypoint_rate_limit(
-        settings=settings,
-        key=(f"auth_magic_link_start:{_request_client_identifier(http_request, settings)}:{email_fingerprint}"),
-        max_requests=settings.magic_link_start_rate_limit_max_requests,
-        window_seconds=settings.magic_link_start_rate_limit_window_seconds,
-        detail_code="magic_link_start_rate_limit_exceeded",
-        message="magic-link start rate limit exceeded",
-    )
-    if rate_limit_error is not None:
-        return rate_limit_error
-
-    try:
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                challenge = start_magic_link_challenge(
-                    conn,
-                    email=request.email,
-                    ttl_seconds=settings.magic_link_ttl_seconds,
-                )
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    challenge_payload = serialize_magic_link_challenge(challenge)
-    delivery_payload = {
-        "kind": "simulated_magic_link",
-        "posture": "builder_visible_only",
-    }
-    if settings.app_env not in {"development", "test"}:
-        challenge_payload.pop("challenge_token", None)
-        delivery_payload = {
-            "kind": "magic_link",
-            "posture": "out_of_band_delivery_required",
-        }
-
-    payload = {
-        "challenge": challenge_payload,
-        "delivery": delivery_payload,
-    }
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.post("/v1/auth/magic-link/verify")
-def verify_v1_magic_link(http_request: Request, request: MagicLinkVerifyRequest) -> JSONResponse:
-    settings = get_settings()
-    challenge_fingerprint = hashlib.sha256(request.challenge_token.strip().encode("utf-8")).hexdigest()[:20]
-    rate_limit_error = _enforce_entrypoint_rate_limit(
-        settings=settings,
-        key=(f"auth_magic_link_verify:{_request_client_identifier(http_request, settings)}:{challenge_fingerprint}"),
-        max_requests=settings.magic_link_verify_rate_limit_max_requests,
-        window_seconds=settings.magic_link_verify_rate_limit_window_seconds,
-        detail_code="magic_link_verify_rate_limit_exceeded",
-        message="magic-link verify rate limit exceeded",
-    )
-    if rate_limit_error is not None:
-        return rate_limit_error
-
-    try:
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                user_account, session, session_token, _device = verify_magic_link_challenge(
-                    conn,
-                    challenge_token=request.challenge_token,
-                    session_ttl_seconds=settings.auth_session_ttl_seconds,
-                    device_label=request.device_label,
-                    device_key=request.device_key,
-                )
-                set_current_user_account(conn, user_account["id"])
-                ensure_user_preferences_row(conn, user_account_id=user_account["id"])
-                preferences = ensure_user_preferences(conn, user_account_id=user_account["id"])
-                workspace = None
-                if session["workspace_id"] is not None:
-                    workspace = get_workspace_for_member(
-                        conn,
-                        workspace_id=session["workspace_id"],
-                        user_account_id=user_account["id"],
-                    )
-                feature_flags = list_feature_flags_for_user(conn, user_account_id=user_account["id"])
-    except MagicLinkTokenExpiredError as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except (MagicLinkTokenInvalidError, ValueError) as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    payload = _serialize_hosted_session_payload(
-        session=serialize_auth_session(session),
-        user_account=serialize_user_account(user_account),
-        workspace=None if workspace is None else serialize_workspace(workspace),
-        preferences=serialize_user_preferences(preferences),
-        feature_flags=feature_flags,
-    )
-    payload["session_token"] = session_token
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.post("/v1/auth/logout")
-def logout_v1_auth_session(request: Request) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                logout_auth_session(conn, session_token=session_token)
-    except (AuthSessionInvalidError, ValueError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content={"status": "logged_out"})
-
-
-@app.get("/v1/auth/session")
-def get_v1_auth_session(request: Request) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=user_account_id,
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is not None and resolution["session"]["workspace_id"] != workspace["id"]:
-                    set_session_workspace(
-                        conn,
-                        session_id=resolution["session"]["id"],
-                        user_account_id=user_account_id,
-                        workspace_id=workspace["id"],
-                    )
-                    resolution["session"]["workspace_id"] = workspace["id"]
-                preferences = ensure_user_preferences(conn, user_account_id=user_account_id)
-                feature_flags = list_feature_flags_for_user(conn, user_account_id=user_account_id)
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-
-    payload = _serialize_hosted_session_payload(
-        session=serialize_auth_session(resolution["session"]),
-        user_account=serialize_user_account(resolution["user_account"]),
-        workspace=None if workspace is None else serialize_workspace(workspace),
-        preferences=serialize_user_preferences(preferences),
-        feature_flags=feature_flags,
-    )
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.post("/v1/workspaces")
-def create_v1_workspace(request: Request, body: HostedWorkspaceCreateRequest) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = create_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    name=body.name,
-                    slug=body.slug,
-                )
-                set_session_workspace(
-                    conn,
-                    session_id=resolution["session"]["id"],
-                    user_account_id=resolution["user_account"]["id"],
-                    workspace_id=workspace["id"],
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=201,
-        content=jsonable_encoder({"workspace": serialize_workspace(workspace)}),
-    )
-
-
-@app.get("/v1/workspaces/current")
-def get_v1_current_workspace(request: Request) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                if resolution["session"]["workspace_id"] != workspace["id"]:
-                    set_session_workspace(
-                        conn,
-                        session_id=resolution["session"]["id"],
-                        user_account_id=resolution["user_account"]["id"],
-                        workspace_id=workspace["id"],
-                    )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder({"workspace": serialize_workspace(workspace)}),
-    )
-
-
 @app.post("/v1/workspaces/bootstrap")
-def bootstrap_v1_workspace(
-    request: Request,
-    body: HostedWorkspaceBootstrapRequest,
-) -> JSONResponse:
+def bootstrap_v1_workspace(request: Request) -> JSONResponse:
     settings = get_settings()
-    resolved_workspace_id: UUID | None = None
-    user_account_id: UUID | None = None
-    seeded_providers: list[ModelProviderRow] = []
-
     try:
-        session_token = _extract_bearer_token(request)
+        user_account_id = _resolve_authenticated_v1_user_id(settings, request)
         with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
             with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = None
-                if body.workspace_id is not None:
-                    workspace = get_workspace_for_member(
-                        conn,
-                        workspace_id=body.workspace_id,
-                        user_account_id=user_account_id,
-                    )
-                    if workspace is None:
-                        raise HostedWorkspaceNotFoundError(f"workspace {body.workspace_id} was not found")
-                    resolved_workspace_id = workspace["id"]
-                    set_session_workspace(
-                        conn,
-                        session_id=resolution["session"]["id"],
-                        user_account_id=user_account_id,
-                        workspace_id=workspace["id"],
-                    )
-                else:
-                    workspace = get_current_workspace(
-                        conn,
-                        user_account_id=user_account_id,
-                        preferred_workspace_id=resolution["session"]["workspace_id"],
-                    )
-                    if workspace is not None:
-                        resolved_workspace_id = workspace["id"]
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                bootstrapped_workspace = complete_workspace_bootstrap(
-                    conn,
-                    workspace_id=workspace["id"],
-                    user_account_id=user_account_id,
-                )
-                store = ContinuityStore(conn)
-                ensure_tier1_model_packs_for_workspace(
-                    store=store,
-                    workspace_id=workspace["id"],
-                    created_by_user_account_id=user_account_id,
-                )
-                preferences = ensure_user_preferences(conn, user_account_id=user_account_id)
-                status_payload = get_bootstrap_status(
-                    conn,
-                    workspace_id=workspace["id"],
-                    user_account_id=user_account_id,
-                )
-                feature_flags = list_feature_flags_for_user(conn, user_account_id=user_account_id)
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        if resolved_workspace_id is not None and user_account_id is not None:
-            with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-                with conn.transaction():
-                    set_current_user_account(conn, user_account_id)
-                    _record_workspace_onboarding_failure(
-                        conn,
-                        workspace_id=resolved_workspace_id,
-                        error_code="workspace_not_found",
-                        error_detail=str(exc),
-                    )
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except HostedWorkspaceBootstrapConflictError as exc:
-        if resolved_workspace_id is not None and user_account_id is not None:
-            with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-                with conn.transaction():
-                    set_current_user_account(conn, user_account_id)
-                    _record_workspace_onboarding_failure(
-                        conn,
-                        workspace_id=resolved_workspace_id,
-                        error_code="bootstrap_conflict",
-                        error_detail=str(exc),
-                    )
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-
-    if resolved_workspace_id is None or user_account_id is None:
-        return JSONResponse(status_code=500, content={"detail": "bootstrap workspace could not be resolved"})
-    seeded_providers = _seed_workspace_provider_configs(
-        settings=settings,
-        session_token=session_token,
-        workspace_id=resolved_workspace_id,
-    )
-    try:
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                refreshed_resolution = resolve_auth_session(conn, session_token=session_token)
-                if refreshed_resolution["user_account"]["id"] != user_account_id:
-                    raise ProviderConfigurationChangedError(
-                        "bootstrap identity changed while provider configuration was being seeded"
-                    )
-                refreshed_workspace = get_workspace_for_member(
-                    conn,
-                    workspace_id=resolved_workspace_id,
-                    user_account_id=user_account_id,
-                )
-                if refreshed_workspace is None:
-                    raise HostedWorkspaceNotFoundError(f"workspace {resolved_workspace_id} was not found")
-                status_payload = get_bootstrap_status(
-                    conn,
-                    workspace_id=resolved_workspace_id,
-                    user_account_id=user_account_id,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except ProviderConfigurationChangedError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-
-    # Provider registration is committed above before any network call.  Seeded
-    # providers begin with a deterministic fallback capability, then discovery
-    # refreshes that snapshot through the same revision/fingerprint fence used
-    # by the public provider endpoints.
-    for provider in seeded_providers:
-        discovery = _discover_provider_capability(provider=provider, settings=settings)
-        _persist_discovered_provider_capability(
+                context = ensure_local_workspace(conn, user_account_id=user_account_id)
+        workspace_id = context["workspace"]["id"]
+        seeded_providers = _seed_workspace_provider_configs(
             settings=settings,
-            session_token=session_token,
-            workspace_id=provider["workspace_id"],
-            provider=provider,
-            outcome=discovery,
+            user_account_id=user_account_id,
+            workspace_id=workspace_id,
         )
+        for provider in seeded_providers:
+            discovery = _discover_provider_capability(provider=provider, settings=settings)
+            _persist_discovered_provider_capability(
+                settings=settings,
+                user_account_id=user_account_id,
+                workspace_id=workspace_id,
+                provider=provider,
+                outcome=discovery,
+            )
+    except LookupError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     return JSONResponse(
         status_code=200,
         content=jsonable_encoder(
             {
-                "workspace": serialize_workspace(bootstrapped_workspace),
-                "bootstrap": status_payload,
-                "preferences": serialize_user_preferences(preferences),
-                "feature_flags": feature_flags,
-                "telegram_state": "available_in_p10_s2_transport",
+                "workspace": serialize_local_workspace(context["workspace"]),
+                "bootstrap": {
+                    "workspace_id": str(workspace_id),
+                    "status": "ready",
+                    "bootstrapped_at": (
+                        None
+                        if context["workspace"]["bootstrapped_at"] is None
+                        else context["workspace"]["bootstrapped_at"].isoformat()
+                    ),
+                },
+                "seeded_provider_count": len(seeded_providers),
             }
         ),
     )
@@ -13403,41 +11856,31 @@ def bootstrap_v1_workspace(
 @app.get("/v1/workspaces/bootstrap/status")
 def get_v1_workspace_bootstrap_status(request: Request) -> JSONResponse:
     settings = get_settings()
-
     try:
-        session_token = _extract_bearer_token(request)
+        user_account_id = _resolve_authenticated_v1_user_id(settings, request)
         with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
             with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                status_payload = get_bootstrap_status(
-                    conn,
-                    workspace_id=workspace["id"],
-                    user_account_id=resolution["user_account"]["id"],
-                )
-                feature_flags = list_feature_flags_for_user(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-
+                context = get_local_workspace(conn, user_account_id=user_account_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    if context is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "local workspace is not bootstrapped; POST /v1/workspaces/bootstrap first"},
+        )
+    workspace = context["workspace"]
     return JSONResponse(
         status_code=200,
         content=jsonable_encoder(
             {
-                "workspace": serialize_workspace(workspace),
-                "bootstrap": status_payload,
-                "feature_flags": feature_flags,
-                "telegram_state": "available_in_p10_s2_transport",
+                "workspace": serialize_local_workspace(workspace),
+                "bootstrap": {
+                    "workspace_id": str(workspace["id"]),
+                    "status": workspace["bootstrap_status"],
+                    "bootstrapped_at": (
+                        None if workspace["bootstrapped_at"] is None else workspace["bootstrapped_at"].isoformat()
+                    ),
+                },
             }
         ),
     )
@@ -13448,10 +11891,10 @@ def register_v1_provider(request: Request, body: RegisterProviderRequest) -> JSO
     settings = get_settings()
 
     try:
-        session_token = _extract_bearer_token(request)
+        user_account_id = _resolve_authenticated_v1_user_id(settings, request)
         provider, capability = _create_workspace_provider_durable(
             settings=settings,
-            session_token=session_token,
+            authenticated_user_id=user_account_id,
             provider_key=body.provider_key,
             display_name=body.display_name,
             base_url=body.base_url,
@@ -13466,7 +11909,7 @@ def register_v1_provider(request: Request, body: RegisterProviderRequest) -> JSO
         discovery = _discover_provider_capability(provider=provider, settings=settings)
         refreshed_capability = _persist_discovered_provider_capability(
             settings=settings,
-            session_token=session_token,
+            user_account_id=user_account_id,
             workspace_id=provider["workspace_id"],
             provider=provider,
             outcome=discovery,
@@ -13477,9 +11920,7 @@ def register_v1_provider(request: Request, body: RegisterProviderRequest) -> JSO
                 content={"detail": "provider configuration changed during capability discovery"},
             )
         capability = refreshed_capability
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
+    except LookupError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except ProviderConfigurationChangedError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
@@ -13516,10 +11957,10 @@ def register_v1_ollama_provider(
     settings = get_settings()
 
     try:
-        session_token = _extract_bearer_token(request)
+        user_account_id = _resolve_authenticated_v1_user_id(settings, request)
         provider, capability = _create_workspace_provider_durable(
             settings=settings,
-            session_token=session_token,
+            authenticated_user_id=user_account_id,
             provider_key=OLLAMA_ADAPTER_KEY,
             display_name=body.display_name,
             base_url=body.base_url,
@@ -13534,7 +11975,7 @@ def register_v1_ollama_provider(
         discovery = _discover_provider_capability(provider=provider, settings=settings)
         refreshed_capability = _persist_discovered_provider_capability(
             settings=settings,
-            session_token=session_token,
+            user_account_id=user_account_id,
             workspace_id=provider["workspace_id"],
             provider=provider,
             outcome=discovery,
@@ -13545,9 +11986,7 @@ def register_v1_ollama_provider(
                 content={"detail": "provider configuration changed during capability discovery"},
             )
         capability = refreshed_capability
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
+    except LookupError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except ProviderConfigurationChangedError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
@@ -13584,10 +12023,10 @@ def register_v1_llamacpp_provider(
     settings = get_settings()
 
     try:
-        session_token = _extract_bearer_token(request)
+        user_account_id = _resolve_authenticated_v1_user_id(settings, request)
         provider, capability = _create_workspace_provider_durable(
             settings=settings,
-            session_token=session_token,
+            authenticated_user_id=user_account_id,
             provider_key=LLAMACPP_ADAPTER_KEY,
             display_name=body.display_name,
             base_url=body.base_url,
@@ -13602,7 +12041,7 @@ def register_v1_llamacpp_provider(
         discovery = _discover_provider_capability(provider=provider, settings=settings)
         refreshed_capability = _persist_discovered_provider_capability(
             settings=settings,
-            session_token=session_token,
+            user_account_id=user_account_id,
             workspace_id=provider["workspace_id"],
             provider=provider,
             outcome=discovery,
@@ -13613,9 +12052,7 @@ def register_v1_llamacpp_provider(
                 content={"detail": "provider configuration changed during capability discovery"},
             )
         capability = refreshed_capability
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
+    except LookupError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except ProviderConfigurationChangedError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
@@ -13652,10 +12089,10 @@ def register_v1_vllm_provider(
     settings = get_settings()
 
     try:
-        session_token = _extract_bearer_token(request)
+        user_account_id = _resolve_authenticated_v1_user_id(settings, request)
         provider, capability = _create_workspace_provider_durable(
             settings=settings,
-            session_token=session_token,
+            authenticated_user_id=user_account_id,
             provider_key=VLLM_ADAPTER_KEY,
             display_name=body.display_name,
             base_url=body.base_url,
@@ -13670,7 +12107,7 @@ def register_v1_vllm_provider(
         discovery = _discover_provider_capability(provider=provider, settings=settings)
         refreshed_capability = _persist_discovered_provider_capability(
             settings=settings,
-            session_token=session_token,
+            user_account_id=user_account_id,
             workspace_id=provider["workspace_id"],
             provider=provider,
             outcome=discovery,
@@ -13681,9 +12118,7 @@ def register_v1_vllm_provider(
                 content={"detail": "provider configuration changed during capability discovery"},
             )
         capability = refreshed_capability
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
+    except LookupError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except ProviderConfigurationChangedError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
@@ -13727,10 +12162,10 @@ def register_v1_azure_provider(
         return JSONResponse(status_code=400, content={"detail": "azure credential is required"})
 
     try:
-        session_token = _extract_bearer_token(request)
+        user_account_id = _resolve_authenticated_v1_user_id(settings, request)
         provider, capability = _create_workspace_azure_provider_durable(
             settings=settings,
-            session_token=session_token,
+            authenticated_user_id=user_account_id,
             display_name=body.display_name,
             base_url=body.base_url,
             credential=credential,
@@ -13745,7 +12180,7 @@ def register_v1_azure_provider(
         discovery = _discover_provider_capability(provider=provider, settings=settings)
         refreshed_capability = _persist_discovered_provider_capability(
             settings=settings,
-            session_token=session_token,
+            user_account_id=user_account_id,
             workspace_id=provider["workspace_id"],
             provider=provider,
             outcome=discovery,
@@ -13756,9 +12191,7 @@ def register_v1_azure_provider(
                 content={"detail": "provider configuration changed during capability discovery"},
             )
         capability = refreshed_capability
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
+    except LookupError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except ProviderConfigurationChangedError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
@@ -13792,22 +12225,22 @@ def list_v1_providers(request: Request) -> JSONResponse:
     settings = get_settings()
 
     try:
-        session_token = _extract_bearer_token(request)
+        user_account_id = _resolve_authenticated_v1_user_id(settings, request)
+        workspace_id, _ = _require_local_provider_workspace(
+            settings=settings,
+            user_account_id=user_account_id,
+        )
         with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
             with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
+                context = get_local_workspace(conn, user_account_id=user_account_id)
+                if context is None or context["workspace"]["id"] != workspace_id:
+                    raise LookupError("local workspace is not bootstrapped")
                 store = ContinuityStore(conn)
-                providers = store.list_model_providers_for_workspace(workspace_id=workspace["id"])
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+                providers = store.list_model_providers_for_workspace(workspace_id=workspace_id)
+    except LookupError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     items = [_serialize_model_provider(provider) for provider in providers]
     return JSONResponse(
@@ -13829,35 +12262,31 @@ def get_v1_provider(provider_id: UUID, request: Request) -> JSONResponse:
     settings = get_settings()
 
     try:
-        session_token = _extract_bearer_token(request)
+        user_account_id = _resolve_authenticated_v1_user_id(settings, request)
+        workspace_id, _ = _require_local_provider_workspace(
+            settings=settings,
+            user_account_id=user_account_id,
+        )
         with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
             with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                _ensure_workspace_owner_access(
-                    workspace=workspace,
-                    user_account_id=resolution["user_account"]["id"],
-                )
-
+                context = get_local_workspace(conn, user_account_id=user_account_id)
+                if context is None or context["workspace"]["id"] != workspace_id:
+                    raise LookupError("local workspace is not bootstrapped")
                 store = ContinuityStore(conn)
                 provider = store.get_model_provider_for_workspace_optional(
                     provider_id=provider_id,
-                    workspace_id=workspace["id"],
+                    workspace_id=workspace_id,
                 )
                 if provider is None:
                     return JSONResponse(status_code=404, content={"detail": f"provider {provider_id} was not found"})
                 capability = store.get_provider_capability_for_provider_optional(
                     provider_id=provider_id,
-                    workspace_id=workspace["id"],
+                    workspace_id=workspace_id,
                 )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except LookupError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     return JSONResponse(
         status_code=200,
@@ -13879,10 +12308,10 @@ def update_v1_provider(
     settings = get_settings()
 
     try:
-        session_token = _extract_bearer_token(request)
+        user_account_id = _resolve_authenticated_v1_user_id(settings, request)
         provider, capability = _update_workspace_provider_durable(
             settings=settings,
-            session_token=session_token,
+            authenticated_user_id=user_account_id,
             provider_id=provider_id,
             display_name=body.display_name,
             base_url=body.base_url,
@@ -13899,7 +12328,7 @@ def update_v1_provider(
         discovery = _discover_provider_capability(provider=provider, settings=settings)
         refreshed_capability = _persist_discovered_provider_capability(
             settings=settings,
-            session_token=session_token,
+            user_account_id=user_account_id,
             workspace_id=provider["workspace_id"],
             provider=provider,
             outcome=discovery,
@@ -13910,9 +12339,7 @@ def update_v1_provider(
                 content={"detail": "provider configuration changed during capability discovery"},
             )
         capability = refreshed_capability
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
+    except LookupError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except ProviderConfigurationChangedError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
@@ -13946,23 +12373,16 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
     settings = get_settings()
 
     try:
-        session_token = _extract_bearer_token(request)
+        user_account_id = _resolve_authenticated_v1_user_id(settings, request)
+        workspace_id, _ = _require_local_provider_workspace(
+            settings=settings,
+            user_account_id=user_account_id,
+        )
         with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
             with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                _ensure_workspace_owner_access(
-                    workspace=workspace,
-                    user_account_id=resolution["user_account"]["id"],
-                )
-                workspace_id = workspace["id"]
-                user_account_id = resolution["user_account"]["id"]
+                context = get_local_workspace(conn, user_account_id=user_account_id)
+                if context is None or context["workspace"]["id"] != workspace_id:
+                    raise LookupError("local workspace is not bootstrapped")
                 provider = ContinuityStore(conn).get_model_provider_for_workspace_optional(
                     provider_id=body.provider_id,
                     workspace_id=workspace_id,
@@ -14008,21 +12428,9 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
 
         with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
             with conn.transaction():
-                persisted_resolution = resolve_auth_session(
-                    conn,
-                    session_token=session_token,
-                )
-                persisted_workspace = get_workspace_for_member(
-                    conn,
-                    workspace_id=workspace_id,
-                    user_account_id=persisted_resolution["user_account"]["id"],
-                )
-                if persisted_workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "workspace was not found"})
-                _ensure_workspace_owner_access(
-                    workspace=persisted_workspace,
-                    user_account_id=persisted_resolution["user_account"]["id"],
-                )
+                persisted_context = get_local_workspace(conn, user_account_id=user_account_id)
+                if persisted_context is None or persisted_context["workspace"]["id"] != workspace_id:
+                    raise LookupError("local workspace is not bootstrapped")
                 store = ContinuityStore(conn)
                 capability = store.upsert_provider_capability_if_current(
                     workspace_id=workspace_id,
@@ -14052,8 +12460,8 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                         model_request=model_request,
                         outcome=invocation_outcome,
                     )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except LookupError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except ProviderAdapterNotFoundError as exc:
         return JSONResponse(status_code=422, content={"detail": str(exc)})
     except ProviderSecretManagerError as exc:
@@ -14094,314 +12502,6 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
     )
 
 
-@app.get("/v1/model-packs")
-def list_v1_model_packs(request: Request) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                store = ContinuityStore(conn)
-                packs = store.list_model_packs_for_workspace(workspace_id=workspace["id"])
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except ModelPackValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    items = [_serialize_model_pack(pack) for pack in packs]
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(
-            {
-                "items": items,
-                "summary": {
-                    "total_count": len(items),
-                    "order": list(MODEL_PACK_LIST_ORDER),
-                },
-            }
-        ),
-    )
-
-
-@app.get("/v1/model-packs/{pack_id}")
-def get_v1_model_pack(
-    pack_id: str,
-    request: Request,
-    version: Annotated[str | None, Query(min_length=1, max_length=40)] = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        normalized_pack_id = normalize_pack_id(pack_id)
-        normalized_version = None if version is None else normalize_pack_version(version)
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                store = ContinuityStore(conn)
-                pack = store.get_model_pack_for_workspace_optional(
-                    workspace_id=workspace["id"],
-                    pack_id=normalized_pack_id,
-                    pack_version=normalized_version,
-                )
-                if pack is None:
-                    return JSONResponse(
-                        status_code=404,
-                        content={"detail": f"model pack {normalized_pack_id} was not found"},
-                    )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except ModelPackValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder({"model_pack": _serialize_model_pack(pack)}),
-    )
-
-
-@app.post("/v1/model-packs")
-def create_v1_model_pack(request: Request, body: CreateModelPackRequest) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        normalized_pack_id = normalize_pack_id(body.pack_id)
-        normalized_pack_version = normalize_pack_version(body.pack_version)
-        normalized_family = normalize_pack_family(body.family)
-        normalized_briefing_strategy = normalize_briefing_strategy(body.briefing_strategy)
-        normalized_briefing_max_tokens = normalize_briefing_max_tokens(body.briefing_max_tokens)
-        normalized_contract = normalize_model_pack_contract(body.contract)
-        normalized_display_name = body.display_name.strip()
-        if normalized_display_name == "":
-            raise ModelPackValidationError("display_name is required")
-
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                _ensure_workspace_owner_access(
-                    workspace=workspace,
-                    user_account_id=resolution["user_account"]["id"],
-                )
-
-                store = ContinuityStore(conn)
-                ensure_tier1_model_packs_for_workspace(
-                    store=store,
-                    workspace_id=workspace["id"],
-                    created_by_user_account_id=resolution["user_account"]["id"],
-                )
-                if is_reserved_tier1_pack_key(
-                    pack_id=normalized_pack_id,
-                    pack_version=normalized_pack_version,
-                ):
-                    return JSONResponse(
-                        status_code=409,
-                        content={
-                            "detail": (
-                                f"model pack {normalized_pack_id}@{normalized_pack_version} "
-                                "is reserved for built-in catalog entries"
-                            )
-                        },
-                    )
-                pack = store.create_model_pack(
-                    workspace_id=workspace["id"],
-                    created_by_user_account_id=resolution["user_account"]["id"],
-                    pack_id=normalized_pack_id,
-                    pack_version=normalized_pack_version,
-                    display_name=normalized_display_name,
-                    family=normalized_family,
-                    description=body.description.strip(),
-                    status=MODEL_PACK_STATUS_ACTIVE,
-                    briefing_strategy=normalized_briefing_strategy,
-                    briefing_max_tokens=normalized_briefing_max_tokens,
-                    contract=normalized_contract,
-                    metadata=_json_object(body.metadata),
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except psycopg.errors.UniqueViolation:
-        return JSONResponse(
-            status_code=409,
-            content={"detail": "model pack pack_id and pack_version must be unique within the workspace"},
-        )
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-    except ModelPackValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=201,
-        content=jsonable_encoder({"model_pack": _serialize_model_pack(pack)}),
-    )
-
-
-@app.post("/v1/model-packs/{pack_id}/bind")
-def bind_v1_model_pack(pack_id: str, request: Request, body: BindModelPackRequest) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        normalized_pack_id = normalize_pack_id(pack_id)
-        normalized_pack_version = None if body.pack_version is None else normalize_pack_version(body.pack_version)
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                _ensure_workspace_owner_access(
-                    workspace=workspace,
-                    user_account_id=resolution["user_account"]["id"],
-                )
-
-                store = ContinuityStore(conn)
-                ensure_tier1_model_packs_for_workspace(
-                    store=store,
-                    workspace_id=workspace["id"],
-                    created_by_user_account_id=resolution["user_account"]["id"],
-                )
-                provider = None
-                if body.provider_id is not None:
-                    provider = store.get_model_provider_for_workspace_optional(
-                        provider_id=body.provider_id,
-                        workspace_id=workspace["id"],
-                    )
-                    if provider is None:
-                        return JSONResponse(
-                            status_code=404,
-                            content={"detail": f"provider {body.provider_id} was not found"},
-                        )
-                pack = store.get_model_pack_for_workspace_optional(
-                    workspace_id=workspace["id"],
-                    pack_id=normalized_pack_id,
-                    pack_version=normalized_pack_version,
-                )
-                if pack is None:
-                    return JSONResponse(
-                        status_code=404,
-                        content={"detail": f"model pack {normalized_pack_id} was not found"},
-                    )
-                if provider is not None:
-                    assert_model_pack_runtime_compatibility(
-                        pack=pack,
-                        provider_key=provider["provider_key"],
-                        runtime_provider=provider["model_provider"],
-                    )
-                store.create_workspace_model_pack_binding(
-                    workspace_id=workspace["id"],
-                    provider_id=None if provider is None else provider["id"],
-                    model_pack_id=pack["id"],
-                    bound_by_user_account_id=resolution["user_account"]["id"],
-                    binding_source=MODEL_PACK_BINDING_SOURCE_MANUAL,
-                    metadata=_json_object(body.metadata),
-                )
-                if provider is None:
-                    binding = store.get_latest_workspace_model_pack_binding_optional(
-                        workspace_id=workspace["id"],
-                    )
-                else:
-                    binding = store.get_resolved_workspace_model_pack_binding_optional(
-                        workspace_id=workspace["id"],
-                        provider_id=provider["id"],
-                    )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-    except ModelPackCompatibilityError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-    except ModelPackValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    if binding is None:
-        return JSONResponse(status_code=500, content={"detail": "workspace model pack binding could not be resolved"})
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder({"binding": _serialize_workspace_model_pack_binding(binding)}),
-    )
-
-
-@app.get("/v1/workspaces/{workspace_id}/model-pack-binding")
-def get_v1_workspace_model_pack_binding(
-    workspace_id: UUID,
-    request: Request,
-    provider_id: Annotated[UUID | None, Query()] = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_workspace_for_member(
-                    conn,
-                    workspace_id=workspace_id,
-                    user_account_id=resolution["user_account"]["id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": f"workspace {workspace_id} was not found"})
-
-                store = ContinuityStore(conn)
-                if provider_id is None:
-                    binding = store.get_latest_workspace_model_pack_binding_optional(
-                        workspace_id=workspace["id"],
-                    )
-                else:
-                    provider = store.get_model_provider_for_workspace_optional(
-                        provider_id=provider_id,
-                        workspace_id=workspace["id"],
-                    )
-                    if provider is None:
-                        return JSONResponse(
-                            status_code=404, content={"detail": f"provider {provider_id} was not found"}
-                        )
-                    binding = store.get_resolved_workspace_model_pack_binding_optional(
-                        workspace_id=workspace["id"],
-                        provider_id=provider_id,
-                    )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(
-            {
-                "binding": None if binding is None else _serialize_workspace_model_pack_binding(binding),
-            }
-        ),
-    )
-
-
 @app.post("/v1/runtime/invoke")
 def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONResponse:
     settings = get_settings()
@@ -14417,36 +12517,23 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     workspace_id: UUID | None = None
-    user_account: UserAccountRow | None = None
+    user_account_id: UUID | None = None
     unresolved_runtime_provider: RuntimeProviderConfig | None = None
     runtime_provider: RuntimeProviderConfig | None = None
-    model_pack: ModelPackRow | None = None
-    model_pack_source: str = "none"
 
     try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = get_current_workspace(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+        user_account_id = _resolve_authenticated_v1_user_id(settings, request)
+        workspace_id, _ = _require_local_provider_workspace(
+            settings=settings,
+            user_account_id=user_account_id,
+        )
+    except LookupError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
-                workspace_id = workspace["id"]
-                user_account = resolution["user_account"]
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-
-    if workspace_id is None or user_account is None:
+    if workspace_id is None or user_account_id is None:
         return JSONResponse(status_code=500, content={"detail": "runtime context could not be resolved"})
-
-    user_account_id = user_account["id"]
-    if not isinstance(user_account_id, UUID):
-        return JSONResponse(status_code=500, content={"detail": "runtime user context is invalid"})
 
     fingerprint = request_fingerprint(
         cast(
@@ -14459,7 +12546,7 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
     )
 
     # Atomically reserve or lock the stable request identity before touching
-    # provider configuration, secret files, DNS, model packs, or adapters. This
+    # provider configuration, secret files, DNS, or adapters. This
     # closes the absent-row lookup/create race while preserving terminal replay
     # even if mutable runtime configuration is later removed.
     try:
@@ -14483,7 +12570,7 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
     except ResponseJobFenceLostError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
-    # Fetch only database-backed provider/model-pack state while the transaction
+    # Fetch only database-backed provider state while the transaction
     # is open. Credential resolution and network-address validation happen after
     # the connection is released.
     try:
@@ -14500,27 +12587,12 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                     content={"detail": f"provider {body.provider_id} was not found"},
                 )
             unresolved_runtime_provider = RuntimeProviderConfig.from_row(_object_dict(provider_row))
-            selected_pack = resolve_workspace_model_pack_selection(
-                store=store,
-                workspace_id=workspace_id,
-                requested_pack_id=body.pack_id,
-                requested_pack_version=body.pack_version,
-                provider_id=unresolved_runtime_provider.provider_id,
-            )
-            model_pack = selected_pack.pack
-            model_pack_source = selected_pack.source
 
         validate_provider_base_url(unresolved_runtime_provider.base_url)
         runtime_provider = resolve_runtime_provider_config_secrets(
             config=unresolved_runtime_provider,
             settings=settings,
         )
-    except ModelPackCompatibilityError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-    except ModelPackNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except ModelPackValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ProviderSecretManagerError as exc:
@@ -14540,49 +12612,6 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
         max_entities=body.max_entities,
         max_entity_edges=body.max_entity_edges,
     )
-    runtime_system_instruction = SYSTEM_INSTRUCTION
-    runtime_developer_instruction = DEVELOPER_INSTRUCTION
-
-    try:
-        if model_pack is not None:
-            assert_model_pack_runtime_compatibility(
-                pack=model_pack,
-                provider_key=runtime_provider.provider_key,
-                runtime_provider=runtime_provider.model_provider,
-            )
-            runtime_shape = build_model_pack_runtime_shape(model_pack["contract"])
-            (
-                max_sessions,
-                max_events,
-                max_memories,
-                max_entities,
-                max_entity_edges,
-            ) = apply_runtime_limit_caps(
-                max_sessions=runtime_limits.max_sessions,
-                max_events=runtime_limits.max_events,
-                max_memories=runtime_limits.max_memories,
-                max_entities=runtime_limits.max_entities,
-                max_entity_edges=runtime_limits.max_entity_edges,
-                shape=runtime_shape,
-            )
-            runtime_limits = ContextCompilerLimits(
-                max_sessions=max_sessions,
-                max_events=max_events,
-                max_memories=max_memories,
-                max_entities=max_entities,
-                max_entity_edges=max_entity_edges,
-            )
-            runtime_system_instruction = append_instruction(
-                SYSTEM_INSTRUCTION,
-                runtime_shape.system_instruction_append,
-            )
-            runtime_developer_instruction = append_instruction(
-                DEVELOPER_INSTRUCTION,
-                runtime_shape.developer_instruction_append,
-            )
-    except ModelPackCompatibilityError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-
     try:
         adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
     except ProviderAdapterNotFoundError as exc:
@@ -14615,8 +12644,8 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                 message_text=body.message,
                 limits=runtime_limits,
                 runtime_override=(runtime_provider.model_provider, selected_model),
-                system_instruction=runtime_system_instruction,
-                developer_instruction=runtime_developer_instruction,
+                system_instruction=SYSTEM_INSTRUCTION,
+                developer_instruction=DEVELOPER_INSTRUCTION,
             )
             lease_token = uuid4()
             claimed_job = job_store.claim_pending(
@@ -14680,13 +12709,6 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                     )
             response_metadata: JsonObject = {
                 "workspace_id": str(workspace_id),
-                "model_pack": None
-                if model_pack is None
-                else {
-                    "pack_id": model_pack["pack_id"],
-                    "pack_version": model_pack["pack_version"],
-                    "source": model_pack_source,
-                },
             }
             if isinstance(result, ResponseFailure):
                 status_code = 409 if response_conflict else 502
@@ -14752,2331 +12774,29 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
     )
 
 
-@app.post("/v1/devices/link/start")
-def start_v1_device_link(request: Request, body: DeviceLinkStartRequest) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace_id = body.workspace_id or resolution["session"]["workspace_id"]
-                if body.workspace_id is not None:
-                    workspace = get_workspace_for_member(
-                        conn,
-                        workspace_id=body.workspace_id,
-                        user_account_id=user_account_id,
-                    )
-                    if workspace is None:
-                        raise HostedWorkspaceNotFoundError(f"workspace {body.workspace_id} was not found")
-                    workspace_id = workspace["id"]
-                challenge = start_device_link_challenge(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace_id,
-                    device_key=body.device_key,
-                    device_label=body.device_label,
-                    ttl_seconds=settings.device_link_ttl_seconds,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder({"challenge": serialize_device_link_challenge(challenge)}),
-    )
-
-
-@app.post("/v1/devices/link/confirm")
-def confirm_v1_device_link(request: Request, body: DeviceLinkConfirmRequest) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                device = confirm_device_link_challenge(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    challenge_token=body.challenge_token,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except DeviceLinkTokenExpiredError as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except DeviceLinkTokenInvalidError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=201,
-        content=jsonable_encoder({"device": serialize_device(device)}),
-    )
-
-
-@app.get("/v1/devices")
-def list_v1_devices(request: Request) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                devices = list_hosted_devices(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    workspace_id=resolution["session"]["workspace_id"],
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-
-    items = [serialize_device(device) for device in devices]
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(
-            {
-                "items": items,
-                "summary": {
-                    "total_count": len(items),
-                    "active_count": sum(1 for item in items if item["status"] == "active"),
-                    "revoked_count": sum(1 for item in items if item["status"] == "revoked"),
-                    "order": ["created_at_desc", "id_desc"],
-                },
-            }
-        ),
-    )
-
-
-@app.delete("/v1/devices/{device_id}")
-def delete_v1_device(device_id: UUID, request: Request) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                device = revoke_hosted_device(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    device_id=device_id,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedDeviceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder({"device": serialize_device(device)}),
-    )
-
-
-@app.get("/v1/preferences")
-def get_v1_preferences(request: Request) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                preferences = ensure_user_preferences(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder({"preferences": serialize_user_preferences(preferences)}),
-    )
-
-
-@app.patch("/v1/preferences")
-def patch_v1_preferences(
-    request: Request,
-    body: HostedPreferencesPatchRequest,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                preferences = patch_user_preferences(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    timezone=body.timezone,
-                    brief_preferences=body.brief_preferences,
-                    quiet_hours=body.quiet_hours,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedPreferencesValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder({"preferences": serialize_user_preferences(preferences)}),
-    )
-
-
-@app.get("/v1/admin/hosted/overview")
-def get_v1_admin_hosted_overview(
-    request: Request,
-    window_hours: int = Query(default=24, ge=1, le=168),
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
-                payload = get_hosted_overview_for_admin(conn, window_hours=window_hours)
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.get("/v1/admin/hosted/design-partners/dashboard")
-def get_v1_admin_hosted_design_partner_dashboard(request: Request) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
-                payload = get_design_partner_dashboard(conn)
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.get("/v1/admin/hosted/design-partners")
-def get_v1_admin_hosted_design_partners(
-    request: Request,
-    limit: int = Query(default=50, ge=1, le=200),
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
-                payload = list_design_partners(conn, limit=limit)
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.post("/v1/admin/hosted/design-partners")
-def post_v1_admin_hosted_design_partner(
-    request: Request,
-    body: DesignPartnerCreateRequest,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
-                payload = create_design_partner(
-                    conn,
-                    created_by_user_account_id=user_account_id,
-                    name=body.name,
-                    partner_key=body.partner_key,
-                    lifecycle_stage=body.lifecycle_stage,
-                    onboarding_status=body.onboarding_status,
-                    support_status=body.support_status,
-                    instrumentation_status=body.instrumentation_status,
-                    case_study_status=body.case_study_status,
-                    target_outcome=body.target_outcome,
-                    launch_notes=body.launch_notes,
-                    onboarding_checklist=body.onboarding_checklist,
-                    support_checklist=body.support_checklist,
-                    success_metrics=body.success_metrics,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-    except psycopg.errors.UniqueViolation as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=201, content=jsonable_encoder(payload))
-
-
-@app.get("/v1/admin/hosted/design-partners/{design_partner_id}")
-def get_v1_admin_hosted_design_partner_detail(
-    design_partner_id: UUID,
-    request: Request,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
-                payload = get_design_partner_detail(conn, design_partner_id=design_partner_id)
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-    except DesignPartnerNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.patch("/v1/admin/hosted/design-partners/{design_partner_id}")
-def patch_v1_admin_hosted_design_partner(
-    design_partner_id: UUID,
-    request: Request,
-    body: DesignPartnerPatchRequest,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
-                payload = update_design_partner(
-                    conn,
-                    design_partner_id=design_partner_id,
-                    lifecycle_stage=body.lifecycle_stage,
-                    onboarding_status=body.onboarding_status,
-                    support_status=body.support_status,
-                    instrumentation_status=body.instrumentation_status,
-                    case_study_status=body.case_study_status,
-                    target_outcome=body.target_outcome,
-                    launch_notes=body.launch_notes,
-                    onboarding_checklist=body.onboarding_checklist,
-                    support_checklist=body.support_checklist,
-                    success_metrics=body.success_metrics,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-    except DesignPartnerNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.post("/v1/admin/hosted/design-partners/{design_partner_id}/workspaces")
-def post_v1_admin_hosted_design_partner_workspace(
-    design_partner_id: UUID,
-    request: Request,
-    body: DesignPartnerWorkspaceLinkRequest,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
-                payload = link_design_partner_workspace(
-                    conn,
-                    design_partner_id=design_partner_id,
-                    workspace_id=body.workspace_id,
-                    linked_by_user_account_id=user_account_id,
-                    linkage_status=body.linkage_status,
-                    environment_label=body.environment_label,
-                    instrumentation_ready=body.instrumentation_ready,
-                    notes=body.notes,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-    except DesignPartnerNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except DesignPartnerWorkspaceConflictError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-    except psycopg.Error as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=201, content=jsonable_encoder(payload))
-
-
-@app.post("/v1/admin/hosted/design-partners/{design_partner_id}/feedback")
-def post_v1_admin_hosted_design_partner_feedback(
-    design_partner_id: UUID,
-    request: Request,
-    body: DesignPartnerFeedbackCreateRequest,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
-                payload = record_design_partner_feedback(
-                    conn,
-                    design_partner_id=design_partner_id,
-                    captured_by_user_account_id=user_account_id,
-                    workspace_id=body.workspace_id,
-                    source_kind=body.source_kind,
-                    category=body.category,
-                    sentiment=body.sentiment,
-                    urgency=body.urgency,
-                    feedback_status=body.feedback_status,
-                    case_study_signal=body.case_study_signal,
-                    summary=body.summary,
-                    detail=body.detail,
-                    metadata=body.metadata,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-    except DesignPartnerNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except DesignPartnerFeedbackValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=201, content=jsonable_encoder(payload))
-
-
-@app.get("/v1/admin/hosted/workspaces")
-def get_v1_admin_hosted_workspaces(
-    request: Request,
-    limit: int = Query(default=50, ge=1, le=200),
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
-                items = list_hosted_workspaces_for_admin(conn, limit=limit)
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(
-            {
-                "items": items,
-                "summary": {
-                    "total_count": len(items),
-                    "returned_count": len(items),
-                    "order": ["updated_at_desc", "id_desc"],
-                },
-            }
-        ),
-    )
-
-
-@app.get("/v1/admin/hosted/delivery-receipts")
-def get_v1_admin_hosted_delivery_receipts(
-    request: Request,
-    limit: int = Query(default=100, ge=1, le=400),
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
-                items = list_hosted_delivery_receipts_for_admin(
-                    conn,
-                    limit=limit,
-                    workspace_id=workspace_id,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(
-            {
-                "items": items,
-                "summary": {
-                    "total_count": len(items),
-                    "returned_count": len(items),
-                    "order": ["recorded_at_desc", "id_desc"],
-                },
-            }
-        ),
-    )
-
-
-@app.get("/v1/admin/hosted/incidents")
-def get_v1_admin_hosted_incidents(
-    request: Request,
-    status: str = Query(default="open", min_length=1, max_length=20),
-    limit: int = Query(default=100, ge=1, le=500),
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-    normalized_status = status.strip().casefold()
-    if normalized_status not in {"open", "resolved", "all"}:
-        return JSONResponse(status_code=400, content={"detail": "status must be one of: open, resolved, all"})
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
-                items = list_hosted_incidents_for_admin(
-                    conn,
-                    limit=limit,
-                    status_filter=normalized_status,  # type: ignore[arg-type]
-                    workspace_id=workspace_id,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(
-            {
-                "items": items,
-                "summary": {
-                    "total_count": len(items),
-                    "returned_count": len(items),
-                    "status_filter": normalized_status,
-                    "order": ["occurred_at_desc", "incident_id_desc"],
-                },
-            }
-        ),
-    )
-
-
-@app.get("/v1/admin/hosted/rollout-flags")
-def get_v1_admin_hosted_rollout_flags(request: Request) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
-                flags = list_rollout_flags_for_admin(conn, user_account_id=user_account_id)
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(
-            {
-                "items": flags,
-                "summary": {
-                    "total_count": len(flags),
-                    "enabled_count": sum(1 for flag in flags if flag["enabled"]),
-                    "disabled_count": sum(1 for flag in flags if not flag["enabled"]),
-                    "order": ["flag_key_asc"],
-                },
-            }
-        ),
-    )
-
-
-@app.patch("/v1/admin/hosted/rollout-flags")
-def patch_v1_admin_hosted_rollout_flags(
-    request: Request,
-    body: HostedRolloutFlagsPatchRequest,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
-                updated_flags = patch_rollout_flags(
-                    conn,
-                    patches=[
-                        {
-                            "flag_key": item.flag_key,
-                            "enabled": item.enabled,
-                            "cohort_key": item.cohort_key,
-                            "description": item.description,
-                        }
-                        for item in body.updates
-                    ],
-                    allowed_cohort_key=resolution["user_account"]["beta_cohort_key"],
-                )
-                flags = list_rollout_flags_for_admin(conn, user_account_id=user_account_id)
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(
-            {
-                "updated": updated_flags,
-                "items": flags,
-                "summary": {
-                    "total_count": len(flags),
-                    "enabled_count": sum(1 for flag in flags if flag["enabled"]),
-                    "disabled_count": sum(1 for flag in flags if not flag["enabled"]),
-                },
-            }
-        ),
-    )
-
-
-@app.get("/v1/admin/hosted/analytics")
-def get_v1_admin_hosted_analytics(
-    request: Request,
-    window_hours: int = Query(default=24, ge=1, le=168),
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
-                telemetry = aggregate_chat_telemetry(conn, window_hours=window_hours)
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder({"analytics": telemetry}))
-
-
-@app.get("/v1/admin/hosted/rate-limits")
-def get_v1_admin_hosted_rate_limits(
-    request: Request,
-    window_hours: int = Query(default=24, ge=1, le=168),
-    limit: int = Query(default=100, ge=1, le=200),
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
-                payload = get_hosted_rate_limits_for_admin(
-                    conn,
-                    window_hours=window_hours,
-                    limit=limit,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.post("/v1/channels/telegram/link/start")
-def start_v1_telegram_link(request: Request, body: TelegramLinkStartRequest) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=body.workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                challenge = start_telegram_link_challenge(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                    ttl_seconds=settings.telegram_link_ttl_seconds,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-
-    payload = {
-        "workspace_id": str(workspace["id"]),
-        "challenge": serialize_channel_link_challenge(challenge, include_token=True),
-        "instructions": {
-            "bot_username": settings.telegram_bot_username,
-            "command": f"/link {challenge['link_code']}",
-            "posture": "send the link code to the configured telegram bot, then confirm in hosted settings",
-        },
-    }
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.post("/v1/channels/telegram/link/confirm")
-def confirm_v1_telegram_link(request: Request, body: TelegramLinkConfirmRequest) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                challenge, identity = confirm_telegram_link_challenge(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    challenge_token=body.challenge_token,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except TelegramLinkPendingError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-    except TelegramLinkTokenExpiredError as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except TelegramLinkTokenInvalidError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=201,
-        content=jsonable_encoder(
-            {
-                "identity": serialize_channel_identity(identity),
-                "challenge": serialize_channel_link_challenge(challenge, include_token=False),
-            }
-        ),
-    )
-
-
-@app.post("/v1/channels/telegram/unlink")
-def unlink_v1_telegram(request: Request, body: TelegramUnlinkRequest) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=body.workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                identity = unlink_telegram_identity(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TelegramIdentityNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder({"identity": serialize_channel_identity(identity)}))
-
-
-@app.get("/v1/channels/telegram/status")
-def get_v1_telegram_status(
-    request: Request,
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                payload = get_telegram_link_status(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-def _ingest_telegram_webhook_sync(
-    *,
-    settings: Settings,
-    payload: dict[str, object],
-) -> TelegramWebhookIngestResult:
-    """Persist one webhook on a worker thread so async ingress stays responsive."""
-
-    with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-        with conn.transaction():
-            set_hosted_service_bypass(conn, True)
-            return ingest_telegram_webhook(
-                conn,
-                payload=payload,
-                bot_username=settings.telegram_bot_username,
-            )
-
-
-@app.post("/v1/channels/telegram/webhook")
-async def ingest_v1_telegram_webhook(request: Request) -> JSONResponse:
-    settings = get_settings()
-    if settings.app_env not in {"development", "test"} and settings.telegram_webhook_secret == "":  # nosec B105
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "telegram webhook ingress is not configured"},
-        )
-
-    rate_limit_error = _enforce_entrypoint_rate_limit(
-        settings=settings,
-        key=f"telegram_webhook:{_request_client_identifier(request, settings)}",
-        max_requests=settings.telegram_webhook_rate_limit_max_requests,
-        window_seconds=settings.telegram_webhook_rate_limit_window_seconds,
-        detail_code="telegram_webhook_rate_limit_exceeded",
-        message="telegram webhook rate limit exceeded",
-    )
-    if rate_limit_error is not None:
-        return rate_limit_error
-
-    if settings.telegram_webhook_secret != "":  # nosec B105
-        header_secret = request.headers.get("x-telegram-bot-api-secret-token", "").strip()
-        if not hmac.compare_digest(header_secret, settings.telegram_webhook_secret):
-            return JSONResponse(status_code=401, content={"detail": "telegram webhook secret is invalid"})
-
-    try:
-        payload = await request.json()
-    except ValueError:
-        return JSONResponse(status_code=400, content={"detail": "telegram webhook payload must be valid json"})
-
-    if not isinstance(payload, dict):
-        return JSONResponse(status_code=400, content={"detail": "telegram webhook payload must be an object"})
-
-    try:
-        ingest_result = await run_in_threadpool(
-            _ingest_telegram_webhook_sync,
-            settings=settings,
-            payload=payload,
-        )
-    except TelegramWebhookValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(
-            {
-                "status": "accepted",
-                "ingest": serialize_webhook_ingest_result(ingest_result),
-            }
-        ),
-    )
-
-
-@app.get("/v1/channels/telegram/messages")
-def list_v1_telegram_messages(
-    request: Request,
-    limit: int = Query(default=50, ge=1, le=200),
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                rows = list_workspace_telegram_messages(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    workspace_id=workspace["id"],
-                    limit=limit,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-
-    items = [serialize_channel_message(row) for row in rows]
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(
-            {
-                "items": items,
-                "summary": {
-                    "workspace_id": str(workspace["id"]),
-                    "total_count": len(items),
-                    "order": ["created_at_desc", "id_desc"],
-                },
-            }
-        ),
-    )
-
-
-@app.get("/v1/channels/telegram/threads")
-def list_v1_telegram_threads(
-    request: Request,
-    limit: int = Query(default=50, ge=1, le=200),
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                rows = list_workspace_telegram_threads(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    workspace_id=workspace["id"],
-                    limit=limit,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-
-    items = [serialize_channel_thread(row) for row in rows]
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(
-            {
-                "items": items,
-                "summary": {
-                    "workspace_id": str(workspace["id"]),
-                    "total_count": len(items),
-                    "order": ["last_message_at_desc", "id_desc"],
-                },
-            }
-        ),
-    )
-
-
-@app.post("/v1/channels/telegram/messages/{message_id}/dispatch")
-def dispatch_v1_telegram_message(
-    message_id: UUID,
-    request: Request,
-    body: TelegramDispatchRequest,
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                outbound_message, receipt = dispatch_telegram_message(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    workspace_id=workspace["id"],
-                    source_message_id=message_id,
-                    text=body.text,
-                    dispatch_idempotency_key=body.idempotency_key,
-                    bot_token=settings.telegram_bot_token,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TelegramMessageNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TelegramRoutingError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=201,
-        content=jsonable_encoder(
-            {
-                "message": serialize_channel_message(outbound_message),
-                "receipt": serialize_delivery_receipt(receipt),
-            }
-        ),
-    )
-
-
-@app.get("/v1/channels/telegram/delivery-receipts")
-def list_v1_telegram_delivery_receipts(
-    request: Request,
-    limit: int = Query(default=50, ge=1, le=200),
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                rows = list_workspace_telegram_delivery_receipts(
-                    conn,
-                    user_account_id=resolution["user_account"]["id"],
-                    workspace_id=workspace["id"],
-                    limit=limit,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-
-    items = [serialize_delivery_receipt(row) for row in rows]
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(
-            {
-                "items": items,
-                "summary": {
-                    "workspace_id": str(workspace["id"]),
-                    "total_count": len(items),
-                    "order": ["recorded_at_desc", "id_desc"],
-                },
-            }
-        ),
-    )
-
-
-@app.get("/v1/channels/telegram/notification-preferences")
-def get_v1_telegram_notification_preferences(
-    request: Request,
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                payload = get_workspace_notification_preferences(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TelegramIdentityNotFoundError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-    except TelegramNotificationPreferenceValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.patch("/v1/channels/telegram/notification-preferences")
-def patch_v1_telegram_notification_preferences(
-    request: Request,
-    body: TelegramNotificationPreferencesPatchRequest,
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                patch_payload = body.model_dump(exclude_none=True)
-                patch_workspace_notification_subscription(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                    patch=patch_payload,
-                )
-                payload = get_workspace_notification_preferences(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TelegramIdentityNotFoundError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-    except TelegramNotificationPreferenceValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.get("/v1/channels/telegram/daily-brief")
-def get_v1_telegram_daily_brief(
-    request: Request,
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                payload = get_workspace_daily_brief_preview(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TelegramIdentityNotFoundError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-    except TelegramNotificationPreferenceValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.post("/v1/channels/telegram/daily-brief/deliver")
-def post_v1_telegram_daily_brief_deliver(
-    request: Request,
-    body: TelegramScheduledDeliveryRequest,
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                rollout_resolution = resolve_rollout_flag(
-                    conn,
-                    user_account_id=user_account_id,
-                    flag_key="hosted_scheduler_delivery_enabled",
-                )
-                if not rollout_resolution["enabled"]:
-                    record_chat_telemetry(
-                        conn,
-                        user_account_id=user_account_id,
-                        workspace_id=workspace["id"],
-                        flow_kind="scheduler_daily_brief",
-                        event_kind="rollout_block",
-                        status="blocked_rollout",
-                        route_path="/v1/channels/telegram/daily-brief/deliver",
-                        rollout_flag_key=rollout_resolution["flag_key"],
-                        rollout_flag_state="blocked",
-                        evidence={
-                            "force": body.force,
-                            "idempotency_key": body.idempotency_key,
-                        },
-                    )
-                    return _hosted_rollout_block_error(flag_key=rollout_resolution["flag_key"])
-
-                rate_limit_rollout = resolve_rollout_flag(
-                    conn,
-                    user_account_id=user_account_id,
-                    flag_key="hosted_rate_limits_enabled",
-                )
-                abuse_rollout = resolve_rollout_flag(
-                    conn,
-                    user_account_id=user_account_id,
-                    flag_key="hosted_abuse_controls_enabled",
-                )
-                if rate_limit_rollout["enabled"]:
-                    decision = evaluate_hosted_flow_limits(
-                        conn,
-                        settings=settings,
-                        user_account_id=user_account_id,
-                        workspace_id=workspace["id"],
-                        flow_kind="scheduler_daily_brief",
-                    )
-                    if decision["code"] == "hosted_abuse_limit_exceeded" and not abuse_rollout["enabled"]:
-                        decision = {
-                            **decision,
-                            "allowed": True,
-                            "code": None,
-                            "message": "abuse controls disabled by rollout",
-                            "retry_after_seconds": 0,
-                            "abuse_signal": None,
-                        }
-
-                    if not decision["allowed"]:
-                        blocked_status = (
-                            "abuse_blocked" if decision["code"] == "hosted_abuse_limit_exceeded" else "rate_limited"
-                        )
-                        blocked_event = "abuse_block" if blocked_status == "abuse_blocked" else "rate_limited"
-                        record_chat_telemetry(
-                            conn,
-                            user_account_id=user_account_id,
-                            workspace_id=workspace["id"],
-                            flow_kind="scheduler_daily_brief",
-                            event_kind=blocked_event,  # type: ignore[arg-type]
-                            status=blocked_status,  # type: ignore[arg-type]
-                            route_path="/v1/channels/telegram/daily-brief/deliver",
-                            rollout_flag_key=rate_limit_rollout["flag_key"],
-                            rollout_flag_state="enabled",
-                            rate_limit_key=decision["rate_limit_key"],
-                            rate_limit_window_seconds=decision["window_seconds"],
-                            rate_limit_max_requests=decision["max_requests"],
-                            retry_after_seconds=decision["retry_after_seconds"],
-                            abuse_signal=decision["abuse_signal"],
-                            evidence={
-                                "force": body.force,
-                                "idempotency_key": body.idempotency_key,
-                            },
-                        )
-                        return _hosted_rate_limit_error(
-                            detail_code=decision["code"] or "hosted_rate_limit_exceeded",
-                            message=decision["message"],
-                            retry_after_seconds=decision["retry_after_seconds"],
-                            rate_limit_key=decision["rate_limit_key"],
-                            window_seconds=decision["window_seconds"],
-                            max_requests=decision["max_requests"],
-                            observed_requests=decision["observed_requests"],
-                            abuse_signal=decision["abuse_signal"],
-                        )
-
-                record_chat_telemetry(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                    flow_kind="scheduler_daily_brief",
-                    event_kind="attempt",
-                    status="ok",
-                    route_path="/v1/channels/telegram/daily-brief/deliver",
-                    rollout_flag_key=rollout_resolution["flag_key"],
-                    rollout_flag_state="enabled",
-                    evidence={
-                        "force": body.force,
-                        "idempotency_key": body.idempotency_key,
-                    },
-                )
-
-                payload = deliver_workspace_daily_brief(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                    bot_token=settings.telegram_bot_token,
-                    force=body.force,
-                    idempotency_key=body.idempotency_key,
-                )
-                delivery_receipt = payload.get("delivery_receipt")
-                delivery_receipt_id: UUID | None = None
-                if isinstance(delivery_receipt, dict) and isinstance(delivery_receipt.get("id"), str):
-                    delivery_receipt_id = UUID(delivery_receipt["id"])
-
-                status_value: HostedTelemetryStatus = "ok"
-                job = payload.get("job")
-                if isinstance(job, dict):
-                    job_status = str(job.get("status", "ok"))
-                    if job_status in {"failed"}:
-                        status_value = "failed"
-                    elif job_status.startswith("suppressed"):
-                        status_value = "suppressed"
-                    elif job_status == "simulated":
-                        status_value = "simulated"
-                    elif job_status == "delivered":
-                        status_value = "delivered"
-                record_chat_telemetry(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                    flow_kind="scheduler_daily_brief",
-                    event_kind="result",
-                    status=status_value,
-                    route_path="/v1/channels/telegram/daily-brief/deliver",
-                    rollout_flag_key=rollout_resolution["flag_key"],
-                    rollout_flag_state="enabled",
-                    delivery_receipt_id=delivery_receipt_id,
-                    evidence={
-                        "idempotent_replay": bool(payload.get("idempotent_replay")),
-                        "force": body.force,
-                    },
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TelegramIdentityNotFoundError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-    except TelegramNotificationPreferenceValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    status_code = 200 if bool(payload.get("idempotent_replay")) else 201
-    return JSONResponse(status_code=status_code, content=jsonable_encoder(payload))
-
-
-@app.get("/v1/channels/telegram/open-loop-prompts")
-def list_v1_telegram_open_loop_prompts(
-    request: Request,
-    limit: int = Query(default=20, ge=1, le=100),
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                payload = list_workspace_open_loop_prompts(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                    limit=limit,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TelegramIdentityNotFoundError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-    except TelegramNotificationPreferenceValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.post("/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver")
-def post_v1_telegram_open_loop_prompt_deliver(
-    prompt_id: str,
-    request: Request,
-    body: TelegramScheduledDeliveryRequest,
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                rollout_resolution = resolve_rollout_flag(
-                    conn,
-                    user_account_id=user_account_id,
-                    flag_key="hosted_scheduler_delivery_enabled",
-                )
-                if not rollout_resolution["enabled"]:
-                    record_chat_telemetry(
-                        conn,
-                        user_account_id=user_account_id,
-                        workspace_id=workspace["id"],
-                        flow_kind="scheduler_open_loop_prompt",
-                        event_kind="rollout_block",
-                        status="blocked_rollout",
-                        route_path=f"/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver",
-                        rollout_flag_key=rollout_resolution["flag_key"],
-                        rollout_flag_state="blocked",
-                        evidence={
-                            "prompt_id": prompt_id,
-                            "force": body.force,
-                            "idempotency_key": body.idempotency_key,
-                        },
-                    )
-                    return _hosted_rollout_block_error(flag_key=rollout_resolution["flag_key"])
-
-                rate_limit_rollout = resolve_rollout_flag(
-                    conn,
-                    user_account_id=user_account_id,
-                    flag_key="hosted_rate_limits_enabled",
-                )
-                abuse_rollout = resolve_rollout_flag(
-                    conn,
-                    user_account_id=user_account_id,
-                    flag_key="hosted_abuse_controls_enabled",
-                )
-                if rate_limit_rollout["enabled"]:
-                    decision = evaluate_hosted_flow_limits(
-                        conn,
-                        settings=settings,
-                        user_account_id=user_account_id,
-                        workspace_id=workspace["id"],
-                        flow_kind="scheduler_open_loop_prompt",
-                    )
-                    if decision["code"] == "hosted_abuse_limit_exceeded" and not abuse_rollout["enabled"]:
-                        decision = {
-                            **decision,
-                            "allowed": True,
-                            "code": None,
-                            "message": "abuse controls disabled by rollout",
-                            "retry_after_seconds": 0,
-                            "abuse_signal": None,
-                        }
-
-                    if not decision["allowed"]:
-                        blocked_status = (
-                            "abuse_blocked" if decision["code"] == "hosted_abuse_limit_exceeded" else "rate_limited"
-                        )
-                        blocked_event = "abuse_block" if blocked_status == "abuse_blocked" else "rate_limited"
-                        record_chat_telemetry(
-                            conn,
-                            user_account_id=user_account_id,
-                            workspace_id=workspace["id"],
-                            flow_kind="scheduler_open_loop_prompt",
-                            event_kind=blocked_event,  # type: ignore[arg-type]
-                            status=blocked_status,  # type: ignore[arg-type]
-                            route_path=f"/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver",
-                            rollout_flag_key=rate_limit_rollout["flag_key"],
-                            rollout_flag_state="enabled",
-                            rate_limit_key=decision["rate_limit_key"],
-                            rate_limit_window_seconds=decision["window_seconds"],
-                            rate_limit_max_requests=decision["max_requests"],
-                            retry_after_seconds=decision["retry_after_seconds"],
-                            abuse_signal=decision["abuse_signal"],
-                            evidence={
-                                "prompt_id": prompt_id,
-                                "force": body.force,
-                                "idempotency_key": body.idempotency_key,
-                            },
-                        )
-                        return _hosted_rate_limit_error(
-                            detail_code=decision["code"] or "hosted_rate_limit_exceeded",
-                            message=decision["message"],
-                            retry_after_seconds=decision["retry_after_seconds"],
-                            rate_limit_key=decision["rate_limit_key"],
-                            window_seconds=decision["window_seconds"],
-                            max_requests=decision["max_requests"],
-                            observed_requests=decision["observed_requests"],
-                            abuse_signal=decision["abuse_signal"],
-                        )
-
-                record_chat_telemetry(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                    flow_kind="scheduler_open_loop_prompt",
-                    event_kind="attempt",
-                    status="ok",
-                    route_path=f"/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver",
-                    rollout_flag_key=rollout_resolution["flag_key"],
-                    rollout_flag_state="enabled",
-                    evidence={
-                        "prompt_id": prompt_id,
-                        "force": body.force,
-                        "idempotency_key": body.idempotency_key,
-                    },
-                )
-
-                payload = deliver_workspace_open_loop_prompt(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                    prompt_id=prompt_id,
-                    bot_token=settings.telegram_bot_token,
-                    force=body.force,
-                    idempotency_key=body.idempotency_key,
-                )
-                delivery_receipt = payload.get("delivery_receipt")
-                delivery_receipt_id: UUID | None = None
-                if isinstance(delivery_receipt, dict) and isinstance(delivery_receipt.get("id"), str):
-                    delivery_receipt_id = UUID(delivery_receipt["id"])
-
-                status_value: HostedTelemetryStatus = "ok"
-                job = payload.get("job")
-                if isinstance(job, dict):
-                    job_status = str(job.get("status", "ok"))
-                    if job_status in {"failed"}:
-                        status_value = "failed"
-                    elif job_status.startswith("suppressed"):
-                        status_value = "suppressed"
-                    elif job_status == "simulated":
-                        status_value = "simulated"
-                    elif job_status == "delivered":
-                        status_value = "delivered"
-                record_chat_telemetry(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                    flow_kind="scheduler_open_loop_prompt",
-                    event_kind="result",
-                    status=status_value,
-                    route_path=f"/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver",
-                    rollout_flag_key=rollout_resolution["flag_key"],
-                    rollout_flag_state="enabled",
-                    delivery_receipt_id=delivery_receipt_id,
-                    evidence={
-                        "idempotent_replay": bool(payload.get("idempotent_replay")),
-                        "prompt_id": prompt_id,
-                        "force": body.force,
-                    },
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TelegramIdentityNotFoundError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-    except TelegramOpenLoopPromptNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TelegramNotificationPreferenceValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    status_code = 200 if bool(payload.get("idempotent_replay")) else 201
-    return JSONResponse(status_code=status_code, content=jsonable_encoder(payload))
-
-
-@app.get("/v1/channels/telegram/scheduler/jobs")
-def list_v1_telegram_scheduler_jobs(
-    request: Request,
-    limit: int = Query(default=50, ge=1, le=200),
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                payload = list_workspace_scheduler_jobs(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                    limit=limit,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TelegramIdentityNotFoundError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-    except TelegramNotificationPreferenceValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.post("/v1/channels/telegram/messages/{message_id}/handle")
-def handle_v1_telegram_message(
-    message_id: UUID,
-    request: Request,
-    body: TelegramMessageHandleRequest,
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                rollout_resolution = resolve_rollout_flag(
-                    conn,
-                    user_account_id=user_account_id,
-                    flag_key="hosted_chat_handle_enabled",
-                )
-                if not rollout_resolution["enabled"]:
-                    record_chat_telemetry(
-                        conn,
-                        user_account_id=user_account_id,
-                        workspace_id=workspace["id"],
-                        flow_kind="chat_handle",
-                        event_kind="rollout_block",
-                        status="blocked_rollout",
-                        route_path="/v1/channels/telegram/messages/{message_id}/handle",
-                        channel_message_id=message_id,
-                        rollout_flag_key=rollout_resolution["flag_key"],
-                        rollout_flag_state="blocked",
-                        evidence={"intent_hint": body.intent_hint},
-                    )
-                    return _hosted_rollout_block_error(flag_key=rollout_resolution["flag_key"])
-
-                rate_limit_rollout = resolve_rollout_flag(
-                    conn,
-                    user_account_id=user_account_id,
-                    flag_key="hosted_rate_limits_enabled",
-                )
-                abuse_rollout = resolve_rollout_flag(
-                    conn,
-                    user_account_id=user_account_id,
-                    flag_key="hosted_abuse_controls_enabled",
-                )
-                if rate_limit_rollout["enabled"]:
-                    decision = evaluate_hosted_flow_limits(
-                        conn,
-                        settings=settings,
-                        user_account_id=user_account_id,
-                        workspace_id=workspace["id"],
-                        flow_kind="chat_handle",
-                    )
-                    if decision["code"] == "hosted_abuse_limit_exceeded" and not abuse_rollout["enabled"]:
-                        decision = {
-                            **decision,
-                            "allowed": True,
-                            "code": None,
-                            "message": "abuse controls disabled by rollout",
-                            "retry_after_seconds": 0,
-                            "abuse_signal": None,
-                        }
-
-                    if not decision["allowed"]:
-                        blocked_status = (
-                            "abuse_blocked" if decision["code"] == "hosted_abuse_limit_exceeded" else "rate_limited"
-                        )
-                        blocked_event = "abuse_block" if blocked_status == "abuse_blocked" else "rate_limited"
-                        record_chat_telemetry(
-                            conn,
-                            user_account_id=user_account_id,
-                            workspace_id=workspace["id"],
-                            flow_kind="chat_handle",
-                            event_kind=blocked_event,  # type: ignore[arg-type]
-                            status=blocked_status,  # type: ignore[arg-type]
-                            route_path="/v1/channels/telegram/messages/{message_id}/handle",
-                            channel_message_id=message_id,
-                            rollout_flag_key=rate_limit_rollout["flag_key"],
-                            rollout_flag_state="enabled",
-                            rate_limit_key=decision["rate_limit_key"],
-                            rate_limit_window_seconds=decision["window_seconds"],
-                            rate_limit_max_requests=decision["max_requests"],
-                            retry_after_seconds=decision["retry_after_seconds"],
-                            abuse_signal=decision["abuse_signal"],
-                            evidence={"intent_hint": body.intent_hint},
-                        )
-                        return _hosted_rate_limit_error(
-                            detail_code=decision["code"] or "hosted_rate_limit_exceeded",
-                            message=decision["message"],
-                            retry_after_seconds=decision["retry_after_seconds"],
-                            rate_limit_key=decision["rate_limit_key"],
-                            window_seconds=decision["window_seconds"],
-                            max_requests=decision["max_requests"],
-                            observed_requests=decision["observed_requests"],
-                            abuse_signal=decision["abuse_signal"],
-                        )
-
-                record_chat_telemetry(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                    flow_kind="chat_handle",
-                    event_kind="attempt",
-                    status="ok",
-                    route_path="/v1/channels/telegram/messages/{message_id}/handle",
-                    channel_message_id=message_id,
-                    rollout_flag_key=rollout_resolution["flag_key"],
-                    rollout_flag_state="enabled",
-                    evidence={"intent_hint": body.intent_hint},
-                )
-
-                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
-                payload = handle_telegram_message(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                    message_id=message_id,
-                    bot_token=settings.telegram_bot_token,
-                    intent_hint=body.intent_hint,
-                )
-                intent = payload.get("intent")
-                intent_status = str(intent.get("status", "handled")) if isinstance(intent, dict) else "handled"
-                telemetry_status: HostedTelemetryStatus = "ok" if intent_status == "handled" else "failed"
-                delivery_receipt = payload.get("delivery_receipt")
-                delivery_receipt_id: UUID | None = None
-                if isinstance(delivery_receipt, dict) and isinstance(delivery_receipt.get("id"), str):
-                    delivery_receipt_id = UUID(delivery_receipt["id"])
-                record_chat_telemetry(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                    flow_kind="chat_handle",
-                    event_kind="result",
-                    status=telemetry_status,
-                    route_path="/v1/channels/telegram/messages/{message_id}/handle",
-                    channel_message_id=message_id,
-                    delivery_receipt_id=delivery_receipt_id,
-                    rollout_flag_key=rollout_resolution["flag_key"],
-                    rollout_flag_state="enabled",
-                    evidence={
-                        "intent_status": intent_status,
-                        "intent_kind": intent.get("intent_kind") if isinstance(intent, dict) else None,
-                    },
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except HostedUserAccountNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TelegramMessageNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TelegramRoutingError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.get("/v1/channels/telegram/messages/{message_id}/result")
-def get_v1_telegram_message_result(
-    message_id: UUID,
-    request: Request,
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
-                payload = get_telegram_message_result(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                    message_id=message_id,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except HostedUserAccountNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TelegramMessageResultNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.get("/v1/channels/telegram/recall")
-def list_v1_telegram_recall(
-    request: Request,
-    workspace_id: UUID | None = None,
-    query_text: str | None = Query(default=None, alias="query", min_length=1, max_length=4000),
-    thread_id: UUID | None = None,
-    task_id: UUID | None = None,
-    project: str | None = Query(default=None, min_length=1, max_length=200),
-    person: str | None = Query(default=None, min_length=1, max_length=200),
-    since: datetime | None = None,
-    until: datetime | None = None,
-    limit: int = Query(
-        default=DEFAULT_CONTINUITY_RECALL_LIMIT,
-        ge=1,
-        le=MAX_CONTINUITY_RECALL_LIMIT,
-    ),
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
-                payload = query_continuity_recall(
-                    ContinuityStore(conn),
-                    user_id=user_account_id,
-                    request=ContinuityRecallQueryInput(
-                        query=query_text,
-                        thread_id=thread_id,
-                        task_id=task_id,
-                        project=project,
-                        person=person,
-                        since=since,
-                        until=until,
-                        limit=limit,
-                    ),
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except HostedUserAccountNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except ContinuityRecallValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(
-            {
-                "workspace_id": str(workspace["id"]),
-                "recall": payload,
-            }
-        ),
-    )
-
-
-@app.get("/v1/channels/telegram/resume")
-def get_v1_telegram_resumption_brief(
-    request: Request,
-    workspace_id: UUID | None = None,
-    query_text: str | None = Query(default=None, alias="query", min_length=1, max_length=4000),
-    thread_id: UUID | None = None,
-    task_id: UUID | None = None,
-    project: str | None = Query(default=None, min_length=1, max_length=200),
-    person: str | None = Query(default=None, min_length=1, max_length=200),
-    since: datetime | None = None,
-    until: datetime | None = None,
-    max_recent_changes: int = Query(
-        default=DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
-        ge=0,
-        le=MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
-    ),
-    max_open_loops: int = Query(
-        default=DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
-        ge=0,
-        le=MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
-    ),
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
-                payload = compile_continuity_resumption_brief(
-                    ContinuityStore(conn),
-                    user_id=user_account_id,
-                    request=ContinuityResumptionBriefRequestInput(
-                        query=query_text,
-                        thread_id=thread_id,
-                        task_id=task_id,
-                        project=project,
-                        person=person,
-                        since=since,
-                        until=until,
-                        max_recent_changes=max_recent_changes,
-                        max_open_loops=max_open_loops,
-                    ),
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except HostedUserAccountNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except ContinuityResumptionValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-    except ContinuityRecallValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(
-            {
-                "workspace_id": str(workspace["id"]),
-                "resume": payload,
-            }
-        ),
-    )
-
-
-@app.get("/v1/channels/telegram/open-loops")
-def get_v1_telegram_open_loops(
-    request: Request,
-    workspace_id: UUID | None = None,
-    query_text: str | None = Query(default=None, alias="query", min_length=1, max_length=4000),
-    thread_id: UUID | None = None,
-    task_id: UUID | None = None,
-    project: str | None = Query(default=None, min_length=1, max_length=200),
-    person: str | None = Query(default=None, min_length=1, max_length=200),
-    since: datetime | None = None,
-    until: datetime | None = None,
-    limit: int = Query(
-        default=DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT,
-        ge=0,
-        le=MAX_CONTINUITY_OPEN_LOOP_LIMIT,
-    ),
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
-                payload = compile_continuity_open_loop_dashboard(
-                    ContinuityStore(conn),
-                    user_id=user_account_id,
-                    request=ContinuityOpenLoopDashboardQueryInput(
-                        query=query_text,
-                        thread_id=thread_id,
-                        task_id=task_id,
-                        project=project,
-                        person=person,
-                        since=since,
-                        until=until,
-                        limit=limit,
-                    ),
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except HostedUserAccountNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except ContinuityOpenLoopValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-    except ContinuityRecallValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(
-            {
-                "workspace_id": str(workspace["id"]),
-                "open_loops": payload,
-            }
-        ),
-    )
-
-
-@app.post("/v1/channels/telegram/open-loops/{open_loop_id}/review-action")
-def review_action_v1_telegram_open_loop(
-    open_loop_id: UUID,
-    request: Request,
-    body: TelegramOpenLoopReviewActionBody,
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
-                payload = apply_telegram_open_loop_review_with_log(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                    continuity_object_id=open_loop_id,
-                    action=body.action,
-                    note=body.note,
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except HostedUserAccountNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except ContinuityOpenLoopNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except ContinuityOpenLoopValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.get("/v1/channels/telegram/approvals")
-def list_v1_telegram_approvals(
-    request: Request,
-    status: str = Query(default="pending", min_length=1, max_length=20),
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    settings = get_settings()
-    status_filter = status.casefold().strip()
-    if status_filter not in {"pending", "all"}:
-        return JSONResponse(status_code=400, content={"detail": "status must be one of: pending, all"})
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-
-                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
-                payload = list_telegram_approvals(
-                    conn,
-                    user_account_id=user_account_id,
-                    workspace_id=workspace["id"],
-                    status_filter=status_filter,  # type: ignore[arg-type]
-                )
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except HostedUserAccountNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.post("/v1/channels/telegram/approvals/{approval_id}/approve")
-def approve_v1_telegram_approval(
-    approval_id: UUID,
-    request: Request,
-    body: TelegramApprovalResolveBody | None = None,
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    del body
-    settings = get_settings()
-    resolution_error: (
-        ApprovalResolutionConflictError | TaskStepApprovalLinkageError | TaskStepLifecycleBoundaryError | None
-    ) = None
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
-                try:
-                    payload = approve_telegram_approval(
-                        conn,
-                        user_account_id=user_account_id,
-                        workspace_id=workspace["id"],
-                        approval_id=approval_id,
-                    )
-                except (
-                    ApprovalResolutionConflictError,
-                    TaskStepApprovalLinkageError,
-                    TaskStepLifecycleBoundaryError,
-                ) as exc:
-                    resolution_error = exc
-                    payload = None
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except HostedUserAccountNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except ApprovalNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-
-    if resolution_error is not None:
-        return JSONResponse(status_code=409, content={"detail": str(resolution_error)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
-
-
-@app.post("/v1/channels/telegram/approvals/{approval_id}/reject")
-def reject_v1_telegram_approval(
-    approval_id: UUID,
-    request: Request,
-    body: TelegramApprovalResolveBody | None = None,
-    workspace_id: UUID | None = None,
-) -> JSONResponse:
-    del body
-    settings = get_settings()
-    resolution_error: (
-        ApprovalResolutionConflictError | TaskStepApprovalLinkageError | TaskStepLifecycleBoundaryError | None
-    ) = None
-
-    try:
-        session_token = _extract_bearer_token(request)
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
-            with conn.transaction():
-                resolution = resolve_auth_session(conn, session_token=session_token)
-                user_account_id = resolution["user_account"]["id"]
-                workspace = _resolve_workspace_for_hosted_channel_request(
-                    conn,
-                    user_account_id=user_account_id,
-                    session_id=resolution["session"]["id"],
-                    preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=workspace_id,
-                )
-                if workspace is None:
-                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
-                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
-                try:
-                    payload = reject_telegram_approval(
-                        conn,
-                        user_account_id=user_account_id,
-                        workspace_id=workspace["id"],
-                        approval_id=approval_id,
-                    )
-                except (
-                    ApprovalResolutionConflictError,
-                    TaskStepApprovalLinkageError,
-                    TaskStepLifecycleBoundaryError,
-                ) as exc:
-                    resolution_error = exc
-                    payload = None
-    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
-    except HostedWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except HostedUserAccountNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except ApprovalNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-
-    if resolution_error is not None:
-        return JSONResponse(status_code=409, content={"detail": str(resolution_error)})
-
-    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+def _apply_legacy_surface_mount_policy() -> None:
+    if LEGACY_SURFACES_ENABLED:
+        return
+
+    retained_routes = []
+    for route in app.router.routes:
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", None)
+        if not isinstance(path, str) or not isinstance(methods, set):
+            retained_routes.append(route)
+            continue
+        operation_keys = {
+            (method, path)
+            for method in methods
+            if method in {"GET", "POST", "PUT", "PATCH", "DELETE"}
+        }
+        gated_keys = operation_keys & LEGACY_HTTP_OPERATION_KEYS
+        if gated_keys:
+            if operation_keys != gated_keys:  # pragma: no cover - one-operation route invariant
+                raise RuntimeError(f"legacy surface route mixes gated and retained methods: {path}")
+            continue
+        retained_routes.append(route)
+    app.router.routes[:] = retained_routes
+
+
+_apply_legacy_surface_mount_policy()

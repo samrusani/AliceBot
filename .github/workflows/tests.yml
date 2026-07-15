@@ -265,7 +265,7 @@ jobs:
         env:
           DATABASE_URL: postgresql://alicebot_app:ci@localhost:5432/alicebot
           DATABASE_ADMIN_URL: postgresql://alicebot_admin:ci@localhost:5432/alicebot
-        run: ./.venv/bin/python -m pytest tests/integration -q -p no:cacheprovider
+        run: ALICE_LEGACY_SURFACES=1 ./.venv/bin/python -m pytest tests/integration -q -p no:cacheprovider
 
   web:
     name: Web tests, types, accessibility, and budgets

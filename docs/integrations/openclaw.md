@@ -33,7 +33,6 @@ Import augments Alice continuity retrieval. It does not replace:
 
 - one-call continuity
 - provider registration
-- model-pack bindings
 
 After import, these surfaces will include OpenClaw-backed continuity when it is relevant to the request:
 
