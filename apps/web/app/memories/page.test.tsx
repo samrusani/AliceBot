@@ -1,5 +1,5 @@
 import React from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import MemoriesPage from "./page";
@@ -74,6 +74,16 @@ vi.mock("../../lib/api", async () => {
     listMemoryReviewQueue: listMemoryReviewQueueMock,
   };
 });
+
+function deferred<T = never>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
 
 describe("MemoriesPage", () => {
   beforeEach(() => {
@@ -535,6 +545,95 @@ describe("MemoriesPage", () => {
     expect(screen.getByText("revisions down")).toBeInTheDocument();
     expect(screen.getByText("Labels unavailable")).toBeInTheDocument();
     expect(screen.getByText("labels down")).toBeInTheDocument();
+  });
+
+  it("starts independent selected-record reads in bounded parallel waves", async () => {
+    const memory = {
+      id: "memory-wave-1",
+      memory_key: "user.preference.wave",
+      value: { merchant: "Wave Merchant" },
+      status: "active",
+      source_event_ids: ["event-wave-1"],
+      created_at: "2026-03-18T10:00:00Z",
+      updated_at: "2026-03-18T10:05:00Z",
+      deleted_at: null,
+    };
+    const openLoop = {
+      id: "loop-wave-1",
+      memory_id: memory.id,
+      title: "Confirm wave behavior",
+      status: "open",
+      opened_at: "2026-03-23T09:00:00Z",
+      due_at: null,
+      resolved_at: null,
+      resolution_note: null,
+      created_at: "2026-03-23T09:00:00Z",
+      updated_at: "2026-03-23T09:00:00Z",
+    };
+
+    getApiConfigMock.mockReturnValue({
+      apiBaseUrl: "https://api.example.com",
+      userId: "user-1",
+      defaultThreadId: "thread-1",
+      defaultToolId: "tool-1",
+    });
+    hasLiveApiConfigMock.mockReturnValue(true);
+    listMemoriesMock.mockResolvedValue({
+      items: [memory],
+      summary: {
+        status: "active",
+        limit: 20,
+        returned_count: 1,
+        total_count: 1,
+        has_more: false,
+        order: ["updated_at_desc", "created_at_desc", "id_desc"],
+      },
+    });
+    listOpenLoopsMock.mockResolvedValue({
+      items: [openLoop],
+      summary: {
+        status: "open",
+        limit: 20,
+        returned_count: 1,
+        total_count: 1,
+        has_more: false,
+        order: ["opened_at_desc", "created_at_desc", "id_desc"],
+      },
+    });
+    listMemoryReviewQueueMock.mockRejectedValue(new Error("queue unavailable"));
+    getMemoryEvaluationSummaryMock.mockRejectedValue(new Error("summary unavailable"));
+    getMemoryTrustDashboardMock.mockRejectedValue(new Error("trust unavailable"));
+    getMemoryHygieneDashboardMock.mockRejectedValue(new Error("hygiene unavailable"));
+
+    const memoryDetail = deferred<{ memory: typeof memory }>();
+    const openLoopDetail = deferred<{ open_loop: typeof openLoop }>();
+    const revisions = deferred();
+    const labels = deferred();
+    getMemoryDetailMock.mockReturnValue(memoryDetail.promise);
+    getOpenLoopDetailMock.mockReturnValue(openLoopDetail.promise);
+    getMemoryRevisionsMock.mockReturnValue(revisions.promise);
+    listMemoryLabelsMock.mockReturnValue(labels.promise);
+
+    const pagePromise = MemoriesPage({
+      searchParams: Promise.resolve({ memory: memory.id, open_loop: openLoop.id }),
+    });
+
+    await waitFor(() => {
+      expect(getMemoryDetailMock).toHaveBeenCalledTimes(1);
+      expect(getOpenLoopDetailMock).toHaveBeenCalledTimes(1);
+    });
+
+    memoryDetail.resolve({ memory });
+    openLoopDetail.resolve({ open_loop: openLoop });
+
+    await waitFor(() => {
+      expect(getMemoryRevisionsMock).toHaveBeenCalledTimes(1);
+      expect(listMemoryLabelsMock).toHaveBeenCalledTimes(1);
+    });
+
+    revisions.reject(new Error("revisions unavailable"));
+    labels.reject(new Error("labels unavailable"));
+    await pagePromise;
   });
 
   it("shows queue submit-and-next action only when queue mode has a deterministic next item", async () => {

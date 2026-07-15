@@ -83,7 +83,11 @@ from alicebot_api.vnext_embeddings import (
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_grounding import compute_query_grounding
 from alicebot_api.vnext_json import json_safe
-from alicebot_api.vnext_project_scope import memory_project_scope
+from alicebot_api.vnext_project_scope import (
+    project_scope_identity,
+    resolve_project_scope,
+    source_project_scope,
+)
 from alicebot_api.vnext_ranking import (
     CONTENT_EVENT_METADATA_KEYS,
     TIE_BREAK_CONTENT_STABLE,
@@ -694,7 +698,13 @@ def _normalized_scope_values(values: Sequence[str], *, field_name: str) -> froze
 
 
 def _resolve_retrieval_scope(request: VNextRetrievalRequest) -> _ResolvedRetrievalScope:
-    projects = _normalized_scope_values(request.projects, field_name="projects")
+    if len(request.projects) > MAX_CONTEXT_SCOPE_VALUES:
+        raise VNextRetrievalValidationError(
+            f"projects is limited to {MAX_CONTEXT_SCOPE_VALUES} values"
+        )
+    projects = frozenset(project_scope_identity(request.projects))
+    if any(len(value) > 200 for value in projects):
+        raise VNextRetrievalValidationError("projects values must be at most 200 characters")
     people = _normalized_scope_values(request.people, field_name="people")
     raw_window = request.time_window.strip().casefold()
     if raw_window == "all":
@@ -763,10 +773,13 @@ def _row_project_scope_values(row: Mapping[str, object]) -> set[str]:
     higher-priority representation is present, lower-priority values must not
     widen access to a project the resource no longer belongs to.
     """
-    canonical_scope = {value.casefold() for value in memory_project_scope(row)}
-    if canonical_scope:
-        return canonical_scope
-    return _row_scope_values(row, ("project", "projects"))
+    return set(resolve_project_scope(row).identity)
+
+
+def _source_project_scope_values(row: Mapping[str, object]) -> set[str]:
+    """Resolve a persisted source envelope without widening stale aliases."""
+
+    return set(project_scope_identity(source_project_scope(row)))
 
 
 def _row_scope_event_time(row: Mapping[str, object]) -> datetime | None:
@@ -788,8 +801,14 @@ def _row_matches_scope(
     scope: _ResolvedRetrievalScope,
     *,
     person_linked_memory_ids: frozenset[str] = frozenset(),
+    source_scope_envelope: bool = False,
 ) -> bool:
-    if scope.projects and not (_row_project_scope_values(row) & scope.projects):
+    project_scope = (
+        _source_project_scope_values(row)
+        if source_scope_envelope
+        else _row_project_scope_values(row)
+    )
+    if scope.projects and not (project_scope & scope.projects):
         return False
     if scope.people:
         direct_people = _row_scope_values(row, _PEOPLE_SCOPE_KEYS)
@@ -810,6 +829,7 @@ def _filter_rows_for_scope(
     scope: _ResolvedRetrievalScope,
     *,
     person_linked_memory_ids: frozenset[str] = frozenset(),
+    source_scope_envelope: bool = False,
 ) -> list[JsonObject]:
     if not scope.active:
         return list(rows)
@@ -820,6 +840,7 @@ def _filter_rows_for_scope(
             row,
             scope,
             person_linked_memory_ids=person_linked_memory_ids,
+            source_scope_envelope=source_scope_envelope,
         )
     ]
 
@@ -898,6 +919,7 @@ def _fetch_scope_filtered(
     person_linked_memory_ids: frozenset[str],
     target: int,
     store_scope_complete: bool = False,
+    source_scope_envelope: bool = False,
 ) -> tuple[list[JsonObject], StageSourceT]:
     """Fetch a ranked list and apply the resolved scope before selection."""
     if not scope.active:
@@ -909,6 +931,7 @@ def _fetch_scope_filtered(
             rows,
             scope,
             person_linked_memory_ids=person_linked_memory_ids,
+            source_scope_envelope=source_scope_envelope,
         ),
         target=target,
         predicate_applied_before_limit=store_scope_complete,
@@ -1019,7 +1042,7 @@ def _graph_memory_admissible(
     if memory_types and row.get("memory_type") not in memory_types:
         return False
     if projects:
-        requested_projects = {project.strip().casefold() for project in projects if project.strip()}
+        requested_projects = set(project_scope_identity(projects))
         if not (_row_project_scope_values(row) & requested_projects):
             return False
     if created_by_agent_ids and row.get("created_by_agent_id") not in created_by_agent_ids:
@@ -1677,7 +1700,11 @@ class VNextRetrievalService:
                 )
             source_id = reference.removeprefix("source:")
             source = source_cache.get(source_id)
-            return source is not None and _row_matches_scope(source, scope)
+            return source is not None and _row_matches_scope(
+                source,
+                scope,
+                source_scope_envelope=True,
+            )
 
         def _value_allowed(value: object) -> bool:
             references = _reference_strings(value)
@@ -2126,7 +2153,12 @@ class VNextRetrievalService:
             return [
                 row
                 for source_id in source_ids
-                if (row := by_id.get(source_id)) is not None and _row_matches_scope(row, scope)
+                if (row := by_id.get(source_id)) is not None
+                and _row_matches_scope(
+                    row,
+                    scope,
+                    source_scope_envelope=True,
+                )
             ]
 
         def _resource_scope_filters(method: object) -> dict[str, object]:
@@ -2243,6 +2275,7 @@ class VNextRetrievalService:
             person_linked_memory_ids=frozenset(),
             target=limit,
             store_scope_complete=bool(source_scope_filters),
+            source_scope_envelope=True,
         )
         lexical_rows = lexical_rows[:limit]
         ranked_lists[SOURCE_STAGE_TITLE_RECENCY] = lexical_rows
@@ -2316,7 +2349,7 @@ class VNextRetrievalService:
         sources_enabled = bool(interpretation["requires_sources"])
         contradictions_requested = bool(interpretation["requires_contradictions"])
         memory_types = tuple(request.memory_types)
-        projects = tuple(request.projects)
+        projects = tuple(sorted(scope.projects))
         created_by_agent_ids = tuple(request.created_by_agent_ids)
         filter_run_id = request.filter_run_id
         trace_id = request.trace_id or str(uuid4())
@@ -2905,7 +2938,12 @@ class VNextRetrievalService:
                     source = currency_get_source(source_id) if callable(currency_get_source) else None
                     currency_source_cache[source_id] = (
                         cast(JsonObject, source)
-                        if isinstance(source, Mapping) and _row_matches_scope(source, scope)
+                        if isinstance(source, Mapping)
+                        and _row_matches_scope(
+                            source,
+                            scope,
+                            source_scope_envelope=True,
+                        )
                         else None
                     )
                 return currency_source_cache[source_id]
@@ -3172,7 +3210,12 @@ class VNextRetrievalService:
                 source_row = temporal_get_source(source_id)
                 temporal_source_dates[source_id] = (
                     _source_event_time(cast(JsonObject, source_row))
-                    if isinstance(source_row, Mapping) and _row_matches_scope(source_row, scope)
+                    if isinstance(source_row, Mapping)
+                    and _row_matches_scope(
+                        source_row,
+                        scope,
+                        source_scope_envelope=True,
+                    )
                     else None
                 )
             return temporal_source_dates[source_id]
@@ -3517,7 +3560,11 @@ class VNextRetrievalService:
                 if scope.active:
                     source_id = str(link.get("source_id") or "")
                     source = sources_by_id.get(source_id)
-                    if source is None or not _row_matches_scope(source, scope):
+                    if source is None or not _row_matches_scope(
+                        source,
+                        scope,
+                        source_scope_envelope=True,
+                    ):
                         continue
                 evidence.append(
                     {

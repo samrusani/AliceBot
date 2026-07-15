@@ -1183,12 +1183,15 @@ def test_project_scope_bound_key_is_enforced_in_sqlite_mode(sqlite_context, monk
             arguments={"query": "scope", "projects": ["other-project"]},
         )
 
-    with pytest.raises(MCPToolError, match="project_scope_binding_violation"):
+    with pytest.raises(
+        MCPToolError, match="^requested explanation is unavailable$"
+    ) as explain_error:
         call_mcp_tool(
             sqlite_context,
             name="alice_explain",
             arguments={"memory_id": outside_id},
         )
+    assert outside_id not in str(explain_error.value)
 
     with pytest.raises(MCPToolError, match="project_scope_binding_violation"):
         call_mcp_tool(

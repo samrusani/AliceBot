@@ -17,6 +17,12 @@ from alicebot_api.vnext_model_intelligence import (
     build_model_backed_artifact,
     resolve_model_route,
 )
+from alicebot_api.vnext_project_scope import (
+    normalize_project_scope,
+    project_scope_identity,
+    project_scopes_overlap,
+    source_project_scope,
+)
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_temporal_query import parse_event_datetime
 
@@ -232,9 +238,8 @@ def _matches_report_scope(
     window_end: datetime,
 ) -> bool:
     if projects:
-        requested = {project.strip().casefold() for project in projects if project.strip()}
-        persisted = {project.strip().casefold() for project in resource_project_scope(row) if project.strip()}
-        if not requested.intersection(persisted):
+        row_scope = source_project_scope(row) if kind == "source" else resource_project_scope(row)
+        if not project_scopes_overlap(row_scope, projects):
             return False
     event_time = _row_event_time(row, kind=kind)
     return event_time is not None and window_start <= event_time < window_end
@@ -399,7 +404,7 @@ def _digest_payload(payload: object) -> str:
 
 
 def _canonical_project_scope(values: Sequence[object]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(normalized for value in values if (normalized := " ".join(str(value).split()).strip())))
+    return normalize_project_scope(values)
 
 
 def _metadata_json(row: JsonObject) -> JsonObject:
@@ -459,7 +464,7 @@ class VNextBrainService:
                 "generated_for": day.isoformat(),
                 "scope": {
                     "domains": request.domains,
-                    "projects": _canonical_project_scope(request.projects),
+                    "projects": project_scope_identity(request.projects),
                     "sensitivity_allowed": request.sensitivity_allowed,
                 },
                 "limits": {
@@ -517,7 +522,8 @@ class VNextBrainService:
         source_refs = _source_refs(sources)
         report_project_scope = _canonical_project_scope(
             request.projects
-            or tuple(project for row in [*sources, *memories, *open_loops] for project in resource_project_scope(row))
+            or tuple(project for row in sources for project in source_project_scope(row))
+            + tuple(project for row in [*memories, *open_loops] for project in resource_project_scope(row))
         )
         metadata = {
             **request.metadata_json,
@@ -648,7 +654,7 @@ class VNextBrainService:
                 "window_end": window_end.isoformat(),
                 "scope": {
                     "domains": request.domains,
-                    "projects": _canonical_project_scope(request.projects),
+                    "projects": project_scope_identity(request.projects),
                     "sensitivity_allowed": request.sensitivity_allowed,
                 },
                 "limits": {
@@ -706,7 +712,8 @@ class VNextBrainService:
         source_refs = _source_refs(sources)
         report_project_scope = _canonical_project_scope(
             request.projects
-            or tuple(project for row in [*sources, *memories, *open_loops] for project in resource_project_scope(row))
+            or tuple(project for row in sources for project in source_project_scope(row))
+            + tuple(project for row in [*memories, *open_loops] for project in resource_project_scope(row))
         )
         metadata = {
             **request.metadata_json,
@@ -964,14 +971,14 @@ class VNextBrainService:
         created: list[JsonObject] = []
         upsert_open_loop = getattr(self.store, "upsert_open_loop_by_automation_digest", None)
         for title, source in candidates:
-            source_scope = _canonical_project_scope(resource_project_scope(source))
+            source_scope = _canonical_project_scope(source_project_scope(source))
             project_scope = source_scope or _canonical_project_scope(request.projects)
             automation_digest = _digest_payload(
                 {
                     "workflow_digest": workflow_digest,
                     "source_id": source.get("id"),
                     "title": title,
-                    "project_scope": project_scope,
+                    "project_scope": project_scope_identity(project_scope),
                 }
             )
             loop_payload: JsonObject = {
@@ -1020,7 +1027,10 @@ class VNextBrainService:
         insight = self._weekly_pattern_line(sources=sources, memories=memories, open_loops=open_loops)
         project_scope = _canonical_project_scope(request.projects) or tuple(
             dict.fromkeys(
-                project for row in [*sources, *memories, *open_loops] for project in resource_project_scope(row)
+                (
+                    *(project for row in sources for project in source_project_scope(row)),
+                    *(project for row in [*memories, *open_loops] for project in resource_project_scope(row)),
+                )
             )
         )
         memory_payload: JsonObject = {

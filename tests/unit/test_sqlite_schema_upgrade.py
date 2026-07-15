@@ -7,6 +7,7 @@ import pytest
 
 from alicebot_api import sqlite_schema
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
+from alicebot_api.vnext_capture import VNextCaptureService, capture_dedupe_key_for_text
 
 
 def _table_statement(name: str) -> str:
@@ -86,15 +87,17 @@ def test_v0_7_data_bearing_file_upgrades_status_check_and_preserves_children() -
     conn.execute("UPDATE memories SET status = 'stale' WHERE id = ?", (memory_id,))
     conn.commit()
 
-    assert conn.execute(
-        "SELECT status, canonical_text FROM memories WHERE id = ?", (memory_id,)
-    ).fetchone() == ("stale", "Preserve this seeded memory")
+    assert conn.execute("SELECT status, canonical_text FROM memories WHERE id = ?", (memory_id,)).fetchone() == (
+        "stale",
+        "Preserve this seeded memory",
+    )
     assert conn.execute(
         "SELECT memory_id, text_after FROM memory_revisions WHERE id = ?", (revision_id,)
     ).fetchone() == (memory_id, "Preserve this seeded memory")
-    assert conn.execute(
-        "SELECT memory_id, title FROM open_loops WHERE id = ?", (loop_id,)
-    ).fetchone() == (memory_id, "Verify public release")
+    assert conn.execute("SELECT memory_id, title FROM open_loops WHERE id = ?", (loop_id,)).fetchone() == (
+        memory_id,
+        "Verify public release",
+    )
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     assert {
         "project_id",
@@ -301,12 +304,8 @@ def test_bootstrap_repairs_identifiers_left_on_tombstone_by_prior_bootstrap() ->
         assert (live_digest, live_confirmation) == ("duplicate-digest", "duplicate-confirmation")
         # The live canonical row no longer points at a tombstone.
         live_meta = json.loads(live_metadata)
-        assert "duplicate_commit_digest_canonical_memory_id" not in live_meta.get(
-            "lifecycle_migration", {}
-        )
-        assert "duplicate_confirmation_id_canonical_memory_id" not in live_meta.get(
-            "lifecycle_migration", {}
-        )
+        assert "duplicate_commit_digest_canonical_memory_id" not in live_meta.get("lifecycle_migration", {})
+        assert "duplicate_confirmation_id_canonical_memory_id" not in live_meta.get("lifecycle_migration", {})
         tombstone_digest, tombstone_confirmation = conn.execute(
             "SELECT commit_digest, confirmation_id FROM memories WHERE id = ?", (tombstone_id,)
         ).fetchone()
@@ -375,6 +374,56 @@ def test_bootstrap_promotes_and_reads_legacy_nested_multi_project_scope() -> Non
     )
 
 
+def test_bootstrap_reopen_never_rewrites_an_explicit_empty_project_scope(tmp_path) -> None:
+    db_path = tmp_path / "explicit-empty-scope.db"
+    user_id = "00000000-0000-0000-0000-000000000261"
+    memory_id = "00000000-0000-0000-0000-000000000262"
+    metadata_text = '{"project_scope":[],"agentic_memory":{"project_scope":["stale-project"]}}'
+    conn = sqlite3.connect(db_path)
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    ensure_sqlite_user(conn, user_id, "explicit-empty-scope@example.com")
+    conn.execute(
+        """
+        INSERT INTO memories (
+          id, user_id, memory_key, value, status, source_event_ids,
+          memory_type, canonical_text, domain, sensitivity, project_id,
+          metadata_json
+        )
+        VALUES (?, ?, 'explicit.empty.scope', '{}', 'active', '[]',
+                'semantic', 'Explicit empty scope', 'project', 'internal',
+                'stale-project', ?)
+        """,
+        (memory_id, user_id, metadata_text),
+    )
+    conn.commit()
+    conn.close()
+
+    for _ in range(2):
+        conn = sqlite3.connect(db_path)
+        sqlite_schema.bootstrap_sqlite_schema(conn)
+        conn.commit()
+        conn.close()
+
+    conn = sqlite3.connect(db_path)
+    raw_project_id, raw_metadata = conn.execute(
+        "SELECT project_id, metadata_json FROM memories WHERE id = ?", (memory_id,)
+    ).fetchone()
+    assert raw_project_id == "stale-project"
+    assert raw_metadata == metadata_text
+    store = SQLiteVNextStore(conn, user_id)
+    assert store.list_memories(projects=("stale-project",)) == []
+    assert (
+        store.find_live_memory_by_canonical_text(
+            "Explicit empty scope",
+            domain="project",
+            sensitivity="internal",
+            project_scope=(),
+        )["id"]
+        == memory_id
+    )
+    conn.close()
+
+
 def test_bootstrap_backfills_legacy_source_dedupe_keys_per_project_scope() -> None:
     conn = sqlite3.connect(":memory:")
     sqlite_schema.bootstrap_sqlite_schema(conn)
@@ -406,11 +455,398 @@ def test_bootstrap_backfills_legacy_source_dedupe_keys_per_project_scope() -> No
     rows = conn.execute("SELECT dedupe_key FROM sources ORDER BY id").fetchall()
     assert all(row[0].startswith("capture-md5:") for row in rows)
     assert rows[0][0] != rows[1][0]
-    index = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE name = 'sources_user_dedupe_key_unique_idx'"
-    ).fetchone()[0]
+    index = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'sources_user_dedupe_key_unique_idx'").fetchone()[
+        0
+    ]
     assert "UNIQUE INDEX" in index
     assert "deleted_at IS NULL" in index
+
+
+def test_bootstrap_repairs_precanonical_source_dedupe_identity_once() -> None:
+    conn = sqlite3.connect(":memory:")
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    user_id = "00000000-0000-0000-0000-000000000281"
+    ensure_sqlite_user(conn, user_id, "source-identity-repair@example.com")
+    raw_text = "\tFact: canonical scope identity repairs old keys.\n"
+    for source_id, captured_at, scope, old_key in (
+        (
+            "00000000-0000-0000-0000-000000000282",
+            "2026-01-01T00:00:00Z",
+            [" Beta ", "ALICE", "alice"],
+            "capture-md5:old-a",
+        ),
+        (
+            "00000000-0000-0000-0000-000000000283",
+            "2026-01-02T00:00:00Z",
+            ["alice", "beta"],
+            "capture-md5:old-b",
+        ),
+    ):
+        conn.execute(
+            """
+            INSERT INTO sources (
+              id, user_id, source_type, content_hash, dedupe_key, captured_at,
+              domain, sensitivity, metadata_json
+            ) VALUES (?, ?, 'manual_text', ?, ?, ?, 'project', 'private', ?)
+            """,
+            (
+                source_id,
+                user_id,
+                f"sha256:{source_id}",
+                old_key,
+                captured_at,
+                json.dumps({"raw_text": raw_text, "project_scope": scope}),
+            ),
+        )
+    conn.execute(
+        "DELETE FROM alice_schema_state WHERE key = ?",
+        (sqlite_schema._SOURCE_DEDUPE_IDENTITY_STATE_KEY,),
+    )
+    conn.commit()
+
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+
+    expected = capture_dedupe_key_for_text(
+        raw_text,
+        ("alice", "beta"),
+        domain="project",
+        sensitivity="private",
+    )
+    assert conn.execute("SELECT dedupe_key FROM sources ORDER BY captured_at, id").fetchall() == [(expected,), (None,)]
+    assert conn.execute(
+        "SELECT value FROM alice_schema_state WHERE key = ?",
+        (sqlite_schema._SOURCE_DEDUPE_IDENTITY_STATE_KEY,),
+    ).fetchone() == (sqlite_schema._SOURCE_DEDUPE_IDENTITY_VERSION,)
+
+    # The versioned fast path does not rewrite already-repaired identities.
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    assert conn.execute("SELECT dedupe_key FROM sources ORDER BY captured_at, id").fetchall() == [(expected,), (None,)]
+
+
+def test_bootstrap_v5_dedupe_repair_preserves_unicode_scope_distinctions() -> None:
+    conn = sqlite3.connect(":memory:")
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    user_id = "00000000-0000-0000-0000-000000000311"
+    ensure_sqlite_user(conn, user_id, "source-unicode-identity@example.com")
+    raw_text = "Fact: conservative Unicode project identity is stable."
+    scopes = ("ALICE", "alice", "İ", "i", "Straße", "STRASSE", "Σ", "σ", "ς")
+    for index, scope in enumerate(scopes, start=1):
+        conn.execute(
+            """
+            INSERT INTO sources (
+              id, user_id, source_type, content_hash, dedupe_key, captured_at,
+              domain, sensitivity, metadata_json
+            ) VALUES (?, ?, 'manual_text', ?, ?, ?, 'project', 'private', ?)
+            """,
+            (
+                f"00000000-0000-0000-0002-{index:012d}",
+                user_id,
+                f"sha256:unicode-{index}",
+                f"capture-md5:old-unicode-{index}",
+                f"2026-01-{index:02d}T00:00:00Z",
+                json.dumps({"raw_text": raw_text, "project_scope": [scope]}, ensure_ascii=False),
+            ),
+        )
+    conn.execute(
+        "UPDATE alice_schema_state SET value = '2' WHERE key = ?",
+        (sqlite_schema._SOURCE_DEDUPE_IDENTITY_STATE_KEY,),
+    )
+    conn.commit()
+
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+
+    rows = conn.execute("SELECT metadata_json, dedupe_key FROM sources ORDER BY captured_at, id").fetchall()
+    repaired = {json.loads(metadata_json)["project_scope"][0]: dedupe_key for metadata_json, dedupe_key in rows}
+    assert repaired["ALICE"] == capture_dedupe_key_for_text(
+        raw_text,
+        ("alice",),
+        domain="project",
+        sensitivity="private",
+    )
+    assert repaired["alice"] is None
+    for scope in ("İ", "i", "Straße", "STRASSE", "Σ", "σ", "ς"):
+        assert repaired[scope] == capture_dedupe_key_for_text(
+            raw_text,
+            (scope,),
+            domain="project",
+            sensitivity="private",
+        )
+    assert len({repaired[scope] for scope in ("İ", "i", "Straße", "STRASSE", "Σ", "σ", "ς")}) == 7
+    assert conn.execute(
+        "SELECT value FROM alice_schema_state WHERE key = ?",
+        (sqlite_schema._SOURCE_DEDUPE_IDENTITY_STATE_KEY,),
+    ).fetchone() == (sqlite_schema._SOURCE_DEDUPE_IDENTITY_VERSION,)
+
+
+def test_bootstrap_v5_canonicalizes_finite_integral_numeric_source_scope() -> None:
+    conn = sqlite3.connect(":memory:")
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    user_id = "00000000-0000-0000-0002-000000000020"
+    ensure_sqlite_user(conn, user_id, "source-numeric-identity@example.com")
+    raw_text = "Fact: Integral JSON spellings share one project identity."
+    cases = (
+        ("00000000-0000-0000-0002-000000000021", "2026-01-01T00:00:00Z", [1]),
+        ("00000000-0000-0000-0002-000000000022", "2026-01-02T00:00:00Z", [1.0]),
+        ("00000000-0000-0000-0002-000000000023", "2026-01-03T00:00:00Z", [-0.0]),
+        ("00000000-0000-0000-0002-000000000024", "2026-01-04T00:00:00Z", [0]),
+        ("00000000-0000-0000-0002-000000000025", "2026-01-05T00:00:00Z", [True]),
+    )
+    for source_id, captured_at, scope in cases:
+        conn.execute(
+            """
+            INSERT INTO sources (
+              id, user_id, source_type, content_hash, dedupe_key, captured_at,
+              domain, sensitivity, metadata_json
+            ) VALUES (?, ?, 'manual_text', ?, ?, ?, 'project', 'private', ?)
+            """,
+            (
+                source_id,
+                user_id,
+                f"sha256:{source_id}",
+                f"capture-md5:old-{source_id}",
+                captured_at,
+                json.dumps({"raw_text": raw_text, "project_scope": scope}),
+            ),
+        )
+    conn.execute(
+        "UPDATE alice_schema_state SET value = '4' WHERE key = ?",
+        (sqlite_schema._SOURCE_DEDUPE_IDENTITY_STATE_KEY,),
+    )
+    conn.commit()
+
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+
+    repaired = conn.execute("SELECT id, dedupe_key FROM sources ORDER BY captured_at, id").fetchall()
+    assert repaired[0][1] == capture_dedupe_key_for_text(
+        raw_text,
+        ("1",),
+        domain="project",
+        sensitivity="private",
+    )
+    assert repaired[1][1] is None
+    assert repaired[2][1] == capture_dedupe_key_for_text(
+        raw_text,
+        ("0",),
+        domain="project",
+        sensitivity="private",
+    )
+    assert repaired[3][1] is None
+    assert repaired[4][1] == capture_dedupe_key_for_text(
+        raw_text,
+        ("True",),
+        domain="project",
+        sensitivity="private",
+    )
+
+
+@pytest.mark.parametrize(
+    ("case_name", "scope_metadata"),
+    (
+        (
+            "canonical",
+            {
+                "project_scope": [" Legacy Project "],
+                "agentic_memory": {"project_scope": ["stale-project"]},
+            },
+        ),
+        (
+            "agentic_project_scope",
+            {
+                "project_id": "stale-project",
+                "agentic_memory": {"project_scope": [" Legacy Project "]},
+            },
+        ),
+        (
+            "agent_identity_project_scope",
+            {
+                "project_id": "stale-project",
+                "agent_identity": {"project_scope": [" Legacy Project "]},
+            },
+        ),
+        (
+            "metadata_canonical",
+            {"metadata_json": {"project_scope": [" Legacy Project "]}},
+        ),
+        (
+            "scope_canonical",
+            {"scope_json": {"project_scope": [" Legacy Project "]}},
+        ),
+        (
+            "metadata_identity_project_scope",
+            {"metadata_json": {"agent_identity": {"project_scope": [" Legacy Project "]}}},
+        ),
+        (
+            "scope_agentic_project_scope",
+            {"scope_json": {"agentic_memory": {"project_scope": [" Legacy Project "]}}},
+        ),
+        (
+            "project_id",
+            {"project_id": " Legacy Project "},
+        ),
+        (
+            "project",
+            {"project": " Legacy Project "},
+        ),
+        (
+            "projects",
+            {"projects": [" Legacy Project "]},
+        ),
+        (
+            "agentic_project_id",
+            {"agentic_memory": {"project_id": " Legacy Project "}},
+        ),
+        (
+            "agentic_project",
+            {"agentic_memory": {"project": " Legacy Project "}},
+        ),
+        (
+            "agentic_projects",
+            {"agentic_memory": {"projects": [" Legacy Project "]}},
+        ),
+        (
+            "metadata_project_id",
+            {"metadata_json": {"project_id": " Legacy Project "}},
+        ),
+        (
+            "scope_project",
+            {"scope_json": {"project": " Legacy Project "}},
+        ),
+        (
+            "scope_agentic_projects",
+            {"scope_json": {"agentic_memory": {"projects": [" Legacy Project "]}}},
+        ),
+    ),
+)
+def test_bootstrap_v4_resolves_legacy_source_scope_and_blocks_duplicate_recapture(
+    case_name: str,
+    scope_metadata: dict[str, object],
+) -> None:
+    """Every source-reachable resolver form repairs to the scoped identity."""
+
+    conn = sqlite3.connect(":memory:")
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    user_id = "00000000-0000-0000-0000-000000000321"
+    source_id = "00000000-0000-0000-0000-000000000322"
+    ensure_sqlite_user(conn, user_id, f"source-{case_name}@example.com")
+    raw_text = f"Fact: {case_name} preserves its legacy source scope."
+    metadata = {"raw_text": raw_text, **scope_metadata}
+    conn.execute(
+        """
+        INSERT INTO sources (
+          id, user_id, source_type, content_hash, dedupe_key, captured_at,
+          domain, sensitivity, metadata_json
+        ) VALUES (?, ?, 'manual_text', ?, 'capture-md5:pre-v4',
+                  '2026-01-01T00:00:00Z', 'project', 'private', ?)
+        """,
+        (
+            source_id,
+            user_id,
+            f"sha256:{case_name}",
+            json.dumps(metadata),
+        ),
+    )
+    conn.execute(
+        "UPDATE alice_schema_state SET value = '3' WHERE key = ?",
+        (sqlite_schema._SOURCE_DEDUPE_IDENTITY_STATE_KEY,),
+    )
+    conn.commit()
+
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+
+    expected_scoped = capture_dedupe_key_for_text(
+        raw_text,
+        ("Legacy Project",),
+        domain="project",
+        sensitivity="private",
+    )
+    unscoped = capture_dedupe_key_for_text(
+        raw_text,
+        domain="project",
+        sensitivity="private",
+    )
+    repaired_key = conn.execute(
+        "SELECT dedupe_key FROM sources WHERE id = ?",
+        (source_id,),
+    ).fetchone()[0]
+    assert repaired_key == expected_scoped
+    assert repaired_key != unscoped
+
+    result = VNextCaptureService(SQLiteVNextStore(conn, user_id)).capture_text(
+        raw_text,
+        project_scope=("Legacy Project",),
+        domain="project",
+        sensitivity="private",
+    )
+    assert result.duplicate is True
+    assert result.source_id == source_id
+    assert conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 1
+
+
+def test_bootstrap_v4_keeps_blank_nested_canonical_source_scope_authoritative() -> None:
+    """Blank nested canonical scope must not resurrect a stale singular alias."""
+
+    conn = sqlite3.connect(":memory:")
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    user_id = "00000000-0000-0000-0000-000000000323"
+    source_id = "00000000-0000-0000-0000-000000000324"
+    ensure_sqlite_user(conn, user_id, "blank-nested-source-scope@example.com")
+    raw_text = "Fact: blank nested canonical source scope remains authoritative."
+    conn.execute(
+        """
+        INSERT INTO sources (
+          id, user_id, source_type, content_hash, dedupe_key, captured_at,
+          domain, sensitivity, metadata_json
+        ) VALUES (?, ?, 'manual_text', ?, 'capture-md5:pre-v4',
+                  '2026-01-01T00:00:00Z', 'project', 'private', ?)
+        """,
+        (
+            source_id,
+            user_id,
+            "sha256:blank-nested-canonical-scope",
+            json.dumps(
+                {
+                    "raw_text": raw_text,
+                    "project_id": " Legacy Project ",
+                    "agent_identity": {"project_scope": ["\t\n"]},
+                }
+            ),
+        ),
+    )
+    conn.execute(
+        "UPDATE alice_schema_state SET value = '3' WHERE key = ?",
+        (sqlite_schema._SOURCE_DEDUPE_IDENTITY_STATE_KEY,),
+    )
+    conn.commit()
+
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+
+    unscoped = capture_dedupe_key_for_text(
+        raw_text,
+        domain="project",
+        sensitivity="private",
+    )
+    stale_scoped = capture_dedupe_key_for_text(
+        raw_text,
+        ("Legacy Project",),
+        domain="project",
+        sensitivity="private",
+    )
+    repaired_key = conn.execute(
+        "SELECT dedupe_key FROM sources WHERE id = ?",
+        (source_id,),
+    ).fetchone()[0]
+    assert repaired_key == unscoped
+    assert repaired_key != stale_scoped
+
+    result = VNextCaptureService(SQLiteVNextStore(conn, user_id)).capture_text(
+        raw_text,
+        project_scope=("Legacy Project",),
+        domain="project",
+        sensitivity="private",
+    )
+    assert result.duplicate is False
+    assert result.source_id != source_id
+    assert conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 2
 
 
 def test_bootstrap_source_dedupe_fast_path_skips_complete_metadata_scan(monkeypatch) -> None:
@@ -555,9 +991,7 @@ def test_content_update_transactionally_expires_only_derived_entity_edges() -> N
         patch={"canonical_text": "Zara Quill said hello."},
     )
 
-    assert [str(edge["id"]) for edge in store.list_edges(from_id=str(memory["id"]))] == [
-        str(manual["id"])
-    ]
+    assert [str(edge["id"]) for edge in store.list_edges(from_id=str(memory["id"]))] == [str(manual["id"])]
     assert conn.execute(
         "SELECT valid_to IS NOT NULL FROM graph_edges WHERE id = ?", (str(mention["id"]),)
     ).fetchone() == (1,)

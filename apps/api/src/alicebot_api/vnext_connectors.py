@@ -21,7 +21,7 @@ from alicebot_api.telegram_channels import normalize_telegram_update
 from alicebot_api.vnext_capture import SourceCaptureInput, VNextCaptureService, VNextCaptureStore
 from alicebot_api.vnext_embeddings import DeferredMemoryEmbedding
 from alicebot_api.vnext_event_log import append_event
-from alicebot_api.vnext_project_scope import normalize_project_scope
+from alicebot_api.vnext_project_scope import resolve_project_scope
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_secrets import SecretProvider, default_secret_provider, redact_secret_fields
 
@@ -1717,10 +1717,12 @@ class VNextConnectorService:
             # owning project can retrieve it and other projects are excluded.
             # Without this the candidate was unscoped for canonical retrieval
             # even though the source was scoped (audit 2 P1 #2).
-            proposal_scope = normalize_project_scope(
-                item.metadata_json.get("project_scope")
-                or (agent_identity.get("project_scope") if isinstance(agent_identity, dict) else None)
-            )
+            proposal_scope = resolve_project_scope(
+                {
+                    "metadata_json": item.metadata_json,
+                    "scope_json": agent_identity,
+                }
+            ).values
             memory = self.store.create_memory(
                 {
                     "memory_key": f"vnext.agent_output.{sha256((item.external_id + item.raw_text).encode('utf-8')).hexdigest()[:16]}",

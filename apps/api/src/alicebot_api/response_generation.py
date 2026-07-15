@@ -86,6 +86,7 @@ class OpenAICompatibleTransportConfig:
     api_key: str
     timeout_seconds: int
     invoke_path: str = "/responses"
+    auth_mode: str = "bearer"
 
 
 class _OpenAIResponseContentItem(TypedDict, total=False):
@@ -278,18 +279,25 @@ def _build_model_http_request(
     *,
     base_url: str,
     api_key: str,
+    auth_mode: str,
     invoke_path: str,
     payload: JsonObject,
 ) -> Request:
     normalized_invoke_path = invoke_path if invoke_path.startswith("/") else f"/{invoke_path}"
     endpoint = base_url.rstrip("/") + normalized_invoke_path
+    normalized_auth_mode = auth_mode.strip().lower()
+    headers = {"Content-Type": "application/json"}
+    if normalized_auth_mode == "bearer":
+        token = api_key.strip()
+        if token == "":  # nosec B105
+            raise ModelInvocationError("MODEL_API_KEY is not configured")
+        headers["Authorization"] = f"Bearer {token}"
+    elif normalized_auth_mode != "none":
+        raise ModelInvocationError(f"unsupported provider auth_mode: {auth_mode}")
     return Request(
         endpoint,
         data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
 
@@ -347,13 +355,12 @@ def invoke_openai_compatible_model(
 ) -> ModelInvocationResponse:
     if request.provider != "openai_responses":
         raise ModelInvocationError(f"unsupported model provider: {request.provider}")
-    if transport.api_key == "":
-        raise ModelInvocationError("MODEL_API_KEY is not configured")
 
     payload = _build_openai_responses_payload(request)
     http_request = _build_model_http_request(
         base_url=transport.base_url,
         api_key=transport.api_key,
+        auth_mode=transport.auth_mode,
         invoke_path=transport.invoke_path,
         payload=payload,
     )

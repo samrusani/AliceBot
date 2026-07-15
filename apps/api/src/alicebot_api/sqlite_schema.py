@@ -50,7 +50,11 @@ from hashlib import md5
 import json
 import sqlite3
 
-from alicebot_api.vnext_project_scope import normalize_project_scope
+from alicebot_api.vnext_project_scope import (
+    normalize_project_scope,
+    project_scope_identity,
+    resolve_source_metadata_project_scope,
+)
 
 DOMAINS = (
     "professional",
@@ -257,6 +261,12 @@ _NOW_UTC_ISO_SQL = "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
 REDACTION_MARKER = "[REDACTED]"
 
 _TABLE_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS alice_schema_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+    """,
     f"""
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -1287,8 +1297,9 @@ def _backfill_legacy_memory_project_scopes(conn: sqlite3.Connection) -> None:
     ``metadata_json.agentic_memory.project_scope``.  Canonical readers use the
     top-level metadata array, while the singular ``project_id`` column is safe
     only when the normalized scope contains exactly one project.  The query is
-    deliberately limited to rows without a non-empty top-level array so a
-    stale nested value can never widen an already-canonical scope.
+    deliberately limited to rows where the canonical key is absent. An
+    existing empty or malformed canonical value is authoritative and must
+    never be rewritten from stale compatibility metadata.
     """
     cursor = conn.execute(
         """
@@ -1296,10 +1307,7 @@ def _backfill_legacy_memory_project_scopes(conn: sqlite3.Connection) -> None:
         FROM memories
         WHERE json_type(metadata_json, '$.agentic_memory.project_scope') = 'array'
           AND json_array_length(metadata_json, '$.agentic_memory.project_scope') > 0
-          AND (
-            json_type(metadata_json, '$.project_scope') IS NOT 'array'
-            OR json_array_length(metadata_json, '$.project_scope') = 0
-          )
+          AND json_type(metadata_json, '$.project_scope') IS NULL
         """
     )
     column_indexes = {description[0]: index for index, description in enumerate(cursor.description)}
@@ -1348,7 +1356,7 @@ def _source_capture_dedupe_key(
     sensitivity: object,
 ) -> str:
     normalized = raw_text.replace("\r\n", "\n").replace("\r", "\n").strip()
-    scope = tuple(sorted(normalize_project_scope(project_scope)))
+    scope = project_scope_identity(project_scope)
     if scope:
         normalized += "\x1fproject_scope:" + "\x1f".join(scope)
     normalized += "\x1fdomain:" + str(domain or "unknown").strip().casefold()
@@ -1396,10 +1404,16 @@ def _backfill_source_dedupe_keys(conn: sqlite3.Connection) -> None:
         else:
             metadata = {}
         raw_text = metadata.get("raw_text")
+        # Resolve the persisted source row through the same presence-aware
+        # canonical/legacy precedence as runtime reads.  In particular, early
+        # sources may carry scope under agentic/agent identity metadata or the
+        # singular project aliases; treating only metadata.project_scope as
+        # scoped would permanently assign those rows the global dedupe key.
+        source_scope = resolve_source_metadata_project_scope(metadata).values
         key = (
             _source_capture_dedupe_key(
                 raw_text=raw_text,
-                project_scope=metadata.get("project_scope"),
+                project_scope=source_scope,
                 domain=record["domain"],
                 sensitivity=record["sensitivity"],
             )
@@ -1423,6 +1437,42 @@ def _backfill_source_dedupe_keys(conn: sqlite3.Connection) -> None:
             """,
             (key, str(record["id"]), key),
         )
+
+
+_SOURCE_DEDUPE_IDENTITY_STATE_KEY = "source_dedupe_identity_version"
+_SOURCE_DEDUPE_IDENTITY_VERSION = "5"
+
+
+def _repair_source_dedupe_identity(conn: sqlite3.Connection) -> None:
+    """Versioned repair to the current conservative project identity."""
+
+    state = conn.execute(
+        "SELECT value FROM alice_schema_state WHERE key = ?",
+        (_SOURCE_DEDUPE_IDENTITY_STATE_KEY,),
+    ).fetchone()
+    state_value = state.get("value") if isinstance(state, dict) else (state[0] if state else None)
+    if state_value == _SOURCE_DEDUPE_IDENTITY_VERSION:
+        _backfill_source_dedupe_keys(conn)
+        return
+
+    conn.execute("DROP INDEX IF EXISTS sources_user_dedupe_key_unique_idx")
+    conn.execute("UPDATE sources SET dedupe_key = NULL WHERE deleted_at IS NULL")
+    _backfill_source_dedupe_keys(conn)
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX sources_user_dedupe_key_unique_idx
+          ON sources (user_id, dedupe_key)
+          WHERE deleted_at IS NULL AND dedupe_key IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO alice_schema_state (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (_SOURCE_DEDUPE_IDENTITY_STATE_KEY, _SOURCE_DEDUPE_IDENTITY_VERSION),
+    )
 
 
 def _backfill_memory_agent_attribution(conn: sqlite3.Connection) -> None:
@@ -1709,7 +1759,7 @@ def bootstrap_sqlite_schema(conn: sqlite3.Connection) -> None:
     # Install the empty-work index before probing for rows. On healthy current
     # files this keeps every open independent of total source count.
     conn.execute(_SOURCE_DEDUPE_BACKFILL_INDEX_SQL)
-    _backfill_source_dedupe_keys(conn)
+    _repair_source_dedupe_identity(conn)
     _backfill_legacy_memory_project_scopes(conn)
     _backfill_memory_agent_attribution(conn)
     _deduplicate_memory_lookup_values(conn)

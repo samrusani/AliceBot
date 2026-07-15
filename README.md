@@ -12,7 +12,7 @@
 
 Alice is a local-first memory service that lets AI agents resume interrupted work, track open loops, recall decisions with provenance, and improve when corrected — instead of re-reading transcripts or trusting opaque summaries.
 
-In one historical run dated 2026-07-07, it scored **79.4%** on [LongMemEval](https://github.com/samrusani/AliceBot/blob/main/docs/benchmarks/longmemeval/README.md), a long-term-memory benchmark. That is a single-run receipt, not a repeated-run estimate or a fresh v0.10.2 measurement; it includes one disclosed trade-off on the abstention subset (25/30 → 22/30). The full per-question evidence, methodology, and reproduction script are committed to this repo. Open source, local-first, MIT-licensed.
+In one historical run dated 2026-07-07, it scored **79.4%** on [LongMemEval](https://github.com/samrusani/AliceBot/blob/main/docs/benchmarks/longmemeval/README.md), a long-term-memory benchmark. That is a single-run receipt, not a repeated-run estimate or a measurement of the current release; it includes one disclosed trade-off on the abstention subset (25/30 → 22/30). The full per-question evidence, methodology, and reproduction script are committed to this repo. Open source, local-first, MIT-licensed.
 
 Agents connect over MCP, HTTP API, or CLI. Humans stay in control: agent writes land as policy-checked commits or reviewable proposals, and a local review console is where memory gets approved, corrected, or forgotten. That review boundary is a feature, not a limitation — it is what makes the memory trustworthy enough to act on.
 
@@ -136,7 +136,9 @@ search degrades to full-text only and says so explicitly in the retrieval trace.
 
 ## Status
 
-`v0.10.3` is the latest published release. Alice is a public-alpha, pre-1.0 project.
+`v0.10.3` is the latest published release.
+`v0.10.4` is the current release-hardening candidate. It is not published.
+Alice is a public-alpha, pre-1.0 project.
 What that means in practice:
 
 - **Local-first, single-user.** One operator, one machine (or one headless server reached over SSH).
@@ -156,7 +158,7 @@ What that means in practice:
 - [Known limitations](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/known-limitations.md)
 - [Backup and restore](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/backup-and-restore.md)
 - [Security and privacy](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/security-and-privacy.md)
-- [v0.10.2 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.10.2-release-notes.md)
+- [v0.10.3 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.10.3-release-notes.md)
 - [Release procedure](https://github.com/samrusani/AliceBot/blob/main/RELEASING.md)
 - [Architecture](https://github.com/samrusani/AliceBot/blob/main/ARCHITECTURE.md)
 - [Roadmap](https://github.com/samrusani/AliceBot/blob/main/ROADMAP.md)

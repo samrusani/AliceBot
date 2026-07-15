@@ -27,6 +27,7 @@ import type {
   VNextWorkspacePayload,
 } from "../lib/api";
 import {
+  buildApiUrl,
   clearVNextOperatorAgentApiKey,
   confirmVNextMemory,
   createVNextContextPack,
@@ -1516,7 +1517,10 @@ export function VNextBrainWorkspace({
   const selectedLoop = workspace.openLoops.find((loop) => loop.id === selectedOpenLoopId) ?? workspace.openLoops[0] ?? null;
   const selectedConnector =
     INITIAL_CONNECTORS.find((connector) => connector.id === selectedConnectorId) ?? INITIAL_CONNECTORS[0];
-  const browserClipperEndpoint = `${apiBaseUrl || "http://127.0.0.1:8000"}/v0/vnext/connectors/browser-clipper/capture`;
+  const browserClipperEndpoint = buildApiUrl(
+    apiBaseUrl || "http://127.0.0.1:8000",
+    "/v0/vnext/connectors/browser-clipper/capture",
+  );
   const activeSourceLabel = dataSource === "live" ? "Live API" : "Demo fixture";
   const status = pendingAction ? "loading" : statusTone === "success" ? "success" : statusTone === "danger" ? "error" : isRefreshing ? "loading" : dataSource;
 

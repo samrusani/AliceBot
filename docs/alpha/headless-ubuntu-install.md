@@ -40,7 +40,7 @@ less install-alice.sh
 bash install-alice.sh --branch main --install-dir ~/alicebot
 ```
 
-For an immutable install after a release tag is published, replace `--branch main` with `--tag <release-tag>` (currently `--tag v0.10.2`).
+For an immutable install after a release tag is published, replace `--branch main` with `--tag <release-tag>` (currently `--tag v0.10.3`).
 
 Use `--non-interactive` only after you have chosen a safe install directory and know whether the host should install local Postgres.
 
@@ -145,6 +145,94 @@ SQL
 > `alicebot_app` does not exist — the migrations `GRANT` to that role by
 > name. Do not rename it, and make sure both role passwords match the
 > credentials in `DATABASE_URL` / `DATABASE_ADMIN_URL` before migrating.
+
+## Migration 0087/0089 Duplicate Preflight
+
+Existing PostgreSQL installations upgrading across migrations `0087` and
+`0089` must check the three new uniqueness keys before running Alembic. Run the
+following with `DATABASE_ADMIN_URL`; every query must return zero rows:
+
+```sql
+SELECT
+  user_id,
+  artifact_type,
+  metadata_json ->> 'workflow' AS workflow,
+  metadata_json ->> 'idempotency_digest' AS idempotency_digest,
+  count(*) AS duplicate_count,
+  array_agg(id ORDER BY created_at, id) AS row_ids
+FROM generated_artifacts
+WHERE metadata_json ->> 'idempotency_digest' IS NOT NULL
+GROUP BY user_id, artifact_type, metadata_json ->> 'workflow',
+         metadata_json ->> 'idempotency_digest'
+HAVING count(*) > 1;
+
+SELECT
+  user_id,
+  metadata_json ->> 'idempotency_digest' AS idempotency_digest,
+  count(*) AS duplicate_count,
+  array_agg(id ORDER BY created_at, id) AS row_ids
+FROM open_loops
+WHERE metadata_json ->> 'idempotency_digest' IS NOT NULL
+GROUP BY user_id, metadata_json ->> 'idempotency_digest'
+HAVING count(*) > 1;
+
+SELECT
+  user_id,
+  metadata_json ->> 'idempotency_digest' AS idempotency_digest,
+  count(*) AS duplicate_count,
+  array_agg(id ORDER BY created_at, id) AS row_ids
+FROM graph_edges
+WHERE metadata_json ->> 'idempotency_digest' IS NOT NULL
+GROUP BY user_id, metadata_json ->> 'idempotency_digest'
+HAVING count(*) > 1;
+```
+
+If any query returns rows, stop Alice writers and the scheduler, take a fresh
+backup, and inspect every listed ID before changing data. For generated
+artifacts and open loops, choose the authoritative survivor from lifecycle and
+provenance history, retire the duplicate through the normal review/lifecycle
+surface, and remove the digest only from a loser retained solely for history:
+
+```sql
+BEGIN;
+UPDATE generated_artifacts
+SET metadata_json = metadata_json - 'idempotency_digest'
+WHERE id = '<confirmed-retired-loser-id>'::uuid;
+
+UPDATE open_loops
+SET metadata_json = metadata_json - 'idempotency_digest'
+WHERE id = '<confirmed-resolved-or-dismissed-loser-id>'::uuid;
+COMMIT;
+```
+
+Do not apply those templates to active rows and do not blindly delete
+audit-bearing records. Graph edges have no lifecycle status: delete a loser
+only after verifying that its endpoints, edge type, validity interval,
+confidence, explanation, creator, and provenance metadata duplicate the chosen
+survivor. If rows with one digest differ materially, stop and investigate the
+producer rather than guessing which edge is correct.
+
+Re-run all three preflight queries and require zero rows before retrying
+`alembic upgrade head`. Migrations `0087` and `0089` automatically discard an
+invalid concurrent-index catalog entry, but they intentionally do not repair
+domain-row collisions. After the migration, verify that all three unique
+indexes are ready and valid:
+
+```sql
+SELECT c.relname, i.indisready, i.indisvalid
+FROM pg_catalog.pg_class AS c
+JOIN pg_catalog.pg_index AS i ON i.indexrelid = c.oid
+JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+WHERE n.nspname = current_schema()
+  AND c.relname IN (
+    'generated_artifacts_user_idempotency_digest_uidx',
+    'open_loops_user_idempotency_digest_uidx',
+    'graph_edges_user_idempotency_digest_uidx'
+  )
+ORDER BY c.relname;
+```
+
+The result must contain all three names with both booleans `true`.
 
 ```bash
 ./.venv/bin/python -m alembic -c apps/api/alembic.ini upgrade head

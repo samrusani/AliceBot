@@ -6,6 +6,12 @@ from typing import Iterable, Mapping
 from uuid import uuid4
 
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_project_scope import (
+    normalize_project_identifier,
+    normalize_project_scope,
+    project_scope_identity,
+    resolve_project_scope,
+)
 from alicebot_api.vnext_repositories import JsonObject
 
 
@@ -224,14 +230,12 @@ def _string_list(value: object) -> list[str]:
         return []
     if not isinstance(value, list):
         raise AgentIdentityValidationError("project_scope must be a list of strings")
-    values: list[str] = []
     for item in value:
         if not isinstance(item, str):
             raise AgentIdentityValidationError("project_scope must be a list of strings")
-        normalized = " ".join(item.split()).strip()
-        if normalized:
-            values.append(normalized)
-    return values
+        if normalize_project_identifier(item) == "":
+            raise AgentIdentityValidationError("project_scope identifiers must not be blank")
+    return list(normalize_project_scope(value))
 
 
 def _default_agent_type(agent_id: str) -> str:
@@ -283,59 +287,7 @@ def resource_project_scope(resource: Mapping[str, object] | None) -> tuple[str, 
     metadata must never widen the resource into another project.
     """
 
-    if resource is None:
-        return ()
-
-    def _normalized(value: object) -> tuple[str, ...]:
-        values: list[str] = []
-
-        def _add(item: object) -> None:
-            if isinstance(item, (str, int)):
-                normalized = " ".join(str(item).split()).strip()
-                if normalized:
-                    values.append(normalized)
-            elif isinstance(item, (list, tuple)):
-                for nested in item:
-                    _add(nested)
-
-        _add(value)
-        return tuple(dict.fromkeys(values))
-
-    containers = tuple(
-        container
-        for container_key in ("metadata_json", "scope_json")
-        if isinstance((container := resource.get(container_key)), Mapping)
-    )
-    if "project_scope" in resource:
-        return _normalized(resource.get("project_scope"))
-    for container in containers:
-        if "project_scope" in container:
-            return _normalized(container.get("project_scope"))
-
-    values: list[str] = []
-
-    def _add(value: object) -> None:
-        if isinstance(value, (str, int)):
-            normalized = " ".join(str(value).split()).strip()
-            if normalized:
-                values.append(normalized)
-        elif isinstance(value, (list, tuple)):
-            for item in value:
-                _add(item)
-
-    for key in ("project_id", "project"):
-        _add(resource.get(key))
-    for container in containers:
-        for key in ("project_id", "project", "projects"):
-            _add(container.get(key))
-        agentic = container.get("agentic_memory")
-        if isinstance(agentic, Mapping):
-            for key in ("project_id", "project", "projects", "project_scope"):
-                _add(agentic.get(key))
-        agent_identity = container.get("agent_identity")
-        if isinstance(agent_identity, Mapping):
-            _add(agent_identity.get("project_scope"))
-    return tuple(dict.fromkeys(values))
+    return resolve_project_scope(resource).values
 
 
 def evaluate_agent_policy(
@@ -400,8 +352,12 @@ def evaluate_agent_policy(
     # stay wholly inside it.  On a violation the effective scope is empty so a
     # caller cannot accidentally continue with the unauthorized request.
     if identity.project_scope_locked:
-        bound_scope = set(identity.project_scope)
-        out_of_scope = tuple(value for value in project_scope if value not in bound_scope)
+        bound_scope = set(project_scope_identity(identity.project_scope))
+        out_of_scope = tuple(
+            value
+            for value in project_scope
+            if not set(project_scope_identity((value,))).issubset(bound_scope)
+        )
         if out_of_scope or (require_explicit_project_scope and not project_scope):
             reasons.append("project_scope_binding_violation")
             decision = "blocked"

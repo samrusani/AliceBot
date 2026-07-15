@@ -7,7 +7,10 @@ memory, model-backed source-grounded synthesis, local connector-backed evidence
 capture, hardened connector settings/state/secrets, agent-facing context packs
 and context trees, governed agent proposals, and a local scheduler runtime.
 
-The vNext architecture is now the active Alice product line. `v0.10.3` is the latest published release. Alice remains local-first rather than a hosted launch; install the
+The vNext architecture is now the active Alice product line.
+`v0.10.3` is the latest published release.
+`v0.10.4` is the current remediation candidate. Alice remains
+local-first rather than a hosted launch; install the
 package entrypoints for normal use and use an editable checkout only for
 contributor workflows.
 

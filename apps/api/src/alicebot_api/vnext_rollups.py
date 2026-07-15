@@ -174,6 +174,7 @@ from alicebot_api.vnext_memory_version import (
     memory_matches_snapshot,
     memory_version_snapshot,
 )
+from alicebot_api.vnext_project_scope import project_scope_identity
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_store import FTS_QUERY_STOPWORDS
 
@@ -623,7 +624,7 @@ def _member_text(row: JsonObject) -> str:
 
 
 def _project_scope_key(row: JsonObject) -> tuple[str, ...]:
-    return tuple(sorted({value.casefold() for value in resource_project_scope(row)}))
+    return project_scope_identity(resource_project_scope(row))
 
 
 def _shared_project_scope(rows: tuple[JsonObject, ...] | list[JsonObject]) -> tuple[str, ...]:
@@ -1490,10 +1491,9 @@ def _scoped_rows(
             if domain not in domains and domain != "unknown":
                 continue
         if projects:
-            allowed_projects = {value.casefold() for value in projects}
-            if not any(
-                value.casefold() in allowed_projects
-                for value in resource_project_scope(row)
+            allowed_projects = set(project_scope_identity(projects))
+            if not allowed_projects.intersection(
+                project_scope_identity(resource_project_scope(row))
             ):
                 continue
         scoped.append(row)

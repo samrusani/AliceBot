@@ -9,7 +9,7 @@ from __future__ import annotations
 from alembic import op
 from sqlalchemy import text
 
-from alicebot_api.provider_configuration import provider_config_fingerprint
+from alicebot_api.provider_configuration import provider_config_fingerprint_v1
 
 
 revision = "20260713_0088"
@@ -54,7 +54,7 @@ def _backfill_provider_config_fingerprints() -> None:
         updates.append(
             {
                 "provider_id": row["id"],
-                "config_fingerprint_sha256": provider_config_fingerprint(
+                "config_fingerprint_sha256": provider_config_fingerprint_v1(
                     provider_key=str(row["provider_key"]),
                     model_provider=str(row["model_provider"]),
                     display_name=str(row["display_name"]),

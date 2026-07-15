@@ -230,6 +230,10 @@ export function HostedSettingsPanel({ apiBaseUrl }: HostedSettingsPanelProps) {
     }
   }
 
+  function selectedWorkspaceQuery() {
+    return { workspace_id: trimOrNull(workspaceId) ?? undefined };
+  }
+
   async function handleStartLink(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -316,9 +320,21 @@ export function HostedSettingsPanel({ apiBaseUrl }: HostedSettingsPanelProps) {
   async function handleRefreshTransportRecords() {
     await runOperation(async () => {
       const [messagePayload, threadPayload, receiptPayload] = await Promise.all([
-        requestTelegramJson<{ items: TelegramMessage[] }>("/v1/channels/telegram/messages"),
-        requestTelegramJson<{ items: TelegramThread[] }>("/v1/channels/telegram/threads"),
-        requestTelegramJson<{ items: TelegramReceipt[] }>("/v1/channels/telegram/delivery-receipts"),
+        requestTelegramJson<{ items: TelegramMessage[] }>(
+          "/v1/channels/telegram/messages",
+          undefined,
+          selectedWorkspaceQuery(),
+        ),
+        requestTelegramJson<{ items: TelegramThread[] }>(
+          "/v1/channels/telegram/threads",
+          undefined,
+          selectedWorkspaceQuery(),
+        ),
+        requestTelegramJson<{ items: TelegramReceipt[] }>(
+          "/v1/channels/telegram/delivery-receipts",
+          undefined,
+          selectedWorkspaceQuery(),
+        ),
       ]);
 
       setMessages(messagePayload.items);
@@ -333,6 +349,8 @@ export function HostedSettingsPanel({ apiBaseUrl }: HostedSettingsPanelProps) {
     await runOperation(async () => {
       const payload = await requestTelegramJson<{ notification_preferences: TelegramNotificationPreferences }>(
         "/v1/channels/telegram/notification-preferences",
+        undefined,
+        selectedWorkspaceQuery(),
       );
       setNotificationPreferences(payload.notification_preferences);
       setStatusTone("success");
@@ -356,6 +374,7 @@ export function HostedSettingsPanel({ apiBaseUrl }: HostedSettingsPanelProps) {
             daily_brief_window_start: "07:00",
           }),
         },
+        selectedWorkspaceQuery(),
       );
       setNotificationPreferences(payload.notification_preferences);
       setStatusTone("success");
@@ -365,7 +384,11 @@ export function HostedSettingsPanel({ apiBaseUrl }: HostedSettingsPanelProps) {
 
   async function handlePreviewDailyBrief() {
     await runOperation(async () => {
-      const payload = await requestTelegramJson<TelegramDailyBriefPreview>("/v1/channels/telegram/daily-brief");
+      const payload = await requestTelegramJson<TelegramDailyBriefPreview>(
+        "/v1/channels/telegram/daily-brief",
+        undefined,
+        selectedWorkspaceQuery(),
+      );
       setDailyBriefPreview(payload);
       setStatusTone("success");
       setStatusText("Loaded current daily brief preview and delivery policy.");
@@ -377,6 +400,7 @@ export function HostedSettingsPanel({ apiBaseUrl }: HostedSettingsPanelProps) {
       const payload = await requestTelegramJson<{ job: TelegramSchedulerJob; idempotent_replay: boolean }>(
         "/v1/channels/telegram/daily-brief/deliver",
         { method: "POST", body: JSON.stringify({}) },
+        selectedWorkspaceQuery(),
       );
       setStatusTone("success");
       setStatusText(
@@ -391,6 +415,8 @@ export function HostedSettingsPanel({ apiBaseUrl }: HostedSettingsPanelProps) {
   async function loadOpenLoopPrompts() {
     const payload = await requestTelegramJson<{ items: TelegramOpenLoopPrompt[] }>(
       "/v1/channels/telegram/open-loop-prompts",
+      undefined,
+      selectedWorkspaceQuery(),
     );
     setOpenLoopPrompts(payload.items);
   }
@@ -408,6 +434,7 @@ export function HostedSettingsPanel({ apiBaseUrl }: HostedSettingsPanelProps) {
       const payload = await requestTelegramJson<{ idempotent_replay: boolean }>(
         `/v1/channels/telegram/open-loop-prompts/${encodeURIComponent(promptId)}/deliver`,
         { method: "POST", body: JSON.stringify({}) },
+        selectedWorkspaceQuery(),
       );
       setStatusTone("success");
       setStatusText(
@@ -423,6 +450,8 @@ export function HostedSettingsPanel({ apiBaseUrl }: HostedSettingsPanelProps) {
   async function loadSchedulerJobs() {
     const payload = await requestTelegramJson<{ items: TelegramSchedulerJob[] }>(
       "/v1/channels/telegram/scheduler/jobs",
+      undefined,
+      selectedWorkspaceQuery(),
     );
     setSchedulerJobs(payload.items);
   }

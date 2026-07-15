@@ -5,9 +5,15 @@ from __future__ import annotations
 import threading
 from uuid import uuid4
 
+import pytest
+
 from alicebot_api.db import user_connection
-from alicebot_api.store import ContinuityStore
-from alicebot_api.vnext_capture import VNextCaptureService
+from alicebot_api.store import ContinuityStore, ContinuityStoreInvariantError
+from alicebot_api.vnext_capture import (
+    VNextCaptureService,
+    capture_dedupe_key_for_text,
+    content_hash_for_text,
+)
 from alicebot_api.vnext_store import PostgresVNextStore
 
 
@@ -125,3 +131,113 @@ def test_exact_recapture_with_changed_classification_preserves_postgres_source_a
             if row["metadata_json"].get("source_id") in {first.source_id, reclassified.source_id}
         }
         assert classified_candidates == {("project", "public"), ("professional", "private")}
+
+
+def test_source_scope_mutation_rotates_postgres_identity_and_releases_old_capture(
+    migrated_database_urls,
+) -> None:
+    user_id = uuid4()
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        ContinuityStore(conn).create_user(
+            user_id,
+            f"capture-mutation-{user_id}@example.invalid",
+            "Capture mutation",
+        )
+        store = PostgresVNextStore(conn)
+        service = VNextCaptureService(store)
+        text = "Fact: Reviewed source scope changes must rotate identity atomically."
+        first = service.capture_text(
+            text,
+            domain="project",
+            sensitivity="private",
+            project_scope=("Alpha",),
+        )
+        source = store.get_source(str(first.source_id))
+        assert source is not None
+        updated = store.update_source(
+            source_id=str(first.source_id),
+            patch={
+                "metadata_json": {
+                    **source["metadata_json"],
+                    "project_scope": ["Beta"],
+                }
+            },
+        )
+
+        assert updated["dedupe_key"] == capture_dedupe_key_for_text(
+            text,
+            ("Beta",),
+            domain="project",
+            sensitivity="private",
+        )
+        beta_repeat = service.capture_text(
+            text,
+            domain="project",
+            sensitivity="private",
+            project_scope=("Beta",),
+        )
+        alpha_replacement, alpha_created = store.get_or_create_source(
+            {
+                "source_type": "manual_text",
+                "content_hash": content_hash_for_text(text, ("Alpha",)),
+                "dedupe_key": capture_dedupe_key_for_text(
+                    text,
+                    ("Alpha",),
+                    domain="project",
+                    sensitivity="private",
+                ),
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"raw_text": text, "project_scope": ["Alpha"]},
+            }
+        )
+
+        assert beta_repeat.status == "duplicate"
+        assert beta_repeat.source_id == first.source_id
+        assert alpha_created is True
+        assert str(alpha_replacement["id"]) != first.source_id
+
+
+def test_source_scope_mutation_collision_rolls_back_postgres_row(
+    migrated_database_urls,
+) -> None:
+    user_id = uuid4()
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        ContinuityStore(conn).create_user(
+            user_id,
+            f"capture-collision-{user_id}@example.invalid",
+            "Capture collision",
+        )
+        store = PostgresVNextStore(conn)
+        service = VNextCaptureService(store)
+        text = "Fact: Collision rollback leaves both source identities intact."
+        alpha = service.capture_text(
+            text,
+            domain="project",
+            sensitivity="private",
+            project_scope=("Alpha",),
+        )
+        service.capture_text(
+            text,
+            domain="project",
+            sensitivity="private",
+            project_scope=("Beta",),
+        )
+        before = store.get_source(str(alpha.source_id))
+        assert before is not None
+
+        with pytest.raises(ContinuityStoreInvariantError, match="already belongs"):
+            store.update_source(
+                source_id=str(alpha.source_id),
+                patch={
+                    "metadata_json": {
+                        **before["metadata_json"],
+                        "project_scope": ["Beta"],
+                    }
+                },
+            )
+
+        after = store.get_source(str(alpha.source_id))
+        assert after is not None
+        assert after["dedupe_key"] == before["dedupe_key"]
+        assert after["metadata_json"] == before["metadata_json"]

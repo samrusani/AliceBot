@@ -203,51 +203,51 @@ export default async function TasksPage({
   let stepSummary = selectedTask ? getFixtureTaskStepSummary(selectedTask.id) : null;
   let stepSource: ApiSource = selectedTask ? "fixture" : listSource;
 
-  if (selectedTask && liveModeReady && taskSource === "live") {
-    try {
-      const payload = await getTaskSteps(apiConfig.apiBaseUrl, selectedTask.id, apiConfig.userId);
-      steps = payload.items;
-      stepSummary = payload.summary;
-      stepSource = "live";
-    } catch {
-      steps = getFixtureTaskSteps(selectedTask.id);
-      stepSummary = getFixtureTaskStepSummary(selectedTask.id);
-      stepSource = "fixture";
-    }
-  }
-
   let execution = selectedTask?.latest_execution_id ? getFixtureExecution(selectedTask.latest_execution_id) : null;
   let executionSource: ApiSource | null = execution ? "fixture" : null;
   let executionUnavailableMessage: string | null = null;
-
-  if (selectedTask?.latest_execution_id && liveModeReady && taskSource === "live") {
-    try {
-      const payload = await getToolExecution(
-        apiConfig.apiBaseUrl,
-        selectedTask.latest_execution_id,
-        apiConfig.userId,
-      );
-      execution = payload.execution;
-      executionSource = "live";
-    } catch {
-      execution = getFixtureExecution(selectedTask.latest_execution_id);
-      executionSource = execution ? "fixture" : null;
-      executionUnavailableMessage = execution
-        ? null
-        : "The latest execution record could not be read from the configured backend.";
-    }
-  }
 
   let taskRuns = selectedTask ? buildFixtureTaskRuns(selectedTask) : [];
   let taskRunSource: ApiSource | "unavailable" = selectedTask ? "fixture" : "unavailable";
   let taskRunUnavailableMessage: string | null = null;
 
   if (selectedTask && liveModeReady && taskSource === "live") {
-    try {
-      const payload = await listTaskRuns(apiConfig.apiBaseUrl, selectedTask.id, apiConfig.userId);
-      taskRuns = payload.items;
+    const executionId = selectedTask.latest_execution_id;
+    const [stepResult, executionResult, taskRunResult] = await Promise.allSettled([
+      getTaskSteps(apiConfig.apiBaseUrl, selectedTask.id, apiConfig.userId),
+      executionId
+        ? getToolExecution(apiConfig.apiBaseUrl, executionId, apiConfig.userId)
+        : Promise.resolve(null),
+      listTaskRuns(apiConfig.apiBaseUrl, selectedTask.id, apiConfig.userId),
+    ]);
+
+    if (stepResult.status === "fulfilled") {
+      steps = stepResult.value.items;
+      stepSummary = stepResult.value.summary;
+      stepSource = "live";
+    } else {
+      steps = getFixtureTaskSteps(selectedTask.id);
+      stepSummary = getFixtureTaskStepSummary(selectedTask.id);
+      stepSource = "fixture";
+    }
+
+    if (executionId) {
+      if (executionResult.status === "fulfilled" && executionResult.value) {
+        execution = executionResult.value.execution;
+        executionSource = "live";
+      } else {
+        execution = getFixtureExecution(executionId);
+        executionSource = execution ? "fixture" : null;
+        executionUnavailableMessage = execution
+          ? null
+          : "The latest execution record could not be read from the configured backend.";
+      }
+    }
+
+    if (taskRunResult.status === "fulfilled") {
+      taskRuns = taskRunResult.value.items;
       taskRunSource = "live";
-    } catch {
+    } else {
       taskRuns = [];
       taskRunSource = "unavailable";
       taskRunUnavailableMessage = "The task-run records could not be read from the configured backend.";

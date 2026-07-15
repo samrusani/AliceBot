@@ -2,17 +2,107 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+import math
 from typing import Mapping, Sequence
 
 from alicebot_api.vnext_repositories import JsonObject
+
+
+_ASCII_PROJECT_WHITESPACE = frozenset(" \t\n\r\f\v")
+_ASCII_PROJECT_CASE_TRANSLATION = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "abcdefghijklmnopqrstuvwxyz",
+)
+
+
+def _project_scalar_text(value: object) -> str | None:
+    """Return the shared JSON-scalar spelling accepted for project ids.
+
+    Boolean support is intentional and predates numeric scope support; keep
+    its title-case spelling so the existing Python/SQLite/PostgreSQL identity
+    remains stable. Numeric JSON values are accepted only when finite and
+    mathematically integral. Their fixed decimal spelling makes lexical forms
+    such as ``1``, ``1.0``, and ``1e0`` one identity across all stores.
+    """
+
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, int):
+        return str(value)
+
+    numeric: Decimal
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        try:
+            # str(float) is also the JSON encoder's stable round-trip spelling.
+            numeric = Decimal(str(value))
+        except InvalidOperation:  # pragma: no cover - finite float backstop
+            return None
+    elif isinstance(value, Decimal):
+        numeric = value
+    else:
+        return None
+
+    if not numeric.is_finite() or numeric != numeric.to_integral_value():
+        return None
+    integral = numeric.to_integral_value()
+    if integral == 0:
+        return "0"
+    return format(integral, "f")
+
+
+def normalize_project_identifier(value: object) -> str:
+    """Normalize only the explicitly supported ASCII project whitespace.
+
+    Space, tab, line feed, vertical tab, form feed, and carriage return are
+    collapsed to one ASCII space and trimmed at the edges.  Every non-ASCII
+    code point, including Unicode whitespace, is preserved exactly.  This is
+    intentionally narrower than :meth:`str.split` so Python, SQLite, and
+    PostgreSQL cannot disagree because of Unicode or locale tables.
+    """
+
+    scalar = _project_scalar_text(value)
+    if scalar is None:
+        return ""
+    normalized: list[str] = []
+    pending_space = False
+    for character in scalar:
+        if character in _ASCII_PROJECT_WHITESPACE:
+            pending_space = bool(normalized)
+            continue
+        if pending_space:
+            normalized.append(" ")
+            pending_space = False
+        normalized.append(character)
+    return "".join(normalized)
+
+
+def project_identifier_identity(value: object) -> str:
+    """Return one conservative project-identifier comparison key.
+
+    ASCII-only identifiers compare case-insensitively.  If any non-ASCII code
+    point remains after ASCII-whitespace normalization, the identifier is kept
+    exact and case-sensitive instead of relying on backend-specific Unicode
+    case mappings.
+    """
+
+    normalized = normalize_project_identifier(value)
+    if normalized.isascii():
+        return normalized.translate(_ASCII_PROJECT_CASE_TRANSLATION)
+    return normalized
 
 
 def normalize_project_scope(value: object) -> tuple[str, ...]:
     values: list[str] = []
 
     def add(item: object) -> None:
-        if isinstance(item, (str, int)):
-            normalized = " ".join(str(item).split()).strip()
+        if _project_scalar_text(item) is not None:
+            normalized = normalize_project_identifier(item)
             if normalized:
                 values.append(normalized)
         elif isinstance(item, Sequence) and not isinstance(item, (str, bytes, bytearray)):
@@ -23,35 +113,199 @@ def normalize_project_scope(value: object) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
 
-def memory_project_scope(memory: Mapping[str, object]) -> tuple[str, ...]:
-    """Canonical array scope with non-widening singular legacy fallbacks."""
-    if "project_scope" in memory:
-        return normalize_project_scope(memory.get("project_scope"))
-    metadata = memory.get("metadata_json")
-    if isinstance(metadata, Mapping):
-        if "project_scope" in metadata:
-            return normalize_project_scope(metadata.get("project_scope"))
-        agentic = metadata.get("agentic_memory")
+def project_scope_identity(value: object) -> tuple[str, ...]:
+    """Return the deterministic comparison key for a project scope.
+
+    Persisted values keep their display spelling and first-seen ordering via
+    :func:`normalize_project_scope`.  Identity comparisons are deliberately a
+    separate operation: project scope is a set, ASCII identifiers compare
+    case-insensitively, and identifiers containing non-ASCII compare exactly.
+    The sorted tuple uses Unicode code-point order; its UTF-8 byte ordering is
+    identical to PostgreSQL's explicit ``C`` collation for valid text.
+    """
+
+    return tuple(sorted({project_identifier_identity(item) for item in normalize_project_scope(value)}))
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectScopeResolution:
+    """A resolved resource scope which retains canonical-key presence.
+
+    ``present`` distinguishes an absent canonical representation (where
+    legacy fallbacks remain valid) from an explicitly empty or malformed
+    canonical value (which is authoritative and must fail closed).
+    """
+
+    present: bool
+    values: tuple[str, ...]
+
+    @property
+    def identity(self) -> tuple[str, ...]:
+        return project_scope_identity(self.values)
+
+
+def resolve_project_scope(resource: Mapping[str, object] | None) -> ProjectScopeResolution:
+    """Resolve one resource's scope without widening canonical values.
+
+    Canonical ``project_scope`` values are checked at the resource root, then
+    in ``metadata_json`` and ``scope_json``.  Presence is authoritative even
+    for ``[]``, ``null``, or a malformed value.  Only rows with no canonical
+    key use the historical singular/nested aliases.
+    """
+
+    if resource is None:
+        return ProjectScopeResolution(present=False, values=())
+
+    def canonical_values(value: object) -> tuple[str, ...]:
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+            return ()
+        return normalize_project_scope(value)
+
+    containers = tuple(
+        container
+        for container_key in ("metadata_json", "scope_json")
+        if isinstance((container := resource.get(container_key)), Mapping)
+    )
+    if "project_scope" in resource:
+        return ProjectScopeResolution(
+            present=True,
+            values=canonical_values(resource.get("project_scope")),
+        )
+    for container in containers:
+        if "project_scope" in container:
+            return ProjectScopeResolution(
+                present=True,
+                values=canonical_values(container.get("project_scope")),
+            )
+
+    nested_scope: list[object] = []
+    nested_scope_present = False
+    for container in containers:
+        agentic = container.get("agentic_memory")
+        if isinstance(agentic, Mapping) and "project_scope" in agentic:
+            nested_scope_present = True
+            nested_scope.append(agentic.get("project_scope"))
+        agent_identity = container.get("agent_identity")
+        if isinstance(agent_identity, Mapping) and "project_scope" in agent_identity:
+            nested_scope_present = True
+            nested_scope.append(agent_identity.get("project_scope"))
+    if nested_scope_present:
+        return ProjectScopeResolution(
+            present=True,
+            values=normalize_project_scope(nested_scope),
+        )
+
+    direct_scope = normalize_project_scope([resource.get(key) for key in ("project_id", "project", "projects")])
+    if direct_scope:
+        return ProjectScopeResolution(present=False, values=direct_scope)
+
+    legacy_values: list[object] = []
+    for container in containers:
+        for key in ("project_id", "project", "projects"):
+            legacy_values.append(container.get(key))
+        agentic = container.get("agentic_memory")
         if isinstance(agentic, Mapping):
-            legacy_agentic_scope = normalize_project_scope(agentic.get("project_scope"))
-            if legacy_agentic_scope:
-                return legacy_agentic_scope
-    direct_project = normalize_project_scope(memory.get("project_id"))
-    if direct_project:
-        return direct_project
-    if isinstance(metadata, Mapping):
-        return normalize_project_scope(metadata.get("project_id"))
-    return ()
+            for key in ("project_id", "project", "projects"):
+                legacy_values.append(agentic.get(key))
+    return ProjectScopeResolution(
+        present=False,
+        values=normalize_project_scope(legacy_values),
+    )
+
+
+def resolve_source_metadata_project_scope(
+    metadata_json: Mapping[str, object] | None,
+) -> ProjectScopeResolution:
+    """Adapt persisted source metadata to the universal scope resolver.
+
+    Historical source writers persisted either a complete resource-shaped
+    scope envelope (root fields plus optional ``metadata_json``/``scope_json``
+    containers) or the contents of the metadata container itself.  Direct
+    ``agentic_memory`` and ``agent_identity`` objects are therefore merged into
+    the nested metadata container before resolving.  An explicitly stored
+    container value wins on key collisions, while every canonical presence and
+    fallback tier remains governed by :func:`resolve_project_scope`.
+    """
+
+    if not isinstance(metadata_json, Mapping):
+        return ProjectScopeResolution(present=False, values=())
+
+    resource = dict(metadata_json)
+    stored_container = resource.get("metadata_json")
+    metadata_container = dict(stored_container) if isinstance(stored_container, Mapping) else {}
+    for nested_key in ("agentic_memory", "agent_identity"):
+        direct_nested = resource.get(nested_key)
+        if not isinstance(direct_nested, Mapping):
+            continue
+        stored_nested = metadata_container.get(nested_key)
+        metadata_container[nested_key] = (
+            {**direct_nested, **stored_nested} if isinstance(stored_nested, Mapping) else dict(direct_nested)
+        )
+    resource["metadata_json"] = metadata_container
+    return resolve_project_scope(resource)
+
+
+def source_project_scope(source: Mapping[str, object]) -> tuple[str, ...]:
+    """Return scope from a persisted source row's metadata envelope.
+
+    Unlike memories and artifacts, a source stores the complete historical
+    scope envelope inside its ``metadata_json`` column.  Passing the source row
+    itself to :func:`resolve_project_scope` would therefore let a stale outer
+    alias win over an authoritative canonical value inside that envelope.
+    """
+
+    metadata_json = source.get("metadata_json")
+    resolution = resolve_source_metadata_project_scope(metadata_json if isinstance(metadata_json, Mapping) else None)
+    if resolution.present or resolution.values:
+        return resolution.values
+    # Some pre-envelope adapters exposed the singular project alias directly
+    # on the source row.  Preserve that compatibility only when the persisted
+    # envelope contains no canonical key and resolves to no legacy scope.
+    return resolve_project_scope(source).values
+
+
+def source_capture_identity_matches(
+    source: Mapping[str, object],
+    *,
+    content_hashes: Sequence[str],
+    project_scope: object,
+    domain: object,
+    sensitivity: object,
+) -> bool:
+    """Validate a persisted source against one requested capture identity.
+
+    Lookup keys are only candidate selectors: source review can reassign scope
+    or classification, and historical rows may carry a stale key. Every fast,
+    legacy-hash, and atomic-conflict candidate therefore revalidates the
+    current persisted envelope before it may be returned as a duplicate.
+    """
+
+    expected_hashes = {str(value) for value in content_hashes if str(value)}
+    if expected_hashes and str(source.get("content_hash") or "") not in expected_hashes:
+        return False
+    if project_scope_identity(source_project_scope(source)) != project_scope_identity(project_scope):
+        return False
+
+    def classification(value: object) -> str:
+        return str(value or "unknown").strip().casefold()
+
+    return classification(source.get("domain")) == classification(domain) and classification(
+        source.get("sensitivity")
+    ) == classification(sensitivity)
+
+
+def memory_project_scope(memory: Mapping[str, object]) -> tuple[str, ...]:
+    """Return a memory's presence-aware canonical/legacy project scope."""
+
+    return resolve_project_scope(memory).values
 
 
 def canonical_memory_metadata(memory: Mapping[str, object]) -> JsonObject:
     metadata = memory.get("metadata_json")
     result = dict(metadata) if isinstance(metadata, Mapping) else {}
-    scope = memory_project_scope(memory)
-    if scope or "project_scope" in memory or (
-        isinstance(metadata, Mapping) and "project_scope" in metadata
-    ):
-        result["project_scope"] = list(scope)
+    resolution = resolve_project_scope(memory)
+    if resolution.present or resolution.values:
+        result["project_scope"] = list(resolution.values)
     return result
 
 
@@ -62,14 +316,22 @@ def expose_memory_project_scope(row: JsonObject) -> JsonObject:
 
 
 def project_scopes_overlap(resource_scope: object, requested_scope: object) -> bool:
-    requested = set(normalize_project_scope(requested_scope))
-    return bool(requested and requested.intersection(normalize_project_scope(resource_scope)))
+    requested = set(project_scope_identity(requested_scope))
+    return bool(requested and requested.intersection(project_scope_identity(resource_scope)))
 
 
 __all__ = [
     "canonical_memory_metadata",
     "expose_memory_project_scope",
     "memory_project_scope",
+    "normalize_project_identifier",
     "normalize_project_scope",
+    "ProjectScopeResolution",
+    "project_identifier_identity",
+    "project_scope_identity",
     "project_scopes_overlap",
+    "resolve_project_scope",
+    "resolve_source_metadata_project_scope",
+    "source_capture_identity_matches",
+    "source_project_scope",
 ]

@@ -8,13 +8,15 @@ row.
 
 This revision also closes the last legacy project-scope compatibility gap.
 Early agentic commits stored scope only at
-``metadata_json.agentic_memory.project_scope``.  The upgrade normalizes that
-array into the canonical top-level ``metadata_json.project_scope`` without
-overwriting an existing non-empty canonical array, and fills ``project_id``
-only for an unambiguous singleton scope.  Multi-project rows remain metadata
-scoped and keep ``project_id`` NULL.  Downgrade deliberately retains these
-canonical metadata copies because it cannot distinguish them from top-level
-scope that predated this revision without risking data loss.
+``metadata_json.agentic_memory.project_scope``.  When the canonical top-level
+``metadata_json.project_scope`` key is absent, the upgrade normalizes that
+legacy array into the canonical location and fills ``project_id`` only for an
+unambiguous singleton scope.  A present canonical key is authoritative even
+when its value is empty, JSON null, or malformed; stale nested scope must not
+overwrite it or populate ``project_id``.  Multi-project legacy rows remain
+metadata scoped and keep ``project_id`` NULL.  Downgrade deliberately retains
+canonical metadata copies created from absent keys because it cannot identify
+them later without risking data loss.
 
 Upgrade posture for pre-existing duplicates is lossless for memory content:
 the earliest row remains the canonical lookup target, later rows retain their
@@ -52,11 +54,14 @@ _UPGRADE_STATEMENTS: tuple[str, ...] = (
           MIN(normalized_element.ordinality) AS first_ordinal
         FROM (
           SELECT
-            regexp_replace(
-              btrim(element.value #>> '{}'),
-              '[[:space:]]+',
-              ' ',
-              'g'
+            btrim(
+              regexp_replace(
+                element.value #>> '{}',
+                '[' || chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || ' ]+',
+                ' ',
+                'g'
+              ),
+              ' '
             ) AS normalized,
             element.ordinality
           FROM jsonb_array_elements(
@@ -76,11 +81,7 @@ _UPGRADE_STATEMENTS: tuple[str, ...] = (
       WHERE jsonb_typeof(
               memory.metadata_json #> '{agentic_memory,project_scope}'
             ) = 'array'
-        AND (
-          jsonb_typeof(memory.metadata_json -> 'project_scope')
-            IS DISTINCT FROM 'array'
-          OR jsonb_array_length(memory.metadata_json -> 'project_scope') = 0
-        )
+        AND NOT (memory.metadata_json ? 'project_scope')
       GROUP BY memory.id
     )
     UPDATE memories AS memory

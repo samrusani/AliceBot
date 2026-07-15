@@ -342,6 +342,62 @@ def test_daily_brief_applies_project_scope_before_bounded_legacy_limit() -> None
     assert store.open_loops[-1]["metadata_json"]["project_scope"] == ["project-a"]
 
 
+def test_brain_source_scope_uses_complete_persisted_envelope_for_filtering_and_derivation() -> None:
+    def source(source_id: str, canonical_scope: list[str]) -> dict[str, object]:
+        return {
+            "id": source_id,
+            "title": source_id,
+            "captured_at": "2026-05-10T12:00:00Z",
+            "domain": "project",
+            "sensitivity": "private",
+            "metadata_json": {
+                "project_id": "stale",
+                "raw_text": f"TODO: review {source_id}",
+                "metadata_json": {"project_scope": canonical_scope},
+            },
+        }
+
+    scoped_store = InMemoryVNextBrainStore()
+    scoped_store.sources.extend((source("empty-source", []), source("real-source", ["real"])))
+    real = VNextBrainService(scoped_store).generate_daily_brief(
+        BrainArtifactRequest(
+            generated_for="2026-05-10",
+            projects=("real",),
+            discover_open_loops=False,
+        )
+    )
+    stale = VNextBrainService(scoped_store).generate_daily_brief(
+        BrainArtifactRequest(
+            generated_for="2026-05-10",
+            projects=("stale",),
+            discover_open_loops=False,
+        )
+    )
+
+    assert real["metadata_json"]["input_summary"]["source_ids"] == ["real-source"]
+    assert stale["metadata_json"]["input_summary"]["source_ids"] == []
+
+    daily_store = InMemoryVNextBrainStore()
+    daily_store.sources.extend((source("empty-source", []), source("real-source", ["real"])))
+    daily = VNextBrainService(daily_store).generate_daily_brief(
+        BrainArtifactRequest(generated_for="2026-05-10")
+    )
+    loops_by_source = {row["source_id"]: row for row in daily_store.open_loops}
+
+    assert daily["metadata_json"]["project_scope"] == ["real"]
+    assert loops_by_source["empty-source"]["metadata_json"]["project_scope"] == []
+    assert loops_by_source["real-source"]["metadata_json"]["project_scope"] == ["real"]
+
+    weekly_store = InMemoryVNextBrainStore()
+    weekly_store.sources.extend((source("empty-source", []), source("real-source", ["real"])))
+    weekly = VNextBrainService(weekly_store).generate_weekly_synthesis(
+        BrainArtifactRequest(generated_for="2026-05-10")
+    )
+
+    assert weekly["metadata_json"]["project_scope"] == ["real"]
+    assert weekly_store.memories[-1]["metadata_json"]["project_scope"] == ["real"]
+
+
 def test_brain_request_validation_rejects_bad_dates_and_limits() -> None:
     service = VNextBrainService(InMemoryVNextBrainStore())
 

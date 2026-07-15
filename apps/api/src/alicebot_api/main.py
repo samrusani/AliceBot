@@ -494,6 +494,8 @@ from alicebot_api.vnext_agent_keys import (
     agent_key_from_authorization,
     resolve_protected_agent_identity,
 )
+from alicebot_api.vnext_project_scope import source_project_scope
+from alicebot_api.vnext_artifact_review import dispatch_vnext_artifact_review
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService, VNextBrainValidationError
 from alicebot_api.vnext_capture import VNextCaptureService, VNextCaptureValidationError
 from alicebot_api.vnext_embeddings import (
@@ -532,7 +534,13 @@ from alicebot_api.vnext_memory_commit import (
     is_pending_consolidation_candidate,
     memory_commit_request_from_payload,
 )
-from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
+from alicebot_api.vnext_projects import (
+    PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE,
+    ProjectAutomationRequest,
+    VNextProjectService,
+    VNextProjectTerminalConsistencyError,
+    VNextProjectValidationError,
+)
 from alicebot_api.vnext_queue import (
     QueueTaskRequest,
     VNextQueueNotFoundError,
@@ -2768,6 +2776,7 @@ def _vnext_exact_resource_policy(
     identity: AgentIdentity | None,
     action: str,
     resource: dict[str, object],
+    source_resource: bool = False,
 ) -> PolicyDecision:
     domain = " ".join(str(resource.get("domain") or "unknown").split()).strip() or "unknown"
     sensitivity = " ".join(str(resource.get("sensitivity") or "unknown").split()).strip() or "unknown"
@@ -2776,7 +2785,7 @@ def _vnext_exact_resource_policy(
         action=action,
         domains=(domain,),
         sensitivity_allowed=(sensitivity,),
-        project_scope=resource_project_scope(resource),
+        project_scope=source_project_scope(resource) if source_resource else resource_project_scope(resource),
         require_explicit_project_scope=bool(identity is not None and identity.project_scope_locked),
     )
     if decision.decision == "allowed_with_filtering":
@@ -5784,6 +5793,11 @@ def _resolve_workspace_for_hosted_channel_request(
     preferred_workspace_id: UUID | None,
     requested_workspace_id: UUID | None,
 ):
+    # Hosted channel operations may target any workspace visible to the
+    # authenticated account, but selecting one for a request must not silently
+    # change the session's current workspace. Keep session_id in the internal
+    # call contract so callers remain explicit about the session context.
+    del session_id
     if requested_workspace_id is not None:
         workspace = get_workspace_for_member(
             conn,
@@ -5792,30 +5806,13 @@ def _resolve_workspace_for_hosted_channel_request(
         )
         if workspace is None:
             raise HostedWorkspaceNotFoundError(f"workspace {requested_workspace_id} was not found")
-        if preferred_workspace_id != workspace["id"]:
-            set_session_workspace(
-                conn,
-                session_id=session_id,
-                user_account_id=user_account_id,
-                workspace_id=workspace["id"],
-            )
         return workspace
 
-    workspace = get_current_workspace(
+    return get_current_workspace(
         conn,
         user_account_id=user_account_id,
         preferred_workspace_id=preferred_workspace_id,
     )
-    if workspace is None:
-        return None
-    if preferred_workspace_id != workspace["id"]:
-        set_session_workspace(
-            conn,
-            session_id=session_id,
-            user_account_id=user_account_id,
-            workspace_id=workspace["id"],
-        )
-    return workspace
 
 
 def _ensure_hosted_admin_access(conn, *, user_account_id: UUID) -> None:
@@ -8664,86 +8661,90 @@ def review_vnext_source(source_id: UUID, request: VNextSourceReviewRequest) -> J
     if action not in {"review", "update", "assign_project", "archive"}:
         return _vnext_public_error_response(status_code=400, detail="vNext source review action is invalid")
 
-    with user_connection(settings.database_url, request.user_id) as conn:
-        store = PostgresVNextStore(conn)
-        existing = store.get_source(str(source_id))
-        if existing is None:
-            return _vnext_public_error_response(status_code=404, detail="vNext source was not found")
-        if action == "archive":
-            archived = store.delete_source(source_id=str(source_id), actor_type="user")
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            existing = store.get_source(str(source_id))
+            if existing is None:
+                return _vnext_public_error_response(status_code=404, detail="vNext source was not found")
+            if action == "archive":
+                archived = store.delete_source(source_id=str(source_id), actor_type="user")
+                append_event(
+                    store,
+                    event_type="source.archived",
+                    actor_type="user",
+                    target_type="source",
+                    target_id=str(source_id),
+                    payload={"action": action, "review_note": request.review_note},
+                )
+                trace = _vnext_load_source_trace(
+                    store=store,
+                    source=archived,
+                )
+                return JSONResponse(
+                    status_code=200,
+                    content=jsonable_encoder({"source": archived, "archived": True, "trace": trace}),
+                )
+
+            if action == "assign_project" and request.project_id is None:
+                return _vnext_public_error_response(status_code=400, detail="project_id is required")
+
+            metadata = {
+                **_vnext_metadata(existing),
+                "review_status": "reviewed" if action == "review" else "updated",
+                "reviewed_at": datetime.now(UTC).isoformat(),
+                "review_note": request.review_note,
+                "updated_from": "vnext_workspace",
+            }
+            if request.project_id is not None:
+                metadata["project_id"] = request.project_id
+                if action == "assign_project":
+                    # project_scope is the canonical, overlap-aware scope used by
+                    # retrieval.  Replace it together with the singular legacy
+                    # pointer so a reassignment cannot leave the source readable
+                    # through its previous project.
+                    metadata["project_scope"] = [request.project_id]
+            patch: dict[str, object] = {"metadata_json": metadata}
+            if request.title is not None:
+                patch["title"] = request.title
+            if request.domain is not None:
+                patch["domain"] = request.domain
+            if request.sensitivity is not None:
+                patch["sensitivity"] = request.sensitivity
+            updated = store.update_source(source_id=str(source_id), patch=patch, actor_type="user")
+            if action == "assign_project":
+                store.create_edge(
+                    {
+                        "from_type": "source",
+                        "from_id": str(source_id),
+                        "to_type": "project",
+                        "to_id": request.project_id,
+                        "edge_type": "belongs_to_project",
+                        "confidence": 1.0,
+                        "explanation": "Assigned from live /vnext source review.",
+                        "created_by": "user",
+                        "metadata_json": {"review_action": action},
+                    },
+                    actor_type="user",
+                )
             append_event(
                 store,
-                event_type="source.archived",
+                event_type={
+                    "review": "source.reviewed",
+                    "update": "source.updated_from_workspace",
+                    "assign_project": "source.assigned_project",
+                }[action],
                 actor_type="user",
                 target_type="source",
                 target_id=str(source_id),
-                payload={"action": action, "review_note": request.review_note},
+                payload={"action": action, "project_id": request.project_id, "review_note": request.review_note},
             )
             trace = _vnext_load_source_trace(
                 store=store,
-                source=archived,
+                source=updated,
             )
-            return JSONResponse(
-                status_code=200, content=jsonable_encoder({"source": archived, "archived": True, "trace": trace})
-            )
-
-        if action == "assign_project" and request.project_id is None:
-            return _vnext_public_error_response(status_code=400, detail="project_id is required")
-
-        metadata = {
-            **_vnext_metadata(existing),
-            "review_status": "reviewed" if action == "review" else "updated",
-            "reviewed_at": datetime.now(UTC).isoformat(),
-            "review_note": request.review_note,
-            "updated_from": "vnext_workspace",
-        }
-        if request.project_id is not None:
-            metadata["project_id"] = request.project_id
-            if action == "assign_project":
-                # project_scope is the canonical, overlap-aware scope used by
-                # retrieval.  Replace it together with the singular legacy
-                # pointer so a reassignment cannot leave the source readable
-                # through its previous project.
-                metadata["project_scope"] = [request.project_id]
-        patch: dict[str, object] = {"metadata_json": metadata}
-        if request.title is not None:
-            patch["title"] = request.title
-        if request.domain is not None:
-            patch["domain"] = request.domain
-        if request.sensitivity is not None:
-            patch["sensitivity"] = request.sensitivity
-        updated = store.update_source(source_id=str(source_id), patch=patch, actor_type="user")
-        if action == "assign_project":
-            store.create_edge(
-                {
-                    "from_type": "source",
-                    "from_id": str(source_id),
-                    "to_type": "project",
-                    "to_id": request.project_id,
-                    "edge_type": "belongs_to_project",
-                    "confidence": 1.0,
-                    "explanation": "Assigned from live /vnext source review.",
-                    "created_by": "user",
-                    "metadata_json": {"review_action": action},
-                },
-                actor_type="user",
-            )
-        append_event(
-            store,
-            event_type={
-                "review": "source.reviewed",
-                "update": "source.updated_from_workspace",
-                "assign_project": "source.assigned_project",
-            }[action],
-            actor_type="user",
-            target_type="source",
-            target_id=str(source_id),
-            payload={"action": action, "project_id": request.project_id, "review_note": request.review_note},
-        )
-        trace = _vnext_load_source_trace(
-            store=store,
-            source=updated,
-        )
+    except ContinuityStoreInvariantError as exc:
+        return _vnext_public_error_response(status_code=409, detail=str(exc))
 
     return JSONResponse(
         status_code=200, content=jsonable_encoder({"source": updated, "archived": False, "trace": trace})
@@ -8806,6 +8807,7 @@ def get_vnext_artifact_trace(
                     identity=identity,
                     action="artifact.lookup",
                     resource=source,
+                    source_resource=True,
                 )
                 append_policy_events(
                     store,
@@ -10158,7 +10160,10 @@ def review_vnext_artifact(
     authorization: str | None = Header(default=None),
 ) -> JSONResponse:
     settings = get_settings()
-    project_review_service: VNextProjectService | None = None
+    review_result = None
+    reviewer_actor_type = "user"
+    reviewer_actor_id: str | None = None
+    reviewer_trace_id: str | None = request.trace_id
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
@@ -10170,26 +10175,34 @@ def review_vnext_artifact(
             identity = _vnext_authenticated_agent_identity(
                 store, request, user_id=request.user_id, authorization=authorization
             )
-            artifact, _decision = _vnext_authorized_artifact(
+            _artifact, decision = _vnext_authorized_artifact(
                 store=store,
                 identity=identity,
                 artifact_id=str(artifact_id),
                 action="artifact.review",
                 for_update=True,
             )
-            if VNextProjectService.is_project_update_candidate(artifact):
-                project_review_service = VNextProjectService(store, defer_embeddings=True)
-                payload = project_review_service.review_project_update(
-                    artifact_id=str(artifact_id),
-                    action=request.action,
-                )
-            else:
-                payload = VNextQueueService(store).review_artifact(
-                    artifact_id=str(artifact_id),
-                    action=request.action,
-                )
+            reviewer_actor_type, reviewer_actor_id = _vnext_agent_actor(identity, fallback="user")
+            if reviewer_actor_id is None:
+                reviewer_actor_id = str(request.user_id)
+            reviewer_trace_id = request.trace_id or decision.trace_id
+            review_result = dispatch_vnext_artifact_review(
+                store,
+                artifact_id=str(artifact_id),
+                action=request.action,
+                actor_type=reviewer_actor_type,
+                actor_id=reviewer_actor_id,
+                trace_id=reviewer_trace_id,
+                run_id=identity.agent_run_id if identity is not None else None,
+            )
+            payload = review_result.artifact
     except VNextQueueNotFoundError:
         return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
+    except VNextProjectTerminalConsistencyError:
+        return _vnext_public_error_response(
+            status_code=409,
+            detail=PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE,
+        )
     except (VNextQueueValidationError, VNextProjectValidationError):
         return _vnext_public_error_response(status_code=400, detail="vNext artifact review request is invalid")
     except AgentKeyAuthenticationError as exc:
@@ -10197,12 +10210,14 @@ def review_vnext_artifact(
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
-    if project_review_service is not None:
+    if review_result is not None and review_result.deferred_embedding_inputs:
         _persist_vnext_deferred_embeddings(
             database_url=settings.database_url,
             user_id=request.user_id,
-            result=project_review_service,
-            actor_type="user",
+            result=review_result,
+            actor_type=reviewer_actor_type,
+            actor_id=reviewer_actor_id,
+            trace_id=reviewer_trace_id,
         )
 
     return JSONResponse(
@@ -10467,25 +10482,69 @@ def generate_vnext_project_update_candidate(
 
 
 @app.post("/v0/vnext/projects/update-candidates/{artifact_id}/review")
-def review_vnext_project_update_candidate(artifact_id: str, request: VNextProjectUpdateReviewRequest) -> JSONResponse:
+def review_vnext_project_update_candidate(
+    artifact_id: str,
+    request: VNextProjectUpdateReviewRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
+    reviewer_actor_type = "user"
+    reviewer_actor_id: str | None = None
+    reviewer_trace_id: str | None = request.trace_id
+
+    try:
+        _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            service = VNextProjectService(PostgresVNextStore(conn), defer_embeddings=True)
+            store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
+            _artifact, decision = _vnext_authorized_artifact(
+                store=store,
+                identity=identity,
+                artifact_id=artifact_id,
+                action="artifact.review",
+                for_update=True,
+            )
+            reviewer_actor_type, reviewer_actor_id = _vnext_agent_actor(identity, fallback="user")
+            if reviewer_actor_id is None:
+                reviewer_actor_id = str(request.user_id)
+            reviewer_trace_id = request.trace_id or decision.trace_id
+            service = VNextProjectService(store, defer_embeddings=True)
             payload = service.review_project_update(
                 artifact_id=artifact_id,
                 action=request.action,
                 edited_current_state=request.edited_current_state,
+                actor_type=reviewer_actor_type,
+                actor_id=reviewer_actor_id,
+                trace_id=reviewer_trace_id,
+                run_id=identity.agent_run_id if identity is not None else None,
             )
+    except VNextQueueNotFoundError:
+        return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
+    except VNextProjectTerminalConsistencyError:
+        return _vnext_public_error_response(
+            status_code=409,
+            detail=PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE,
+        )
     except VNextProjectValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext project update review request is invalid")
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
+    except AgentPolicyBlockedError as exc:
+        return _vnext_permission_response(exc.decision)
 
     _persist_vnext_deferred_embeddings(
         database_url=settings.database_url,
         user_id=request.user_id,
         result=service,
-        actor_type="user",
+        actor_type=reviewer_actor_type,
+        actor_id=reviewer_actor_id,
+        trace_id=reviewer_trace_id,
     )
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -15602,6 +15661,7 @@ async def ingest_v1_telegram_webhook(request: Request) -> JSONResponse:
 def list_v1_telegram_messages(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -15615,7 +15675,7 @@ def list_v1_telegram_messages(
                     user_account_id=resolution["user_account"]["id"],
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -15627,6 +15687,8 @@ def list_v1_telegram_messages(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     items = [serialize_channel_message(row) for row in rows]
     return JSONResponse(
@@ -15648,6 +15710,7 @@ def list_v1_telegram_messages(
 def list_v1_telegram_threads(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -15661,7 +15724,7 @@ def list_v1_telegram_threads(
                     user_account_id=resolution["user_account"]["id"],
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -15673,6 +15736,8 @@ def list_v1_telegram_threads(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     items = [serialize_channel_thread(row) for row in rows]
     return JSONResponse(
@@ -15695,6 +15760,7 @@ def dispatch_v1_telegram_message(
     message_id: UUID,
     request: Request,
     body: TelegramDispatchRequest,
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -15708,7 +15774,7 @@ def dispatch_v1_telegram_message(
                     user_account_id=resolution["user_account"]["id"],
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -15723,6 +15789,8 @@ def dispatch_v1_telegram_message(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except TelegramMessageNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except TelegramRoutingError as exc:
@@ -15745,6 +15813,7 @@ def dispatch_v1_telegram_message(
 def list_v1_telegram_delivery_receipts(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -15758,7 +15827,7 @@ def list_v1_telegram_delivery_receipts(
                     user_account_id=resolution["user_account"]["id"],
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -15770,6 +15839,8 @@ def list_v1_telegram_delivery_receipts(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     items = [serialize_delivery_receipt(row) for row in rows]
     return JSONResponse(
@@ -15790,6 +15861,7 @@ def list_v1_telegram_delivery_receipts(
 @app.get("/v1/channels/telegram/notification-preferences")
 def get_v1_telegram_notification_preferences(
     request: Request,
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -15804,7 +15876,7 @@ def get_v1_telegram_notification_preferences(
                     user_account_id=user_account_id,
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -15816,6 +15888,8 @@ def get_v1_telegram_notification_preferences(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except TelegramIdentityNotFoundError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
     except TelegramNotificationPreferenceValidationError as exc:
@@ -15828,6 +15902,7 @@ def get_v1_telegram_notification_preferences(
 def patch_v1_telegram_notification_preferences(
     request: Request,
     body: TelegramNotificationPreferencesPatchRequest,
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -15842,7 +15917,7 @@ def patch_v1_telegram_notification_preferences(
                     user_account_id=user_account_id,
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -15861,6 +15936,8 @@ def patch_v1_telegram_notification_preferences(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except TelegramIdentityNotFoundError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
     except TelegramNotificationPreferenceValidationError as exc:
@@ -15872,6 +15949,7 @@ def patch_v1_telegram_notification_preferences(
 @app.get("/v1/channels/telegram/daily-brief")
 def get_v1_telegram_daily_brief(
     request: Request,
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -15886,7 +15964,7 @@ def get_v1_telegram_daily_brief(
                     user_account_id=user_account_id,
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -15898,6 +15976,8 @@ def get_v1_telegram_daily_brief(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except TelegramIdentityNotFoundError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
     except TelegramNotificationPreferenceValidationError as exc:
@@ -15910,6 +15990,7 @@ def get_v1_telegram_daily_brief(
 def post_v1_telegram_daily_brief_deliver(
     request: Request,
     body: TelegramScheduledDeliveryRequest,
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -15924,7 +16005,7 @@ def post_v1_telegram_daily_brief_deliver(
                     user_account_id=user_account_id,
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -16075,6 +16156,8 @@ def post_v1_telegram_daily_brief_deliver(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except TelegramIdentityNotFoundError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
     except TelegramNotificationPreferenceValidationError as exc:
@@ -16088,6 +16171,7 @@ def post_v1_telegram_daily_brief_deliver(
 def list_v1_telegram_open_loop_prompts(
     request: Request,
     limit: int = Query(default=20, ge=1, le=100),
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -16102,7 +16186,7 @@ def list_v1_telegram_open_loop_prompts(
                     user_account_id=user_account_id,
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -16115,6 +16199,8 @@ def list_v1_telegram_open_loop_prompts(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except TelegramIdentityNotFoundError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
     except TelegramNotificationPreferenceValidationError as exc:
@@ -16128,6 +16214,7 @@ def post_v1_telegram_open_loop_prompt_deliver(
     prompt_id: str,
     request: Request,
     body: TelegramScheduledDeliveryRequest,
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -16142,7 +16229,7 @@ def post_v1_telegram_open_loop_prompt_deliver(
                     user_account_id=user_account_id,
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -16298,6 +16385,8 @@ def post_v1_telegram_open_loop_prompt_deliver(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except TelegramIdentityNotFoundError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
     except TelegramOpenLoopPromptNotFoundError as exc:
@@ -16313,6 +16402,7 @@ def post_v1_telegram_open_loop_prompt_deliver(
 def list_v1_telegram_scheduler_jobs(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -16327,7 +16417,7 @@ def list_v1_telegram_scheduler_jobs(
                     user_account_id=user_account_id,
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -16340,6 +16430,8 @@ def list_v1_telegram_scheduler_jobs(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except TelegramIdentityNotFoundError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
     except TelegramNotificationPreferenceValidationError as exc:
@@ -16353,6 +16445,7 @@ def handle_v1_telegram_message(
     message_id: UUID,
     request: Request,
     body: TelegramMessageHandleRequest,
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -16367,7 +16460,7 @@ def handle_v1_telegram_message(
                     user_account_id=user_account_id,
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -16504,6 +16597,8 @@ def handle_v1_telegram_message(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except HostedUserAccountNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except TelegramMessageNotFoundError as exc:
@@ -16520,6 +16615,7 @@ def handle_v1_telegram_message(
 def get_v1_telegram_message_result(
     message_id: UUID,
     request: Request,
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -16534,7 +16630,7 @@ def get_v1_telegram_message_result(
                     user_account_id=user_account_id,
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -16548,6 +16644,8 @@ def get_v1_telegram_message_result(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except HostedUserAccountNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except TelegramMessageResultNotFoundError as exc:
@@ -16559,6 +16657,7 @@ def get_v1_telegram_message_result(
 @app.get("/v1/channels/telegram/recall")
 def list_v1_telegram_recall(
     request: Request,
+    workspace_id: UUID | None = None,
     query_text: str | None = Query(default=None, alias="query", min_length=1, max_length=4000),
     thread_id: UUID | None = None,
     task_id: UUID | None = None,
@@ -16585,7 +16684,7 @@ def list_v1_telegram_recall(
                     user_account_id=user_account_id,
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -16607,6 +16706,8 @@ def list_v1_telegram_recall(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except HostedUserAccountNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except ContinuityRecallValidationError as exc:
@@ -16626,6 +16727,7 @@ def list_v1_telegram_recall(
 @app.get("/v1/channels/telegram/resume")
 def get_v1_telegram_resumption_brief(
     request: Request,
+    workspace_id: UUID | None = None,
     query_text: str | None = Query(default=None, alias="query", min_length=1, max_length=4000),
     thread_id: UUID | None = None,
     task_id: UUID | None = None,
@@ -16657,7 +16759,7 @@ def get_v1_telegram_resumption_brief(
                     user_account_id=user_account_id,
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -16680,6 +16782,8 @@ def get_v1_telegram_resumption_brief(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except HostedUserAccountNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except ContinuityResumptionValidationError as exc:
@@ -16701,6 +16805,7 @@ def get_v1_telegram_resumption_brief(
 @app.get("/v1/channels/telegram/open-loops")
 def get_v1_telegram_open_loops(
     request: Request,
+    workspace_id: UUID | None = None,
     query_text: str | None = Query(default=None, alias="query", min_length=1, max_length=4000),
     thread_id: UUID | None = None,
     task_id: UUID | None = None,
@@ -16727,7 +16832,7 @@ def get_v1_telegram_open_loops(
                     user_account_id=user_account_id,
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -16749,6 +16854,8 @@ def get_v1_telegram_open_loops(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except HostedUserAccountNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except ContinuityOpenLoopValidationError as exc:
@@ -16772,6 +16879,7 @@ def review_action_v1_telegram_open_loop(
     open_loop_id: UUID,
     request: Request,
     body: TelegramOpenLoopReviewActionBody,
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -16786,7 +16894,7 @@ def review_action_v1_telegram_open_loop(
                     user_account_id=user_account_id,
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -16802,6 +16910,8 @@ def review_action_v1_telegram_open_loop(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except HostedUserAccountNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except ContinuityOpenLoopNotFoundError as exc:
@@ -16816,6 +16926,7 @@ def review_action_v1_telegram_open_loop(
 def list_v1_telegram_approvals(
     request: Request,
     status: str = Query(default="pending", min_length=1, max_length=20),
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     settings = get_settings()
     status_filter = status.casefold().strip()
@@ -16833,7 +16944,7 @@ def list_v1_telegram_approvals(
                     user_account_id=user_account_id,
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -16847,6 +16958,8 @@ def list_v1_telegram_approvals(
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except HostedUserAccountNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
@@ -16858,6 +16971,7 @@ def approve_v1_telegram_approval(
     approval_id: UUID,
     request: Request,
     body: TelegramApprovalResolveBody | None = None,
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     del body
     settings = get_settings()
@@ -16876,7 +16990,7 @@ def approve_v1_telegram_approval(
                     user_account_id=user_account_id,
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -16897,6 +17011,8 @@ def approve_v1_telegram_approval(
                     payload = None
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except HostedUserAccountNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except ApprovalNotFoundError as exc:
@@ -16913,6 +17029,7 @@ def reject_v1_telegram_approval(
     approval_id: UUID,
     request: Request,
     body: TelegramApprovalResolveBody | None = None,
+    workspace_id: UUID | None = None,
 ) -> JSONResponse:
     del body
     settings = get_settings()
@@ -16931,7 +17048,7 @@ def reject_v1_telegram_approval(
                     user_account_id=user_account_id,
                     session_id=resolution["session"]["id"],
                     preferred_workspace_id=resolution["session"]["workspace_id"],
-                    requested_workspace_id=None,
+                    requested_workspace_id=workspace_id,
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
@@ -16952,6 +17069,8 @@ def reject_v1_telegram_approval(
                     payload = None
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except HostedUserAccountNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except ApprovalNotFoundError as exc:

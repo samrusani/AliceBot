@@ -13,6 +13,11 @@ from psycopg.types.json import Jsonb
 
 from alicebot_api.db import UserConnection
 from alicebot_api.store import ContinuityStoreInvariantError
+from alicebot_api.vnext_capture import (
+    capture_content_hash_for_source,
+    capture_dedupe_key_for_source,
+    source_capture_raw_text,
+)
 from alicebot_api.vnext_embeddings import (
     EMBEDDING_SIGNATURE_METADATA_KEY,
     memory_embedding_signature_is_current,
@@ -23,7 +28,9 @@ from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_project_scope import (
     canonical_memory_metadata,
     expose_memory_project_scope,
-    normalize_project_scope,
+    project_scope_identity,
+    source_capture_identity_matches,
+    source_project_scope,
 )
 from alicebot_api.vnext_repositories import JsonObject
 
@@ -37,6 +44,51 @@ MAX_SOURCE_CHUNKS_PER_READ = 501
 # excluded-by-default from retrieval. Mirrors
 # sqlite_store._MEMORY_SEARCHABLE_STATUSES_SQL; keep the two in sync.
 _MEMORY_SEARCHABLE_STATUSES_SQL = "('active', 'accepted')"
+
+_PROJECT_ASCII_WHITESPACE_PATTERN_SQL = "'[' || chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || ' ]+'"
+_ASCII_PROJECT_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_ASCII_PROJECT_LOWER = "abcdefghijklmnopqrstuvwxyz"
+
+
+def _escape_like_literal(value: str) -> str:
+    """Escape one literal substring for SQL LIKE with backslash ESCAPE."""
+
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _postgres_ascii_literal_contains_sql(value_expression: str) -> str:
+    """Build a binary-collated ASCII-folded literal substring predicate."""
+
+    folded_value = f"translate({value_expression}, '{_ASCII_PROJECT_UPPER}', '{_ASCII_PROJECT_LOWER}') COLLATE \"C\""
+    folded_pattern = (
+        f"('%%' || translate(%s, '{_ASCII_PROJECT_UPPER}', '{_ASCII_PROJECT_LOWER}') || '%%') COLLATE \"C\""
+    )
+    return f"({folded_value}) LIKE ({folded_pattern}) ESCAPE E'\\\\'"
+
+
+def _normalized_project_identifier_sql(value_expression: str) -> str:
+    """Mirror Python's explicit ASCII project-whitespace normalization."""
+
+    return f"btrim(regexp_replace({value_expression}, {_PROJECT_ASCII_WHITESPACE_PATTERN_SQL}, ' ', 'g'), ' ')"
+
+
+def _project_identifier_identity_sql(
+    value_expression: str,
+    *,
+    already_normalized: bool = False,
+) -> str:
+    """Mirror the conservative ASCII-only project identity in PostgreSQL."""
+
+    normalized = value_expression if already_normalized else _normalized_project_identifier_sql(value_expression)
+    return f"""
+(
+  CASE
+    WHEN octet_length({normalized}) = char_length({normalized})
+      THEN translate({normalized}, '{_ASCII_PROJECT_UPPER}', '{_ASCII_PROJECT_LOWER}')
+    ELSE {normalized}
+  END
+) COLLATE "C"
+"""
 
 
 def _jsonb_project_scope_values_sql(
@@ -55,7 +107,24 @@ def _jsonb_project_scope_values_sql(
     """
 
     canonical_scope = f"{metadata_expression} -> 'project_scope'"
-    nested_scope = f"{metadata_expression} #> '{{agentic_memory,project_scope}}'"
+    nested_scope = f"""
+jsonb_build_array(
+  {metadata_expression} #> '{{agentic_memory,project_scope}}',
+  {metadata_expression} #> '{{agent_identity,project_scope}}'
+)
+"""
+    nested_scope_present = f"""
+(
+  (
+    jsonb_typeof({metadata_expression} -> 'agentic_memory') = 'object'
+    AND ({metadata_expression} -> 'agentic_memory') ? 'project_scope'
+  )
+  OR (
+    jsonb_typeof({metadata_expression} -> 'agent_identity') = 'object'
+    AND ({metadata_expression} -> 'agent_identity') ? 'project_scope'
+  )
+)
+"""
     project_id_branch = ""
     if project_id_expression is not None:
         project_id_branch = f"""
@@ -64,23 +133,250 @@ def _jsonb_project_scope_values_sql(
     legacy_values = ",\n      ".join(
         f"{metadata_expression} #> '{{{','.join(key.split('.'))}}}'" for key in legacy_keys
     )
-    return f"""
+    resolved_scope = f"""
 CASE
   WHEN {metadata_expression} ? 'project_scope'
     THEN CASE
       WHEN jsonb_typeof({canonical_scope}) = 'array' THEN {canonical_scope}
       ELSE '[]'::jsonb
     END
-  WHEN jsonb_typeof({nested_scope}) = 'array'
-       AND jsonb_array_length({nested_scope}) > 0
+  WHEN {nested_scope_present}
     THEN {nested_scope}{project_id_branch}
-  ELSE jsonb_path_query_array(
-    jsonb_build_array(
-      {legacy_values}
-    ),
-    'strict $.** ? (@.type() == "string")'
+  ELSE jsonb_build_array(
+    {legacy_values}
   )
 END
+"""
+    resolved_leaf_rows = _jsonb_project_scope_leaf_values_sql(
+        f"({resolved_scope})",
+        alias="generic_resolved_scope",
+    )
+    normalized_scope_value = _normalized_project_identifier_sql("scope_leaf.value")
+    identity_scope_value = _project_identifier_identity_sql(
+        "normalized_scope.value",
+        already_normalized=True,
+    )
+    return f"""
+(
+  SELECT COALESCE(
+    jsonb_agg(scope_identity.value ORDER BY scope_identity.value COLLATE "C"),
+    '[]'::jsonb
+  )
+  FROM (
+    SELECT DISTINCT {identity_scope_value} AS value
+    FROM ({resolved_leaf_rows}) AS scope_leaf(value)
+    CROSS JOIN LATERAL (
+      SELECT {normalized_scope_value} AS value
+    ) AS normalized_scope
+    WHERE normalized_scope.value <> ''
+  ) AS scope_identity
+)
+"""
+
+
+def _jsonb_project_scope_leaf_values_sql(
+    candidate_expression: str,
+    *,
+    alias: str,
+) -> str:
+    """Return the JSON scalar leaves accepted by Python and migration 0090."""
+
+    return f"""
+WITH RECURSIVE {alias}_nodes(value) AS (
+  SELECT {candidate_expression}
+  UNION ALL
+  SELECT array_item.value
+  FROM {alias}_nodes AS parent
+  CROSS JOIN LATERAL jsonb_array_elements(
+    CASE
+      WHEN jsonb_typeof(parent.value) = 'array' THEN parent.value
+      ELSE '[]'::jsonb
+    END
+  ) AS array_item(value)
+)
+SELECT CASE jsonb_typeof(value)
+  WHEN 'string' THEN value #>> '{{}}'
+  WHEN 'number' THEN CASE
+    WHEN (value #>> '{{}}')::numeric = trunc((value #>> '{{}}')::numeric)
+      THEN CASE
+        WHEN (value #>> '{{}}')::numeric = 0 THEN '0'
+        ELSE trunc((value #>> '{{}}')::numeric)::text
+      END
+  END
+  WHEN 'boolean' THEN CASE
+    WHEN value = 'true'::jsonb THEN 'True'
+    ELSE 'False'
+  END
+END AS value
+FROM {alias}_nodes
+WHERE jsonb_typeof(value) IN ('string', 'boolean')
+   OR (
+     jsonb_typeof(value) = 'number'
+     AND (value #>> '{{}}')::numeric = trunc((value #>> '{{}}')::numeric)
+   )
+"""
+
+
+def _jsonb_source_project_scope_values_sql(metadata_expression: str) -> str:
+    """Resolve a persisted source's complete scope envelope in PostgreSQL.
+
+    Source writers historically stored either plain metadata or an entire
+    resource-shaped envelope inside ``sources.metadata_json``. This mirrors
+    the Python resolver and migration 0090, including scalar-leaf parity.
+    """
+
+    root_alias_leaf_rows = _jsonb_project_scope_leaf_values_sql(
+        "source_candidates.root_aliases",
+        alias="root_alias_candidate",
+    )
+    resolved_leaf_rows = _jsonb_project_scope_leaf_values_sql(
+        "resolved_source_scope.value",
+        alias="resolved_scope",
+    )
+    normalized_root_alias_value = _normalized_project_identifier_sql("root_alias_candidate_value.value")
+    normalized_scope_value = _normalized_project_identifier_sql("resolved_scope_value.value")
+    identity_scope_value = _project_identifier_identity_sql(
+        "normalized_scope.value",
+        already_normalized=True,
+    )
+    return f"""
+(
+  SELECT COALESCE(
+    jsonb_agg(scope_identity.value ORDER BY scope_identity.value COLLATE "C"),
+    '[]'::jsonb
+  )
+  FROM (
+    SELECT DISTINCT {identity_scope_value} AS value
+    FROM LATERAL (
+    SELECT CASE
+      WHEN jsonb_typeof({metadata_expression}) = 'object'
+        THEN {metadata_expression}
+      ELSE '{{}}'::jsonb
+    END AS value
+  ) AS source_resource
+  CROSS JOIN LATERAL (
+    SELECT
+      CASE
+        WHEN jsonb_typeof(source_resource.value -> 'metadata_json') = 'object'
+          THEN source_resource.value -> 'metadata_json'
+        ELSE '{{}}'::jsonb
+      END AS metadata_json,
+      CASE
+        WHEN jsonb_typeof(source_resource.value -> 'scope_json') = 'object'
+          THEN source_resource.value -> 'scope_json'
+        ELSE '{{}}'::jsonb
+      END AS scope_json
+  ) AS source_containers
+  CROSS JOIN LATERAL (
+    SELECT
+      CASE
+        WHEN jsonb_typeof(source_resource.value -> 'agentic_memory') = 'object'
+          THEN (source_resource.value -> 'agentic_memory') ||
+            CASE
+              WHEN jsonb_typeof(source_containers.metadata_json -> 'agentic_memory') = 'object'
+                THEN source_containers.metadata_json -> 'agentic_memory'
+              ELSE '{{}}'::jsonb
+            END
+        ELSE source_containers.metadata_json -> 'agentic_memory'
+      END AS agentic_memory,
+      CASE
+        WHEN jsonb_typeof(source_resource.value -> 'agent_identity') = 'object'
+          THEN (source_resource.value -> 'agent_identity') ||
+            CASE
+              WHEN jsonb_typeof(source_containers.metadata_json -> 'agent_identity') = 'object'
+                THEN source_containers.metadata_json -> 'agent_identity'
+              ELSE '{{}}'::jsonb
+            END
+        ELSE source_containers.metadata_json -> 'agent_identity'
+      END AS agent_identity
+  ) AS source_nested
+  CROSS JOIN LATERAL (
+    SELECT
+      jsonb_build_array(
+        source_nested.agentic_memory -> 'project_scope',
+        source_nested.agent_identity -> 'project_scope',
+        source_containers.scope_json #> '{{agentic_memory,project_scope}}',
+        source_containers.scope_json #> '{{agent_identity,project_scope}}'
+      ) AS nested_scope,
+      (
+        (
+          jsonb_typeof(source_nested.agentic_memory) = 'object'
+          AND source_nested.agentic_memory ? 'project_scope'
+        )
+        OR (
+          jsonb_typeof(source_nested.agent_identity) = 'object'
+          AND source_nested.agent_identity ? 'project_scope'
+        )
+        OR (
+          jsonb_typeof(source_containers.scope_json -> 'agentic_memory') = 'object'
+          AND (source_containers.scope_json -> 'agentic_memory') ? 'project_scope'
+        )
+        OR (
+          jsonb_typeof(source_containers.scope_json -> 'agent_identity') = 'object'
+          AND (source_containers.scope_json -> 'agent_identity') ? 'project_scope'
+        )
+      ) AS nested_scope_present,
+      jsonb_build_array(
+        source_resource.value -> 'project_id',
+        source_resource.value -> 'project',
+        source_resource.value -> 'projects'
+      ) AS root_aliases,
+      jsonb_build_array(
+        source_containers.metadata_json -> 'project_id',
+        source_containers.metadata_json -> 'project',
+        source_containers.metadata_json -> 'projects',
+        source_nested.agentic_memory -> 'project_id',
+        source_nested.agentic_memory -> 'project',
+        source_nested.agentic_memory -> 'projects',
+        source_containers.scope_json -> 'project_id',
+        source_containers.scope_json -> 'project',
+        source_containers.scope_json -> 'projects',
+        source_containers.scope_json #> '{{agentic_memory,project_id}}',
+        source_containers.scope_json #> '{{agentic_memory,project}}',
+        source_containers.scope_json #> '{{agentic_memory,projects}}'
+      ) AS final_aliases
+  ) AS source_candidates
+  CROSS JOIN LATERAL (
+    SELECT CASE
+      WHEN source_resource.value ? 'project_scope'
+        THEN CASE
+          WHEN jsonb_typeof(source_resource.value -> 'project_scope') = 'array'
+            THEN source_resource.value -> 'project_scope'
+          ELSE '[]'::jsonb
+        END
+      WHEN source_containers.metadata_json ? 'project_scope'
+        THEN CASE
+          WHEN jsonb_typeof(source_containers.metadata_json -> 'project_scope') = 'array'
+            THEN source_containers.metadata_json -> 'project_scope'
+          ELSE '[]'::jsonb
+        END
+      WHEN source_containers.scope_json ? 'project_scope'
+        THEN CASE
+          WHEN jsonb_typeof(source_containers.scope_json -> 'project_scope') = 'array'
+            THEN source_containers.scope_json -> 'project_scope'
+          ELSE '[]'::jsonb
+        END
+      WHEN source_candidates.nested_scope_present
+        THEN source_candidates.nested_scope
+      WHEN EXISTS (
+        SELECT 1
+        FROM (
+          {root_alias_leaf_rows}
+        ) AS root_alias_candidate_value
+        WHERE {normalized_root_alias_value} <> ''
+      ) THEN source_candidates.root_aliases
+      ELSE source_candidates.final_aliases
+    END AS value
+  ) AS resolved_source_scope
+  CROSS JOIN LATERAL (
+    {resolved_leaf_rows}
+  ) AS resolved_scope_value
+  CROSS JOIN LATERAL (
+    SELECT {normalized_scope_value} AS value
+  ) AS normalized_scope
+  WHERE normalized_scope.value <> ''
+  ) AS scope_identity
+)
 """
 
 
@@ -157,10 +453,7 @@ EXISTS (
 """
 
 
-_SOURCE_SCOPE_PROJECT_SQL = _jsonb_project_scope_values_sql(
-    "metadata_json",
-    legacy_keys=("project_id", "project", "projects"),
-)
+_SOURCE_SCOPE_PROJECT_SQL = _jsonb_source_project_scope_values_sql("metadata_json")
 _SOURCE_SCOPE_PEOPLE_SQL = _jsonb_scope_values_sql(
     "metadata_json",
     ("person_id", "person_ids", "person", "people", "people_ids"),
@@ -198,28 +491,79 @@ _OPEN_LOOP_SCOPE_PEOPLE_SQL = _jsonb_scope_values_sql(
 )
 _OPEN_LOOP_SCOPE_EVENT_TIME_SQL = "COALESCE(opened_at, updated_at, created_at)"
 
+# CPython 3.12's fixed Unicode whitespace table used by ``str.strip()``.
+# PostgreSQL's POSIX ``[[:space:]]`` class is locale-dependent and omits the
+# U+001C-U+001F controls, so it cannot safely guard embedding compare-and-swap
+# freshness. Keep this table in lockstep with migration 0090 without importing
+# migration code into the runtime package.
+_PYTHON_312_STRIP_CODEPOINTS = (
+    0x0009,
+    0x000A,
+    0x000B,
+    0x000C,
+    0x000D,
+    0x001C,
+    0x001D,
+    0x001E,
+    0x001F,
+    0x0020,
+    0x0085,
+    0x00A0,
+    0x1680,
+    0x2000,
+    0x2001,
+    0x2002,
+    0x2003,
+    0x2004,
+    0x2005,
+    0x2006,
+    0x2007,
+    0x2008,
+    0x2009,
+    0x200A,
+    0x2028,
+    0x2029,
+    0x202F,
+    0x205F,
+    0x3000,
+)
+_PYTHON_312_STRIP_CHARS_SQL = " || ".join(f"chr({codepoint})" for codepoint in _PYTHON_312_STRIP_CODEPOINTS)
+
+
+def _python_312_strip_sql(expression: str) -> str:
+    return f"btrim({expression}, {_PYTHON_312_STRIP_CHARS_SQL})"
+
+
 # Exact SQL mirror of vnext_embeddings.memory_embedding_text/content_sha256:
 # trim title/canonical/summary, omit blanks, and preserve the first occurrence
 # when fields contain identical text.
-_MEMORY_EMBEDDING_CONTENT_SHA256_SQL = """
-encode(
-  digest(
-    concat_ws(
-      E'\\n',
-      NULLIF(btrim(title), ''),
-      CASE
-        WHEN NULLIF(btrim(canonical_text), '') IS DISTINCT FROM NULLIF(btrim(title), '')
-          THEN NULLIF(btrim(canonical_text), '')
-      END,
-      CASE
-        WHEN NULLIF(btrim(summary), '') IS DISTINCT FROM NULLIF(btrim(title), '')
-         AND NULLIF(btrim(summary), '') IS DISTINCT FROM NULLIF(btrim(canonical_text), '')
-          THEN NULLIF(btrim(summary), '')
-      END
+_MEMORY_EMBEDDING_CONTENT_SHA256_SQL = f"""
+(
+  SELECT encode(
+    digest(
+      concat_ws(
+        E'\\n',
+        normalized.title,
+        CASE
+          WHEN normalized.canonical_text IS DISTINCT FROM normalized.title
+            THEN normalized.canonical_text
+        END,
+        CASE
+          WHEN normalized.summary IS DISTINCT FROM normalized.title
+           AND normalized.summary IS DISTINCT FROM normalized.canonical_text
+            THEN normalized.summary
+        END
+      ),
+      'sha256'
     ),
-    'sha256'
-  ),
-  'hex'
+    'hex'
+  )
+  FROM (
+    SELECT
+      NULLIF({_python_312_strip_sql("title")}, '') AS title,
+      NULLIF({_python_312_strip_sql("canonical_text")}, '') AS canonical_text,
+      NULLIF({_python_312_strip_sql("summary")}, '') AS summary
+  ) AS normalized
 )
 """
 
@@ -930,47 +1274,50 @@ class PostgresVNextStore:
         *,
         target_type: str | None = None,
         target_id: str | None = None,
+        occurred_at_start: datetime | None = None,
+        occurred_at_end: datetime | None = None,
         limit: int | None = None,
     ) -> list[VNextRow]:
-        if target_type is None and target_id is None:
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be positive")
+        if target_type is None and target_id is None and occurred_at_start is None and occurred_at_end is None:
+            limit_sql = ""
+            params: list[object] = []
             if limit is not None:
-                return self._fetch_all(
-                    f"""
+                limit_sql = " LIMIT %s"
+                params.append(limit)
+            return self._fetch_all(
+                f"""
                     SELECT {EVENT_LOG_COLUMNS}
                     FROM event_log
-                    ORDER BY occurred_at DESC, id DESC
-                    LIMIT %s
+                    ORDER BY occurred_at DESC, id DESC{limit_sql}
                     """,
-                    (limit,),
-                )
-            return self._fetch_all(
-                f"""
-                SELECT {EVENT_LOG_COLUMNS}
-                FROM event_log
-                ORDER BY occurred_at DESC, id DESC
-                """
+                tuple(params),
             )
+        clauses = [
+            "(%s::text IS NULL OR target_type = %s)",
+            "(%s::text IS NULL OR target_id = %s)",
+        ]
+        params = [target_type, target_type, target_id, target_id]
+        if occurred_at_start is not None:
+            clauses.append("occurred_at >= %s::timestamptz")
+            params.append(occurred_at_start)
+        if occurred_at_end is not None:
+            clauses.append("occurred_at <= %s::timestamptz")
+            params.append(occurred_at_end)
+        where_sql = " WHERE " + " AND ".join(clauses) if clauses else ""
+        limit_sql = ""
         if limit is not None:
-            return self._fetch_all(
-                f"""
-                SELECT {EVENT_LOG_COLUMNS}
-                FROM event_log
-                WHERE (%s::text IS NULL OR target_type = %s)
-                  AND (%s::text IS NULL OR target_id = %s)
-                ORDER BY occurred_at DESC, id DESC
-                LIMIT %s
-                """,
-                (target_type, target_type, target_id, target_id, limit),
-            )
+            limit_sql = " LIMIT %s"
+            params.append(limit)
         return self._fetch_all(
             f"""
                 SELECT {EVENT_LOG_COLUMNS}
                 FROM event_log
-                WHERE (%s::text IS NULL OR target_type = %s)
-                  AND (%s::text IS NULL OR target_id = %s)
-                ORDER BY occurred_at DESC, id DESC
-            """,
-            (target_type, target_type, target_id, target_id),
+                {where_sql}
+                ORDER BY occurred_at DESC, id DESC{limit_sql}
+                """,
+            tuple(params),
         )
 
     def list_events_for_source_trace(
@@ -1032,6 +1379,69 @@ class PostgresVNextStore:
             ),
         )
 
+    def list_resume_memory_events(
+        self,
+        *,
+        statuses: Sequence[str],
+        projects: Sequence[str] | None = None,
+        query: str | None = None,
+        occurred_at_start: datetime | None = None,
+        occurred_at_end: datetime | None = None,
+        limit: int = 20,
+    ) -> list[VNextRow]:
+        """Return events joined to resume-admitted memories before LIMIT."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        normalized_statuses = list(dict.fromkeys(str(value) for value in statuses if str(value)))
+        if not normalized_statuses:
+            return []
+        project_list = list(project_scope_identity(projects or ())) or None
+        normalized_query = str(query).strip() if query is not None else None
+        if normalized_query == "":
+            normalized_query = None
+        qualified_columns = ", ".join(f"event.{column.strip()}" for column in EVENT_LOG_COLUMNS.split(","))
+        return self._fetch_all(
+            f"""
+                SELECT {qualified_columns}
+                FROM event_log AS event
+                JOIN memories AS m
+                  ON event.target_type = 'memory'
+                 AND event.target_id = m.id::text
+                 AND event.user_id = m.user_id
+                WHERE m.deleted_at IS NULL
+                  AND m.status = ANY(%s::text[])
+                  AND (
+                    %s::text[] IS NULL
+                    OR ({_SCOPED_MEMORY_PROJECT_SQL}) ?| %s::text[]
+                  )
+                  AND (
+                    %s::text IS NULL
+                    OR strpos(lower(COALESCE(m.title, '')), lower(%s)) > 0
+                    OR strpos(lower(COALESCE(m.canonical_text, '')), lower(%s)) > 0
+                    OR strpos(lower(COALESCE(m.summary, '')), lower(%s)) > 0
+                  )
+                  AND (%s::timestamptz IS NULL OR event.occurred_at >= %s::timestamptz)
+                  AND (%s::timestamptz IS NULL OR event.occurred_at <= %s::timestamptz)
+                ORDER BY event.occurred_at DESC, event.id DESC
+                LIMIT %s
+                """,
+            (
+                normalized_statuses,
+                project_list,
+                project_list,
+                normalized_query,
+                normalized_query,
+                normalized_query,
+                normalized_query,
+                occurred_at_start,
+                occurred_at_start,
+                occurred_at_end,
+                occurred_at_end,
+                limit,
+            ),
+        )
+
     def list_memory_events(
         self,
         *,
@@ -1046,7 +1456,7 @@ class PostgresVNextStore:
         """Return memory-targeted events with target scope applied pre-LIMIT."""
         if limit < 1:
             raise ValueError("limit must be positive")
-        project_list = list(normalize_project_scope(scope_projects)) or None
+        project_list = list(project_scope_identity(scope_projects)) or None
         people_list = [str(value).strip().casefold() for value in scope_people if str(value).strip()] or None
         person_memory_ids = [str(value) for value in scope_person_memory_ids if str(value)] or None
         prefix_pattern = f"{event_type_prefix}%" if event_type_prefix is not None else None
@@ -1560,6 +1970,14 @@ class PostgresVNextStore:
         if raw_row is None:  # pragma: no cover - unique-index invariant backstop
             raise ContinuityStoreInvariantError("get_or_create_source did not return a source")
         row = cast(VNextRow, raw_row)
+        if not created and not source_capture_identity_matches(
+            row,
+            content_hashes=(str(source["content_hash"]),),
+            project_scope=source_project_scope(source),
+            domain=source.get("domain", "unknown"),
+            sensitivity=source.get("sensitivity", "unknown"),
+        ):
+            raise ContinuityStoreInvariantError("atomic source dedupe winner does not match capture identity")
         if created:
             self._append_mutation_event(
                 event_type="source.created",
@@ -1634,32 +2052,110 @@ class PostgresVNextStore:
         )
 
     def update_source(self, *, source_id: str, patch: JsonObject, actor_type: str = "system") -> VNextRow:
-        row = self._fetch_one(
-            "update_source",
-            f"""
-                UPDATE sources
-                SET title = COALESCE(%s, title),
-                    author = COALESCE(%s, author),
-                    uri = COALESCE(%s, uri),
-                    raw_path = COALESCE(%s, raw_path),
-                    domain = COALESCE(%s, domain),
-                    sensitivity = COALESCE(%s, sensitivity),
-                    metadata_json = COALESCE(%s, metadata_json)
-                WHERE id = %s::uuid
-                  AND deleted_at IS NULL
-                RETURNING {SOURCE_COLUMNS}
-                """,
-            (
-                patch.get("title"),
-                patch.get("author"),
-                patch.get("uri"),
-                patch.get("raw_path"),
-                patch.get("domain"),
-                patch.get("sensitivity"),
-                _json_object(patch["metadata_json"]) if "metadata_json" in patch else None,
-                source_id,
-            ),
-        )
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""
+                    SELECT {SOURCE_COLUMNS}
+                    FROM sources
+                    WHERE id = %s::uuid
+                      AND deleted_at IS NULL
+                    FOR UPDATE
+                    """,
+                (source_id,),
+            )
+            raw_current = cur.fetchone()
+            if raw_current is None:
+                raise ContinuityStoreInvariantError("update_source did not return a row from the database")
+            current = cast(VNextRow, raw_current)
+            prospective = dict(current)
+            for field in (
+                "title",
+                "author",
+                "uri",
+                "raw_path",
+                "domain",
+                "sensitivity",
+                "metadata_json",
+            ):
+                if field in patch and patch[field] is not None:
+                    prospective[field] = patch[field]
+
+            current_scope = project_scope_identity(source_project_scope(current))
+            prospective_scope = project_scope_identity(source_project_scope(prospective))
+            scope_changed = current_scope != prospective_scope
+            identity_changed = not source_capture_identity_matches(
+                current,
+                content_hashes=(),
+                project_scope=prospective_scope,
+                domain=prospective.get("domain", "unknown"),
+                sensitivity=prospective.get("sensitivity", "unknown"),
+            )
+            raw_text_changed = source_capture_raw_text(current) != source_capture_raw_text(prospective)
+            dedupe_input_changed = identity_changed or raw_text_changed
+            dedupe_key = (
+                capture_dedupe_key_for_source(prospective) if dedupe_input_changed else current.get("dedupe_key")
+            )
+            content_input_changed = scope_changed or raw_text_changed
+            content_hash = (
+                capture_content_hash_for_source(prospective) or str(current["content_hash"])
+                if content_input_changed
+                else str(current["content_hash"])
+            )
+            if dedupe_key is not None and dedupe_key != current.get("dedupe_key"):
+                cur.execute(
+                    """
+                        SELECT id
+                        FROM sources
+                        WHERE dedupe_key = %s
+                          AND id <> %s::uuid
+                          AND deleted_at IS NULL
+                        LIMIT 1
+                        FOR UPDATE
+                        """,
+                    (dedupe_key, source_id),
+                )
+                if cur.fetchone() is not None:
+                    raise ContinuityStoreInvariantError(
+                        "source capture identity already belongs to another live source"
+                    )
+            try:
+                cur.execute(
+                    f"""
+                        UPDATE sources
+                        SET title = COALESCE(%s, title),
+                            author = COALESCE(%s, author),
+                            uri = COALESCE(%s, uri),
+                            raw_path = COALESCE(%s, raw_path),
+                            domain = COALESCE(%s, domain),
+                            sensitivity = COALESCE(%s, sensitivity),
+                            metadata_json = COALESCE(%s, metadata_json),
+                            content_hash = %s,
+                            dedupe_key = %s
+                        WHERE id = %s::uuid
+                          AND deleted_at IS NULL
+                        RETURNING {SOURCE_COLUMNS}
+                        """,
+                    (
+                        patch.get("title"),
+                        patch.get("author"),
+                        patch.get("uri"),
+                        patch.get("raw_path"),
+                        patch.get("domain"),
+                        patch.get("sensitivity"),
+                        _json_object(patch["metadata_json"]) if "metadata_json" in patch else None,
+                        content_hash,
+                        dedupe_key,
+                        source_id,
+                    ),
+                )
+            except psycopg.errors.UniqueViolation as exc:
+                raise ContinuityStoreInvariantError(
+                    "source capture identity already belongs to another live source"
+                ) from exc
+            raw_row = cur.fetchone()
+        if raw_row is None:
+            raise ContinuityStoreInvariantError("update_source did not return a row from the database")
+        row = cast(VNextRow, raw_row)
         self._append_mutation_event(
             event_type="source.updated",
             actor_type=actor_type,
@@ -1781,9 +2277,9 @@ class PostgresVNextStore:
         else:
             tsquery_sql = "websearch_to_tsquery('english', %s)"
             tsquery_text = query
-        scope_projects_list = list(scope_projects) or None
+        scope_projects_list = list(project_scope_identity(scope_projects)) or None
         scope_people_list = list(scope_people) or None
-        project_scope_sql = _SOURCE_SCOPE_PROJECT_SQL.replace("metadata_json", "s.metadata_json")
+        project_scope_sql = _jsonb_source_project_scope_values_sql("s.metadata_json")
         people_scope_sql = _SOURCE_SCOPE_PEOPLE_SQL.replace("metadata_json", "s.metadata_json")
         event_time_sql = (
             _SOURCE_SCOPE_EVENT_TIME_SQL.replace("source_created_at", "s.source_created_at")
@@ -2134,9 +2630,15 @@ class PostgresVNextStore:
         self,
         *,
         status: str | None = None,
+        statuses: Sequence[str] | None = None,
+        memory_types: Sequence[str] | None = None,
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         projects: Sequence[str] | None = None,
+        created_at_start: datetime | None = None,
+        created_at_end: datetime | None = None,
+        query: str | None = None,
+        order_by_created_at: bool = False,
         limit: int | None = None,
     ) -> list[VNextRow]:
         if limit is not None and limit < 1:
@@ -2146,6 +2648,20 @@ class PostgresVNextStore:
         if status is not None:
             status_sql = " AND status = %s"
             params.append(status)
+        statuses_sql = ""
+        if statuses is not None:
+            normalized_statuses = list(dict.fromkeys(str(value) for value in statuses if str(value)))
+            if not normalized_statuses:
+                return []
+            statuses_sql = " AND status = ANY(%s::text[])"
+            params.append(normalized_statuses)
+        memory_types_sql = ""
+        if memory_types is not None:
+            normalized_memory_types = list(dict.fromkeys(str(value) for value in memory_types if str(value)))
+            if not normalized_memory_types:
+                return []
+            memory_types_sql = " AND memory_type = ANY(%s::text[])"
+            params.append(normalized_memory_types)
         domains_sql = ""
         if domains:
             domains_sql = " AND (domain = ANY(%s::text[]) OR domain = 'unknown')"
@@ -2157,10 +2673,32 @@ class PostgresVNextStore:
             sensitivity_sql = " AND COALESCE(sensitivity, 'unknown') = ANY(%s::text[])"
             params.append(sensitivity_allowed)
         projects_sql = ""
-        project_list = list(normalize_project_scope(projects or ())) or None
+        project_list = list(project_scope_identity(projects or ())) or None
         if project_list is not None:
             projects_sql = f" AND ({_MEMORY_PROJECT_SCOPE_SQL}) ?| %s::text[]"
             params.append(project_list)
+        created_at_sql = ""
+        if created_at_start is not None:
+            created_at_sql += " AND created_at >= %s::timestamptz"
+            params.append(created_at_start)
+        if created_at_end is not None:
+            created_at_sql += " AND created_at <= %s::timestamptz"
+            params.append(created_at_end)
+        query_sql = ""
+        if query is not None:
+            normalized_query = str(query).strip()
+            if normalized_query:
+                query_sql = (
+                    " AND (strpos(lower(COALESCE(title, '')), lower(%s)) > 0"
+                    " OR strpos(lower(COALESCE(canonical_text, '')), lower(%s)) > 0"
+                    " OR strpos(lower(COALESCE(summary, '')), lower(%s)) > 0)"
+                )
+                params.extend((normalized_query, normalized_query, normalized_query))
+        order_sql = (
+            "ORDER BY created_at DESC, id DESC"
+            if order_by_created_at
+            else "ORDER BY updated_at DESC, created_at DESC, id DESC"
+        )
         limit_sql = ""
         if limit is not None:
             limit_sql = " LIMIT %s"
@@ -2169,8 +2707,9 @@ class PostgresVNextStore:
             f"""
                 SELECT {MEMORY_COLUMNS}
                 FROM memories
-                WHERE deleted_at IS NULL{status_sql}{domains_sql}{sensitivity_sql}{projects_sql}
-                ORDER BY updated_at DESC, created_at DESC, id DESC
+                WHERE deleted_at IS NULL{status_sql}{statuses_sql}{memory_types_sql}
+                  {domains_sql}{sensitivity_sql}{projects_sql}{created_at_sql}{query_sql}
+                {order_sql}
                 {limit_sql}
                 """,
             tuple(params),
@@ -2288,7 +2827,7 @@ class PostgresVNextStore:
         normalized_text = str(canonical_text).strip()
         if not normalized_text:
             return None
-        normalized_scope = list(normalize_project_scope(project_scope))
+        normalized_scope = list(project_scope_identity(project_scope))
         return self._fetch_optional_one(
             f"""
                 SELECT {MEMORY_COLUMNS}
@@ -2325,7 +2864,7 @@ class PostgresVNextStore:
         if limit < 1:
             raise ValueError("limit must be positive")
         memory_types = list(dict.fromkeys(str(value) for value in review_memory_types if str(value)))
-        project_list = list(normalize_project_scope(projects or ())) or None
+        project_list = list(project_scope_identity(projects or ())) or None
         return self._fetch_all(
             f"""
                 SELECT {MEMORY_COLUMNS}
@@ -2382,7 +2921,7 @@ class PostgresVNextStore:
             sensitivity_sql = " AND COALESCE(sensitivity, 'unknown') = ANY(%s::text[])"
             params.append(sensitivity_allowed)
         projects_sql = ""
-        project_list = list(normalize_project_scope(projects or ())) or None
+        project_list = list(project_scope_identity(projects or ())) or None
         if project_list is not None:
             projects_sql = f" AND ({_MEMORY_PROJECT_SCOPE_SQL}) ?| %s::text[]"
             params.append(project_list)
@@ -2412,7 +2951,7 @@ class PostgresVNextStore:
         if not sensitivity_allowed:
             return []
         domain_filter = domains or None
-        project_list = list(normalize_project_scope(projects or ())) or None
+        project_list = list(project_scope_identity(projects or ())) or None
         return self._fetch_all(
             f"""
                 SELECT {MEMORY_COLUMNS}
@@ -2449,7 +2988,7 @@ class PostgresVNextStore:
         if not sensitivity_allowed:
             return 0
         domain_filter = domains or None
-        project_list = list(normalize_project_scope(projects or ())) or None
+        project_list = list(project_scope_identity(projects or ())) or None
         row = self._fetch_one(
             "count rollup input memories",
             f"""
@@ -2491,7 +3030,7 @@ class PostgresVNextStore:
             raise ValueError("limit must be positive")
         bounded_limit = min(limit, len(unique_digests))
         domain_filter = domains or None
-        project_list = list(normalize_project_scope(projects or ())) or None
+        project_list = list(project_scope_identity(projects or ())) or None
         return self._fetch_all(
             f"""
                 SELECT DISTINCT ON (metadata_json ->> 'rollup_digest') {MEMORY_COLUMNS}
@@ -2536,7 +3075,7 @@ class PostgresVNextStore:
             raise ValueError("limit must be positive")
         bounded_limit = min(limit, len(unique_keys))
         domain_filter = domains or None
-        project_list = list(normalize_project_scope(projects or ())) or None
+        project_list = list(project_scope_identity(projects or ())) or None
         return self._fetch_all(
             f"""
                 SELECT DISTINCT ON (metadata_json ->> 'rollup_key') {MEMORY_COLUMNS}
@@ -2584,7 +3123,7 @@ class PostgresVNextStore:
         patterns = _search_patterns(query)
         exact_pattern = patterns[0]
         memory_type_list = list(memory_types) or None
-        project_list = list(projects) or None
+        project_list = list(project_scope_identity(projects)) or None
         created_by_list = list(created_by_agent_ids) or None
         return self._fetch_all(
             f"""
@@ -2667,7 +3206,7 @@ class PostgresVNextStore:
         scope_window_end: datetime | None = None,
     ) -> list[VNextRow]:
         memory_type_list = list(memory_types) or None
-        project_list = list(projects) or None
+        project_list = list(project_scope_identity(projects)) or None
         created_by_list = list(created_by_agent_ids) or None
         scope_people_list = list(scope_people) or None
         scope_person_id_list = list(scope_person_memory_ids) or None
@@ -2778,7 +3317,7 @@ class PostgresVNextStore:
     ) -> list[VNextRow]:
         vector_param = _vector_literal(query_vector)
         memory_type_list = list(memory_types) or None
-        project_list = list(projects) or None
+        project_list = list(project_scope_identity(projects)) or None
         created_by_list = list(created_by_agent_ids) or None
         scope_people_list = list(scope_people) or None
         scope_person_id_list = list(scope_person_memory_ids) or None
@@ -2948,7 +3487,7 @@ class PostgresVNextStore:
         elif window_center.tzinfo is None:
             window_center = window_center.replace(tzinfo=UTC)
         memory_type_list = list(memory_types) or None
-        project_list = list(projects) or None
+        project_list = list(project_scope_identity(projects)) or None
         created_by_list = list(created_by_agent_ids) or None
         event_time_sql = "COALESCE(valid_from, first_seen_at, created_at)"
         return self._fetch_all(
@@ -3701,7 +4240,7 @@ class PostgresVNextStore:
     ) -> list[VNextRow]:
         patterns = _search_patterns(query)
         exact_pattern = patterns[0]
-        scope_projects_list = list(scope_projects) or None
+        scope_projects_list = list(project_scope_identity(scope_projects)) or None
         scope_people_list = list(scope_people) or None
         return self._fetch_all(
             f"""
@@ -4136,8 +4675,10 @@ class PostgresVNextStore:
         scope_projects: Sequence[str] | None = None,
         limit: int = 8,
     ) -> list[VNextRow]:
-        project_scope = list(normalize_project_scope(scope_projects or ())) or None
-        normalized_scope = [value.casefold() for value in project_scope] if project_scope else None
+        project_scope = list(project_scope_identity(scope_projects or ())) or None
+        normalized_scope = project_scope
+        slug_scope_identity_sql = _project_identifier_identity_sql("slug")
+        name_scope_identity_sql = _project_identifier_identity_sql("name")
         return self._fetch_all(
             f"""
                 SELECT {PROJECT_COLUMNS}
@@ -4148,8 +4689,8 @@ class PostgresVNextStore:
                   AND (
                     %s::text[] IS NULL
                     OR id::text = ANY(%s::text[])
-                    OR lower(slug) = ANY(%s::text[])
-                    OR lower(name) = ANY(%s::text[])
+                    OR {slug_scope_identity_sql} = ANY(%s::text[])
+                    OR {name_scope_identity_sql} = ANY(%s::text[])
                   )
                 ORDER BY updated_at DESC, created_at DESC, id DESC
                 LIMIT %s
@@ -4701,7 +5242,7 @@ class PostgresVNextStore:
         scope_window_end: datetime | None = None,
         limit: int = 8,
     ) -> list[VNextRow]:
-        project_list = list(normalize_project_scope(scope_projects)) or None
+        project_list = list(project_scope_identity(scope_projects)) or None
         people_list = [str(value).strip().casefold() for value in scope_people if str(value).strip()] or None
         person_memory_ids = [str(value) for value in scope_person_memory_ids if str(value)] or None
         return self._fetch_all(
@@ -5013,6 +5554,8 @@ class PostgresVNextStore:
         self,
         *,
         status: str | None = "open",
+        statuses: Sequence[str] | None = None,
+        query: str | None = None,
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         project_id: str | None = None,
@@ -5023,13 +5566,42 @@ class PostgresVNextStore:
         scope_window_start: datetime | None = None,
         scope_window_end: datetime | None = None,
     ) -> list[VNextRow]:
-        scope_projects_list = list(normalize_project_scope(scope_projects or ())) or None
+        scope_projects_list = list(project_scope_identity(scope_projects or ())) or None
         scope_people_list = list(scope_people) or None
+        normalized_statuses = None
+        statuses_sql = ""
+        statuses_params: tuple[object, ...] = ()
+        if statuses is not None:
+            normalized_statuses = list(dict.fromkeys(str(value) for value in statuses if str(value)))
+            if not normalized_statuses:
+                return []
+            statuses_sql = " AND status = ANY(%s::text[])"
+            statuses_params = (normalized_statuses,)
+        normalized_query = str(query).strip() if query is not None else ""
+        query_sql = ""
+        query_params: tuple[object, ...] = ()
+        if normalized_query:
+            query_sql = f"""
+                  AND (
+                    {_postgres_ascii_literal_contains_sql("COALESCE(title, '')")}
+                    OR {_postgres_ascii_literal_contains_sql("COALESCE(description, '')")}
+                    OR (
+                      jsonb_typeof(metadata_json -> 'next_action') = 'string'
+                      AND {_postgres_ascii_literal_contains_sql("COALESCE(metadata_json ->> 'next_action', '')")}
+                    )
+                    OR (
+                      jsonb_typeof(metadata_json #> '{{agentic_memory,next_action}}') = 'string'
+                      AND {_postgres_ascii_literal_contains_sql("COALESCE(metadata_json #>> '{agentic_memory,next_action}', '')")}
+                    )
+                  )
+            """
+            query_params = (_escape_like_literal(normalized_query),) * 4
         return self._fetch_all(
             f"""
                 SELECT {OPEN_LOOP_COLUMNS}
                 FROM open_loops
                 WHERE (%s::text IS NULL OR status = %s)
+                  {statuses_sql}
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
                   AND (%s::uuid IS NULL OR project_id = %s::uuid)
@@ -5051,12 +5623,14 @@ class PostgresVNextStore:
                     %s::timestamptz IS NULL
                     OR {_OPEN_LOOP_SCOPE_EVENT_TIME_SQL} <= %s::timestamptz
                   )
+                  {query_sql}
                 ORDER BY opened_at DESC, created_at DESC, id DESC
                 LIMIT %s
                 """,
             (
                 status,
                 status,
+                *statuses_params,
                 domains,
                 domains,
                 sensitivity_allowed,
@@ -5074,6 +5648,85 @@ class PostgresVNextStore:
                 scope_window_start,
                 scope_window_end,
                 scope_window_end,
+                *query_params,
+                limit,
+            ),
+        )
+
+    def list_open_loop_events(
+        self,
+        *,
+        statuses: Sequence[str],
+        scope_projects: Sequence[str] | None = None,
+        query: str | None = None,
+        occurred_at_start: datetime | None = None,
+        occurred_at_end: datetime | None = None,
+        limit: int = 20,
+    ) -> list[VNextRow]:
+        """Return scoped events for active loops without bounding loop age."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        normalized_statuses = list(dict.fromkeys(str(value) for value in statuses if str(value)))
+        if not normalized_statuses:
+            return []
+        scope_projects_list = list(project_scope_identity(scope_projects or ())) or None
+        normalized_query = str(query).strip() if query is not None else ""
+        query_sql = ""
+        query_params: tuple[object, ...] = ()
+        if normalized_query:
+            query_sql = f"""
+                  AND (
+                    {_postgres_ascii_literal_contains_sql("COALESCE(loop.title, '')")}
+                    OR {_postgres_ascii_literal_contains_sql("COALESCE(loop.description, '')")}
+                    OR (
+                      jsonb_typeof(loop.metadata_json -> 'next_action') = 'string'
+                      AND {_postgres_ascii_literal_contains_sql("COALESCE(loop.metadata_json ->> 'next_action', '')")}
+                    )
+                    OR (
+                      jsonb_typeof(loop.metadata_json #> '{{agentic_memory,next_action}}') = 'string'
+                      AND {_postgres_ascii_literal_contains_sql("COALESCE(loop.metadata_json #>> '{agentic_memory,next_action}', '')")}
+                    )
+                    OR EXISTS (
+                      SELECT 1
+                      FROM jsonb_path_query(
+                        event.payload_json,
+                        'strict $.** ? (@.type() == "string")'
+                      ) AS payload_leaf(value)
+                      WHERE {_postgres_ascii_literal_contains_sql("payload_leaf.value #>> '{}'")}
+                    )
+                  )
+            """
+            query_params = (_escape_like_literal(normalized_query),) * 5
+        qualified_columns = ", ".join(f"event.{column.strip()}" for column in EVENT_LOG_COLUMNS.split(","))
+        return self._fetch_all(
+            f"""
+                SELECT {qualified_columns}
+                FROM event_log AS event
+                JOIN open_loops AS loop
+                  ON event.target_type = 'open_loop'
+                 AND event.target_id = loop.id::text
+                 AND event.user_id = loop.user_id
+                WHERE loop.status = ANY(%s::text[])
+                  AND (
+                    %s::text[] IS NULL
+                    OR ({_OPEN_LOOP_SCOPE_PROJECT_SQL}) ?| %s::text[]
+                  )
+                  {query_sql}
+                  AND (%s::timestamptz IS NULL OR event.occurred_at >= %s::timestamptz)
+                  AND (%s::timestamptz IS NULL OR event.occurred_at <= %s::timestamptz)
+                ORDER BY event.occurred_at DESC, event.id DESC
+                LIMIT %s
+                """,
+            (
+                normalized_statuses,
+                scope_projects_list,
+                scope_projects_list,
+                *query_params,
+                occurred_at_start,
+                occurred_at_start,
+                occurred_at_end,
+                occurred_at_end,
                 limit,
             ),
         )
@@ -5362,7 +6015,7 @@ class PostgresVNextStore:
         scope_projects: tuple[str, ...] = (),
         limit: int = 8,
     ) -> list[VNextRow]:
-        project_list = list(normalize_project_scope(scope_projects)) or None
+        project_list = list(project_scope_identity(scope_projects)) or None
         return self._fetch_all(
             f"""
                 SELECT {ARTIFACT_COLUMNS}
@@ -5445,7 +6098,7 @@ class PostgresVNextStore:
         normalized_digest = str(digest).strip()
         if not normalized_digest:
             return None
-        project_list = list(normalize_project_scope(scope_projects or ())) or None
+        project_list = list(project_scope_identity(scope_projects or ())) or None
         return self._fetch_optional_one(
             f"""
                 SELECT {ARTIFACT_COLUMNS}
@@ -5604,7 +6257,7 @@ class PostgresVNextStore:
         scope_projects: Sequence[str] | None = None,
         limit: int = 100,
     ) -> list[VNextRow]:
-        project_list = list(normalize_project_scope(scope_projects or ())) or None
+        project_list = list(project_scope_identity(scope_projects or ())) or None
         return self._fetch_all(
             f"""
                 SELECT {QUALITY_RATING_COLUMNS}

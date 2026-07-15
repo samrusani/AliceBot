@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -12,6 +13,8 @@ import alicebot_api.cli as cli_module
 from alicebot_api.config import Settings
 from alicebot_api.contracts import ContinuityRecallResponse
 from alicebot_api.vnext_embeddings import VNextEmbeddingProviderError
+from alicebot_api.vnext_event_log import build_event_log_record
+from alicebot_api.vnext_projects import PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE
 
 
 def test_parser_routes_required_commands() -> None:
@@ -283,6 +286,9 @@ class FakeVNextCliStore:
     def get_memory_for_update(self, memory_id: str) -> dict[str, object] | None:
         """Mirror the production locking read for single-threaded CLI tests."""
 
+        return self.get_memory(memory_id)
+
+    def get_memory(self, memory_id: str) -> dict[str, object] | None:
         return next(
             (memory for memory in self.memories if memory.get("id") == memory_id),
             None,
@@ -299,6 +305,9 @@ class FakeVNextCliStore:
         row = {**revision, "id": f"revision-{len(self.revisions) + 1}"}
         self.revisions.append(row)
         return row
+
+    def list_revisions(self, memory_id: str) -> list[dict[str, object]]:
+        return [revision for revision in self.revisions if revision.get("memory_id") == memory_id]
 
     def create_provenance_link(self, link: dict[str, object], **_kwargs) -> dict[str, object]:
         return {**link, "id": "provenance-1"}
@@ -560,9 +569,23 @@ class FakeVNextCliStore:
         project.update(patch)
         return project
 
-    def update_artifact_status(self, *, artifact_id: str, status: str, **_kwargs) -> dict[str, object]:
+    def update_artifact_status(
+        self,
+        *,
+        artifact_id: str,
+        status: str,
+        expected_status: str | None = None,
+        metadata_json: dict[str, object] | None = None,
+        **_kwargs,
+    ) -> dict[str, object] | None:
         artifact = self.artifacts[artifact_id]
+        if expected_status is not None and artifact.get("status") != expected_status:
+            return None
         artifact["status"] = status
+        if metadata_json is not None:
+            metadata = artifact.setdefault("metadata_json", {})
+            assert isinstance(metadata, dict)
+            metadata.update(metadata_json)
         return artifact
 
     def upsert_scheduler_workflow(self, workflow: dict[str, object], **_kwargs) -> dict[str, object]:
@@ -2152,14 +2175,18 @@ def test_project_review_defers_embedding_until_primary_transaction_closes(monkey
             assert defer_embeddings is True
             self.deferred_embedding_inputs = (deferred_input,)
 
-        def review_project_update(self, **_kwargs):
+        def review_project_update(self, **kwargs):
             assert transaction_depth == 1
+            assert kwargs["actor_type"] == "user"
+            assert kwargs["actor_id"] == str(context.user_id)
             calls.append("review")
             return {"id": "artifact-1", "status": "accepted"}
 
-    def fake_persist(_ctx, deferred_inputs, **_kwargs) -> None:
+    def fake_persist(_ctx, deferred_inputs, **kwargs) -> None:
         assert transaction_depth == 0
         assert deferred_inputs == (deferred_input,)
+        assert kwargs["actor_type"] == "user"
+        assert kwargs["actor_id"] == str(context.user_id)
         calls.append("embedding")
 
     monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
@@ -2178,6 +2205,412 @@ def test_project_review_defers_embedding_until_primary_transaction_closes(monkey
 
     assert payload["status"] == "accepted"
     assert calls == ["review", "embedding"]
+
+
+@pytest.mark.parametrize("action", ["accept", "reject", "promote"])
+def test_generic_cli_artifact_review_uses_central_dispatch_with_reviewer_attribution(monkeypatch, action: str) -> None:
+    transaction_depth = 0
+    calls: list[str] = []
+    deferred_input = object()
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        nonlocal transaction_depth
+        transaction_depth += 1
+        try:
+            yield object()
+        finally:
+            transaction_depth -= 1
+
+    class DispatchResult:
+        artifact = {"id": "artifact-1", "status": action}
+        deferred_embedding_inputs = (deferred_input,)
+
+    def fake_dispatch(_store, **kwargs):
+        assert transaction_depth == 1
+        assert kwargs["artifact_id"] == "artifact-1"
+        assert kwargs["action"] == action
+        assert kwargs["actor_type"] == "user"
+        assert kwargs["actor_id"] == str(context.user_id)
+        calls.append("dispatch")
+        return DispatchResult()
+
+    def fake_persist(_ctx, deferred_inputs, **kwargs) -> None:
+        assert transaction_depth == 0
+        assert deferred_inputs == (deferred_input,)
+        assert kwargs["actor_type"] == "user"
+        assert kwargs["actor_id"] == str(context.user_id)
+        calls.append("embedding")
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(cli_module, "dispatch_vnext_artifact_review", fake_dispatch)
+    monkeypatch.setattr(cli_module, "_persist_deferred_embedding_inputs", fake_persist)
+    context = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    args = cli_module.build_parser().parse_args(["vnext", "artifacts", "review", "artifact-1", "--action", action])
+
+    payload = json.loads(cli_module._run_vnext_artifact_review(context, args))
+
+    assert payload["status"] == action
+    assert calls == ["dispatch", "embedding"]
+
+
+def _cli_project_update_review_fixture() -> tuple[FakeVNextCliStore, dict[str, object]]:
+    store = FakeVNextCliStore()
+    store.projects["project-1"] = {
+        "id": "project-1",
+        "name": "Alice vNext",
+        "slug": "alice-vnext",
+        "status": "active",
+        "current_state": "Sprint 7 complete.",
+        "domain": "project",
+        "sensitivity": "private",
+    }
+    store.sources.append(
+        {
+            "id": "source-1",
+            "source_type": "manual_text",
+            "title": "Alice project note",
+            "content_hash": "sha256:terminal-consistency-cli",
+            "captured_at": "2026-05-10T00:00:00Z",
+            "domain": "project",
+            "sensitivity": "private",
+            "metadata_json": {
+                "project_scope": ["project-1"],
+                "raw_text": "Alice vNext is ready for terminal consistency review.",
+            },
+        }
+    )
+    artifact = cli_module.VNextProjectService(store).generate_project_update_candidate(
+        cli_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    return store, artifact
+
+
+def _cli_project_update_review_argv(*, adapter: str, artifact_id: str, action: str) -> list[str]:
+    if adapter == "generic":
+        return ["vnext", "artifacts", "review", artifact_id, "--action", action]
+    return ["vnext", "projects", "review-update", artifact_id, "--action", action]
+
+
+def _install_cli_project_update_store(monkeypatch, store: FakeVNextCliStore) -> None:
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        yield store
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(
+        cli_module,
+        "_build_context",
+        lambda _args: cli_module.CLIContext(
+            settings=Settings(database_url="postgresql://db"),
+            database_url="postgresql://db",
+            user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        ),
+    )
+    monkeypatch.setattr(cli_module, "_persist_deferred_embedding_inputs", lambda *_args, **_kwargs: None)
+
+
+def _apply_supported_cli_memory_lifecycle(
+    store: FakeVNextCliStore,
+    *,
+    artifact: dict[str, object],
+    operation: str,
+) -> None:
+    metadata = artifact["metadata_json"]
+    assert isinstance(metadata, dict)
+    memory_id = str(metadata["candidate_memory_id"])
+    service = cli_module.VNextMemoryCommitService(store)
+    if operation == "correct":
+        service.correct(
+            identity=None,
+            memory_id=memory_id,
+            canonical_text="Later corrected CLI project-update memory.",
+            reason="Exercise a supported post-review correction.",
+        )
+    elif operation == "undo":
+        service.undo(
+            identity=None,
+            memory_id=memory_id,
+            reason="Exercise a supported post-review undo.",
+        )
+    else:
+        service.forget(
+            identity=None,
+            memory_id=memory_id,
+            reason="Exercise a supported post-review forget.",
+        )
+
+
+def _accept_later_cli_project_update(store: FakeVNextCliStore, *, first_artifact_id: str) -> None:
+    service = cli_module.VNextProjectService(store)
+    later = service.generate_project_update_candidate(
+        cli_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    assert later["id"] != first_artifact_id
+    service.review_project_update(
+        artifact_id=str(later["id"]),
+        action="edit",
+        edited_current_state="Later accepted CLI project state B.",
+    )
+
+
+def _append_conflicting_cli_project_update_decision(
+    store: FakeVNextCliStore,
+    *,
+    artifact: dict[str, object],
+    conflict: str,
+) -> None:
+    metadata = artifact["metadata_json"]
+    assert isinstance(metadata, dict)
+    artifact_id = str(artifact["id"])
+    candidate_memory_id = str(metadata["candidate_memory_id"])
+    project_id = str(metadata["project_id"])
+    review_event = next(
+        event for event in store.events if event.get("event_type") == f"project.update_candidate_{artifact['status']}"
+    )
+    event_type: str
+    target_type: str
+    target_id: str
+    payload: dict[str, object]
+    if conflict == "accepted_plus_rejected":
+        event_type = "project.update_candidate_rejected"
+        target_type = "artifact"
+        target_id = artifact_id
+        payload = {"project_id": project_id, "source_ids": list(metadata["source_ids"])}
+    elif conflict == "candidate_linked_accepted_wrong_action":
+        event_type = "project.update_candidate_accepted"
+        target_type = "project"
+        target_id = project_id
+        payload = {"candidate_memory_id": candidate_memory_id, "action": "reject"}
+    elif conflict == "rejected_plus_conflicting_rejection":
+        event_type = "project.update_candidate_rejected"
+        target_type = "artifact"
+        target_id = artifact_id
+        payload = {"project_id": project_id, "source_ids": ["conflicting-source"]}
+    else:  # pragma: no cover - exhaustive parameter list
+        raise AssertionError(conflict)
+    store.append_event(
+        build_event_log_record(
+            event_type=event_type,
+            actor_type=str(review_event["actor_type"]),
+            actor_id=str(review_event["actor_id"]) if review_event.get("actor_id") is not None else None,
+            target_type=target_type,
+            target_id=target_id,
+            trace_id=str(review_event["trace_id"]) if review_event.get("trace_id") is not None else None,
+            run_id=str(review_event["run_id"]) if review_event.get("run_id") is not None else None,
+            payload=payload,
+        )
+    )
+
+
+def _redact_and_clone_cli_project_update_terminal(
+    store: FakeVNextCliStore,
+    *,
+    terminal: dict[str, object],
+) -> str:
+    metadata = terminal["metadata_json"]
+    assert isinstance(metadata, dict)
+    candidate_memory_id = str(metadata["candidate_memory_id"])
+    for revision in store.revisions:
+        if (
+            str(revision.get("memory_id") or "") == candidate_memory_id
+            and revision.get("action") == "project_update_review"
+        ):
+            revision.update(
+                {
+                    "metadata_json": {"redacted": True},
+                    "text_before": "[REDACTED]",
+                    "text_after": "[REDACTED]",
+                    "reason": "[REDACTED]",
+                }
+            )
+    for event in store.events:
+        payload = event.get("payload_json")
+        if not isinstance(payload, dict):
+            continue
+        if (
+            str(payload.get("candidate_memory_id") or "") != candidate_memory_id
+            and str(payload.get("memory_id") or "") != candidate_memory_id
+            and not (event.get("target_type") == "memory" and str(event.get("target_id") or "") == candidate_memory_id)
+        ):
+            continue
+        event["payload_json"] = {
+            "redacted": True,
+            "memory_id": candidate_memory_id,
+            "event_type": event["event_type"],
+        }
+        event["integrity_hash"] = None
+    clone_id = "artifact-terminal-clone"
+    clone = deepcopy(terminal)
+    clone["id"] = clone_id
+    store.artifacts[clone_id] = clone
+    return clone_id
+
+
+@pytest.mark.parametrize("adapter", ["generic", "dedicated"])
+@pytest.mark.parametrize(
+    ("forced_status", "retry_action"),
+    [("accepted", "accept"), ("rejected", "reject")],
+)
+def test_cli_project_update_review_rejects_forced_terminal_status_without_mutation(
+    monkeypatch,
+    capsys,
+    adapter: str,
+    forced_status: str,
+    retry_action: str,
+) -> None:
+    store, artifact = _cli_project_update_review_fixture()
+    artifact["status"] = forced_status
+    artifact_id = str(artifact["id"])
+    _install_cli_project_update_store(monkeypatch, store)
+    state_before = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    exit_code = cli_module.main(
+        _cli_project_update_review_argv(adapter=adapter, artifact_id=artifact_id, action=retry_action)
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err.strip() == f"error: {PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE}"
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before
+
+
+@pytest.mark.parametrize("adapter", ["generic", "dedicated"])
+def test_cli_project_update_review_rejects_terminal_clone_after_true_redaction_without_mutation(
+    monkeypatch,
+    capsys,
+    adapter: str,
+) -> None:
+    store, artifact = _cli_project_update_review_fixture()
+    original_id = str(artifact["id"])
+    _install_cli_project_update_store(monkeypatch, store)
+    original_argv = _cli_project_update_review_argv(adapter=adapter, artifact_id=original_id, action="accept")
+    assert cli_module.main(original_argv) == 0
+    capsys.readouterr()
+    clone_id = _redact_and_clone_cli_project_update_terminal(store, terminal=artifact)
+    state_before_retry = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    exit_code = cli_module.main(_cli_project_update_review_argv(adapter=adapter, artifact_id=clone_id, action="accept"))
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err.strip() == f"error: {PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE}"
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
+
+
+@pytest.mark.parametrize("adapter", ["generic", "dedicated"])
+@pytest.mark.parametrize("action", ["accept", "reject"])
+def test_cli_project_update_review_keeps_consistent_terminal_outcomes_idempotent(
+    monkeypatch,
+    capsys,
+    adapter: str,
+    action: str,
+) -> None:
+    store, artifact = _cli_project_update_review_fixture()
+    artifact_id = str(artifact["id"])
+    _install_cli_project_update_store(monkeypatch, store)
+    argv = _cli_project_update_review_argv(adapter=adapter, artifact_id=artifact_id, action=action)
+    first_exit = cli_module.main(argv)
+    first_output = capsys.readouterr()
+    state_before_retry = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+    second_exit = cli_module.main(argv)
+
+    second_output = capsys.readouterr()
+    assert first_exit == second_exit == 0
+    assert json.loads(first_output.out) == json.loads(second_output.out)
+    assert first_output.err == second_output.err == ""
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
+
+
+@pytest.mark.parametrize("adapter", ["generic", "dedicated"])
+@pytest.mark.parametrize(
+    ("action", "conflict"),
+    [
+        ("accept", "accepted_plus_rejected"),
+        ("accept", "candidate_linked_accepted_wrong_action"),
+        ("reject", "rejected_plus_conflicting_rejection"),
+    ],
+)
+def test_cli_project_update_terminal_replay_rejects_every_coupled_competing_decision(
+    monkeypatch,
+    capsys,
+    adapter: str,
+    action: str,
+    conflict: str,
+) -> None:
+    store, artifact = _cli_project_update_review_fixture()
+    artifact_id = str(artifact["id"])
+    _install_cli_project_update_store(monkeypatch, store)
+    argv = _cli_project_update_review_argv(adapter=adapter, artifact_id=artifact_id, action=action)
+    assert cli_module.main(argv) == 0
+    capsys.readouterr()
+    _append_conflicting_cli_project_update_decision(store, artifact=artifact, conflict=conflict)
+    state_before_retry = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    exit_code = cli_module.main(argv)
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err.strip() == f"error: {PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE}"
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
+
+
+@pytest.mark.parametrize("adapter", ["generic", "dedicated"])
+@pytest.mark.parametrize("operation", ["correct", "undo", "forget"])
+def test_cli_accepted_project_update_replay_survives_supported_memory_lifecycle(
+    monkeypatch,
+    capsys,
+    adapter: str,
+    operation: str,
+) -> None:
+    store, artifact = _cli_project_update_review_fixture()
+    artifact_id = str(artifact["id"])
+    _install_cli_project_update_store(monkeypatch, store)
+    argv = _cli_project_update_review_argv(adapter=adapter, artifact_id=artifact_id, action="accept")
+    first_exit = cli_module.main(argv)
+    first_output = capsys.readouterr()
+    _apply_supported_cli_memory_lifecycle(store, artifact=artifact, operation=operation)
+    state_before_retry = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    second_exit = cli_module.main(argv)
+
+    second_output = capsys.readouterr()
+    assert first_exit == second_exit == 0
+    assert json.loads(first_output.out) == json.loads(second_output.out)
+    assert first_output.err == second_output.err == ""
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
+
+
+@pytest.mark.parametrize("adapter", ["generic", "dedicated"])
+def test_cli_accepted_project_update_replay_preserves_a_genuine_later_project_update(
+    monkeypatch,
+    capsys,
+    adapter: str,
+) -> None:
+    store, artifact = _cli_project_update_review_fixture()
+    artifact_id = str(artifact["id"])
+    _install_cli_project_update_store(monkeypatch, store)
+    argv = _cli_project_update_review_argv(adapter=adapter, artifact_id=artifact_id, action="accept")
+    first_exit = cli_module.main(argv)
+    first_output = capsys.readouterr()
+    _accept_later_cli_project_update(store, first_artifact_id=artifact_id)
+    state_before_retry = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    second_exit = cli_module.main(argv)
+
+    second_output = capsys.readouterr()
+    assert first_exit == second_exit == 0
+    assert json.loads(first_output.out) == json.loads(second_output.out)
+    assert first_output.err == second_output.err == ""
+    assert store.projects["project-1"]["current_state"] == "Later accepted CLI project state B."
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
 
 
 def test_missing_connector_payload_returns_clean_nonzero(monkeypatch, capsys, tmp_path) -> None:

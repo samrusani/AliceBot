@@ -268,6 +268,77 @@ def test_openai_compatible_adapter_invokes_registered_transport(monkeypatch) -> 
     assert response.output_text == "Provider online"
 
 
+def test_openai_compatible_adapter_omits_auth_for_bootstrapped_no_auth_config(
+    monkeypatch,
+) -> None:
+    captured_requests: list[dict[str, object]] = []
+    captured_headers: list[dict[str, str]] = []
+    registry = make_provider_adapter_registry()
+    adapter = registry.resolve(OPENAI_COMPATIBLE_ADAPTER_KEY)
+    runtime_provider = resolve_runtime_provider_config_secrets(
+        config=make_runtime_provider_config(
+            api_key="auth_mode_none",
+            auth_mode="none",
+        ),
+        settings=Settings(),
+    )
+
+    def fake_urlopen(request, timeout):
+        headers = dict(request.header_items())
+        captured_headers.append(headers)
+        captured_requests.append(
+            {
+                "url": request.full_url,
+                "timeout": timeout,
+                "headers": headers,
+            }
+        )
+        if request.full_url.endswith("/models"):
+            return FakeHTTPResponse(json.dumps({"data": [{"id": "local-model"}]}).encode("utf-8"))
+        return FakeHTTPResponse(
+            json.dumps(
+                {
+                    "id": "resp_no_auth",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "No-auth provider online"}],
+                        }
+                    ],
+                    "usage": {"input_tokens": 8, "output_tokens": 3, "total_tokens": 11},
+                }
+            ).encode("utf-8")
+        )
+
+    monkeypatch.setattr("alicebot_api.local_provider_helpers.urlopen", fake_urlopen)
+    monkeypatch.setattr("alicebot_api.response_generation.urlopen", fake_urlopen)
+
+    capabilities = adapter.discover_capabilities(
+        config=runtime_provider,
+        settings=Settings(healthcheck_timeout_seconds=5),
+    )
+    response = adapter.invoke(
+        config=runtime_provider,
+        settings=Settings(model_timeout_seconds=11),
+        request=build_provider_test_model_request(
+            runtime_provider=OPENAI_RESPONSES_PROVIDER,
+            model="local-model",
+            prompt_text="Are you available without authentication?",
+        ),
+    )
+
+    assert runtime_provider.auth_mode == "none"
+    assert runtime_provider.api_key == "auth_mode_none"
+    assert capabilities["models"] == ["local-model"]
+    assert response.output_text == "No-auth provider online"
+    assert len(captured_requests) == 3
+    assert all(
+        "authorization" not in {key.lower() for key in headers}
+        for headers in captured_headers
+    )
+
+
 def test_ollama_adapter_discovers_capabilities_and_invokes(monkeypatch) -> None:
     captured: list[dict[str, object]] = []
     registry = make_provider_adapter_registry()

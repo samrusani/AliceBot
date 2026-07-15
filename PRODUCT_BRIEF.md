@@ -15,13 +15,15 @@ Agent developers — people building or operating AI agents who need durable, ex
 ## Current Posture
 - `v0.10.3` is the latest published release and immutable baseline. Its PyPI
   wheel and source distribution have Trusted Publishing provenance, with exact
-  digests in `docs/release/v0.10.2-checksums.txt`.
+  digests in `docs/release/v0.10.3-checksums.txt`.
+- `v0.10.4` is the current release-hardening candidate. It fixes
+  forward from that baseline and has not been tagged or published.
 - The product baseline includes hybrid retrieval, the eleven-tool core MCP
   surface, the Memory Operations Protocol, per-agent API keys, Context API v2,
   temporal graph memory/entity resolution, and six live eval suites.
 - The **79.4% LongMemEval_s (397/500)** figure is one historical run from
   2026-07-07 with per-question evidence. It is not a repeated-run estimate or a
-  fresh v0.10.2 benchmark.
+  measurement of the current release.
 - The fourth-audit remediation shipped in `v0.10.3` after exact-SHA gates
   and independent review passed.
 - Alice is public-alpha, pre-1.0, single-user, and self-hosted. `alice-memory`

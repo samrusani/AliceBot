@@ -34,6 +34,19 @@ type HostedOverview = {
 
 type HostedOverviewPayload = HostedOverview | { overview?: HostedOverview | null };
 
+type HostedRateLimitSummary = Record<
+  string,
+  {
+    rate_limited?: number;
+    abuse_blocked?: number;
+  }
+>;
+
+type HostedRateLimitPayload = {
+  summary?: HostedRateLimitSummary;
+  items?: unknown[];
+};
+
 type RolloutFlag = {
   flag_key: string;
   enabled: boolean;
@@ -55,6 +68,14 @@ function formatTimestamp(value: string | undefined) {
   } catch {
     return value;
   }
+}
+
+function countRateLimitedEvents(summary: HostedRateLimitSummary | undefined) {
+  if (!summary) {
+    return null;
+  }
+
+  return Object.values(summary).reduce((total, bucket) => total + (bucket.rate_limited ?? 0), 0);
 }
 
 export function HostedAdminPanel({ apiBaseUrl }: HostedAdminPanelProps) {
@@ -129,7 +150,7 @@ export function HostedAdminPanel({ apiBaseUrl }: HostedAdminPanelProps) {
           requestAdminJson<{ items: unknown[] }>("/v1/admin/hosted/incidents?status=open"),
           requestAdminJson<{ items: RolloutFlag[] }>("/v1/admin/hosted/rollout-flags"),
           requestAdminJson<{ analytics: { total_events: number } }>("/v1/admin/hosted/analytics"),
-          requestAdminJson<{ items: unknown[] }>("/v1/admin/hosted/rate-limits"),
+          requestAdminJson<HostedRateLimitPayload>("/v1/admin/hosted/rate-limits"),
         ]);
 
       const resolvedOverview: HostedOverview | null =
@@ -140,7 +161,7 @@ export function HostedAdminPanel({ apiBaseUrl }: HostedAdminPanelProps) {
       setIncidentCount(incidentsPayload.items.length);
       setRolloutFlags(rolloutPayload.items);
       setAnalyticsTotal(analyticsPayload.analytics.total_events);
-      setRateLimitedTotal(rateLimitsPayload.items.length);
+      setRateLimitedTotal(countRateLimitedEvents(rateLimitsPayload.summary));
       setLastLoadedAt(new Date().toISOString());
       setStatusTone("success");
       setStatusText("Hosted admin datasets loaded.");
@@ -251,7 +272,7 @@ export function HostedAdminPanel({ apiBaseUrl }: HostedAdminPanelProps) {
           </div>
           <div>
             <dt>Rate-limit events</dt>
-            <dd>{rateLimitedTotal ?? 0}</dd>
+            <dd>{overview?.chat_telemetry.rate_limited_count ?? rateLimitedTotal ?? 0}</dd>
           </div>
           <div>
             <dt>Last refreshed</dt>

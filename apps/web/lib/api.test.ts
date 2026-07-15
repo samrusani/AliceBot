@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   admitMemory,
   ApiError,
+  buildApiUrl,
   combinePageModes,
   connectCalendarAccount,
   connectGmailAccount,
@@ -187,6 +188,38 @@ describe("api helpers", () => {
     expect(getApiConfig().apiBaseUrl).toBe("");
   });
 
+  it("preserves configured API base paths when joining logical API routes", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await requestJson(
+      "https://api.example.com/root?token=discarded#fragment",
+      "/v0/threads",
+      undefined,
+      { user_id: "user-1" },
+    );
+    await requestJson("https://api.example.com/root/", "/v0/threads");
+    await requestJson("https://api.example.com", "/v0/threads");
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://api.example.com/root/v0/threads?user_id=user-1",
+      "https://api.example.com/root/v0/threads",
+      "https://api.example.com/v0/threads",
+    ]);
+    expect(
+      buildApiUrl(
+        "https://api.example.com/root",
+        "/v0/vnext/connectors/browser-clipper/capture",
+      ),
+    ).toBe(
+      "https://api.example.com/root/v0/vnext/connectors/browser-clipper/capture",
+    );
+  });
+
   it("attaches the in-memory operator key only to loopback vNext routes", async () => {
     const agentApiKey = "alice_sk_operator_session_secret";
     setVNextOperatorAgentApiKey(agentApiKey);
@@ -205,6 +238,7 @@ describe("api helpers", () => {
     await requestJson("http://127.0.0.1:8000", "/v0/threads");
     await requestJson("http://127.0.0.1:8000", "/v1/admin/hosted/overview");
     await requestJson("http://127.0.0.1:8000", "/v0/vnextish/workspace");
+    await requestJson("http://127.0.0.1:8000/alice", "/v0/vnext/workspace");
 
     const authorizationHeaders = fetchMock.mock.calls.map(([, init]) =>
       new Headers((init as RequestInit).headers).get("Authorization"),
@@ -216,7 +250,11 @@ describe("api helpers", () => {
       null,
       null,
       null,
+      `Bearer ${agentApiKey}`,
     ]);
+    expect(fetchMock.mock.calls.at(-1)?.[0]).toBe(
+      "http://127.0.0.1:8000/alice/v0/vnext/workspace",
+    );
     expect(fetchMock.mock.calls.map(([url]) => String(url)).join(" ")).not.toContain(agentApiKey);
   });
 

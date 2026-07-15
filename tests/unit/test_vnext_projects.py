@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
-from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
+from alicebot_api.vnext_artifact_review import dispatch_vnext_artifact_review
+from alicebot_api.vnext_event_log import build_event_log_record
+from alicebot_api.vnext_memory_commit import VNextMemoryCommitService
+from alicebot_api.vnext_projects import (
+    PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE,
+    ProjectAutomationRequest,
+    VNextProjectService,
+    VNextProjectTerminalConsistencyError,
+    VNextProjectValidationError,
+)
 
 
 class InMemoryVNextProjectStore:
@@ -21,6 +32,19 @@ class InMemoryVNextProjectStore:
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
         return event
+
+    def list_events(
+        self,
+        *,
+        target_type: str | None = None,
+        target_id: str | None = None,
+    ) -> list[dict[str, object]]:
+        return [
+            event
+            for event in self.events
+            if (target_type is None or event.get("target_type") == target_type)
+            and (target_id is None or event.get("target_id") == target_id)
+        ]
 
     def create_artifact(self, artifact: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**artifact, "id": f"artifact-{len(self.artifacts) + 1}"}
@@ -66,6 +90,9 @@ class InMemoryVNextProjectStore:
     def get_memory_for_update(self, memory_id: str) -> dict[str, object] | None:
         return self.memories.get(memory_id)
 
+    def get_memory(self, memory_id: str) -> dict[str, object] | None:
+        return self.memories.get(memory_id)
+
     def clear_memory_embedding(self, *, memory_id: str) -> dict[str, object] | None:
         memory = self.memories.get(memory_id)
         if memory is None:
@@ -94,6 +121,9 @@ class InMemoryVNextProjectStore:
         row = {**revision, "id": f"revision-{len(self.revisions) + 1}"}
         self.revisions.append(row)
         return row
+
+    def list_revisions(self, memory_id: str) -> list[dict[str, object]]:
+        return [revision for revision in self.revisions if revision.get("memory_id") == memory_id]
 
     def get_project(self, project_id: str) -> dict[str, object] | None:
         return self.projects.get(project_id)
@@ -409,6 +439,53 @@ def test_project_automation_and_dashboard_never_mix_same_domain_projects() -> No
     assert all(row["id"] != "artifact-project-2" for row in dashboard["artifacts"])
 
 
+def test_project_automation_resolves_source_envelope_before_filter_digest_and_loop_scope() -> None:
+    store = _seed_store()
+    store.sources = [
+        {
+            "id": "source-empty",
+            "title": "Empty canonical source",
+            "domain": "project",
+            "sensitivity": "private",
+            "metadata_json": {
+                "project_id": "stale",
+                "raw_text": "TODO: ignore stale source",
+                "metadata_json": {"project_scope": []},
+            },
+        },
+        {
+            "id": "source-real",
+            "title": "Real canonical source",
+            "domain": "project",
+            "sensitivity": "private",
+            "metadata_json": {
+                "project_id": "stale",
+                "raw_text": "TODO: ship canonical source",
+                "metadata_json": {"project_scope": ["project-1"]},
+            },
+        },
+    ]
+
+    def unscoped_sources(**kwargs) -> list[dict[str, object]]:
+        return store.sources[: int(kwargs.get("limit", 8))]
+
+    store.search_sources = unscoped_sources  # type: ignore[method-assign]
+    service = VNextProjectService(store)
+    request = ProjectAutomationRequest(project_id="project-1", domains=("project",))
+
+    artifact = service.generate_project_update_candidate(request)
+    source_metadata = store.sources[1]["metadata_json"]
+    assert isinstance(source_metadata, dict)
+    source_metadata["project_id"] = "different-stale-alias"
+    replay = service.generate_project_update_candidate(request)
+    loops = service.extract_open_loops(request)
+
+    assert artifact["metadata_json"]["source_ids"] == ["source-real"]
+    assert replay["id"] == artifact["id"]
+    assert [loop["source_id"] for loop in loops] == ["source-real"]
+    assert loops[0]["metadata_json"]["project_scope"] == ["project-1"]
+
+
 def test_direct_project_workflows_are_idempotent_for_unchanged_evidence() -> None:
     store = _seed_store()
     service = VNextProjectService(store)
@@ -467,6 +544,10 @@ def test_accepting_project_update_updates_project_promotes_memory_and_appends_re
         artifact_id=str(artifact["id"]),
         action="edit",
         edited_current_state="Alice vNext project automation is under review.",
+        actor_type="agent",
+        actor_id="reviewer-agent",
+        trace_id="trace-review",
+        run_id="run-review",
     )
 
     assert reviewed["status"] == "accepted"
@@ -484,7 +565,250 @@ def test_accepting_project_update_updates_project_promotes_memory_and_appends_re
     assert store.revisions[0]["memory_id"] == "memory-2"
     assert store.revisions[0]["memory_key"] == store.memories["memory-2"]["memory_key"]
     assert store.revisions[0]["revision_type"] == "edited"
+    assert store.revisions[0]["actor_type"] == "agent"
+    assert store.revisions[0]["actor_id"] == "reviewer-agent"
     assert store.events[-1]["event_type"] == "project.update_candidate_accepted"
+    assert store.events[-1]["actor_type"] == "agent"
+    assert store.events[-1]["actor_id"] == "reviewer-agent"
+    assert store.events[-1]["trace_id"] == "trace-review"
+    assert store.events[-1]["run_id"] == "run-review"
+
+
+@pytest.mark.parametrize("action", ["accept", "reject"])
+def test_central_artifact_review_dispatches_project_updates_to_coupled_lifecycle(action: str) -> None:
+    store = _seed_store()
+    artifact = VNextProjectService(store).generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    metadata = artifact["metadata_json"]
+    assert isinstance(metadata, dict)
+    candidate_memory_id = str(metadata["candidate_memory_id"])
+
+    result = dispatch_vnext_artifact_review(
+        store,
+        artifact_id=str(artifact["id"]),
+        action=action,
+        actor_type="user",
+        actor_id="reviewer-user",
+    )
+
+    expected_status = "accepted" if action == "accept" else "rejected"
+    expected_memory_status = "active" if action == "accept" else "rejected"
+    assert result.artifact["status"] == expected_status
+    assert store.memories[candidate_memory_id]["status"] == expected_memory_status
+    if action == "accept":
+        assert store.projects["project-1"]["current_state"] == metadata["suggested_current_state"]
+    else:
+        assert store.projects["project-1"]["current_state"] == "Sprint 7 seed complete."
+    assert store.events[-1]["actor_type"] == "user"
+    assert store.events[-1]["actor_id"] == "reviewer-user"
+
+
+def test_central_artifact_review_does_not_treat_project_update_promote_as_generic_promotion() -> None:
+    store = _seed_store()
+    artifact = VNextProjectService(store).generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    metadata = artifact["metadata_json"]
+    assert isinstance(metadata, dict)
+    candidate_memory_id = str(metadata["candidate_memory_id"])
+    project_before = deepcopy(store.projects["project-1"])
+    memory_before = deepcopy(store.memories[candidate_memory_id])
+
+    with pytest.raises(VNextProjectValidationError, match="accept, edit, or reject"):
+        dispatch_vnext_artifact_review(store, artifact_id=str(artifact["id"]), action="promote")
+
+    assert store.projects["project-1"] == project_before
+    assert store.memories[candidate_memory_id] == memory_before
+    assert store.artifacts[str(artifact["id"])]["status"] == "needs_review"
+
+
+def test_central_artifact_review_dispatch_propagates_candidate_supersession_guard() -> None:
+    store = _seed_store()
+    artifact = VNextProjectService(store).generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact_metadata = artifact["metadata_json"]
+    assert isinstance(artifact_metadata, dict)
+    candidate_memory_id = str(artifact_metadata["candidate_memory_id"])
+    candidate = store.memories[candidate_memory_id]
+    candidate["superseded_by"] = "replacement-memory"
+
+    with pytest.raises(VNextProjectValidationError, match="already been superseded"):
+        dispatch_vnext_artifact_review(
+            store,
+            artifact_id=str(artifact["id"]),
+            action="accept",
+        )
+
+    assert store.artifacts[str(artifact["id"])]["status"] == "needs_review"
+    assert store.projects["project-1"]["current_state"] == "Sprint 7 seed complete."
+    assert store.memories[candidate_memory_id]["status"] == "candidate"
+
+
+def test_project_update_scope_linkage_compares_canonical_project_identity() -> None:
+    store = _seed_store()
+    service = VNextProjectService(store)
+    artifact = service.generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact_metadata = artifact["metadata_json"]
+    assert isinstance(artifact_metadata, dict)
+    candidate = store.memories[str(artifact_metadata["candidate_memory_id"])]
+    candidate_metadata = candidate["metadata_json"]
+    assert isinstance(candidate_metadata, dict)
+    artifact_metadata["project_scope"] = [" PROJECT-1 "]
+    candidate_metadata["project_scope"] = ["project-1", "PROJECT-1"]
+
+    reviewed = service.review_project_update(artifact_id=str(artifact["id"]), action="accept")
+
+    assert reviewed["status"] == "accepted"
+
+
+@pytest.mark.parametrize("action", ["accept", "edit", "reject"])
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "column_pointer",
+        "legacy_metadata_pointer",
+        "review_lifecycle",
+        "consolidation_lifecycle",
+        "lifecycle_history",
+    ],
+)
+def test_project_update_review_rejects_superseded_candidate_markers_without_mutation(
+    action: str,
+    marker: str,
+) -> None:
+    store = _seed_store()
+    service = VNextProjectService(store)
+    artifact = service.generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact_id = str(artifact["id"])
+    artifact_metadata = artifact["metadata_json"]
+    assert isinstance(artifact_metadata, dict)
+    candidate_memory_id = str(artifact_metadata["candidate_memory_id"])
+    candidate = store.memories[candidate_memory_id]
+    candidate_metadata = candidate["metadata_json"]
+    assert isinstance(candidate_metadata, dict)
+
+    if marker == "column_pointer":
+        candidate["superseded_by"] = "replacement-memory"
+    elif marker == "legacy_metadata_pointer":
+        candidate_metadata["superseded_by"] = "replacement-memory"
+    elif marker == "review_lifecycle":
+        candidate_metadata["agentic_memory"] = {"lifecycle_status": "review_superseded"}
+    elif marker == "consolidation_lifecycle":
+        candidate_metadata["agentic_memory"] = {"lifecycle_status": "superseded_by_consolidation"}
+    elif marker == "lifecycle_history":
+        candidate_metadata["agentic_memory"] = {
+            "lifecycle_status": "pending_dashboard_review",
+            "lifecycle_history": [{"status": "review_superseded"}],
+        }
+    else:  # pragma: no cover - exhaustive parameter list
+        raise AssertionError(marker)
+
+    project_before = deepcopy(store.projects["project-1"])
+    artifact_before = deepcopy(artifact)
+    candidate_before = deepcopy(candidate)
+    revisions_before = deepcopy(store.revisions)
+    events_before = deepcopy(store.events)
+
+    with pytest.raises(VNextProjectValidationError, match="already been superseded"):
+        service.review_project_update(
+            artifact_id=artifact_id,
+            action=action,
+            edited_current_state="This edit must never be applied." if action == "edit" else None,
+        )
+
+    assert store.projects["project-1"] == project_before
+    assert store.artifacts[artifact_id] == artifact_before
+    assert store.memories[candidate_memory_id] == candidate_before
+    assert store.revisions == revisions_before
+    assert store.events == events_before
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    [
+        "artifact_type",
+        "artifact_workflow",
+        "candidate_status",
+        "candidate_memory_type",
+        "candidate_workflow",
+        "candidate_marker",
+        "candidate_digest",
+        "candidate_root_project",
+        "candidate_metadata_project",
+        "candidate_value_project",
+        "artifact_scope",
+        "artifact_scope_empty",
+        "candidate_scope",
+        "candidate_scope_empty",
+    ],
+)
+def test_project_update_review_rejects_every_candidate_linkage_mismatch_without_mutation(mismatch: str) -> None:
+    store = _seed_store()
+    service = VNextProjectService(store)
+    artifact = service.generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact_id = str(artifact["id"])
+    artifact_metadata = artifact["metadata_json"]
+    assert isinstance(artifact_metadata, dict)
+    candidate_memory_id = str(artifact_metadata["candidate_memory_id"])
+    candidate = store.memories[candidate_memory_id]
+    candidate_metadata = candidate["metadata_json"]
+    candidate_value = candidate["value"]
+    assert isinstance(candidate_metadata, dict)
+    assert isinstance(candidate_value, dict)
+
+    if mismatch == "artifact_type":
+        artifact["artifact_type"] = "daily_brief"
+    elif mismatch == "artifact_workflow":
+        artifact_metadata["workflow"] = "other_workflow"
+    elif mismatch == "candidate_status":
+        candidate["status"] = "rejected"
+    elif mismatch == "candidate_memory_type":
+        candidate["memory_type"] = "semantic"
+    elif mismatch == "candidate_workflow":
+        candidate_metadata["workflow"] = "other_workflow"
+    elif mismatch == "candidate_marker":
+        candidate_metadata["candidate"] = False
+    elif mismatch == "candidate_digest":
+        candidate_metadata["automation_digest"] = "sha256:different"
+    elif mismatch == "candidate_root_project":
+        candidate["project_id"] = "project-2"
+    elif mismatch == "candidate_metadata_project":
+        candidate_metadata["project_id"] = "project-2"
+    elif mismatch == "candidate_value_project":
+        candidate_value["project_id"] = "project-2"
+    elif mismatch == "artifact_scope":
+        artifact_metadata["project_scope"] = ["project-2"]
+    elif mismatch == "artifact_scope_empty":
+        artifact_metadata["project_scope"] = []
+    elif mismatch == "candidate_scope":
+        candidate_metadata["project_scope"] = ["project-2"]
+    elif mismatch == "candidate_scope_empty":
+        candidate_metadata["project_scope"] = []
+    else:  # pragma: no cover - exhaustive parameter list
+        raise AssertionError(mismatch)
+
+    project_before = deepcopy(store.projects["project-1"])
+    artifact_before = deepcopy(artifact)
+    candidate_before = deepcopy(candidate)
+    revisions_before = deepcopy(store.revisions)
+    events_before = deepcopy(store.events)
+
+    with pytest.raises(VNextProjectValidationError):
+        service.review_project_update(artifact_id=artifact_id, action="accept")
+
+    assert store.projects["project-1"] == project_before
+    assert store.artifacts[artifact_id] == artifact_before
+    assert store.memories[candidate_memory_id] == candidate_before
+    assert store.revisions == revisions_before
+    assert store.events == events_before
 
 
 def test_project_update_review_refreshes_content_derived_indexes() -> None:
@@ -552,6 +876,518 @@ def test_rejecting_project_update_logs_rejection_without_updating_project() -> N
     assert service.review_project_update(artifact_id=str(artifact["id"]), action="reject") == reviewed
     with pytest.raises(VNextProjectValidationError, match="cannot be accepted"):
         service.review_project_update(artifact_id=str(artifact["id"]), action="accept")
+
+
+@pytest.mark.parametrize(
+    ("forced_status", "retry_action"),
+    [("accepted", "accept"), ("rejected", "reject")],
+)
+def test_project_update_forced_terminal_status_fails_closed_without_mutation(
+    forced_status: str,
+    retry_action: str,
+) -> None:
+    store = _seed_store()
+    service = VNextProjectService(store)
+    artifact = service.generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact["status"] = forced_status
+    artifact_id = str(artifact["id"])
+    project_before = deepcopy(store.projects)
+    memories_before = deepcopy(store.memories)
+    artifacts_before = deepcopy(store.artifacts)
+    revisions_before = deepcopy(store.revisions)
+    events_before = deepcopy(store.events)
+
+    with pytest.raises(VNextProjectTerminalConsistencyError) as excinfo:
+        service.review_project_update(artifact_id=artifact_id, action=retry_action)
+
+    assert str(excinfo.value) == PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE
+    assert store.projects == project_before
+    assert store.memories == memories_before
+    assert store.artifacts == artifacts_before
+    assert store.revisions == revisions_before
+    assert store.events == events_before
+
+
+@pytest.mark.parametrize(
+    ("action", "corruption"),
+    [
+        ("accept", "artifact_id"),
+        ("accept", "artifact_workflow"),
+        ("accept", "artifact_project"),
+        ("accept", "artifact_linkage"),
+        ("accept", "artifact_candidate"),
+        ("accept", "artifact_digest"),
+        ("accept", "artifact_review_action"),
+        ("accept", "artifact_outcome"),
+        ("accept", "revision_linkage"),
+        ("accept", "revision_action"),
+        ("accept", "revision_type"),
+        ("accept", "revision_before"),
+        ("accept", "revision_after"),
+        ("accept", "revision_actor"),
+        ("accept", "event_linkage"),
+        ("accept", "event_actor"),
+        ("accept", "creation_linkage"),
+        ("accept", "creation_target"),
+        ("accept", "creation_target_type"),
+        ("accept", "partial_creation_redaction"),
+        ("accept", "redacted_creation_with_integrity_hash"),
+        ("accept", "missing_creation_event"),
+        ("accept", "competing_creation_target"),
+        ("accept", "partial_revision_redaction"),
+        ("accept", "partial_event_redaction"),
+        ("accept", "redacted_event_with_integrity_hash"),
+        ("accept", "extra_wrong_review_revision"),
+        ("accept", "duplicate_revision"),
+        ("accept", "duplicate_event"),
+        ("reject", "artifact_id"),
+        ("reject", "artifact_workflow"),
+        ("reject", "artifact_project"),
+        ("reject", "artifact_linkage"),
+        ("reject", "artifact_candidate"),
+        ("reject", "artifact_digest"),
+        ("reject", "artifact_review_action"),
+        ("reject", "artifact_outcome"),
+        ("reject", "revision_linkage"),
+        ("reject", "revision_action"),
+        ("reject", "revision_type"),
+        ("reject", "revision_before"),
+        ("reject", "revision_after"),
+        ("reject", "revision_actor"),
+        ("reject", "event_linkage"),
+        ("reject", "event_actor"),
+        ("reject", "event_source_ids"),
+        ("reject", "creation_linkage"),
+        ("reject", "creation_target"),
+        ("reject", "creation_target_type"),
+        ("reject", "partial_creation_redaction"),
+        ("reject", "redacted_creation_with_integrity_hash"),
+        ("reject", "missing_creation_event"),
+        ("reject", "competing_creation_target"),
+        ("reject", "partial_revision_redaction"),
+        ("reject", "partial_event_redaction"),
+        ("reject", "redacted_event_with_integrity_hash"),
+        ("reject", "extra_wrong_review_revision"),
+        ("reject", "duplicate_revision"),
+        ("reject", "duplicate_event"),
+    ],
+)
+def test_project_update_terminal_consistency_requires_every_immutable_evidence_leg_without_mutation(
+    action: str,
+    corruption: str,
+) -> None:
+    store = _seed_store()
+    service = VNextProjectService(store)
+    artifact = service.generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    terminal = service.review_project_update(artifact_id=str(artifact["id"]), action=action)
+    artifact_id = str(terminal["id"])
+    terminal_metadata = terminal["metadata_json"]
+    assert isinstance(terminal_metadata, dict)
+    candidate_memory_id = str(terminal_metadata["candidate_memory_id"])
+    review_revision = next(
+        revision
+        for revision in store.revisions
+        if revision.get("memory_id") == candidate_memory_id and revision.get("action") == "project_update_review"
+    )
+    revision_metadata = review_revision["metadata_json"]
+    assert isinstance(revision_metadata, dict)
+    review_event = next(
+        event for event in store.events if event.get("event_type") == f"project.update_candidate_{terminal['status']}"
+    )
+    event_payload = review_event["payload_json"]
+    assert isinstance(event_payload, dict)
+    creation_event = next(
+        event for event in store.events if event.get("event_type") == "project.update_candidate_created"
+    )
+    creation_payload = creation_event["payload_json"]
+    assert isinstance(creation_payload, dict)
+
+    if corruption == "artifact_id":
+        terminal["id"] = "different-artifact"
+    elif corruption == "artifact_workflow":
+        terminal_metadata["workflow"] = "different-workflow"
+    elif corruption == "artifact_project":
+        terminal_metadata["project_id"] = "different-project"
+    elif corruption == "artifact_linkage":
+        terminal_metadata["candidate_memory_id"] = "missing-candidate-memory"
+    elif corruption == "artifact_candidate":
+        terminal_metadata["candidate"] = True
+    elif corruption == "artifact_digest":
+        terminal_metadata["automation_digest"] = ""
+    elif corruption == "artifact_review_action":
+        terminal_metadata["review_action"] = "edit" if action == "accept" else "accept"
+    elif corruption == "artifact_outcome":
+        terminal_metadata["review_status"] = "rejected" if action == "accept" else "accepted"
+    elif corruption == "revision_linkage":
+        revision_metadata["artifact_id"] = "different-artifact"
+    elif corruption == "revision_action":
+        review_revision["action"] = "different_action"
+    elif corruption == "revision_type":
+        review_revision["revision_type"] = "rejected" if action == "accept" else "promoted"
+    elif corruption == "revision_before":
+        review_revision["text_before"] = ""
+    elif corruption == "revision_after":
+        review_revision["text_after"] = "Different reviewed state."
+    elif corruption == "revision_actor":
+        review_revision["actor_id"] = "different-reviewer"
+    elif corruption == "event_linkage":
+        event_payload["artifact_id" if action == "accept" else "project_id"] = "different-link"
+    elif corruption == "event_actor":
+        review_event["actor_id"] = "different-reviewer"
+    elif corruption == "event_source_ids":
+        event_payload["source_ids"] = ["different-source"]
+    elif corruption == "creation_linkage":
+        creation_payload["candidate_memory_id"] = "different-candidate-memory"
+    elif corruption == "creation_target":
+        creation_event["target_id"] = "different-artifact"
+    elif corruption == "creation_target_type":
+        creation_event["target_type"] = "memory"
+    elif corruption == "partial_creation_redaction":
+        creation_event["payload_json"] = {"redacted": True, "memory_id": candidate_memory_id}
+        creation_event["integrity_hash"] = None
+    elif corruption == "redacted_creation_with_integrity_hash":
+        creation_event["payload_json"] = {
+            "redacted": True,
+            "memory_id": candidate_memory_id,
+            "event_type": "project.update_candidate_created",
+        }
+        creation_event["integrity_hash"] = "sha256:stale-payload-hash"
+    elif corruption == "missing_creation_event":
+        store.events.remove(creation_event)
+    elif corruption == "competing_creation_target":
+        competing_creation = deepcopy(creation_event)
+        competing_creation["target_id"] = "different-artifact"
+        store.events.append(competing_creation)
+    elif corruption == "partial_revision_redaction":
+        review_revision["metadata_json"] = {"redacted": True}
+        review_revision["text_before"] = "[REDACTED]"
+    elif corruption == "partial_event_redaction":
+        review_event["payload_json"] = {"redacted": True, "memory_id": candidate_memory_id}
+    elif corruption == "redacted_event_with_integrity_hash":
+        review_event["payload_json"] = {
+            "redacted": True,
+            "memory_id": candidate_memory_id,
+            "event_type": f"project.update_candidate_{terminal['status']}",
+        }
+        review_event["integrity_hash"] = "sha256:stale-payload-hash"
+    elif corruption == "extra_wrong_review_revision":
+        extra_revision = deepcopy(review_revision)
+        extra_revision["revision_type"] = "rejected" if action == "accept" else "promoted"
+        store.revisions.append(extra_revision)
+    elif corruption == "duplicate_revision":
+        store.revisions.append(deepcopy(review_revision))
+    elif corruption == "duplicate_event":
+        store.events.append(deepcopy(review_event))
+    else:  # pragma: no cover - exhaustive parameter list
+        raise AssertionError(corruption)
+
+    project_before = deepcopy(store.projects)
+    memories_before = deepcopy(store.memories)
+    artifacts_before = deepcopy(store.artifacts)
+    revisions_before = deepcopy(store.revisions)
+    events_before = deepcopy(store.events)
+
+    with pytest.raises(VNextProjectTerminalConsistencyError) as excinfo:
+        service.review_project_update(artifact_id=artifact_id, action=action)
+
+    assert str(excinfo.value) == PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE
+    assert store.projects == project_before
+    assert store.memories == memories_before
+    assert store.artifacts == artifacts_before
+    assert store.revisions == revisions_before
+    assert store.events == events_before
+
+
+def _redact_project_update_terminal_evidence(
+    store: InMemoryVNextProjectStore,
+    *,
+    terminal: dict[str, object],
+) -> None:
+    metadata = terminal["metadata_json"]
+    assert isinstance(metadata, dict)
+    candidate_memory_id = str(metadata["candidate_memory_id"])
+    for revision in store.revisions:
+        if (
+            str(revision.get("memory_id") or "") == candidate_memory_id
+            and revision.get("action") == "project_update_review"
+        ):
+            revision.update(
+                {
+                    "metadata_json": {"redacted": True},
+                    "text_before": "[REDACTED]",
+                    "text_after": "[REDACTED]",
+                    "reason": "[REDACTED]",
+                }
+            )
+    for event in store.events:
+        payload = event.get("payload_json")
+        if not isinstance(payload, dict):
+            continue
+        if (
+            str(payload.get("candidate_memory_id") or "") != candidate_memory_id
+            and str(payload.get("memory_id") or "") != candidate_memory_id
+            and not (event.get("target_type") == "memory" and str(event.get("target_id") or "") == candidate_memory_id)
+        ):
+            continue
+        event["payload_json"] = {
+            "redacted": True,
+            "memory_id": candidate_memory_id,
+            "event_type": event["event_type"],
+        }
+        event["integrity_hash"] = None
+
+
+def test_project_update_terminal_replay_rejects_clone_after_authorized_true_redaction_without_mutation() -> None:
+    store = _seed_store()
+    service = VNextProjectService(store)
+    artifact = service.generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    terminal = service.review_project_update(artifact_id=str(artifact["id"]), action="accept")
+    _redact_project_update_terminal_evidence(store, terminal=terminal)
+    cloned_artifact = deepcopy(terminal)
+    cloned_artifact["id"] = "artifact-clone"
+    store.artifacts["artifact-clone"] = cloned_artifact
+    state_before_retry = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    with pytest.raises(VNextProjectTerminalConsistencyError) as excinfo:
+        service.review_project_update(artifact_id="artifact-clone", action="accept")
+
+    assert str(excinfo.value) == PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
+
+
+@pytest.mark.parametrize("redacted", [False, True])
+def test_project_update_terminal_replay_allows_repeated_creation_rows_for_one_artifact_without_mutation(
+    redacted: bool,
+) -> None:
+    store = _seed_store()
+    service = VNextProjectService(store)
+    artifact = service.generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    terminal = service.review_project_update(artifact_id=str(artifact["id"]), action="accept")
+    creation_event = next(
+        event for event in store.events if event.get("event_type") == "project.update_candidate_created"
+    )
+    repeated_creation = deepcopy(creation_event)
+    repeated_creation["id"] = "repeated-creation-event"
+    store.events.append(repeated_creation)
+    if redacted:
+        _redact_project_update_terminal_evidence(store, terminal=terminal)
+    state_before_retry = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    assert service.review_project_update(artifact_id=str(artifact["id"]), action="accept") == terminal
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
+
+
+def _append_conflicting_project_update_decision(
+    store: InMemoryVNextProjectStore,
+    *,
+    terminal: dict[str, object],
+    conflict: str,
+) -> None:
+    metadata = terminal["metadata_json"]
+    assert isinstance(metadata, dict)
+    artifact_id = str(terminal["id"])
+    candidate_memory_id = str(metadata["candidate_memory_id"])
+    project_id = str(metadata["project_id"])
+    review_event = next(
+        event for event in store.events if event.get("event_type") == f"project.update_candidate_{terminal['status']}"
+    )
+    event_type: str
+    target_type: str
+    target_id: str
+    payload: dict[str, object]
+    if conflict == "accepted_plus_rejected":
+        event_type = "project.update_candidate_rejected"
+        target_type = "artifact"
+        target_id = artifact_id
+        payload = {
+            "project_id": project_id,
+            "source_ids": list(metadata["source_ids"]),
+        }
+    elif conflict == "candidate_linked_accepted_wrong_action":
+        event_type = "project.update_candidate_accepted"
+        target_type = "project"
+        target_id = project_id
+        payload = {
+            "candidate_memory_id": candidate_memory_id,
+            "action": "reject",
+        }
+    elif conflict == "rejected_plus_conflicting_rejection":
+        event_type = "project.update_candidate_rejected"
+        target_type = "artifact"
+        target_id = artifact_id
+        payload = {
+            "project_id": project_id,
+            "source_ids": ["conflicting-source"],
+        }
+    elif conflict == "rejected_plus_accepted":
+        event_type = "project.update_candidate_accepted"
+        target_type = "project"
+        target_id = project_id
+        payload = {
+            "artifact_id": artifact_id,
+            "candidate_memory_id": candidate_memory_id,
+            "action": "accept",
+        }
+    elif conflict == "accepted_linked_wrong_actor":
+        event_type = "project.update_candidate_accepted"
+        target_type = "project"
+        target_id = project_id
+        payload = {
+            "artifact_id": artifact_id,
+            "candidate_memory_id": candidate_memory_id,
+            "action": "accept",
+        }
+    elif conflict == "accepted_linked_wrong_target":
+        event_type = "project.update_candidate_accepted"
+        target_type = "memory"
+        target_id = candidate_memory_id
+        payload = {
+            "artifact_id": artifact_id,
+            "candidate_memory_id": candidate_memory_id,
+            "action": "accept",
+        }
+    else:  # pragma: no cover - exhaustive parameter list
+        raise AssertionError(conflict)
+    actor_type = str(review_event["actor_type"])
+    actor_id = review_event.get("actor_id")
+    if conflict == "accepted_linked_wrong_actor":
+        actor_type = "agent" if actor_type != "agent" else "user"
+        actor_id = "conflicting-reviewer"
+    store.append_event(
+        build_event_log_record(
+            event_type=event_type,
+            actor_type=actor_type,
+            actor_id=str(actor_id) if actor_id is not None else None,
+            target_type=target_type,
+            target_id=target_id,
+            trace_id=str(review_event["trace_id"]) if review_event.get("trace_id") is not None else None,
+            run_id=str(review_event["run_id"]) if review_event.get("run_id") is not None else None,
+            payload=payload,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("action", "conflict"),
+    [
+        ("accept", "accepted_plus_rejected"),
+        ("accept", "candidate_linked_accepted_wrong_action"),
+        ("reject", "rejected_plus_conflicting_rejection"),
+        ("reject", "rejected_plus_accepted"),
+        ("accept", "accepted_linked_wrong_actor"),
+        ("accept", "accepted_linked_wrong_target"),
+    ],
+)
+def test_project_update_terminal_replay_rejects_every_coupled_competing_decision_without_mutation(
+    action: str,
+    conflict: str,
+) -> None:
+    store = _seed_store()
+    service = VNextProjectService(store)
+    artifact = service.generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    terminal = service.review_project_update(artifact_id=str(artifact["id"]), action=action)
+    _append_conflicting_project_update_decision(store, terminal=terminal, conflict=conflict)
+    state_before_retry = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    with pytest.raises(VNextProjectTerminalConsistencyError) as excinfo:
+        service.review_project_update(artifact_id=str(terminal["id"]), action=action)
+
+    assert str(excinfo.value) == PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
+
+
+@pytest.mark.parametrize("operation", ["correct", "undo", "forget"])
+def test_accepted_project_update_terminal_replay_ignores_supported_memory_lifecycle_evolution(
+    operation: str,
+) -> None:
+    store = _seed_store()
+    service = VNextProjectService(store)
+    artifact = service.generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    terminal = service.review_project_update(artifact_id=str(artifact["id"]), action="accept")
+    terminal_metadata = terminal["metadata_json"]
+    assert isinstance(terminal_metadata, dict)
+    candidate_memory_id = str(terminal_metadata["candidate_memory_id"])
+    memory_service = VNextMemoryCommitService(store)  # type: ignore[arg-type]
+    if operation == "correct":
+        memory_service.correct(
+            identity=None,
+            memory_id=candidate_memory_id,
+            canonical_text="Later corrected project-update memory text.",
+            reason="Exercise a supported post-review correction.",
+        )
+    elif operation == "undo":
+        memory_service.undo(
+            identity=None,
+            memory_id=candidate_memory_id,
+            reason="Exercise a supported post-review undo.",
+        )
+    else:
+        memory_service.forget(
+            identity=None,
+            memory_id=candidate_memory_id,
+            reason="Exercise a supported post-review forget.",
+        )
+    state_before_retry = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    assert service.review_project_update(artifact_id=str(artifact["id"]), action="accept") == terminal
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
+
+
+def test_accepted_project_update_replay_survives_a_genuine_later_project_update() -> None:
+    store = _seed_store()
+    service = VNextProjectService(store)
+    first = service.generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    accepted_first = service.review_project_update(artifact_id=str(first["id"]), action="accept")
+    second = service.generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    assert second["id"] != first["id"]
+    service.review_project_update(
+        artifact_id=str(second["id"]),
+        action="edit",
+        edited_current_state="Later accepted project state B.",
+    )
+    state_before_retry = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    assert service.review_project_update(artifact_id=str(first["id"]), action="accept") == accepted_first
+    assert store.projects["project-1"]["current_state"] == "Later accepted project state B."
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
+
+
+@pytest.mark.parametrize("action", ["accept", "reject"])
+def test_project_update_consistent_terminal_outcome_remains_idempotent_without_mutation(action: str) -> None:
+    store = _seed_store()
+    service = VNextProjectService(store)
+    artifact = service.generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    terminal = service.review_project_update(artifact_id=str(artifact["id"]), action=action)
+    project_before = deepcopy(store.projects)
+    memories_before = deepcopy(store.memories)
+    artifacts_before = deepcopy(store.artifacts)
+    revisions_before = deepcopy(store.revisions)
+    events_before = deepcopy(store.events)
+
+    assert service.review_project_update(artifact_id=str(artifact["id"]), action=action) == terminal
+    assert store.projects == project_before
+    assert store.memories == memories_before
+    assert store.artifacts == artifacts_before
+    assert store.revisions == revisions_before
+    assert store.events == events_before
 
 
 def test_accepted_project_update_cannot_later_be_rejected() -> None:

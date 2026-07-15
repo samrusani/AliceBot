@@ -337,6 +337,42 @@ def test_contradiction_report_enforces_project_scope_for_inputs_and_beliefs() ->
     assert artifact["metadata_json"]["project_scope"] == ["project-a"]
 
 
+def test_contradiction_report_source_filter_honors_embedded_canonical_envelope() -> None:
+    store = _seed_store()
+    store.sources = [
+        {
+            "id": "source-empty",
+            "source_type": "manual_text",
+            "title": "Empty canonical source",
+            "domain": "project",
+            "sensitivity": "private",
+            "metadata_json": {
+                "project_id": "stale",
+                "raw_text": "Alice should not auto-promote generated artifacts into memory.",
+                "metadata_json": {"project_scope": []},
+            },
+        },
+        {
+            "id": "source-real",
+            "source_type": "manual_text",
+            "title": "Real canonical source",
+            "domain": "project",
+            "sensitivity": "private",
+            "metadata_json": {
+                "project_id": "stale",
+                "raw_text": "Alice should not auto-promote generated artifacts into memory.",
+                "metadata_json": {"project_scope": ["real"]},
+            },
+        },
+    ]
+
+    artifact = VNextContradictionService(store).generate_contradiction_report(
+        ContradictionFinderRequest(projects=("real",), max_contradictions=2)
+    )
+
+    assert artifact["metadata_json"]["source_ids"] == ["source-real"]
+
+
 def test_contradiction_report_model_backed_mode_records_source_grounded_metadata() -> None:
     store = _seed_store()
 

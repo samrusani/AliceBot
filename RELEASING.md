@@ -1,7 +1,8 @@
 # Releasing Alice
 
-`v0.10.3` is the latest published release. Preparing a future candidate does
-not authorize a tag, PyPI upload, or GitHub Release.
+`v0.10.3` is the latest published release.
+`v0.10.4` is the current release-hardening candidate. Preparing it
+does not authorize a tag, PyPI upload, or GitHub Release.
 
 ## One Release Identity
 
@@ -133,11 +134,42 @@ PyPI environment is a release blocker even when the YAML is correct.
 Run from a clean checkout whose exact SHA is the intended `main` head:
 
 ```bash
+set -eu
+
 make setup
 make setup-browser
 make migrate
-make release-check DIST_DIR=dist
+
+release_run_root="$(mktemp -d /tmp/alice-release-check.XXXXXX)"
+dist_dir="$release_run_root/dist"
+repro_dist_dir="$release_run_root/reproducibility-check"
+semantic_dir="$release_run_root/semantic"
+
+mkdir "$dist_dir" "$repro_dist_dir" "$semantic_dir"
+
+for directory in "$dist_dir" "$repro_dist_dir" "$semantic_dir"; do
+  test -z "$(find "$directory" -mindepth 1 -maxdepth 1 -print -quit)"
+done
+
+make release-check \
+  DIST_DIR="$dist_dir" \
+  REPRO_DIST_DIR="$repro_dist_dir" \
+  PYTHON_COVERAGE_JSON="$release_run_root/python-coverage.json" \
+  SEMANTIC_EVAL_ARTIFACT_DIR="$semantic_dir" \
+  SEMANTIC_EVAL_REPORT="$semantic_dir/semantic-eval-report.json" \
+  SEMANTIC_EVAL_ATTESTATION="$semantic_dir/semantic-eval-attestation.json"
+
+printf 'Release evidence retained under %s\n' "$release_run_root"
 ```
+
+Run the gate without `-j` and with the required role-separated PostgreSQL and
+embedding-provider environment already configured. Pass both distribution
+directories explicitly: `release-artifacts`, which is already part of
+`release-check`, performs no cleanup or emptiness check. It writes the primary
+wheel, sdist, and checksum manifest to the brand-new empty `DIST_DIR` and the
+comparison build to the brand-new empty `REPRO_DIST_DIR`. Retain the temporary
+root as release evidence; never point either variable at user-owned artifact
+directories and do not run `release-artifacts` separately first.
 
 `make setup-browser` is an idempotent local prerequisite that installs the
 Playwright-managed Chromium binary. It intentionally does not pass
@@ -155,6 +187,13 @@ creates/grants the application role, and runs Alembic; runtime and isolation
 tests use the non-superuser application role. Never point this gate at an
 unbacked production database.
 
+For an upgrade rehearsal from a database older than migration `0089`, run the
+[migration `0087`/`0089` duplicate preflight](docs/alpha/headless-ubuntu-install.md#migration-00870089-duplicate-preflight)
+against a restored representative backup before treating a clean-database gate
+as upgrade evidence. Those migrations can remove an invalid concurrent-index
+catalog entry and retry, but they deliberately cannot choose which domain row
+should survive a real duplicate idempotency key.
+
 The gate performs correctness-only Python linting, normal cross-module mypy
 over the complete first-party production/release-tool surface, unit coverage,
 PostgreSQL integration tests, every model-free LongMemEval test, the checked-in
@@ -163,8 +202,8 @@ replay. Web gates include units, core plus vNext per-file coverage,
 TypeScript, lint, the production build, navigation/axe/outage browser
 tests, and bundle budgets. It also builds both distributions, runs Twine, and
 tests the installed wheel/sdist across all four public entrypoints. It first
-fetches `origin/main`, and writes `dist/SHA256SUMS` only after both artifacts
-pass.
+fetches `origin/main`, and writes `$DIST_DIR/SHA256SUMS` only after both
+artifacts pass.
 
 The release regression surface also treats every advertised MCP JSON Schema
 keyword as an executable pre-handler contract. RFC 3339 full dates must be

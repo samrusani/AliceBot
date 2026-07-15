@@ -7,12 +7,21 @@ from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 import anyio
+import pytest
 
 import alicebot_api.main as main_module
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
+from alicebot_api.mcp_tools import redact_memory_flow
 from alicebot_api.store import ContinuityStore
 from alicebot_api.vnext_agent_keys import create_agent_key
+from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_projects import (
+    PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE,
+    ProjectAutomationRequest,
+    VNextProjectService,
+    VNextProjectTerminalConsistencyError,
+)
 from alicebot_api.vnext_store import PostgresVNextStore
 
 
@@ -61,11 +70,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return int(start_message["status"]), json.loads(body)
 
 
@@ -74,6 +79,329 @@ def seed_user(database_url: str, *, email: str) -> UUID:
     with user_connection(database_url, user_id) as conn:
         ContinuityStore(conn).create_user(user_id, email, email.split("@", 1)[0].title())
     return user_id
+
+
+@pytest.mark.parametrize(
+    ("action", "terminal_status", "revision_type"),
+    [
+        ("accept", "accepted", "promoted"),
+        ("reject", "rejected", "rejected"),
+    ],
+)
+def test_project_update_terminal_replay_survives_authorized_true_redaction(
+    migrated_database_urls,
+    action: str,
+    terminal_status: str,
+    revision_type: str,
+) -> None:
+    user_id = seed_user(
+        migrated_database_urls["app"],
+        email=f"project-update-{terminal_status}-redaction@example.com",
+    )
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = PostgresVNextStore(conn)
+        project = store.create_project(
+            {
+                "name": f"{terminal_status.title()} redaction replay",
+                "slug": f"{terminal_status}-redaction-replay-{uuid4().hex[:12]}",
+                "status": "active",
+                "current_state": "Initial project state.",
+                "domain": "project",
+                "sensitivity": "private",
+            }
+        )
+        project_id = str(project["id"])
+        store.create_source(
+            {
+                "source_type": "manual_text",
+                "title": f"{terminal_status.title()} project update",
+                "content_hash": f"sha256:{uuid4().hex}",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {
+                    "project_scope": [project_id],
+                    "raw_text": f"Decision: The {terminal_status} redaction replay project is ready for its reviewed state.",
+                },
+            }
+        )
+        service = VNextProjectService(store)
+        candidate = service.generate_project_update_candidate(
+            ProjectAutomationRequest(project_id=project_id, domains=("project",))
+        )
+        artifact_id = str(candidate["id"])
+        reviewed = service.review_project_update(artifact_id=artifact_id, action=action)
+        reviewed_metadata = reviewed["metadata_json"]
+        assert isinstance(reviewed_metadata, dict)
+        memory_id = str(reviewed_metadata["candidate_memory_id"])
+
+        review_revisions_before = [
+            revision for revision in store.list_revisions(memory_id) if revision["action"] == "project_update_review"
+        ]
+        assert len(review_revisions_before) == 1
+        review_revision_before = review_revisions_before[0]
+        assert review_revision_before["revision_type"] == revision_type
+
+        event_target_type = "project" if action == "accept" else "artifact"
+        event_target_id = project_id if action == "accept" else artifact_id
+        event_type = f"project.update_candidate_{terminal_status}"
+        review_events_before = [
+            event
+            for event in store.list_events(target_type=event_target_type, target_id=event_target_id)
+            if event["event_type"] == event_type
+        ]
+        assert len(review_events_before) == 1
+        review_event_before = review_events_before[0]
+        creation_events_before = [
+            event
+            for event in store.list_events(target_type="artifact", target_id=artifact_id)
+            if event["event_type"] == "project.update_candidate_created"
+        ]
+        assert len(creation_events_before) == 1
+        creation_event_before = creation_events_before[0]
+        creation_payload_before = creation_event_before["payload_json"]
+        assert isinstance(creation_payload_before, dict)
+        append_event(
+            store,
+            event_type="project.update_candidate_created",
+            actor_type=str(creation_event_before["actor_type"]),
+            actor_id=str(creation_event_before["actor_id"])
+            if creation_event_before.get("actor_id") is not None
+            else None,
+            target_type="artifact",
+            target_id=artifact_id,
+            trace_id=str(creation_event_before["trace_id"])
+            if creation_event_before.get("trace_id") is not None
+            else None,
+            run_id=str(creation_event_before["run_id"]) if creation_event_before.get("run_id") is not None else None,
+            payload=dict(creation_payload_before),
+        )
+
+        # The app-role connection is tenant-bound by RLS. identity=None is
+        # the explicit human path authorized by memory.redact policy.
+        redacted = redact_memory_flow(
+            store,
+            memory_id=memory_id,
+            reason="User requested erasure after the project review.",
+            identity=None,
+        )
+        assert redacted["status"] == "redacted"
+        assert redacted["forgotten_first"] is (action == "accept")
+        assert int(redacted["redacted_revisions"]) >= 1
+        assert int(redacted["redacted_events"]) >= 1
+
+        review_revisions_after = [
+            revision for revision in store.list_revisions(memory_id) if revision["action"] == "project_update_review"
+        ]
+        assert len(review_revisions_after) == 1
+        review_revision_after = review_revisions_after[0]
+        for field in (
+            "id",
+            "memory_id",
+            "sequence_no",
+            "action",
+            "memory_key",
+            "revision_number",
+            "revision_type",
+            "actor_type",
+            "actor_id",
+            "created_at",
+        ):
+            assert review_revision_after[field] == review_revision_before[field]
+        assert review_revision_after["metadata_json"] == {"redacted": True}
+        assert review_revision_after["text_before"] == "[REDACTED]"
+        assert review_revision_after["text_after"] == "[REDACTED]"
+        assert review_revision_after["reason"] == "[REDACTED]"
+
+        review_events_after = [
+            event
+            for event in store.list_events(target_type=event_target_type, target_id=event_target_id)
+            if event["event_type"] == event_type
+        ]
+        assert len(review_events_after) == 1
+        review_event_after = review_events_after[0]
+        for field in (
+            "id",
+            "event_type",
+            "actor_type",
+            "actor_id",
+            "target_type",
+            "target_id",
+            "occurred_at",
+            "trace_id",
+            "run_id",
+        ):
+            assert review_event_after[field] == review_event_before[field]
+        if action == "accept":
+            assert review_event_after["payload_json"] == {
+                "redacted": True,
+                "memory_id": memory_id,
+                "event_type": event_type,
+            }
+            assert review_event_after["integrity_hash"] is None
+        else:
+            # The rejection event targets the artifact and never carries the
+            # candidate memory id, so memory redaction legitimately leaves its
+            # already content-free linkage payload intact.
+            assert review_event_after["payload_json"] == review_event_before["payload_json"]
+
+        creation_events_after = [
+            event
+            for event in store.list_events(target_type="artifact", target_id=artifact_id)
+            if event["event_type"] == "project.update_candidate_created"
+        ]
+        assert len(creation_events_after) == 2
+        for creation_event_after in creation_events_after:
+            assert creation_event_after["target_type"] == "artifact"
+            assert str(creation_event_after["target_id"]) == artifact_id
+            assert creation_event_after["payload_json"] == {
+                "redacted": True,
+                "memory_id": memory_id,
+                "event_type": "project.update_candidate_created",
+            }
+            assert creation_event_after["integrity_hash"] is None
+
+        def terminal_state() -> dict[str, object]:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, status, deleted_at, title, canonical_text, summary,
+                           value, metadata_json, memory_type, memory_key,
+                           project_id, updated_at
+                    FROM memories
+                    WHERE id = %s::uuid
+                    """,
+                    (memory_id,),
+                )
+                raw_memory = cur.fetchone()
+            return {
+                "artifact": store.get_artifact(artifact_id),
+                "project": store.get_project(project_id),
+                "memory": raw_memory,
+                "revisions": store.list_revisions(memory_id),
+                "events": store.list_events(),
+            }
+
+        frozen_state = terminal_state()
+        assert service.review_project_update(artifact_id=artifact_id, action=action) == reviewed
+        assert terminal_state() == frozen_state
+
+        if action == "accept":
+            clone_metadata = dict(reviewed_metadata)
+            clone_metadata.pop("idempotency_digest", None)
+            clone = store.create_artifact(
+                {
+                    "artifact_type": reviewed["artifact_type"],
+                    "title": reviewed["title"],
+                    "content_markdown": reviewed["content_markdown"],
+                    "status": reviewed["status"],
+                    "domain": reviewed["domain"],
+                    "sensitivity": reviewed["sensitivity"],
+                    "generated_by": reviewed["generated_by"],
+                    "prompt_hash": reviewed["prompt_hash"],
+                    "model_info_json": reviewed["model_info_json"],
+                    "metadata_json": clone_metadata,
+                },
+                actor_type="system",
+            )
+            clone_id = str(clone["id"])
+
+            def clone_terminal_state() -> dict[str, object]:
+                return {**terminal_state(), "clone": store.get_artifact(clone_id)}
+
+            frozen_clone_state = clone_terminal_state()
+            with pytest.raises(VNextProjectTerminalConsistencyError) as excinfo:
+                service.review_project_update(artifact_id=clone_id, action="accept")
+
+            assert str(excinfo.value) == PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE
+            assert clone_terminal_state() == frozen_clone_state
+
+
+@pytest.mark.parametrize("action", ["accept", "reject"])
+def test_project_update_terminal_replay_rejects_competing_postgres_decision_without_mutation(
+    migrated_database_urls,
+    action: str,
+) -> None:
+    user_id = seed_user(
+        migrated_database_urls["app"],
+        email=f"project-update-{action}-competing-decision@example.com",
+    )
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = PostgresVNextStore(conn)
+        project = store.create_project(
+            {
+                "name": f"{action.title()} competing decision",
+                "slug": f"{action}-competing-decision-{uuid4().hex[:12]}",
+                "status": "active",
+                "current_state": "Initial project state.",
+                "domain": "project",
+                "sensitivity": "private",
+            }
+        )
+        project_id = str(project["id"])
+        store.create_source(
+            {
+                "source_type": "manual_text",
+                "title": f"{action.title()} competing project update",
+                "content_hash": f"sha256:{uuid4().hex}",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {
+                    "project_scope": [project_id],
+                    "raw_text": f"Decision: The {action} competing-decision project is ready for review.",
+                },
+            }
+        )
+        service = VNextProjectService(store)
+        candidate = service.generate_project_update_candidate(
+            ProjectAutomationRequest(project_id=project_id, domains=("project",))
+        )
+        artifact_id = str(candidate["id"])
+        reviewed = service.review_project_update(artifact_id=artifact_id, action=action)
+        metadata = reviewed["metadata_json"]
+        assert isinstance(metadata, dict)
+        memory_id = str(metadata["candidate_memory_id"])
+
+        if action == "accept":
+            append_event(
+                store,
+                event_type="project.update_candidate_rejected",
+                actor_type="system",
+                target_type="artifact",
+                target_id=artifact_id,
+                payload={
+                    "project_id": project_id,
+                    "source_ids": list(metadata["source_ids"]),
+                },
+            )
+        else:
+            append_event(
+                store,
+                event_type="project.update_candidate_accepted",
+                actor_type="system",
+                target_type="project",
+                target_id=project_id,
+                payload={
+                    "artifact_id": artifact_id,
+                    "candidate_memory_id": memory_id,
+                    "action": "accept",
+                },
+            )
+
+        def terminal_state() -> dict[str, object]:
+            return {
+                "artifact": store.get_artifact(artifact_id),
+                "project": store.get_project(project_id),
+                "memory": store.get_memory(memory_id),
+                "revisions": store.list_revisions(memory_id),
+                "events": store.list_events(),
+            }
+
+        frozen_state = terminal_state()
+        with pytest.raises(VNextProjectTerminalConsistencyError) as excinfo:
+            service.review_project_update(artifact_id=artifact_id, action=action)
+
+        assert str(excinfo.value) == PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE
+        assert terminal_state() == frozen_state
 
 
 def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
@@ -435,13 +763,18 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
         payload={
             "user_id": user_id_text,
             "scope": {"domains": ["project"]},
-            "options": {"generated_for": generated_for, "sensitivity_allowed": ["public", "internal", "private", "unknown"]},
+            "options": {
+                "generated_for": generated_for,
+                "sensitivity_allowed": ["public", "internal", "private", "unknown"],
+            },
         },
     )
     assert scheduler_daily_status == 201
     assert scheduler_daily_payload["run"]["status"] == "succeeded"
     assert scheduler_daily_payload["artifact"]["generated_by"] == "scheduler"
-    assert scheduler_daily_payload["artifact"]["metadata_json"]["scheduler_run_id"] == scheduler_daily_payload["run"]["id"]
+    assert (
+        scheduler_daily_payload["artifact"]["metadata_json"]["scheduler_run_id"] == scheduler_daily_payload["run"]["id"]
+    )
 
     scheduler_weekly_status, scheduler_weekly_payload = invoke_request(
         "POST",
@@ -449,7 +782,10 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
         payload={
             "user_id": user_id_text,
             "scope": {"domains": ["project"]},
-            "options": {"generated_for": generated_for, "sensitivity_allowed": ["public", "internal", "private", "unknown"]},
+            "options": {
+                "generated_for": generated_for,
+                "sensitivity_allowed": ["public", "internal", "private", "unknown"],
+            },
         },
     )
     assert scheduler_weekly_status == 201

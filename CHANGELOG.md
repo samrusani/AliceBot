@@ -2,6 +2,141 @@
 
 ## Unreleased
 
+## v0.10.4 — 2026-07-15
+
+- **Deterministic embedding CAS whitespace.** PostgreSQL now computes the
+  signed memory-embedding content digest with the same explicit CPython 3.12
+  29-codepoint `str.strip()` character table used by Python and migration
+  `0090`, rather than the locale-dependent POSIX `[[:space:]]` class. This
+  closes NBSP-class and U+001C–U+001F disagreement without changing blank
+  omission, first-occurrence field deduplication, LF joining, or SHA-256.
+  Fail-on-old SQL-shape coverage binds vector freshness, signed update CAS,
+  and missing-embedding selection to that table; live role-separated
+  PostgreSQL covers NBSP, U+001C, mixed blank fields, no re-embed loop, and
+  signed vector participation.
+- **Capture identity integrity.** Source capture now validates the resolved
+  source envelope and classification on fast-key, content-hash, and atomic
+  dedupe paths. SQLite and PostgreSQL update stale dedupe keys together with
+  scope, domain, sensitivity, raw-text, and content-hash changes; a collision
+  fails closed, and the source-review HTTP transaction rolls back before its
+  public `409` response.
+- **Key-bound explanation isolation.** Core MCP `alice_explain` now authorizes
+  the requested memory and each expanded predecessor, successor, provenance
+  source, entity backing memory, and continuity object before returning an
+  explanation. Missing, malformed, or mixed-scope evidence returns one generic
+  unavailable response without leaking identifiers; keyless local legacy
+  behavior and the existing key-bound legacy-tool disablement stay unchanged.
+- **Scoped legacy reads.** The legacy MCP `alice_vnext_context_tree` tool
+  propagates the effective project set through five resource groups (projects,
+  memories, sources, open loops, and artifacts), applies source-aware
+  predicates before row limits, and emits admitted target-specific events as a
+  separate event group. The tool remains outside the core MCP surface and is
+  disabled on key-bound servers. Core open-loop lists and resume lookup also
+  apply project scope before bounded limits and fetch events only for admitted
+  targets.
+- **Project-scope scalar parity.** Python, SQLite, PostgreSQL, and migration
+  `0090` canonicalize finite mathematically integral JSON numbers, including
+  signed zero, and reject fractional or non-finite numeric values. The
+  established explicit JSON `true`/`false` scalar identifiers remain
+  supported; objects and null do not become project identifiers.
+- **Terminal project-update evidence binding.** Terminal replay now requires
+  `project.update_candidate_created` evidence whose distinct target set is
+  exactly the locked artifact. Ordinary events must carry the exact candidate
+  ID; authorized true redaction admits only the exact content-free skeleton.
+  Repeated evidence for that same target remains valid, while any other target
+  fails closed.
+- **Protected-path and freeze truth.** The release-engineer handoff includes a
+  completed, copy-ready Upgrade Overview for the touched memory-schema and
+  continuity-API areas. Executable guard and control-document regressions bind
+  that metadata and distinguish Repair Batches 8 through 12's
+  twice-reproduced historical fingerprints and changes-required reviews,
+  Repair Batch 13's unfrozen parity correction, Repair Batch 14's frozen
+  review-rejected carrier, and the current Repair Batch 15 verification and
+  independent-review boundary.
+- **Terminal project-update consistency.** Before returning an idempotent
+  accepted or rejected project-update artifact, the coupled review service now
+  proves the locked terminal artifact against exactly one append-only
+  `project_update_review` revision and exactly one total accepted/rejected
+  decision event coupled to that artifact or candidate. The service counts all
+  coupled decision events before checking expected outcome, actor, action,
+  target, payload, or redaction form, so duplicate or contradictory evidence
+  cannot hide behind a valid event. The proof deliberately does not treat
+  mutable current memory or project state as historical evidence, so later
+  corrections, undo/forget, later accepted project updates, and authorized
+  true redaction do not invalidate a genuine decision. True redaction retains
+  only the exact revision/event linkage skeleton needed for replay. Fabricated
+  or contradictory terminal states fail closed with the fixed repair
+  instruction and zero mutation through all six generic/dedicated HTTP, MCP,
+  and CLI adapters; valid accepted and rejected outcomes remain idempotent.
+- **Persisted-source project isolation.** SQLite and PostgreSQL source and
+  parent-chunk searches, every post-admission retrieval source path, Brain,
+  Projects, Connections, Contradictions, and HTTP artifact-trace authorization
+  now resolve the complete persisted source metadata envelope. Root canonical
+  scope remains authoritative, followed by canonical scope in embedded
+  `metadata_json` then `scope_json`, nested agentic/identity canonical scope,
+  and aliases only after canonical absence. PostgreSQL runtime predicates and
+  migration `0090` choose that nested tier by key presence, not by whether a
+  value produces a nonempty identifier. A present blank, null, malformed, or
+  fractional nested value therefore cannot fall through to a stale alias; a
+  valid scalar or array still normalizes normally, and both nested containers
+  merge in the same order as Python and SQLite. A stale outer alias plus
+  embedded `[]` is visible nowhere; the same stale alias plus embedded
+  `[real]` is visible only to `real`. Strings, integers, finite mathematically
+  integral JSON numbers, and the established explicit boolean scalar values
+  retain backend parity. Fractional/non-finite numbers, mappings, and null are
+  excluded.
+- **Resume query truth.** `alice_resume.query` now filters open-loop title,
+  description, next-action metadata, and relevant event payload text in both
+  SQLite and PostgreSQL before row or event limits. Scoped and unscoped
+  queries cannot be starved by newer mismatching loops or events; queryless
+  behavior and the policy-resolved project scope remain unchanged. Event
+  payload matching recursively inspects string leaf values only; JSON keys,
+  numeric/boolean/null values, and serialization punctuation cannot match.
+  The MCP unit fake applies the same rule to each leaf independently, so a
+  query cannot be synthesized by concatenating separate array/object leaves.
+  Open-loop row fields and loop-event leaves use ASCII case-insensitive literal
+  substring semantics across SQLite, PostgreSQL, and the fake: non-ASCII code
+  points are exact with no Unicode normalization, and `%`, `_`, and `\\` are
+  literal query characters rather than SQL wildcards. Root and nested
+  open-loop `next_action` metadata participates as a row field only when the
+  JSON value is a string; numbers, objects, and arrays are not serialized into
+  row-search candidates. The fake returns matching open loops in production
+  order: `opened_at`, then `created_at`, then `id`, all descending.
+- **API contract correction.** The v0.10.4 remediation replaces permissive
+  phantom response wrappers with contracts derived from the actual handler
+  envelopes, including the complete scheduler-status payload. Its fail-on-old
+  regression invokes the actual endpoint handler and validates the serialized
+  13-field payload against the generated required, closed schema, including
+  phantom-key rejection. This prospectively corrects the
+  v0.10.3 release notes' overbroad claim that all 294 OpenAPI operations were
+  source-verified; the immutable v0.10.3 historical record is not rewritten.
+- **Publication and release-operability truth.** Package metadata now uses an
+  evergreen PyPI description instead of tag-time release-status prose from the
+  repository README, while active docs, release-note links, install tags, and
+  checksum pointers identify the same published baseline. The clean-SHA gate
+  now requires brand-new empty distribution and reproducibility directories,
+  passed explicitly without deleting or reusing user-owned artifacts.
+- **Upgrade preflight.** Operator guidance now identifies duplicate
+  idempotency groups that can block migrations `0087` and `0089`, defines a
+  backup-first survivor/loser repair process, and verifies all three unique
+  indexes after retry.
+- **Future upgrade scope preservation.** The candidate source intended for
+  v0.10.4 corrects migration `0083` so legacy project scope is promoted only
+  when the canonical key is absent and only the six supported ASCII
+  whitespace characters normalize. Source-dedupe repair now follows the full
+  presence-aware legacy resolver in SQLite and PostgreSQL. Present empty,
+  null, malformed, and nonempty values remain authoritative through an
+  `0082`→head upgrade. Migration `0090` separately normalizes preserved source
+  raw text with newline normalization plus CPython 3.12's explicit,
+  locale-independent 29-codepoint `str.strip()` table; live NBSP, NEL, and EM
+  SPACE recapture proves that no duplicate source is created. The v0.10.3 tag
+  and artifacts remain unchanged; already-erased intent still requires
+  external evidence.
+- **Trace partial-outage truth.** Trace detail and ordered events now load in
+  the same wave but compose independently. A successful leg remains visible
+  when its peer fails, and each leg reports live, fixture, or unavailable
+  provenance instead of inheriting a successful list request's origin.
+
 ## v0.10.3 — 2026-07-14
 
 Remediates the fourth external audit's confirmed findings on the published

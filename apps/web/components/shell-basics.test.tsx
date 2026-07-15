@@ -21,6 +21,12 @@ describe("shell coverage", () => {
     render(<HomePage />);
     expect(screen.getByRole("heading", { name: "Operator shell for governed work" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Gmail Review/i })).toHaveAttribute("href", "/gmail");
+    expect(screen.getByRole("link", { name: /Continuity Workspace/i })).toHaveAttribute("href", "/continuity");
+    expect(screen.getByRole("link", { name: /Chief-of-Staff/i })).toHaveAttribute("href", "/chief-of-staff");
+    expect(screen.getByText("16")).toBeInTheDocument();
+    expect(screen.getByText("3")).toBeInTheDocument();
+    expect(screen.getByText(/live backend data, explicit fixtures, or a mixed state/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Hosted Onboarding Guide/i })).toHaveTextContent("Preview");
     expect(screen.getByText("Governed by default")).toBeInTheDocument();
   });
 
@@ -29,6 +35,8 @@ describe("shell coverage", () => {
     const gmailLinks = screen.getAllByRole("link", { name: /Gmail Review connected accounts/i });
     expect(gmailLinks).toHaveLength(2);
     expect(gmailLinks.every((link) => link.getAttribute("aria-current") === "page")).toBe(true);
+    expect(screen.getAllByRole("link", { name: /Continuity Capture, recall/i })).toHaveLength(2);
+    expect(screen.getAllByRole("link", { name: /Chief-of-Staff Deterministic priorities/i })).toHaveLength(2);
     expect(screen.getByRole("link", { name: "Skip to main content" })).toHaveAttribute("href", "#main-content");
   });
 

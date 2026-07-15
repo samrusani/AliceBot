@@ -928,6 +928,90 @@ def test_phase11_openai_compatible_registration_still_works(migrated_database_ur
     assert stored_api_key.startswith("provider_secret_ref:")
 
 
+def test_phase14_openai_compatible_no_auth_update_omits_auth_for_test_and_runtime(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    captured_requests = install_openai_compatible_success(
+        monkeypatch,
+        models=["local-model"],
+        response_text="No-auth runtime response",
+        response_id="resp_no_auth_runtime",
+    )
+    session_token, workspace_id, user_account_id = _bootstrap_workspace_session(
+        "provider-openai-no-auth@example.com"
+    )
+
+    create_status, create_payload = invoke_request(
+        "POST",
+        "/v1/providers",
+        payload={
+            "provider_key": "openai_compatible",
+            "display_name": "No-auth OpenAI Compatible",
+            "base_url": "https://provider.example/v1",
+            "api_key": "initial-provider-secret",
+            "default_model": "local-model",
+        },
+        headers=auth_header(session_token),
+    )
+    assert create_status == 201
+    provider_id = create_payload["provider"]["id"]
+
+    update_status, update_payload = invoke_request(
+        "PATCH",
+        f"/v1/providers/{provider_id}",
+        payload={"auth_mode": "none"},
+        headers=auth_header(session_token),
+    )
+    assert update_status == 200
+    assert update_payload["provider"]["auth_mode"] == "none"
+    assert update_payload["capabilities"]["discovery_status"] == "ready"
+
+    captured_requests.clear()
+    provider_test_status, provider_test_payload = invoke_request(
+        "POST",
+        "/v1/providers/test",
+        payload={"provider_id": provider_id},
+        headers=auth_header(session_token),
+    )
+    assert provider_test_status == 200
+    assert provider_test_payload["result"]["response_id"] == "resp_no_auth_runtime"
+
+    thread_id = _seed_thread_for_user(
+        admin_db_url=migrated_database_urls["admin"],
+        user_id=user_account_id,
+        email="provider-openai-no-auth@example.com",
+    )
+    runtime_status, runtime_payload = invoke_request(
+        "POST",
+        "/v1/runtime/invoke",
+        payload={
+            "provider_id": provider_id,
+            "thread_id": thread_id,
+            "message": "Invoke the no-auth provider.",
+        },
+        headers=auth_header(session_token),
+    )
+    assert runtime_status == 200
+    assert runtime_payload["assistant"]["response_id"] == "resp_no_auth_runtime"
+
+    assert len(captured_requests) == 4
+    assert all(
+        "authorization" not in {str(key).lower() for key in record["headers"]}
+        for record in captured_requests
+    )
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT auth_mode, api_key FROM model_providers WHERE id = %s AND workspace_id = %s",
+                (provider_id, workspace_id),
+            )
+            stored_auth_mode, stored_api_key = cur.fetchone()
+    assert stored_auth_mode == "none"
+    assert stored_api_key == "auth_mode_none"
+
+
 def test_phase14_provider_update_uses_atomic_cas_and_hides_stale_capability(
     migrated_database_urls,
     monkeypatch,
@@ -1118,6 +1202,64 @@ def test_phase14_workspace_bootstrap_config_seed_and_provider_update_refresh_cap
     assert update_payload["capabilities"]["snapshot"]["models_endpoint"] == "/custom-models"
     assert any(record["url"] == "https://provider.example/v1/models" for record in captured_requests)
     assert any(record["url"] == "https://updated-provider.example/v1/custom-models" for record in captured_requests)
+
+
+def test_phase14_workspace_bootstrap_config_invokes_openai_compatible_without_auth(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    captured_requests = install_openai_compatible_success(
+        monkeypatch,
+        models=["local-model"],
+        response_text="Bootstrapped no-auth response",
+        response_id="resp_bootstrap_no_auth",
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            magic_link_ttl_seconds=600,
+            auth_session_ttl_seconds=3600,
+            device_link_ttl_seconds=600,
+            model_timeout_seconds=30,
+            workspace_provider_configs=(
+                WorkspaceProviderConfig(
+                    provider_key="openai_compatible",
+                    display_name="Configured No-auth Provider",
+                    base_url="https://provider.example/v1",
+                    api_key="",
+                    auth_mode="none",
+                    default_model="local-model",
+                ),
+            ),
+        ),
+    )
+
+    session_token, _, _ = _bootstrap_workspace_session("provider-bootstrap-no-auth@example.com")
+    list_status, list_payload = invoke_request(
+        "GET",
+        "/v1/providers",
+        headers=auth_header(session_token),
+    )
+    assert list_status == 200
+    provider = list_payload["items"][0]
+    assert provider["auth_mode"] == "none"
+
+    captured_requests.clear()
+    provider_test_status, provider_test_payload = invoke_request(
+        "POST",
+        "/v1/providers/test",
+        payload={"provider_id": provider["id"]},
+        headers=auth_header(session_token),
+    )
+    assert provider_test_status == 200
+    assert provider_test_payload["result"]["response_id"] == "resp_bootstrap_no_auth"
+    assert len(captured_requests) == 3
+    assert all(
+        "authorization" not in {str(key).lower() for key in record["headers"]}
+        for record in captured_requests
+    )
 
 
 def test_phase14_workspace_bootstrap_config_seeds_vllm_provider(

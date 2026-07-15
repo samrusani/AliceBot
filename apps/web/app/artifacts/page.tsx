@@ -107,16 +107,25 @@ export default async function ArtifactsPage({
     : null;
   let workspaceUnavailableReason: string | undefined;
 
+  let chunks = selectedArtifact ? getFixtureTaskArtifactChunks(selectedArtifact.id) : [];
+  let chunkSummary = selectedArtifact ? getFixtureTaskArtifactChunkSummary(selectedArtifact.id) : null;
+  let chunkSource: ApiSource | "unavailable" | null = selectedArtifact ? "fixture" : null;
+  let chunkUnavailableReason: string | undefined;
+
   if (selectedArtifact && liveModeReady && selectedArtifactSource === "live") {
-    try {
-      const payload = await getTaskWorkspaceDetail(
+    const [workspaceResult, chunkResult] = await Promise.allSettled([
+      getTaskWorkspaceDetail(
         apiConfig.apiBaseUrl,
         selectedArtifact.task_workspace_id,
         apiConfig.userId,
-      );
-      workspace = payload.workspace;
+      ),
+      listTaskArtifactChunks(apiConfig.apiBaseUrl, selectedArtifact.id, apiConfig.userId),
+    ]);
+
+    if (workspaceResult.status === "fulfilled") {
+      workspace = workspaceResult.value.workspace;
       workspaceSource = "live";
-    } catch (error) {
+    } else {
       const fixtureWorkspace = getFixtureTaskWorkspace(selectedArtifact.task_workspace_id);
       if (fixtureWorkspace) {
         workspace = fixtureWorkspace;
@@ -126,22 +135,16 @@ export default async function ArtifactsPage({
         workspaceSource = "unavailable";
       }
       workspaceUnavailableReason =
-        error instanceof Error ? error.message : "Linked task workspace detail could not be loaded.";
+        workspaceResult.reason instanceof Error
+          ? workspaceResult.reason.message
+          : "Linked task workspace detail could not be loaded.";
     }
-  }
 
-  let chunks = selectedArtifact ? getFixtureTaskArtifactChunks(selectedArtifact.id) : [];
-  let chunkSummary = selectedArtifact ? getFixtureTaskArtifactChunkSummary(selectedArtifact.id) : null;
-  let chunkSource: ApiSource | "unavailable" | null = selectedArtifact ? "fixture" : null;
-  let chunkUnavailableReason: string | undefined;
-
-  if (selectedArtifact && liveModeReady && selectedArtifactSource === "live") {
-    try {
-      const payload = await listTaskArtifactChunks(apiConfig.apiBaseUrl, selectedArtifact.id, apiConfig.userId);
-      chunks = payload.items;
-      chunkSummary = payload.summary;
+    if (chunkResult.status === "fulfilled") {
+      chunks = chunkResult.value.items;
+      chunkSummary = chunkResult.value.summary;
       chunkSource = "live";
-    } catch (error) {
+    } else {
       const fixtureArtifact = getFixtureTaskArtifact(selectedArtifact.id);
       if (fixtureArtifact) {
         chunks = getFixtureTaskArtifactChunks(selectedArtifact.id);
@@ -153,7 +156,9 @@ export default async function ArtifactsPage({
         chunkSource = "unavailable";
       }
       chunkUnavailableReason =
-        error instanceof Error ? error.message : "Artifact chunk rows could not be loaded.";
+        chunkResult.reason instanceof Error
+          ? chunkResult.reason.message
+          : "Artifact chunk rows could not be loaded.";
     }
   }
 

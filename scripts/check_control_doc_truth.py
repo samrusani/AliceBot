@@ -9,6 +9,90 @@ import tomllib
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+PACKAGE_DESCRIPTION_RELATIVE_PATH = "docs/pypi-description.md"
+_PACKAGE_DESCRIPTION_VERSION_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])v?\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?(?![A-Za-z0-9])",
+    flags=re.IGNORECASE,
+)
+_PACKAGE_DESCRIPTION_STATE_PATTERN = re.compile(
+    r"\b(?:latest\s+(?:published\s+)?release|candidate|release[ -]?gating|"
+    r"unpublished|publication\s+pending)\b",
+    flags=re.IGNORECASE,
+)
+_LATEST_RELEASE_NOTES_DOCS = ("README.md", "docs/vnext/README.md")
+_LATEST_CHECKSUM_DOCS = ("ARCHITECTURE.md", "PRODUCT_BRIEF.md", "ROADMAP.md")
+_LITERAL_INSTALL_TAG_PATTERN = re.compile(r"--tag\s+v(?P<version>\d+\.\d+\.\d+)\b")
+_PUBLISHED_FUTURE_STATE_PATTERN = re.compile(
+    r"\b(?:will\s+be\s+(?:published|recorded|uploaded|created)|"
+    r"after\s+publication|once\s+published)\b",
+    flags=re.IGNORECASE,
+)
+# v0.10.3 is an immutable published baseline whose historical prose cannot be
+# rewritten. Enforce publication-neutral notes for every later release.
+_FUTURE_STATE_ENFORCEMENT_AFTER = (0, 10, 3)
+_ACTIVE_REMEDIATION_HANDOFF = Path("docs/handoff/2026-07-14-v0.10.4-remediation")
+_ACTIVE_REMEDIATION_MARKERS: dict[str, tuple[str, ...]] = {
+    "README.md": (
+        "Repair Batch 16 is the current bounded correction",
+        "29-codepoint `chr()`-enumerated",
+        "Batch 15 is historical, independently approved, and superseded",
+    ),
+    "BUILD_REPORT.md": (
+        "## Builder Repair Batch 16 scope and current status",
+        "### Current Repair Batch 16 verification",
+        "whitespace finding discovered",
+        "Refreeze 17 changes only documentation-truth enforcement",
+        "Independent review of the exact frozen Batch 16 carrier: **CHANGES",
+    ),
+    "ENGINEER_HANDOFF.md": (
+        "## Builder Repair Batch 16 review delta",
+        "U+001C–U+001F",
+        "```md\n## Upgrade Overview",
+        "- [x] memory schema",
+        "- [x] continuity APIs",
+    ),
+    "FIX_MATRIX.md": (
+        "## Builder Repair Batch 16 closure",
+        "Embedding CAS Python-strip parity",
+        "Repair Batch 16 is the current bounded correction",
+        "Repair Batch 15 was independently approved",
+        "Batch 16 review approved those production semantics",
+        "## Refreeze 17 documentation-truth closure",
+        "Batch 15 is historical and superseded",
+    ),
+    "SURFACE_INVENTORY.md": (
+        "## Repair Batch 16 correction appendix",
+        "three embedding-CAS SQL consumers",
+        "NBSP and U+001C",
+    ),
+}
+_ACTIVE_REMEDIATION_FORBIDDEN_MARKERS: dict[str, tuple[str, ...]] = {
+    "README.md": (
+        "Repair Batch 14 is the current bounded correction",
+        "Independent review and release approval remain pending",
+        "all six groups",
+    ),
+    "BUILD_REPORT.md": (
+        "## Builder Repair Batch 14 scope and current status",
+        "### Current Repair Batch 14 verification",
+        "Independent review of the exact fingerprinted Batch 14 carrier: **PENDING**",
+        "Repair Batch 15 is the current bounded correction",
+        "its six groups",
+    ),
+    "ENGINEER_HANDOFF.md": (
+        "## Builder Repair Batch 14 review deltas",
+        "scopes all six groups",
+    ),
+    "FIX_MATRIX.md": (
+        "across the six groups",
+        "## Builder Repair Batch 14 closure",
+        "Repair Batch 15 is the current bounded correction",
+    ),
+    "SURFACE_INVENTORY.md": (
+        "six memory/source/open-loop/artifact/entity/project groups",
+        "## Repair Batch 14 correction appendix",
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,7 +200,9 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ),
     ControlDocTruthRule(
         relative_path="docs/archive/planning/2026-04-08-context-compaction/README.md",
-        required_markers=("This folder preserves superseded planning and control material removed from the live docs during Context Compaction 01.",),
+        required_markers=(
+            "This folder preserves superseded planning and control material removed from the live docs during Context Compaction 01.",
+        ),
     ),
     ControlDocTruthRule(
         relative_path="docs/archive/process/README.md",
@@ -188,12 +274,8 @@ VERSION_ALIGNED_DOC_RULES: tuple[VersionAlignedDocRule, ...] = (
 )
 
 RELEASE_DOCUMENT_STATE_SCHEMA_VERSION = "alice_release_document_state_v1"
-_RELEASE_DOCUMENT_STATE_KEYS = frozenset(
-    {"schema_version", "version", "publication_status", "checksums_status"}
-)
-_RELEASE_DOCUMENT_STATE_PATTERN = re.compile(
-    r"<!-- alice-release-state: (?P<payload>\{.*\}) -->"
-)
+_RELEASE_DOCUMENT_STATE_KEYS = frozenset({"schema_version", "version", "publication_status", "checksums_status"})
+_RELEASE_DOCUMENT_STATE_PATTERN = re.compile(r"<!-- alice-release-state: (?P<payload>\{.*\}) -->")
 _LATEST_PUBLISHED_VERSION_PATTERN = re.compile(
     r"(?:\blatest\s+published\b(?:(?!\n[ \t]*\n)[\s\S]){0,160}?"
     r"`v(?P<after>\d+\.\d+\.\d+)`|"
@@ -201,9 +283,7 @@ _LATEST_PUBLISHED_VERSION_PATTERN = re.compile(
     r"\blatest\s+published\b)",
     flags=re.IGNORECASE,
 )
-_CHECKSUM_RECEIPT_PATTERN = re.compile(
-    r"^[0-9a-f]{64}  [A-Za-z0-9][A-Za-z0-9_.+-]*$", flags=re.MULTILINE
-)
+_CHECKSUM_RECEIPT_PATTERN = re.compile(r"^[0-9a-f]{64}  [A-Za-z0-9][A-Za-z0-9_.+-]*$", flags=re.MULTILINE)
 _STALE_RELEASE_CLOSURE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "CHANGELOG.md",
@@ -224,13 +304,64 @@ def _semantic_version_key(version: str) -> tuple[int, int, int] | None:
     return int(major), int(minor), int(patch)
 
 
+def _markdown_section(text: str, heading: str) -> str:
+    match = re.search(
+        rf"^{re.escape(heading)}\s*$\n(?P<body>.*?)(?=^##\s|\Z)",
+        text,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    return match.group("body") if match is not None else ""
+
+
+def _validate_package_description(root_dir: Path, project: object) -> list[str]:
+    issues: list[str] = []
+    configured_readme = project.get("readme") if isinstance(project, dict) else None
+    if configured_readme != PACKAGE_DESCRIPTION_RELATIVE_PATH:
+        issues.append(
+            f"pyproject.toml: project.readme must point to the evergreen {PACKAGE_DESCRIPTION_RELATIVE_PATH!r}"
+        )
+    path = root_dir / PACKAGE_DESCRIPTION_RELATIVE_PATH
+    try:
+        description = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        issues.append(f"{PACKAGE_DESCRIPTION_RELATIVE_PATH}: missing or unreadable")
+        return issues
+    if _PACKAGE_DESCRIPTION_VERSION_PATTERN.search(description):
+        issues.append(f"{PACKAGE_DESCRIPTION_RELATIVE_PATH}: contains a version literal")
+    if _PACKAGE_DESCRIPTION_STATE_PATTERN.search(description):
+        issues.append(f"{PACKAGE_DESCRIPTION_RELATIVE_PATH}: contains release-state language")
+    return issues
+
+
+def _validate_active_remediation_handoff(root_dir: Path) -> list[str]:
+    handoff_dir = root_dir / _ACTIVE_REMEDIATION_HANDOFF
+    if not handoff_dir.is_dir():
+        return []
+
+    issues: list[str] = []
+    for relative_path, markers in _ACTIVE_REMEDIATION_MARKERS.items():
+        path = handoff_dir / relative_path
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            issues.append(f"{path.relative_to(root_dir)}: missing or unreadable")
+            continue
+        for marker in markers:
+            if marker not in text:
+                issues.append(f"{path.relative_to(root_dir)}: missing Repair Batch 16 truth marker {marker!r}")
+        normalized_text = " ".join(text.split()).casefold()
+        for marker in _ACTIVE_REMEDIATION_FORBIDDEN_MARKERS.get(relative_path, ()):
+            normalized_marker = " ".join(marker.split()).casefold()
+            if normalized_marker in normalized_text:
+                issues.append(f"{path.relative_to(root_dir)}: contains stale remediation marker {marker!r}")
+    return issues
+
+
 def _has_exact_release_state_keys(state: object) -> bool:
     return isinstance(state, dict) and set(state) == _RELEASE_DOCUMENT_STATE_KEYS
 
 
-def _latest_structured_published_version(
-    *, root_dir: Path, candidate_version: str
-) -> str | None:
+def _latest_structured_published_version(*, root_dir: Path, candidate_version: str) -> str | None:
     """Resolve candidate-mode publication truth from structured historical notes."""
 
     release_dir = root_dir / "docs" / "release"
@@ -275,19 +406,14 @@ def _has_exact_checksum_receipt(path: Path, *, version: str) -> bool:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return False
-    artifact_names = [
-        match.group(0).split("  ", maxsplit=1)[1]
-        for match in _CHECKSUM_RECEIPT_PATTERN.finditer(text)
-    ]
+    artifact_names = [match.group(0).split("  ", maxsplit=1)[1] for match in _CHECKSUM_RECEIPT_PATTERN.finditer(text)]
     return len(artifact_names) == 2 and set(artifact_names) == {
         f"alice_memory-{version}-py3-none-any.whl",
         f"alice_memory-{version}.tar.gz",
     }
 
 
-def _read_release_document_mode(
-    *, root_dir: Path, version: str
-) -> tuple[str | None, list[str]]:
+def _read_release_document_mode(*, root_dir: Path, version: str) -> tuple[str | None, list[str]]:
     relative_path = f"docs/release/v{version}-release-notes.md"
     path = root_dir / relative_path
     try:
@@ -299,13 +425,9 @@ def _read_release_document_mode(
     issues: list[str] = []
     if not lines or lines[0] != expected_title:
         issues.append(f"{relative_path}: missing exact title '{expected_title}'")
-    state_lines = [
-        (index, line) for index, line in enumerate(lines) if "alice-release-state" in line
-    ]
+    state_lines = [(index, line) for index, line in enumerate(lines) if "alice-release-state" in line]
     if len(state_lines) != 1 or state_lines[0][0] != 1:
-        issues.append(
-            f"{relative_path}: alice-release-state must appear exactly once on line 2"
-        )
+        issues.append(f"{relative_path}: alice-release-state must appear exactly once on line 2")
         return None, issues
     match = _RELEASE_DOCUMENT_STATE_PATTERN.fullmatch(state_lines[0][1])
     if match is None:
@@ -320,9 +442,7 @@ def _read_release_document_mode(
         issues.append(f"{relative_path}: alice-release-state must be an object")
         return None, issues
     if not _has_exact_release_state_keys(state):
-        issues.append(
-            f"{relative_path}: alice-release-state must contain exactly the supported keys"
-        )
+        issues.append(f"{relative_path}: alice-release-state must contain exactly the supported keys")
     if state.get("schema_version") != RELEASE_DOCUMENT_STATE_SCHEMA_VERSION:
         issues.append(f"{relative_path}: unsupported alice-release-state schema")
     if state.get("version") != version:
@@ -336,26 +456,21 @@ def _read_release_document_mode(
     elif pair == ("published", "recorded"):
         mode = "published"
     else:
-        issues.append(
-            f"{relative_path}: unsupported publication/checksum state {pair!r}"
-        )
+        issues.append(f"{relative_path}: unsupported publication/checksum state {pair!r}")
         mode = None
 
     checksums = root_dir / "docs" / "release" / f"v{version}-checksums.txt"
     if mode == "candidate" and checksums.exists():
-        issues.append(
-            f"docs/release/v{version}-checksums.txt: must not exist while publication is pending"
-        )
+        issues.append(f"docs/release/v{version}-checksums.txt: must not exist while publication is pending")
     if mode == "published":
         if not checksums.is_file():
-            issues.append(
-                f"docs/release/v{version}-checksums.txt: missing for recorded publication"
-            )
+            issues.append(f"docs/release/v{version}-checksums.txt: missing for recorded publication")
         elif not _has_exact_checksum_receipt(checksums, version=version):
             issues.append(
                 f"docs/release/v{version}-checksums.txt: must contain exactly the canonical wheel and sdist SHA-256 records"
             )
     return mode, issues
+
 
 DISALLOWED_MARKERS: tuple[str, ...] = (
     "through Phase 3 Sprint 9",
@@ -391,14 +506,12 @@ def run_control_doc_truth_check(
     version = str(project.get("version", "")) if isinstance(project, dict) else ""
     if not version:
         issues.append("pyproject.toml: missing project.version")
-    release_mode, release_state_issues = _read_release_document_mode(
-        root_dir=root_dir, version=version
-    )
+    issues.extend(_validate_package_description(root_dir, project))
+    issues.extend(_validate_active_remediation_handoff(root_dir))
+    release_mode, release_state_issues = _read_release_document_mode(root_dir=root_dir, version=version)
     issues.extend(release_state_issues)
     latest_published_version = (
-        _latest_structured_published_version(
-            root_dir=root_dir, candidate_version=version
-        )
+        _latest_structured_published_version(root_dir=root_dir, candidate_version=version)
         if release_mode == "candidate"
         else version
     )
@@ -460,12 +573,46 @@ def run_control_doc_truth_check(
                     f"instead of v{latest_published_version}"
                 )
 
+    if latest_published_version is not None:
+        expected_notes = f"v{latest_published_version}-release-notes.md"
+        for relative_path in _LATEST_RELEASE_NOTES_DOCS:
+            path = root_dir / relative_path
+            if path.is_file() and expected_notes not in path.read_text(encoding="utf-8"):
+                issues.append(f"{relative_path}: latest release-notes link must target {expected_notes}")
+
+        expected_checksums = f"docs/release/v{latest_published_version}-checksums.txt"
+        for relative_path in _LATEST_CHECKSUM_DOCS:
+            path = root_dir / relative_path
+            if path.is_file() and expected_checksums not in path.read_text(encoding="utf-8"):
+                issues.append(f"{relative_path}: published checksum pointer must target {expected_checksums}")
+
+        current_state = root_dir / "CURRENT_STATE.md"
+        if current_state.is_file():
+            release_boundary = _markdown_section(current_state.read_text(encoding="utf-8"), "## Release Boundary")
+            if expected_checksums not in release_boundary:
+                issues.append(f"CURRENT_STATE.md: Release Boundary checksum pointer must target {expected_checksums}")
+
+        install_guide = root_dir / "docs" / "alpha" / "headless-ubuntu-install.md"
+        if install_guide.is_file():
+            install_text = install_guide.read_text(encoding="utf-8")
+            for match in _LITERAL_INSTALL_TAG_PATTERN.finditer(install_text):
+                if match.group("version") != latest_published_version:
+                    issues.append(
+                        "docs/alpha/headless-ubuntu-install.md: literal install tag "
+                        f"v{match.group('version')} must match latest published "
+                        f"v{latest_published_version}"
+                    )
+
+    version_key = _semantic_version_key(version)
+    if release_mode == "published" and version_key is not None and version_key > _FUTURE_STATE_ENFORCEMENT_AFTER:
+        notes_path = root_dir / "docs" / "release" / f"v{version}-release-notes.md"
+        if notes_path.is_file() and _PUBLISHED_FUTURE_STATE_PATTERN.search(notes_path.read_text(encoding="utf-8")):
+            issues.append(f"docs/release/v{version}-release-notes.md: published notes contain future-state language")
+
     for relative_path, stale_pattern in _STALE_RELEASE_CLOSURE_PATTERNS:
         path = root_dir / relative_path
         if path.is_file() and stale_pattern.search(path.read_text(encoding="utf-8")):
-            issues.append(
-                f"{relative_path}: contains stale present-tense v0.10.0 closure wording"
-            )
+            issues.append(f"{relative_path}: contains stale present-tense v0.10.0 closure wording")
 
     mirror = root_dir / ".ai" / "handoff" / "CURRENT_STATE.md"
     current = root_dir / "CURRENT_STATE.md"

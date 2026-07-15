@@ -207,6 +207,7 @@ from alicebot_api.vnext_agent_keys import (
     AgentKeyValidationError,
     create_agent_key,
 )
+from alicebot_api.vnext_artifact_review import dispatch_vnext_artifact_review
 from alicebot_api.vnext_capture import VNextCaptureService, VNextCaptureValidationError
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService, VNextBrainValidationError
 from alicebot_api.vnext_connections import (
@@ -3095,7 +3096,12 @@ def _run_vnext_smoke_operator_console(ctx: CLIContext, _args: argparse.Namespace
                 create_candidate_memories=False,
             )
         )
-        reviewed_artifact = VNextQueueService(store).review_artifact(artifact_id=str(artifact["id"]), action="review")
+        reviewed_artifact = VNextQueueService(store).review_artifact(
+            artifact_id=str(artifact["id"]),
+            action="review",
+            actor_type="user",
+            actor_id=str(ctx.user_id),
+        )
         rating = store.create_artifact_quality_rating(
             {
                 "artifact_id": str(artifact["id"]),
@@ -4146,14 +4152,22 @@ def _run_vnext_project_update_candidate(ctx: CLIContext, args: argparse.Namespac
 
 
 def _run_vnext_project_update_review(ctx: CLIContext, args: argparse.Namespace) -> str:
+    actor_id = str(ctx.user_id)
     with _vnext_store_context(ctx) as store:
         service = VNextProjectService(store, defer_embeddings=True)
         artifact = service.review_project_update(
             artifact_id=args.artifact_id,
             action=args.action,
             edited_current_state=args.edited_current_state,
+            actor_type="user",
+            actor_id=actor_id,
         )
-    _persist_deferred_embedding_inputs(ctx, service.deferred_embedding_inputs)
+    _persist_deferred_embedding_inputs(
+        ctx,
+        service.deferred_embedding_inputs,
+        actor_type="user",
+        actor_id=actor_id,
+    )
     return _json_dumps(artifact)
 
 
@@ -4209,12 +4223,22 @@ def _run_vnext_queue_process_next(ctx: CLIContext, _args: argparse.Namespace) ->
 
 
 def _run_vnext_artifact_review(ctx: CLIContext, args: argparse.Namespace) -> str:
+    actor_id = str(ctx.user_id)
     with _vnext_store_context(ctx) as store:
-        artifact = VNextQueueService(store).review_artifact(
+        result = dispatch_vnext_artifact_review(
+            store,
             artifact_id=args.artifact_id,
             action=args.action,
+            actor_type="user",
+            actor_id=actor_id,
         )
-    return _json_dumps(artifact)
+    _persist_deferred_embedding_inputs(
+        ctx,
+        result.deferred_embedding_inputs,
+        actor_type="user",
+        actor_id=actor_id,
+    )
+    return _json_dumps(result.artifact)
 
 
 def _run_vnext_artifact_export(ctx: CLIContext, args: argparse.Namespace) -> str:

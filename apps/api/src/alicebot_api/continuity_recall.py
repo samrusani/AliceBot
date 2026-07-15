@@ -59,6 +59,10 @@ from alicebot_api.store import (
     RetrievalCandidateRow,
     RetrievalRunRow,
 )
+from alicebot_api.vnext_project_scope import (
+    normalize_project_identifier,
+    project_identifier_identity,
+)
 
 
 class ContinuityRecallValidationError(ValueError):
@@ -446,13 +450,19 @@ def _compute_scope_matches(
     for kind, filter_value in filters_by_kind:
         if filter_value is None:
             continue
-        candidate_values = {
-            value.casefold()
-            for value in (
-                _collect_strings(row["provenance"], keys=_SCOPE_FILTER_KEYS[kind])
-                | _collect_strings(row["body"], keys=_SCOPE_FILTER_KEYS[kind])
-            )
-        }
+        raw_candidate_values = (
+            _collect_strings(row["provenance"], keys=_SCOPE_FILTER_KEYS[kind])
+            | _collect_strings(row["body"], keys=_SCOPE_FILTER_KEYS[kind])
+        )
+        candidate_values = (
+            {
+                identity
+                for value in raw_candidate_values
+                if (identity := project_identifier_identity(value))
+            }
+            if kind == "project"
+            else {value.casefold() for value in raw_candidate_values}
+        )
         if filter_value in candidate_values:
             scope_matches.append({"kind": kind, "value": filter_value})
 
@@ -1282,7 +1292,9 @@ def _ordered_recall_candidates(
 ) -> tuple[list[RankedRecallCandidate], list[RetrievalTraceCandidate], list[str], EntityRetrievalContext]:
     thread_filter = _normalize_uuid_string(request.thread_id)
     task_filter = _normalize_uuid_string(request.task_id)
-    project_filter = request.project.casefold() if request.project is not None else None
+    project_filter = (
+        project_identifier_identity(request.project) if request.project is not None else None
+    )
     person_filter = request.person.casefold() if request.person is not None else None
     query_terms = _query_terms(request.query)
     query_features = _build_similarity_query_features(request.query)
@@ -1821,7 +1833,9 @@ def query_continuity_recall(
     del user_id
 
     normalized_query = _normalize_optional_text(request.query)
-    normalized_project = _normalize_optional_text(request.project)
+    normalized_project = (
+        normalize_project_identifier(request.project) if request.project is not None else None
+    )
     normalized_person = _normalize_optional_text(request.person)
     normalized_request = ContinuityRecallQueryInput(
         query=normalized_query,
