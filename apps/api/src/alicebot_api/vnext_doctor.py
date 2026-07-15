@@ -208,24 +208,6 @@ class VNextDoctorService:
             details={"missing": missing_states},
         )
 
-        telegram = next((row for row in settings if row.get("connector_name") == "telegram"), None)
-        telegram_enabled = bool(telegram.get("enabled")) if isinstance(telegram, dict) else False
-        telegram_secret_ref = str(telegram.get("secret_ref") or "") if isinstance(telegram, dict) else ""
-        telegram_secret_resolved = bool(telegram_secret_ref and self.secret_provider.has_secret(telegram_secret_ref))
-        telegram_secret_ok = (not telegram_enabled and (ci or not telegram_secret_ref)) or (
-            bool(telegram_secret_ref) and telegram_secret_resolved
-        )
-        self._check(
-            checks,
-            name="telegram_secret_ref",
-            ok=telegram_secret_ok,
-            severity="blocking" if telegram_enabled else "warning",
-            message_ok="Telegram secret_ref is configured without exposing the token.",
-            message_fail="Telegram secret_ref is missing or unresolved.",
-            recommended_fix="alicebot vnext connectors telegram configure --secret-ref telegram.bot_token.default --bot-token <redacted>",
-            details={"enabled": telegram_enabled, "secret_ref": telegram_secret_ref or None, "secret_resolved": telegram_secret_resolved},
-        )
-
         scheduler = daemon_status()
         scheduler_known = not bool(scheduler.get("stopped")) or "pid file" not in str(scheduler.get("message", "")).casefold()
         self._check(

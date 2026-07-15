@@ -106,30 +106,6 @@ def test_set_current_user_account_sets_database_context() -> None:
     ]
 
 
-@pytest.mark.parametrize(
-    ("setter", "enabled", "expected_query", "expected_params"),
-    [
-        (db.set_hosted_admin_bypass, True, db.SET_HOSTED_ADMIN_BYPASS_SQL, ("true",)),
-        (db.set_hosted_admin_bypass, False, db.SET_HOSTED_ADMIN_BYPASS_SQL, ("false",)),
-        (db.set_hosted_service_bypass, True, db.SET_HOSTED_SERVICE_BYPASS_SQL, ("true",)),
-        (db.set_hosted_service_bypass, False, db.SET_HOSTED_SERVICE_BYPASS_SQL, ("false",)),
-    ],
-)
-def test_bypass_context_setters_write_expected_flags(
-    setter,
-    enabled: bool,
-    expected_query: str,
-    expected_params: tuple[str],
-) -> None:
-    connection = RecordingConnection()
-
-    setter(connection, enabled)
-
-    assert connection.cursor_instance.executed == [
-        (expected_query, expected_params),
-    ]
-
-
 def test_direct_user_connection_sets_current_user_inside_transaction(monkeypatch) -> None:
     connection = RecordingConnection()
     user_id = uuid4()

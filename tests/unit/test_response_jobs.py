@@ -8,7 +8,7 @@ from psycopg.types.json import Jsonb
 import pytest
 
 from alicebot_api.response_jobs import (
-    RESPONSE_JOB_ENDPOINT_V0,
+    RESPONSE_JOB_ENDPOINT_RUNTIME,
     ResponseGenerationJobStore,
     ResponseJobFenceLostError,
     idempotency_key_hash,
@@ -49,7 +49,7 @@ def _job_row(*, state: str = "pending") -> dict[str, Any]:
         "id": uuid4(),
         "user_id": uuid4(),
         "workspace_id": None,
-        "endpoint": RESPONSE_JOB_ENDPOINT_V0,
+        "endpoint": RESPONSE_JOB_ENDPOINT_RUNTIME,
         "idempotency_key_hash": "a" * 64,
         "idempotency_key_preview": "stable-key",
         "request_fingerprint_sha256": "b" * 64,
@@ -86,7 +86,7 @@ def test_create_or_get_response_job_hashes_key_and_locks_conflict_row() -> None:
     lookup = store.create_or_get_for_update(
         user_id=user_id,
         workspace_id=None,
-        endpoint=RESPONSE_JOB_ENDPOINT_V0,
+        endpoint=RESPONSE_JOB_ENDPOINT_RUNTIME,
         idempotency_key=raw_key,
         request_fingerprint_sha256="b" * 64,
     )
@@ -101,7 +101,7 @@ def test_create_or_get_response_job_hashes_key_and_locks_conflict_row() -> None:
     assert insert_params[3] == raw_key[:12]
     assert raw_key not in insert_params
     assert "FOR UPDATE" in select_sql
-    assert select_params == (RESPONSE_JOB_ENDPOINT_V0, idempotency_key_hash(raw_key))
+    assert select_params == (RESPONSE_JOB_ENDPOINT_RUNTIME, idempotency_key_hash(raw_key))
 
 
 def test_get_response_job_locks_existing_identity_without_creating_work() -> None:
@@ -112,7 +112,7 @@ def test_get_response_job_locks_existing_identity_without_creating_work() -> Non
 
     existing = store.get_for_update(
         user_id=row["user_id"],
-        endpoint=RESPONSE_JOB_ENDPOINT_V0,
+        endpoint=RESPONSE_JOB_ENDPOINT_RUNTIME,
         idempotency_key=raw_key,
     )
 
@@ -122,7 +122,7 @@ def test_get_response_job_locks_existing_identity_without_creating_work() -> Non
     assert sql.lstrip().startswith("SELECT")
     assert "INSERT" not in sql
     assert "FOR UPDATE" in sql
-    assert params == (RESPONSE_JOB_ENDPOINT_V0, idempotency_key_hash(raw_key))
+    assert params == (RESPONSE_JOB_ENDPOINT_RUNTIME, idempotency_key_hash(raw_key))
 
 
 def test_finalize_response_job_is_fenced_by_running_state_and_lease_token() -> None:

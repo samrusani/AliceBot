@@ -28,3 +28,14 @@ def test_reference_agent_examples_demo_runs_python_and_typescript_examples() -> 
     assert payload["python_example"]["stdout"]["brief_type"] == "agent_handoff"
     assert payload["python_example"]["stdout"]["next_suggested_action"] == "Next Action: Run release smoke"
     assert payload["typescript_example"]["stdout"] == payload["python_example"]["stdout"]
+
+
+def test_reference_agent_examples_demo_uses_local_identity_only() -> None:
+    source = DEMO_SCRIPT.read_text(encoding="utf-8")
+
+    assert "ALICE_SESSION_TOKEN" not in source
+    assert "demo-session-token" not in source
+    assert "Authorization" not in source
+    assert "Bearer" not in source
+    assert "ALICE_USER_ID" in source
+    assert "X-AliceBot-User-Id" in source

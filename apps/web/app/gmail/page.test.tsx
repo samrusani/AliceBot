@@ -8,14 +8,18 @@ const {
   getApiConfigMock,
   getGmailAccountDetailMock,
   hasLiveApiConfigMock,
+  legacySurfacesEnabledMock,
   listGmailAccountsMock,
   listTaskWorkspacesMock,
+  notFoundMock,
 } = vi.hoisted(() => ({
   getApiConfigMock: vi.fn(),
   getGmailAccountDetailMock: vi.fn(),
   hasLiveApiConfigMock: vi.fn(),
+  legacySurfacesEnabledMock: vi.fn(),
   listGmailAccountsMock: vi.fn(),
   listTaskWorkspacesMock: vi.fn(),
+  notFoundMock: vi.fn(),
 }));
 
 vi.mock("next/link", () => ({
@@ -25,7 +29,12 @@ vi.mock("next/link", () => ({
 }));
 
 vi.mock("next/navigation", () => ({
+  notFound: notFoundMock,
   useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
+}));
+
+vi.mock("../../lib/legacy-surfaces.server", () => ({
+  legacySurfacesEnabled: legacySurfacesEnabledMock,
 }));
 
 vi.mock("../../lib/api", async () => {
@@ -58,16 +67,32 @@ describe("GmailPage", () => {
       getApiConfigMock,
       getGmailAccountDetailMock,
       hasLiveApiConfigMock,
+      legacySurfacesEnabledMock,
       listGmailAccountsMock,
       listTaskWorkspacesMock,
+      notFoundMock,
     ]) {
       mock.mockReset();
     }
     getApiConfigMock.mockReturnValue({ apiBaseUrl: "", userId: "" });
     hasLiveApiConfigMock.mockReturnValue(false);
+    legacySurfacesEnabledMock.mockReturnValue(true);
+    notFoundMock.mockImplementation(() => {
+      throw new Error("NEXT_NOT_FOUND");
+    });
   });
 
   afterEach(cleanup);
+
+  it("returns not found before any reads when legacy surfaces are disabled", async () => {
+    legacySurfacesEnabledMock.mockReturnValue(false);
+
+    await expect(GmailPage({ searchParams: Promise.resolve({}) })).rejects.toThrow(
+      "NEXT_NOT_FOUND",
+    );
+    expect(notFoundMock).toHaveBeenCalledOnce();
+    expect(listGmailAccountsMock).not.toHaveBeenCalled();
+  });
 
   it("renders fixture state and disables secret-bearing connection without live config", async () => {
     render(await GmailPage({ searchParams: Promise.resolve({}) }));

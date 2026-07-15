@@ -8,12 +8,15 @@ import sys
 from contextlib import contextmanager
 from uuid import uuid4
 
+import pytest
+
 import workers.alicebot_worker.main as main_module
 from alicebot_api.config import Settings
 from workers.alicebot_worker.task_runs import WorkerTickOutcome
 
 
 def test_run_logs_skip_message_when_worker_user_id_is_missing(caplog, monkeypatch) -> None:
+    monkeypatch.setenv("ALICE_LEGACY_SURFACES", "1")
     monkeypatch.delenv("ALICEBOT_WORKER_USER_ID", raising=False)
 
     with caplog.at_level(logging.INFO, logger="alicebot.worker"):
@@ -26,6 +29,7 @@ def test_run_logs_skip_message_when_worker_user_id_is_missing(caplog, monkeypatc
 
 def test_run_ticks_one_task_run_when_worker_user_id_is_configured(caplog, monkeypatch) -> None:
     worker_user_id = uuid4()
+    monkeypatch.setenv("ALICE_LEGACY_SURFACES", "1")
     monkeypatch.setenv("ALICEBOT_WORKER_USER_ID", str(worker_user_id))
     captured: dict[str, object] = {}
 
@@ -67,7 +71,28 @@ def test_run_ticks_one_task_run_when_worker_user_id_is_configured(caplog, monkey
     ]
 
 
-def test_module_entrypoint_logs_skip_message_when_worker_user_id_is_missing() -> None:
+@pytest.mark.parametrize("flag_value", [None, "", "0", "true", " 1", "1 "])
+def test_run_does_not_tick_tasks_without_exact_legacy_flag(caplog, monkeypatch, flag_value: str | None) -> None:
+    monkeypatch.setenv("ALICEBOT_WORKER_USER_ID", str(uuid4()))
+    if flag_value is None:
+        monkeypatch.delenv("ALICE_LEGACY_SURFACES", raising=False)
+    else:
+        monkeypatch.setenv("ALICE_LEGACY_SURFACES", flag_value)
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: (_ for _ in ()).throw(AssertionError("worker must stop before loading settings")),
+    )
+
+    with caplog.at_level(logging.INFO, logger="alicebot.worker"):
+        main_module.run()
+
+    assert caplog.messages == [
+        "Worker tick skipped because ALICE_LEGACY_SURFACES is not set to exactly 1.",
+    ]
+
+
+def test_module_entrypoint_logs_skip_message_when_legacy_surface_is_disabled() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
     pythonpath_entries = [str(repo_root / "apps" / "api" / "src"), str(repo_root / "workers")]
@@ -76,6 +101,7 @@ def test_module_entrypoint_logs_skip_message_when_worker_user_id_is_missing() ->
         pythonpath_entries.append(existing_pythonpath)
     env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
     env.pop("ALICEBOT_WORKER_USER_ID", None)
+    env.pop("ALICE_LEGACY_SURFACES", None)
 
     result = subprocess.run(
         [sys.executable, "-m", "alicebot_worker.main"],
@@ -87,4 +113,4 @@ def test_module_entrypoint_logs_skip_message_when_worker_user_id_is_missing() ->
     )
 
     assert result.returncode == 0
-    assert "Worker tick skipped because ALICEBOT_WORKER_USER_ID is not configured." in result.stderr
+    assert "Worker tick skipped because ALICE_LEGACY_SURFACES is not set to exactly 1." in result.stderr

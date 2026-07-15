@@ -183,12 +183,20 @@ def test_task_brief_compile_compare_and_show_are_deterministic(
         "user_id": str(user_id),
         "mode": "worker_subtask",
         "thread_id": str(thread_id),
+        "briefing_strategy": "compact",
     }
     first_status, first_payload = invoke_request("POST", "/v0/task-briefs/compile", payload=compile_payload)
     second_status, second_payload = invoke_request("POST", "/v0/task-briefs/compile", payload=compile_payload)
     assert first_status == 201
     assert second_status == 201
     assert first_payload["task_brief"] == second_payload["task_brief"]
+    assert first_payload["task_brief"]["strategy"]["briefing_strategy"] == "compact"
+    assert not {
+        "workspace_id",
+        "pack_id",
+        "pack_version",
+        "model_pack_strategy",
+    } & first_payload["task_brief"]["strategy"].keys()
 
     show_status, show_payload = invoke_request(
         "GET",
@@ -206,10 +214,12 @@ def test_task_brief_compile_compare_and_show_are_deterministic(
             "primary": {
                 "mode": "worker_subtask",
                 "thread_id": str(thread_id),
+                "briefing_strategy": "compact",
             },
             "secondary": {
                 "mode": "user_recall",
                 "thread_id": str(thread_id),
+                "briefing_strategy": "detailed",
             },
         },
     )

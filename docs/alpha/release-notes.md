@@ -66,4 +66,4 @@ alicebot vnext smoke headless-ubuntu
 
 ## Support And Feedback
 
-Use [design-partner-onboarding.md](design-partner-onboarding.md) for what to include in reports.
+Use [onboarding.md](onboarding.md) for what to include in reports.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -15,6 +16,28 @@ from alicebot_api.contracts import ContinuityRecallResponse
 from alicebot_api.vnext_embeddings import VNextEmbeddingProviderError
 from alicebot_api.vnext_event_log import build_event_log_record
 from alicebot_api.vnext_projects import PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE
+
+
+def _nested_subcommand_parser(
+    parser: argparse.ArgumentParser,
+    *commands: str,
+) -> argparse.ArgumentParser:
+    current = parser
+    for command in commands:
+        subparser_actions = [
+            action for action in current._actions if isinstance(action, argparse._SubParsersAction)
+        ]
+        assert len(subparser_actions) == 1
+        current = subparser_actions[0].choices[command]
+    return current
+
+
+def _subcommand_names(parser: argparse.ArgumentParser) -> set[str]:
+    subparser_actions = [
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    ]
+    assert len(subparser_actions) == 1
+    return set(subparser_actions[0].choices)
 
 
 def test_parser_routes_required_commands() -> None:
@@ -109,12 +132,6 @@ def test_parser_routes_required_commands() -> None:
         (["lifecycle", "list"], "_run_lifecycle_list"),
         (["lifecycle", "show", continuity_object_id], "_run_lifecycle_show"),
         (["resume"], "_run_resume"),
-        (["task-briefs", "compile", "--mode", "resume"], "_run_task_brief_compile"),
-        (["task-briefs", "show", continuity_object_id], "_run_task_brief_show"),
-        (
-            ["task-briefs", "compare", "--mode", "worker_subtask", "--compare-to-mode", "user_recall"],
-            "_run_task_brief_compare",
-        ),
         (["open-loops"], "_run_open_loops"),
         (["review", "queue"], "_run_review_queue"),
         (["review", "show", continuity_object_id], "_run_review_show"),
@@ -147,6 +164,157 @@ def test_parser_routes_required_commands() -> None:
     for argv, expected_handler_name in cases:
         parsed = parser.parse_args(argv)
         assert parsed.handler.__name__ == expected_handler_name
+
+
+@pytest.mark.parametrize("flag_value", [None, "", "0", "true", " 1", "1 "])
+def test_task_brief_cli_is_absent_unless_legacy_surfaces_is_exactly_one(
+    monkeypatch,
+    flag_value: str | None,
+) -> None:
+    if flag_value is None:
+        monkeypatch.delenv("ALICE_LEGACY_SURFACES", raising=False)
+    else:
+        monkeypatch.setenv("ALICE_LEGACY_SURFACES", flag_value)
+
+    assert "task-briefs" not in _subcommand_names(cli_module.build_parser())
+
+
+def test_task_brief_cli_is_flagged_and_uses_neutral_strategy_options(monkeypatch) -> None:
+    monkeypatch.setenv("ALICE_LEGACY_SURFACES", "1")
+    parser = cli_module.build_parser()
+    continuity_object_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+    cases = [
+        (["task-briefs", "compile", "--mode", "resume"], "_run_task_brief_compile"),
+        (["task-briefs", "show", continuity_object_id], "_run_task_brief_show"),
+        (
+            [
+                "task-briefs",
+                "compare",
+                "--mode",
+                "worker_subtask",
+                "--compare-to-mode",
+                "user_recall",
+            ],
+            "_run_task_brief_compare",
+        ),
+    ]
+    for argv, expected_handler_name in cases:
+        assert parser.parse_args(argv).handler.__name__ == expected_handler_name
+
+    parsed = parser.parse_args(
+        [
+            "task-briefs",
+            "compare",
+            "--mode",
+            "resume",
+            "--briefing-strategy",
+            "compact",
+            "--compare-to-mode",
+            "user_recall",
+            "--compare-briefing-strategy",
+            "detailed",
+        ]
+    )
+    assert parsed.briefing_strategy == "compact"
+    assert parsed.compare_briefing_strategy == "detailed"
+
+    compile_parser = _nested_subcommand_parser(parser, "task-briefs", "compile")
+    compare_parser = _nested_subcommand_parser(parser, "task-briefs", "compare")
+    option_strings = {
+        option
+        for command_parser in (compile_parser, compare_parser)
+        for action in command_parser._actions
+        for option in action.option_strings
+    }
+    assert {
+        "--workspace-id",
+        "--pack-id",
+        "--pack-version",
+        "--model-pack-strategy",
+        "--compare-model-pack-strategy",
+    }.isdisjoint(option_strings)
+
+
+def test_dedicated_telegram_polling_cli_is_absent() -> None:
+    parser = cli_module.build_parser()
+    connectors_parser = _nested_subcommand_parser(parser, "vnext", "connectors")
+
+    assert "telegram" not in _subcommand_names(connectors_parser)
+    assert not hasattr(cli_module, "_run_vnext_telegram_configure")
+    assert not hasattr(cli_module, "_run_vnext_telegram_test")
+    assert not hasattr(cli_module, "_run_vnext_telegram_sync")
+
+
+def test_cli_contains_no_telegram_polling_or_bot_token_residue() -> None:
+    source = Path(cli_module.__file__).read_text(encoding="utf-8")
+
+    for forbidden in (
+        "TelegramPollContext",
+        "poll_telegram_updates",
+        "TELEGRAM_BOT_TOKEN",
+        "telegram.bot_token",
+        "telegram_token_absent",
+    ):
+        assert forbidden not in source
+
+
+def test_continuity_brief_formatter_uses_neutral_briefing_strategy() -> None:
+    empty_section = {
+        "items": [],
+        "summary": {"limit": 0, "total_count": 0, "order": "created_at_desc"},
+        "empty_state": {"message": "none"},
+    }
+    payload = {
+        "brief": {
+            "brief_type": "general",
+            "assembly_version": "continuity_brief_v0",
+            "scope": {},
+            "summary": "No current context.",
+            "selection_strategy": {
+                "task_brief_mode": "user_recall",
+                "provider_strategy": "continuity_brief.general",
+                "briefing_strategy": "balanced",
+                "token_budget": 320,
+                "budget_source": "mode_default",
+            },
+            "trust_posture": {
+                "confidence_posture": "low",
+                "average_confidence": 0.0,
+                "strongest_trust_class": "unknown",
+                "weakest_provenance_posture": "unknown",
+                "active_signal_count": 0,
+                "open_conflict_count": 0,
+                "rationale": "No trusted context.",
+            },
+            "provenance_bundle": {
+                "summary": {
+                    "source_object_count": 0,
+                    "reference_count": 0,
+                    "reference_kind_count": 0,
+                }
+            },
+            "sources": [],
+            "relevant_facts": empty_section,
+            "recent_changes": empty_section,
+            "open_loops": empty_section,
+            "conflicts": {"items": [], "empty_state": {"message": "none"}},
+            "timeline_highlights": {"items": [], "empty_state": {"message": "none"}},
+            "next_suggested_action": {
+                "title": "Review current sources",
+                "object_type": "source",
+                "continuity_object_id": None,
+                "confidence_posture": "low",
+                "reason": "No context is available.",
+                "provenance_references": [],
+            },
+        }
+    }
+
+    rendered = cli_module.format_continuity_brief_output(payload)
+
+    assert "provider=continuity_brief.general briefing=balanced" in rendered
+    assert "model_pack" not in rendered
 
 
 def test_context_pack_parser_tuning_and_tri_state_flags() -> None:
@@ -1711,135 +1879,6 @@ def test_deferred_embedding_provider_call_happens_between_transactions(monkeypat
     assert calls == ["provider", "transaction_open", "persist", "transaction_closed"]
 
 
-def test_telegram_poll_happens_between_cli_transactions(monkeypatch) -> None:
-    transaction_depth = 0
-    calls: list[str] = []
-    poll_context = object()
-
-    @contextmanager
-    def fake_vnext_store_context(_ctx):
-        nonlocal transaction_depth
-        transaction_depth += 1
-        calls.append("transaction_open")
-        try:
-            yield object()
-        finally:
-            transaction_depth -= 1
-            calls.append("transaction_closed")
-
-    class Result:
-        deferred_embedding_inputs = ()
-
-        def to_record(self):
-            return {"status": "ok", "failed_count": 0}
-
-    class FakeConnectorService:
-        def __init__(self, _store, *, defer_embeddings=False):
-            assert transaction_depth == 1
-
-        def prepare_telegram_poll(self, **_kwargs):
-            return poll_context
-
-        def get_config(self, _connector_name):
-            return {"config_json": {"allowed_chat_ids": ["chat-1"]}}
-
-        def sync_telegram_updates(self, updates, **_kwargs):
-            assert transaction_depth == 1
-            assert updates == [{"update_id": 1}]
-            calls.append("persist")
-            return Result()
-
-    def fake_poll(context, **_kwargs):
-        assert transaction_depth == 0
-        assert context is poll_context
-        calls.append("poll")
-        return [{"update_id": 1}]
-
-    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
-    monkeypatch.setattr(cli_module, "VNextConnectorService", FakeConnectorService)
-    monkeypatch.setattr(cli_module, "poll_telegram_updates", fake_poll)
-    context = cli_module.CLIContext(
-        settings=Settings(database_url="postgresql://db"),
-        database_url="postgresql://db",
-        user_id=uuid4(),
-    )
-    args = cli_module.build_parser().parse_args(["vnext", "connectors", "telegram", "sync"])
-
-    payload = json.loads(args.handler(context, args))
-
-    assert payload["status"] == "ok"
-    assert calls == [
-        "transaction_open",
-        "transaction_closed",
-        "poll",
-        "transaction_open",
-        "persist",
-        "transaction_closed",
-    ]
-
-
-def test_telegram_live_test_resolves_secret_and_polls_after_transaction(monkeypatch) -> None:
-    transaction_depth = 0
-    calls: list[str] = []
-
-    @contextmanager
-    def fake_vnext_store_context(_ctx):
-        nonlocal transaction_depth
-        transaction_depth += 1
-        calls.append("transaction_open")
-        try:
-            yield object()
-        finally:
-            transaction_depth -= 1
-            calls.append("transaction_closed")
-
-    class FakeConnectorService:
-        def __init__(self, _store):
-            assert transaction_depth == 1
-
-        def get_config(self, _connector_name):
-            return {
-                "configured": True,
-                "enabled": True,
-                "secret_ref": "telegram.test.token",
-                "config_json": {"allowed_chat_ids": ["chat-1"]},
-            }
-
-        def get_cursor(self, _connector_name):
-            return "41"
-
-    class FakeSecretProvider:
-        def get_secret(self, secret_ref):
-            assert transaction_depth == 0
-            assert secret_ref == "telegram.test.token"
-            calls.append("secret")
-            return "test-token"
-
-    def fake_poll(context, **_kwargs):
-        assert transaction_depth == 0
-        assert context.token == "test-token"
-        assert context.cursor == "41"
-        calls.append("poll")
-        return []
-
-    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
-    monkeypatch.setattr(cli_module, "VNextConnectorService", FakeConnectorService)
-    monkeypatch.setattr(cli_module, "default_secret_provider", lambda: FakeSecretProvider())
-    monkeypatch.setattr(cli_module, "poll_telegram_updates", fake_poll)
-    context = cli_module.CLIContext(
-        settings=Settings(database_url="postgresql://db"),
-        database_url="postgresql://db",
-        user_id=uuid4(),
-    )
-    args = cli_module.build_parser().parse_args(["vnext", "connectors", "telegram", "test", "--live"])
-
-    payload = json.loads(args.handler(context, args))
-
-    assert payload["live_poll"] == "ok"
-    assert payload["secret_resolved"] is True
-    assert calls == ["transaction_open", "transaction_closed", "secret", "poll"]
-
-
 def test_local_folder_scan_happens_before_cli_transaction(monkeypatch) -> None:
     transaction_depth = 0
     calls: list[str] = []
@@ -2613,7 +2652,7 @@ def test_cli_accepted_project_update_replay_preserves_a_genuine_later_project_up
     assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
 
 
-def test_missing_connector_payload_returns_clean_nonzero(monkeypatch, capsys, tmp_path) -> None:
+def test_generic_telegram_ingest_fails_before_reading_payload(monkeypatch, capsys, tmp_path) -> None:
     monkeypatch.setattr(
         cli_module,
         "get_settings",
@@ -2625,7 +2664,8 @@ def test_missing_connector_payload_returns_clean_nonzero(monkeypatch, capsys, tm
     captured = capsys.readouterr()
     assert exit_code == 1
     assert captured.out == ""
-    assert "missing.json" in captured.err
+    assert "chat allowlist enforcement cannot be bypassed" in captured.err
+    assert "missing.json" not in captured.err
     assert "Traceback" not in captured.err
 
 

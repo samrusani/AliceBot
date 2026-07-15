@@ -24,6 +24,7 @@ export default defineConfig({
       reuseExistingServer: false,
       timeout: 30_000,
       env: {
+        ALICE_LEGACY_SURFACES: "0",
         NEXT_PUBLIC_ALICEBOT_API_BASE_URL: "http://127.0.0.1:3199",
         NEXT_PUBLIC_ALICEBOT_USER_ID: "99999999-9999-4999-8999-999999999999",
         ALICEBOT_API_BASE_URL: "http://127.0.0.1:3199",

@@ -301,10 +301,6 @@ code,
   gap: 28px;
 }
 
-.page-stack--chat {
-  gap: 24px;
-}
-
 .page-header {
   display: flex;
   flex-wrap: wrap;
@@ -345,13 +341,6 @@ code,
 .dashboard-grid {
   display: grid;
   gap: 24px;
-}
-
-.chat-layout,
-.chat-layout__main,
-.chat-layout__rail {
-  display: grid;
-  gap: 20px;
 }
 
 .memory-layout,
@@ -402,20 +391,6 @@ code,
 .gmail-action-grid,
 .calendar-action-grid {
   grid-template-columns: minmax(300px, 0.95fr) minmax(0, 1.05fr);
-  align-items: flex-start;
-}
-
-.chat-layout__rail {
-  align-content: start;
-  grid-auto-rows: max-content;
-}
-
-.chat-layout__rail > * {
-  min-width: 0;
-}
-
-.chat-layout {
-  grid-template-columns: minmax(0, 1.5fr) minmax(340px, 0.84fr);
   align-items: flex-start;
 }
 
@@ -748,15 +723,6 @@ code,
   backdrop-filter: blur(14px);
 }
 
-.composer-card--chat-primary,
-.section-card--history {
-  min-height: 100%;
-}
-
-.composer-card--assistant {
-  gap: 20px;
-}
-
 .composer-card__header,
 .detail-stack,
 .trace-panel,
@@ -795,61 +761,6 @@ code,
 
 .governance-banner strong {
   color: var(--text);
-}
-
-.governance-banner--assistant {
-  background: rgba(54, 93, 124, 0.05);
-  border-color: rgba(54, 93, 124, 0.1);
-}
-
-.mode-toggle {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-}
-
-.mode-toggle__item {
-  display: grid;
-  gap: 10px;
-  padding: 20px 22px;
-  border-radius: 22px;
-  border: 1px solid rgba(42, 52, 66, 0.08);
-  background: rgba(255, 252, 248, 0.66);
-  box-shadow: var(--shadow-md);
-  transition:
-    border-color 140ms ease,
-    background-color 140ms ease,
-    transform 140ms ease,
-    box-shadow 140ms ease;
-}
-
-.mode-toggle__item:hover,
-.mode-toggle__item:focus-visible {
-  transform: translateY(-1px);
-  border-color: var(--border-strong);
-  background: rgba(255, 255, 255, 0.78);
-}
-
-.mode-toggle__item.is-active {
-  border-color: rgba(39, 75, 99, 0.2);
-  background: rgba(255, 255, 255, 0.84);
-  box-shadow: 0 18px 36px rgba(32, 43, 56, 0.06);
-}
-
-.mode-toggle__label {
-  font-size: 1rem;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-
-.mode-toggle__description {
-  color: var(--text-soft);
-  line-height: 1.6;
-}
-
-.chat-workspace {
-  display: grid;
-  gap: 24px;
 }
 
 .form-field {
@@ -1754,7 +1665,6 @@ code,
   .content-grid--wide,
   .dashboard-grid--detail,
   .split-layout,
-  .chat-layout,
   .memory-layout,
   .memory-followup-grid,
   .entity-layout,
@@ -1764,7 +1674,6 @@ code,
   .gmail-action-grid,
   .calendar-layout,
   .calendar-action-grid,
-  .chat-workspace,
   .vnext-review-layout,
   .metric-grid,
   .route-grid {

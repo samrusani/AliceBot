@@ -48,7 +48,10 @@ The agent integration surface exposes Alice to external tools without letting th
 - governed scheduler controls for local proactive workflows
 - read-only context tree navigation over existing projects, memories, sources, open loops, artifacts, and recent traces
 
-Agents can request context, submit tasks, generate artifacts, propose memory, and run allowed scheduler workflows, but durable mutation still passes through kernel policies, review state, provenance, and event logging.
+Agents can request context, generate artifacts, propose memory, and run allowed
+core scheduler workflows, but durable mutation still passes through kernel
+policies, review state, provenance, and event logging. The legacy task/execution
+engine is unmounted by default behind `ALICE_LEGACY_SURFACES=1`.
 
 Agent-originated HTTP calls authenticate with per-agent API keys. Create one with `alicebot agent keys create --agent-id <id> --profile <profile>` and send it as `Authorization: Bearer <key>`. The key record overrides any payload-supplied identity; payloads may only downgrade the granted permission profile. Keyless agent calls work only while zero active keys exist. MCP binds a key through the `ALICE_AGENT_API_KEY` environment variable.
 
@@ -81,7 +84,13 @@ Confirm, accept, and correction paths refresh `last_confirmed_at`, so actively r
 
 ## Model Routing
 
-Synthesis workflows use a provider abstraction for chat/completion, structured extraction, summarization, classification, and embeddings where a workflow needs them. The first shipped providers are deterministic local, disabled/no-model, and an OpenAI Responses-compatible cloud path. Retrieval embeddings use any OpenAI-compatible endpoint (Ollama, LM Studio, OpenAI) via `ALICE_EMBEDDINGS_BASE_URL`, `ALICE_EMBEDDINGS_MODEL`, and optional `ALICE_EMBEDDINGS_API_KEY`.
+Synthesis workflows use the surviving provider invocation abstraction for
+structured extraction, summarization, classification, and embeddings where a
+core workflow needs them. Alice does not expose a bundled chat or
+OpenAI-compatible `/v0/responses` product endpoint. Retrieval embeddings use any
+OpenAI-compatible endpoint (Ollama, LM Studio, OpenAI) via
+`ALICE_EMBEDDINGS_BASE_URL`, `ALICE_EMBEDDINGS_MODEL`, and optional
+`ALICE_EMBEDDINGS_API_KEY`.
 
 Routing modes are:
 
@@ -125,23 +134,23 @@ Daily Brief, Weekly Synthesis, Memory Consolidation, and the Staleness Sweep are
 
 ## Connector Boundary
 
-The connector layer now has two tiers.
+The connector layer has two local-first tiers.
 
 Live local capture supports:
 
-- allowlisted Telegram `getUpdates` sync with token references kept outside the database
 - local folder and Obsidian-style Markdown/text scan or polling watch
 - browser clipper capture through `POST /v0/vnext/connectors/browser-clipper/capture` and bookmarklet guidance
-- Hermes/OpenClaw-style agent output ingestion through CLI/API/MCP
+- generic agent output ingestion through CLI/API/MCP
 
 Deterministic payload ingestion remains available for:
 
-- Telegram webhook JSON already received by the local system
+- operator-supplied Telegram raw updates through the allowlist-aware import
+  endpoint; Alice does not poll Telegram or manage a bot token
 - browser clip JSON
-- PDF/DOCX extracted text payloads
+- PDF/DOCX text extracted by an external parser
 - CSV text or row payloads
-- screenshot OCR text payloads
-- voice transcript payloads
+- screenshot text extracted by an external OCR tool
+- voice transcripts produced by an external transcription tool
 
 Each connector preserves raw evidence in source metadata, applies conservative default domain/sensitivity, and writes audit events for settings/state changes. Dedicated `connector_settings` rows hold enabled/configured posture, defaults, sync mode, polling interval, validation errors, and metadata. Dedicated `connector_state` rows hold cursors, timestamps, failure posture, counters, and dedupe state. Cursor advancement pauses when an item fails so a broken item is not silently skipped on the next sync.
 
@@ -160,4 +169,9 @@ Each connector preserves raw evidence in source metadata, applies conservative d
 
 ## Current Production Gap
 
-The connector settings/state/secret posture is now production-shaped for local alpha dogfooding. Managed OAuth, packaged browser extensions, OCR execution, transcription execution, hosted connector polling, hosted scheduling, and automatic memory promotion remain outside this preview. Production deployments should bind the secret-provider interface to OS keychain or managed secret infrastructure rather than relying on the local encrypted-file fallback.
+The connector settings/state/secret posture is local-alpha infrastructure.
+Managed OAuth, packaged browser extensions, channels, OCR execution,
+transcription execution, hosted connector polling, hosted scheduling, and
+automatic memory promotion remain outside this preview. Production deployments
+should bind the secret-provider interface to OS keychain or managed secret
+infrastructure rather than relying on the local encrypted-file fallback.

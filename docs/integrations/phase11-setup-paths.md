@@ -1,142 +1,62 @@
 # Provider Runtime Setup Paths
 
-This guide provides operator-facing setup and verification paths for the shipped provider-runtime surfaces across local, self-hosted, enterprise, and external-agent runtime use.
+This guide covers the retained local provider/runtime boundary. It does not use
+hosted sessions, multi-workspace administration, or model packs.
 
-## Shared Prerequisites
+## Shared prerequisites
 
-1. Start API and data services.
-2. Authenticate and obtain `SESSION_TOKEN`.
-3. Have a workspace selected and a thread available for runtime invoke.
-4. Verify catalog seeding:
+1. Start the Alice API and data services.
+2. Set `ALICEBOT_AUTH_USER_ID` for the local operator, or send the same UUID in
+   `X-AliceBot-User-Id`.
+3. Bootstrap the deterministic local workspace through
+   `POST /v1/workspaces/bootstrap`.
+4. Have a thread ID available for runtime invocation.
+
+Example header used below:
 
 ```bash
-curl -sS -X GET "http://127.0.0.1:8000/v1/model-packs" \
-  -H "Authorization: Bearer $SESSION_TOKEN"
+export ALICE_USER_ID=00000000-0000-0000-0000-000000000001
 ```
 
-Expected built-in packs include:
-
-- `llama@1.0.0`
-- `qwen@1.0.0`
-- `gemma@1.0.0`
-- `gpt-oss@1.0.0`
-- `deepseek@1.0.0`
-- `kimi@1.0.0`
-- `mistral@1.0.0`
-
-## Local Path: Ollama / llama.cpp
-
-Register a local provider, test it, optionally bind a pack, then invoke runtime.
-
-### Register Ollama
+## Register and test a provider
 
 ```bash
-curl -sS -X POST "http://127.0.0.1:8000/v1/providers/ollama/register" \
-  -H "Authorization: Bearer $SESSION_TOKEN" \
+curl -sS -X POST http://127.0.0.1:8000/v1/providers/ollama/register \
+  -H "X-AliceBot-User-Id: $ALICE_USER_ID" \
   -H "Content-Type: application/json" \
-  -d '{
-    "display_name": "Local Ollama",
-    "base_url": "http://127.0.0.1:11434",
-    "default_model": "qwen2.5:7b-instruct"
-  }'
+  -d '{"display_name":"Local Ollama","base_url":"http://127.0.0.1:11434","default_model":"qwen2.5:7b-instruct"}'
 ```
 
-### Bind a Pack
-
 ```bash
-curl -sS -X POST "http://127.0.0.1:8000/v1/model-packs/deepseek/bind" \
-  -H "Authorization: Bearer $SESSION_TOKEN" \
+curl -sS -X POST http://127.0.0.1:8000/v1/providers/test \
+  -H "X-AliceBot-User-Id: $ALICE_USER_ID" \
   -H "Content-Type: application/json" \
-  -d '{"pack_version":"1.0.0","metadata":{"reason":"local-default"}}'
+  -d '{"provider_id":"'"$PROVIDER_ID"'","prompt":"Confirm connectivity."}'
 ```
 
-### Test and Invoke
+Ollama, llama.cpp/llama-server, vLLM, Azure, and generic OpenAI-compatible
+registration all use the same local identity and capability-discovery boundary.
+
+## Invoke with durable idempotency
 
 ```bash
-curl -sS -X POST "http://127.0.0.1:8000/v1/providers/test" \
-  -H "Authorization: Bearer $SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"provider_id":"'"$PROVIDER_ID"'","prompt":"Confirm local runtime connectivity."}'
-```
-
-```bash
-curl -sS -X POST "http://127.0.0.1:8000/v1/runtime/invoke" \
-  -H "Authorization: Bearer $SESSION_TOKEN" \
+curl -sS -X POST http://127.0.0.1:8000/v1/runtime/invoke \
+  -H "X-AliceBot-User-Id: $ALICE_USER_ID" \
   -H "Idempotency-Key: runtime-$(uuidgen)" \
   -H "Content-Type: application/json" \
-  -d '{
-    "provider_id":"'"$PROVIDER_ID"'",
-    "thread_id":"'"$THREAD_ID"'",
-    "message":"Summarize local runtime status."
-  }'
+  -d '{"provider_id":"'"$PROVIDER_ID"'","thread_id":"'"$THREAD_ID"'","message":"Summarize runtime status."}'
 ```
 
-`POST /v1/runtime/invoke` requires one `Idempotency-Key` per logical turn. Reuse
-the exact key when retrying the same request after a transport interruption;
-use a new key for a different turn. AliceBot replays persisted terminal outcomes,
-returns `202` while the original call is still active, and never invokes a
-provider again when an expired job's outcome is unknown.
+Reuse the same idempotency key only when retrying the same logical invocation.
+The public `/v0/responses` chat endpoint is removed in v0.11; the internal
+response-job machinery remains behind `/v1/runtime/invoke` so provider retries
+cannot duplicate charges.
 
-## Self-Hosted Path: vLLM
+## Verification
 
-Register the dedicated `vllm` adapter, then use the same test/invoke seams.
-
-```bash
-curl -sS -X POST "http://127.0.0.1:8000/v1/providers/vllm/register" \
-  -H "Authorization: Bearer $SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "display_name":"Self-Hosted vLLM",
-    "base_url":"http://127.0.0.1:8001",
-    "default_model":"mistral-small-instruct"
-  }'
-```
-
-For explicit invoke override:
-
-```json
-{
-  "pack_id": "mistral",
-  "pack_version": "1.0.0"
-}
-```
-
-## Enterprise Path: Azure
-
-Register Azure through the shipped Azure endpoint, then use the shared test/invoke seams.
-
-```bash
-curl -sS -X POST "http://127.0.0.1:8000/v1/providers/azure/register" \
-  -H "Authorization: Bearer $SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "display_name":"Azure Enterprise",
-    "base_url":"https://YOUR_RESOURCE.openai.azure.com",
-    "auth_mode":"azure_api_key",
-    "api_key":"'"$AZURE_API_KEY"'",
-    "api_version":"2024-10-21",
-    "default_model":"gpt-4.1-mini"
-  }'
-```
-
-Azure uses the same pack seam (`pack_id`, `pack_version`) on `POST /v1/runtime/invoke`. If Azure-specific compatibility metadata is needed, create and bind a custom pack.
-
-## External-Agent Path: AutoGen Bridge
-
-Use the shipped bridge script to run AutoGen-style orchestration while keeping Alice runtime/provider/pack semantics intact.
-
-```bash
-./scripts/run_phase11_autogen_runtime_bridge.py \
-  --session-token "$SESSION_TOKEN" \
-  --provider-id "$PROVIDER_ID" \
-  --thread-id "$THREAD_ID" \
-  --user-message "Provide an execution-ready status update."
-```
-
-## Operator Verification Checklist
-
-1. `GET /v1/model-packs` lists tier-1 and tier-2 built-in packs.
-2. `POST /v1/model-packs/{pack_id}/bind` succeeds for selected pack/version.
-3. `POST /v1/providers/test` succeeds for each configured provider path.
-4. `POST /v1/runtime/invoke` metadata reports resolved `model_pack` and `source`.
-5. Compatibility posture matches `docs/integrations/phase11-model-pack-compatibility.md`.
+1. Provider list/get returns only the local operator's records.
+2. Provider test records capability and invocation telemetry without secrets.
+3. Runtime invoke replays a completed idempotent result and returns `202` while
+   the original request is still active.
+4. No model-pack field or hosted bearer-session requirement appears in the
+   request or response contract.

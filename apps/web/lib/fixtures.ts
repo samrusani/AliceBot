@@ -1,8 +1,5 @@
 import type {
-  AgentProfileItem,
-  AgentProfileListSummary,
   ApprovalItem,
-  ApprovalRequestPayload,
   CalendarAccountListSummary,
   CalendarAccountRecord,
   CalendarEventListSummary,
@@ -28,18 +25,12 @@ import type {
   TaskArtifactRecord,
   TaskWorkspaceListSummary,
   TaskWorkspaceRecord,
-  RequestHistoryEntry,
-  ResponseHistoryEntry,
-  ThreadEventItem,
-  ThreadItem,
-  ThreadSessionItem,
   TaskItem,
   TaskStepItem,
   TaskStepListSummary,
   ToolExecutionItem,
   ToolRecord,
 } from "./api";
-import { DEFAULT_AGENT_PROFILE_ID } from "./api";
 import type { TraceItem } from "../components/trace-list";
 
 const PURCHASE_TOOL: ToolRecord = {
@@ -61,182 +52,6 @@ const PURCHASE_TOOL: ToolRecord = {
 
 const THREAD_MAGNESIUM = "11111111-1111-4111-8111-111111111111";
 const THREAD_VITAMIN_D = "11111111-1111-4111-8111-111111111112";
-const THREAD_CLEANUP = "11111111-1111-4111-8111-111111111113";
-
-export const threadFixtures: ThreadItem[] = [
-  {
-    id: THREAD_MAGNESIUM,
-    title: "Magnesium continuity review",
-    agent_profile_id: "assistant_default",
-    created_at: "2026-03-17T06:40:00Z",
-    updated_at: "2026-03-17T08:45:00Z",
-  },
-  {
-    id: THREAD_VITAMIN_D,
-    title: "Vitamin D reorder follow-up",
-    agent_profile_id: "coach_default",
-    created_at: "2026-03-16T13:58:00Z",
-    updated_at: "2026-03-16T14:32:00Z",
-  },
-  {
-    id: THREAD_CLEANUP,
-    title: "Quarterly routine cleanup",
-    agent_profile_id: "assistant_default",
-    created_at: "2026-03-15T09:20:00Z",
-    updated_at: "2026-03-15T09:20:00Z",
-  },
-];
-
-export const agentProfileFixtures: AgentProfileItem[] = [
-  {
-    id: "assistant_default",
-    name: "Assistant Default",
-    description: "General-purpose assistant profile for baseline conversations.",
-  },
-  {
-    id: "coach_default",
-    name: "Coach Default",
-    description: "Coaching-oriented profile focused on guidance and accountability.",
-  },
-];
-
-export const agentProfileFixtureSummary: AgentProfileListSummary = {
-  total_count: agentProfileFixtures.length,
-  order: ["id_asc"],
-};
-
-export const threadSessionFixtures: Record<string, ThreadSessionItem[]> = {
-  [THREAD_MAGNESIUM]: [
-    {
-      id: "session-magnesium-1",
-      thread_id: THREAD_MAGNESIUM,
-      status: "completed",
-      started_at: "2026-03-17T06:40:00Z",
-      ended_at: "2026-03-17T06:52:00Z",
-      created_at: "2026-03-17T06:40:00Z",
-    },
-    {
-      id: "session-magnesium-2",
-      thread_id: THREAD_MAGNESIUM,
-      status: "active",
-      started_at: "2026-03-17T08:40:00Z",
-      ended_at: null,
-      created_at: "2026-03-17T08:40:00Z",
-    },
-  ],
-  [THREAD_VITAMIN_D]: [
-    {
-      id: "session-vitamin-d-1",
-      thread_id: THREAD_VITAMIN_D,
-      status: "completed",
-      started_at: "2026-03-16T14:00:00Z",
-      ended_at: "2026-03-16T14:32:00Z",
-      created_at: "2026-03-16T14:00:00Z",
-    },
-  ],
-  [THREAD_CLEANUP]: [],
-};
-
-export const threadEventFixtures: Record<string, ThreadEventItem[]> = {
-  [THREAD_MAGNESIUM]: [
-    {
-      id: "event-magnesium-1",
-      thread_id: THREAD_MAGNESIUM,
-      session_id: "session-magnesium-1",
-      sequence_no: 1,
-      kind: "message.user",
-      payload: {
-        text: "Review my magnesium reorder context before I place another order.",
-      },
-      created_at: "2026-03-17T06:41:00Z",
-    },
-    {
-      id: "event-magnesium-2",
-      thread_id: THREAD_MAGNESIUM,
-      session_id: "session-magnesium-1",
-      sequence_no: 2,
-      kind: "approval.request",
-      payload: {
-        action: "place_order",
-        scope: "supplements",
-        status: "pending",
-      },
-      created_at: "2026-03-17T06:50:00Z",
-    },
-    {
-      id: "event-magnesium-3",
-      thread_id: THREAD_MAGNESIUM,
-      session_id: "session-magnesium-2",
-      sequence_no: 3,
-      kind: "message.user",
-      payload: {
-        text: "Summarize what is still waiting for approval.",
-      },
-      created_at: "2026-03-17T08:43:00Z",
-    },
-    {
-      id: "event-magnesium-4",
-      thread_id: THREAD_MAGNESIUM,
-      session_id: "session-magnesium-2",
-      sequence_no: 4,
-      kind: "message.assistant",
-      payload: {
-        text: "The latest magnesium purchase request is still waiting on approval and keeps the merchant and package details explicit.",
-      },
-      created_at: "2026-03-17T08:45:00Z",
-    },
-  ],
-  [THREAD_VITAMIN_D]: [
-    {
-      id: "event-vitamin-d-1",
-      thread_id: THREAD_VITAMIN_D,
-      session_id: "session-vitamin-d-1",
-      sequence_no: 1,
-      kind: "message.user",
-      payload: {
-        text: "What happened with my last Vitamin D reorder?",
-      },
-      created_at: "2026-03-16T14:05:00Z",
-    },
-    {
-      id: "event-vitamin-d-2",
-      thread_id: THREAD_VITAMIN_D,
-      session_id: "session-vitamin-d-1",
-      sequence_no: 2,
-      kind: "approval.resolution",
-      payload: {
-        status: "approved",
-        summary: "The operator approved the reorder before execution.",
-      },
-      created_at: "2026-03-16T14:22:00Z",
-    },
-    {
-      id: "event-vitamin-d-3",
-      thread_id: THREAD_VITAMIN_D,
-      session_id: "session-vitamin-d-1",
-      sequence_no: 3,
-      kind: "tool.execution",
-      payload: {
-        status: "completed",
-        summary: "Merchant proxy completed the approved supplement reorder.",
-      },
-      created_at: "2026-03-16T14:24:00Z",
-    },
-    {
-      id: "event-vitamin-d-4",
-      thread_id: THREAD_VITAMIN_D,
-      session_id: "session-vitamin-d-1",
-      sequence_no: 4,
-      kind: "message.assistant",
-      payload: {
-        text: "The prior Vitamin D request was approved and executed. Open the task or trace review if you need the full record.",
-      },
-      created_at: "2026-03-16T14:32:00Z",
-    },
-  ],
-  [THREAD_CLEANUP]: [],
-};
-
 const MEMORY_MERCHANT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
 const MEMORY_MAGNESIUM = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2";
 const MEMORY_DELIVERY = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3";
@@ -1141,122 +956,6 @@ export const traceFixtures: TraceItem[] = [
   },
 ];
 
-export const requestHistoryFixtures: RequestHistoryEntry[] = [
-  {
-    id: "trace-request-101",
-    submittedAt: "2026-03-17T06:50:00Z",
-    source: "fixture",
-    threadId: THREAD_MAGNESIUM,
-    toolId: PURCHASE_TOOL.id,
-    toolName: PURCHASE_TOOL.name,
-    action: "place_order",
-    scope: "supplements",
-    domainHint: "ecommerce",
-    riskHint: "purchase",
-    attributes: {
-      merchant: "Thorne",
-      item: "Magnesium Bisglycinate",
-      quantity: "1",
-      package: "90 capsules",
-    },
-    decision: "approval_required",
-    taskId: "33333333-3333-4333-8333-333333333333",
-    taskStatus: "pending_approval",
-    approvalId: "44444444-4444-4444-8444-444444444444",
-    approvalStatus: "pending",
-    summary:
-      "The request persisted a pending approval and created a task that remains paused at explicit operator review.",
-    reasons: [
-      "Purchases require explicit user approval before execution.",
-      "Merchant proxy matches the requested supplement purchase scope.",
-    ],
-    trace: {
-      routingTraceId: "55555555-5555-4555-8555-555555555555",
-      routingTraceEventCount: 3,
-      requestTraceId: "66666666-6666-4666-8666-666666666666",
-      requestTraceEventCount: 6,
-    },
-  },
-  {
-    id: "trace-request-100",
-    submittedAt: "2026-03-16T14:10:00Z",
-    source: "fixture",
-    threadId: THREAD_VITAMIN_D,
-    toolId: PURCHASE_TOOL.id,
-    toolName: PURCHASE_TOOL.name,
-    action: "place_order",
-    scope: "supplements",
-    domainHint: "ecommerce",
-    riskHint: "purchase",
-    attributes: {
-      merchant: "Fullscript",
-      item: "Vitamin D3 + K2",
-      quantity: "1",
-    },
-    decision: "approval_required",
-    taskId: "33333333-3333-4333-8333-333333333334",
-    taskStatus: "approved",
-    approvalId: "44444444-4444-4444-8444-444444444445",
-    approvalStatus: "approved",
-    summary:
-      "The governed request produced an approval-linked task, and the operator already resolved the approval as approved.",
-    reasons: [
-      "Repeat supplement purchases remain approval-gated even when the merchant and dosage are known.",
-    ],
-    trace: {
-      routingTraceId: "55555555-5555-4555-8555-555555555556",
-      routingTraceEventCount: 3,
-      requestTraceId: "66666666-6666-4666-8666-666666666667",
-      requestTraceEventCount: 6,
-    },
-  },
-];
-
-export const responseHistoryFixtures: ResponseHistoryEntry[] = [
-  {
-    id: "trace-response-101",
-    submittedAt: "2026-03-17T08:45:00Z",
-    source: "fixture",
-    threadId: THREAD_MAGNESIUM,
-    message: "Summarize my current magnesium supplement context before I decide whether to reorder.",
-    assistantText:
-      "You previously reordered Thorne Magnesium Bisglycinate and the latest governed request is still waiting on approval. The current thread context also reflects a preference for keeping merchant and package size explicit before any purchase action.",
-    assistantEventId: "assistant-event-101",
-    assistantSequenceNo: 14,
-    modelProvider: "openai_responses",
-    model: "gpt-5-mini",
-    summary:
-      "Fixture mode shows the assistant-response layout and linked traces without persisting continuity events to the backend.",
-    trace: {
-      compileTraceId: "trace-ctx-401",
-      compileTraceEventCount: 3,
-      responseTraceId: "trace-response-101",
-      responseTraceEventCount: 2,
-    },
-  },
-  {
-    id: "trace-response-100",
-    submittedAt: "2026-03-16T14:32:00Z",
-    source: "fixture",
-    threadId: THREAD_VITAMIN_D,
-    message: "What do I need to know about the last Vitamin D request?",
-    assistantText:
-      "The prior Vitamin D3 + K2 request already moved through approval and execution. The trace history shows the approval was resolved before the proxy handler completed, so the remaining question is whether you want to open the task or execution review for detail.",
-    assistantEventId: "assistant-event-100",
-    assistantSequenceNo: 11,
-    modelProvider: "openai_responses",
-    model: "gpt-5-mini",
-    summary:
-      "Response history stays bounded with the operator prompt, assistant answer, and both compile and response trace references visible.",
-    trace: {
-      compileTraceId: "trace-ctx-401",
-      compileTraceEventCount: 3,
-      responseTraceId: "trace-response-100",
-      responseTraceEventCount: 2,
-    },
-  },
-];
-
 export const approvalFixtures: ApprovalItem[] = [
   {
     id: "44444444-4444-4444-8444-444444444444",
@@ -1553,10 +1252,6 @@ export function getFixtureExecutionByApprovalId(approvalId: string) {
   return executionFixtures.find((item) => item.approval_id === approvalId) ?? null;
 }
 
-export function getFixtureThread(threadId: string) {
-  return threadFixtures.find((item) => item.id === threadId) ?? null;
-}
-
 export function getFixtureMemory(memoryId: string) {
   return memoryFixtures.find((item) => item.id === memoryId) ?? null;
 }
@@ -1652,10 +1347,6 @@ export function getFixtureCalendarEventList(
   };
 }
 
-export function getFixtureTaskWorkspace(taskWorkspaceId: string) {
-  return taskWorkspaceFixtures.find((item) => item.id === taskWorkspaceId) ?? null;
-}
-
 export function getFixtureTaskArtifact(taskArtifactId: string) {
   return taskArtifactFixtures.find((item) => item.id === taskArtifactId) ?? null;
 }
@@ -1730,14 +1421,6 @@ export function getFixtureMemoryLabelSummary(memoryId: string): MemoryReviewLabe
   };
 }
 
-export function getFixtureThreadSessions(threadId: string) {
-  return threadSessionFixtures[threadId] ?? [];
-}
-
-export function getFixtureThreadEvents(threadId: string) {
-  return threadEventFixtures[threadId] ?? [];
-}
-
 export function getFixtureTaskSteps(taskId: string) {
   return taskStepFixtures[taskId] ?? [];
 }
@@ -1754,80 +1437,5 @@ export function getFixtureTaskStepSummary(taskId: string): TaskStepListSummary {
     next_sequence_no: (latest?.sequence_no ?? 0) + 1,
     append_allowed: false,
     order: items.map((item) => item.id),
-  };
-}
-
-export function buildFixtureRequestEntry(payload: ApprovalRequestPayload): RequestHistoryEntry {
-  const nonce = Date.now().toString(36);
-
-  return {
-    id: `fixture-request-${nonce}`,
-    submittedAt: new Date().toISOString(),
-    source: "fixture",
-    threadId: payload.thread_id,
-    toolId: payload.tool_id,
-    toolName: "Configured tool",
-    action: payload.action,
-    scope: payload.scope,
-    domainHint: payload.domain_hint,
-    riskHint: payload.risk_hint,
-    attributes: payload.attributes,
-    decision: "approval_required",
-    taskId: `fixture-task-${nonce}`,
-    taskStatus: "pending_approval",
-    approvalId: `fixture-approval-${nonce}`,
-    approvalStatus: "pending",
-    summary:
-      "Fixture mode prepared a governed request preview only. Add live API configuration to persist an approval and downstream task.",
-    reasons: [
-      "Fixture mode keeps the approval-request seam explicit without inventing backend state.",
-    ],
-    trace: {
-      routingTraceId: `fixture-route-${nonce}`,
-      routingTraceEventCount: 3,
-      requestTraceId: `fixture-trace-${nonce}`,
-      requestTraceEventCount: 6,
-    },
-  };
-}
-
-export function buildFixtureResponseEntry(
-  payload: Pick<ResponseHistoryEntry, "threadId" | "message">,
-): ResponseHistoryEntry {
-  const nonce = Date.now().toString(36);
-
-  return {
-    id: `fixture-response-${nonce}`,
-    submittedAt: new Date().toISOString(),
-    source: "fixture",
-    threadId: payload.threadId,
-    message: payload.message,
-    assistantText:
-      "Fixture mode generated a preview response only. Add live API configuration to persist the operator message, assistant reply, and linked continuity traces.",
-    assistantEventId: `fixture-assistant-${nonce}`,
-    assistantSequenceNo: 0,
-    modelProvider: "openai_responses",
-    model: "fixture-preview",
-    summary:
-      "The preview keeps the assistant-response seam explicit without inventing stored backend history.",
-    trace: {
-      compileTraceId: `fixture-compile-${nonce}`,
-      compileTraceEventCount: 3,
-      responseTraceId: `fixture-response-trace-${nonce}`,
-      responseTraceEventCount: 2,
-    },
-  };
-}
-
-export function buildFixtureThread(title: string): ThreadItem {
-  const nonce = Date.now().toString(36);
-  const timestamp = new Date().toISOString();
-
-  return {
-    id: `fixture-thread-${nonce}`,
-    title,
-    agent_profile_id: DEFAULT_AGENT_PROFILE_ID,
-    created_at: timestamp,
-    updated_at: timestamp,
   };
 }

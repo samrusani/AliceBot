@@ -63,12 +63,6 @@ def validate(path: Path) -> list[str]:
         if app_env not in {"development", "test"}:
             if values.get("ALICEBOT_AUTH_USER_ID", "") == "":
                 errors.append(f"{path}: ALICEBOT_AUTH_USER_ID is required when APP_ENV={app_env}")
-            if values.get("TELEGRAM_WEBHOOK_SECRET", "") == "":
-                errors.append(f"{path}: TELEGRAM_WEBHOOK_SECRET is required when APP_ENV={app_env}")
-            if values.get("S3_ACCESS_KEY", "alicebot") == "alicebot":
-                errors.append(f"{path}: S3_ACCESS_KEY must be overridden when APP_ENV={app_env}")
-            if values.get("S3_SECRET_KEY", "alicebot-secret") == "alicebot-secret":
-                errors.append(f"{path}: S3_SECRET_KEY must be overridden when APP_ENV={app_env}")
 
     return errors
 

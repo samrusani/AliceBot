@@ -38,7 +38,7 @@ export function ArtifactDetail({ artifact, source, unavailableReason }: Artifact
     <SectionCard
       eyebrow="Selected artifact"
       title={artifact.relative_path}
-      description="Artifact detail keeps registration metadata and ingestion status explicit before workspace and chunk review."
+      description="Artifact detail keeps registration metadata and ingestion status explicit before storage identity and chunk review."
     >
       <div className="detail-grid">
         <div className="detail-summary">
@@ -73,7 +73,7 @@ export function ArtifactDetail({ artifact, source, unavailableReason }: Artifact
             <dd className="mono">{artifact.task_id}</dd>
           </div>
           <div>
-            <dt>Workspace ID</dt>
+            <dt>Storage scope ID</dt>
             <dd className="mono">{artifact.task_workspace_id}</dd>
           </div>
           <div>
@@ -91,10 +91,10 @@ export function ArtifactDetail({ artifact, source, unavailableReason }: Artifact
         </dl>
 
         <div className="detail-group detail-group--muted">
-          <h3>Rooted path summary</h3>
+            <h3>Stored relative path</h3>
           <p className="mono">{artifact.relative_path}</p>
           <p className="muted-copy">
-            This path is stored as a workspace-rooted relative path and remains read-only inside this review route.
+              This relative path is persisted with the artifact and remains read-only inside this review route.
           </p>
         </div>
       </div>

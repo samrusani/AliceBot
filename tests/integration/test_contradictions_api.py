@@ -75,33 +75,8 @@ def seed_user(database_url: str, *, email: str) -> UUID:
     return user_id
 
 
-def auth_header(session_token: str) -> dict[str, str]:
-    return {"authorization": f"Bearer {session_token}"}
-
-
-def bootstrap_authenticated_user(database_url: str, *, email: str) -> tuple[UUID, str]:
-    start_status, start_payload = invoke_request(
-        "POST",
-        "/v1/auth/magic-link/start",
-        payload={"email": email},
-    )
-    assert start_status == 200
-
-    verify_status, verify_payload = invoke_request(
-        "POST",
-        "/v1/auth/magic-link/verify",
-        payload={
-            "challenge_token": start_payload["challenge"]["challenge_token"],
-            "device_label": "Contradictions Test Device",
-            "device_key": f"device-{email}",
-        },
-    )
-    assert verify_status == 200
-
-    user_id = UUID(verify_payload["user_account"]["id"])
-    with user_connection(database_url, user_id) as conn:
-        ContinuityStore(conn).create_user(user_id, email, email.split("@", 1)[0].title())
-    return user_id, verify_payload["session_token"]
+def identity_header(user_id: UUID | str) -> dict[str, str]:
+    return {"x-alicebot-user-id": str(user_id)}
 
 
 def set_continuity_timestamp(
@@ -128,7 +103,7 @@ def test_contradictions_api_detects_surfaces_penalties_and_resolves(
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
 
-    user_id, session_token = bootstrap_authenticated_user(
+    user_id = seed_user(
         migrated_database_urls["app"],
         email="contradictions-api@example.com",
     )
@@ -217,7 +192,7 @@ def test_contradictions_api_detects_surfaces_penalties_and_resolves(
         "POST",
         "/v1/contradictions/detect",
         payload={"limit": 20},
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
     assert detect_status == 200
     assert detect_payload["summary"]["open_case_count"] == 1
@@ -264,7 +239,7 @@ def test_contradictions_api_detects_surfaces_penalties_and_resolves(
             "signal_state": "active",
             "limit": "20",
         },
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
     assert trust_status == 200
     assert trust_payload["summary"]["returned_count"] == 1
@@ -279,7 +254,7 @@ def test_contradictions_api_detects_surfaces_penalties_and_resolves(
             "action": "confirm_primary",
             "note": "Primary record remains current.",
         },
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
     assert resolve_status == 200
     assert resolve_payload["contradiction_case"]["status"] == "resolved"
@@ -289,7 +264,7 @@ def test_contradictions_api_detects_surfaces_penalties_and_resolves(
     detail_status, detail_payload = invoke_request(
         "GET",
         f"/v1/contradictions/cases/{contradiction_case_id}",
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
     assert detail_status == 200
     assert detail_payload["contradiction_case"]["status"] == "resolved"
@@ -302,13 +277,13 @@ def test_contradictions_api_detects_surfaces_penalties_and_resolves(
             "signal_state": "active",
             "limit": "20",
         },
-        headers=auth_header(session_token),
+        headers=identity_header(user_id),
     )
     assert active_trust_after_status == 200
     assert active_trust_after_payload["items"] == []
 
 
-def test_contradictions_api_requires_bearer_auth(
+def test_contradictions_api_requires_local_identity(
     migrated_database_urls,
     monkeypatch,
 ) -> None:
@@ -324,5 +299,7 @@ def test_contradictions_api_requires_bearer_auth(
         query_params={"status": "open", "limit": "20"},
     )
 
-    assert status == 401
-    assert payload == {"detail": "authorization bearer token is required"}
+    assert status == 400
+    assert payload == {
+        "detail": "local identity is required; set ALICEBOT_AUTH_USER_ID or provide X-AliceBot-User-Id"
+    }

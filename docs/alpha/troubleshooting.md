@@ -125,8 +125,9 @@ Fix by narrowing domain/sensitivity, adding project scope, or using a stronger p
 
 ## Secrets
 
-Never paste secret values into bug reports. Use secret refs:
+Never paste secret values into bug reports. Report only the configured secret
+reference and whether it resolves:
 
 ```bash
-alicebot vnext connectors telegram configure --secret-ref env:TELEGRAM_BOT_TOKEN --allowed-chat-id 123456
+alicebot vnext connectors health
 ```

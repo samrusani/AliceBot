@@ -8,7 +8,7 @@ export default function Loading() {
       <PageHeader
         eyebrow="Artifacts"
         title="Artifact review workspace"
-        description="Loading artifact list, selected detail, linked workspace summary, and ordered chunk review."
+        description="Loading artifact list, selected detail, storage identity, and ordered chunk review."
         meta={
           <div className="header-meta">
             <span className="subtle-chip">Loading route state</span>
@@ -47,9 +47,9 @@ export default function Loading() {
 
       <div className="artifact-review-grid">
         <SectionCard
-          eyebrow="Linked workspace"
-          title="Loading workspace summary"
-          description="Task workspace linkage and rooted path context are loading."
+          eyebrow="Artifact storage"
+          title="Loading storage identity"
+          description="Persisted artifact identifiers and relative-path context are loading."
           className="loading-card"
         >
           <div className="detail-stack">

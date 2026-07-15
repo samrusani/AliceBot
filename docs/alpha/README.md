@@ -7,7 +7,7 @@ Alice vNext public preview is a technical, local-first package for people who wa
 Alice is agent-first, not dashboard-first:
 
 1. Install Alice locally.
-2. Connect Hermes, OpenClaw, or a custom agent through MCP/API/CLI.
+2. Connect an existing agent through MCP/API/CLI.
 3. Let agents request scoped context packs, submit reviewable outputs, and commit only explicit user-directed memories through Alice policy.
 4. Use `/vnext` to review, govern, audit, undo, correct, forget, configure, and troubleshoot.
 
@@ -33,7 +33,7 @@ Start here:
 - [Troubleshooting](troubleshooting.md)
 - [Known limitations](known-limitations.md)
 - [Security and privacy](security-and-privacy.md)
-- [Alpha onboarding](design-partner-onboarding.md)
+- [Alpha onboarding](onboarding.md)
 - [Alpha release notes](release-notes.md)
 
 Current alpha posture:
@@ -44,5 +44,8 @@ Current alpha posture:
 - reviewable source, artifact, and agent memory proposal flows
 - explicit trusted-agent memory commits with confirmation/review/reject policy gates
 - no direct Postgres writes by agents
-- supported alpha connectors: local folder, browser clipper MVP, Telegram polling/sync, document payload ingestion, voice transcript payload ingestion, screenshot OCR payload ingestion, and agent output ingestion
+- supported alpha connectors: local folder, browser clipper MVP, document text
+  payloads, externally produced voice transcripts, externally extracted
+  screenshot text, and agent output ingestion; Alice does not execute OCR or
+  transcription
 - `/vnext` is the operator console, not the main agent interface

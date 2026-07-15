@@ -14,9 +14,11 @@ Start with the narrowest path that solves the integration need:
 | Generic external agent needs continuity in one call | `POST /v1/continuity/brief`; key-bound MCP integrations use core `alice_recall` / `alice_resume` (`alice_brief` is keyless-local legacy compatibility only) | `docs/examples/reference-agent-examples.md` |
 | Hermes owns orchestration and Alice supplies continuity workflows | provider plus MCP | `./.venv/bin/python scripts/run_hermes_bridge_demo.py` |
 | Existing OpenClaw workspace data must become queryable in Alice | import, then use normal brief/recall/resume surfaces | `./scripts/use_alice_with_openclaw.sh` |
-| Alice must target a non-default runtime provider or provider-aware pack | supporting Alice-side configuration for the paths above | `docs/integrations/phase14-provider-configuration.md` |
+| Alice must target a non-default runtime provider | supporting Alice-side configuration for the paths above | `docs/integrations/phase14-provider-configuration.md` |
 
-The three major adoption paths are Generic Agent, Hermes, and OpenClaw. Provider and model-pack controls support those paths; they are not presented as a fourth standalone demo path.
+The three major adoption paths are Generic Agent, Hermes, and OpenClaw. Provider
+controls support those paths; they are not presented as a fourth standalone
+demo path.
 
 ## Path Details
 
@@ -47,15 +49,15 @@ Use OpenClaw when the main requirement is importing existing workspace memory in
 - docs: `docs/integrations/openclaw.md`
 - reproducible demo: `./scripts/use_alice_with_openclaw.sh`
 
-### Provider And Pack Controls
+### Provider Controls
 
-Use the provider and model-pack docs when Alice itself owns runtime selection and prompting defaults.
+Use the provider docs when Alice itself owns runtime selection.
 
 - provider registration and capability discovery: `docs/integrations/phase14-provider-configuration.md`
-- pack compatibility and binding posture: `docs/integrations/phase11-model-pack-compatibility.md`
 - keep these controls in Alice rather than cloning them into Hermes or importer flows
 - treat these controls as supporting configuration for the three major adoption paths above, not as a separate reference integration path
 
 ## Scope Guard
 
-These paths package the shipped Alice surface. They do not introduce a second continuity contract, a second provider substrate, or a new pack system.
+These paths package the shipped Alice surface. They do not introduce a second
+continuity contract or provider substrate.

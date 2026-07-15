@@ -66,10 +66,6 @@ alicebot vnext agents policy-telemetry
 alicebot vnext connectors list
 alicebot vnext connectors status
 alicebot vnext connectors health
-alicebot vnext connectors telegram configure --enabled --allowed-chat-id 999001 --secret-ref env:TELEGRAM_BOT_TOKEN
-alicebot vnext connectors telegram configure --enabled --allowed-chat-id 999001 --bot-token "$TELEGRAM_BOT_TOKEN"
-alicebot vnext connectors telegram test
-alicebot vnext connectors telegram sync --allowed-chat-id 999001 --retries 3
 alicebot vnext connectors local-folder add-path ~/Notes/Alice --extension .md --extension .txt
 alicebot vnext connectors local-folder sync
 alicebot vnext connectors local-folder watch --once

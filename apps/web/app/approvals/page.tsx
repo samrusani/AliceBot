@@ -1,6 +1,8 @@
 import { ApprovalDetail } from "../../components/approval-detail";
 import { ApprovalList } from "../../components/approval-list";
 import { PageHeader } from "../../components/page-header";
+import { legacySurfacesEnabled } from "../../lib/legacy-surfaces.server";
+import { notFound } from "next/navigation";
 import {
   combinePageModes,
   getToolExecution,
@@ -21,6 +23,10 @@ export default async function ApprovalsPage({
 }: {
   searchParams?: SearchParams;
 }) {
+  if (!legacySurfacesEnabled()) {
+    notFound();
+  }
+
   const params = (searchParams ? await searchParams : {}) as Record<
     string,
     string | string[] | undefined

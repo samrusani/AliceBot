@@ -265,20 +265,6 @@ OPENAPI_OPERATION_RESPONSE_SCHEMAS: dict[tuple[str, str], tuple[str, dict[str, o
             closed=True,
         ),
     ),
-    ("POST", "/v0/responses"): (
-        "GenerateAssistantResponseSuccessResponse",
-        _operation_schema(
-            "GenerateAssistantResponseSuccessResponse",
-            (
-                "assistant",
-                "detail",
-                "metadata",
-                "response_job",
-                "trace",
-            ),
-            closed=False,
-        ),
-    ),
     ("GET", "/v0/traces"): (
         "ListTracesSuccessResponse",
         _operation_schema(
@@ -1931,54 +1917,12 @@ OPENAPI_OPERATION_RESPONSE_SCHEMAS: dict[tuple[str, str], tuple[str, dict[str, o
             ),
         ),
     ),
-    ("POST", "/v1/auth/magic-link/start"): (
-        "StartV1MagicLinkSuccessResponse",
-        _operation_schema(
-            "StartV1MagicLinkSuccessResponse",
-            ("challenge", "delivery"),
-            required=("challenge", "delivery"),
-            closed=True,
-        ),
-    ),
-    ("POST", "/v1/auth/magic-link/verify"): (
-        "VerifyV1MagicLinkSuccessResponse",
-        _operation_schema(
-            "VerifyV1MagicLinkSuccessResponse",
-            (
-                "magic_link",
-                "status",
-                "expires_at",
-            ),
-        ),
-    ),
-    ("POST", "/v1/auth/logout"): (
-        "LogoutV1AuthSessionSuccessResponse",
-        _operation_schema("LogoutV1AuthSessionSuccessResponse", ("status",), required=("status",), closed=True),
-    ),
-    ("GET", "/v1/auth/session"): (
-        "GetV1AuthSessionSuccessResponse",
-        _operation_schema(
-            "GetV1AuthSessionSuccessResponse",
-            (
-                "items",
-                "summary",
-            ),
-        ),
-    ),
-    ("POST", "/v1/workspaces"): (
-        "CreateV1WorkspaceSuccessResponse",
-        _operation_schema("CreateV1WorkspaceSuccessResponse", ("workspace",), required=("workspace",), closed=True),
-    ),
-    ("GET", "/v1/workspaces/current"): (
-        "GetV1CurrentWorkspaceSuccessResponse",
-        _operation_schema("GetV1CurrentWorkspaceSuccessResponse", ("workspace",), required=("workspace",), closed=True),
-    ),
     ("POST", "/v1/workspaces/bootstrap"): (
         "BootstrapV1WorkspaceSuccessResponse",
         _operation_schema(
             "BootstrapV1WorkspaceSuccessResponse",
-            ("bootstrap", "feature_flags", "preferences", "telegram_state", "workspace"),
-            required=("bootstrap", "feature_flags", "preferences", "telegram_state", "workspace"),
+            ("bootstrap", "seeded_provider_count", "workspace"),
+            required=("bootstrap", "seeded_provider_count", "workspace"),
             closed=True,
         ),
     ),
@@ -1986,8 +1930,8 @@ OPENAPI_OPERATION_RESPONSE_SCHEMAS: dict[tuple[str, str], tuple[str, dict[str, o
         "GetV1WorkspaceBootstrapStatusSuccessResponse",
         _operation_schema(
             "GetV1WorkspaceBootstrapStatusSuccessResponse",
-            ("bootstrap", "feature_flags", "telegram_state", "workspace"),
-            required=("bootstrap", "feature_flags", "telegram_state", "workspace"),
+            ("bootstrap", "workspace"),
+            required=("bootstrap", "workspace"),
             closed=True,
         ),
     ),
@@ -2069,30 +2013,6 @@ OPENAPI_OPERATION_RESPONSE_SCHEMAS: dict[tuple[str, str], tuple[str, dict[str, o
             closed=True,
         ),
     ),
-    ("GET", "/v1/model-packs"): (
-        "ListV1ModelPacksSuccessResponse",
-        _operation_schema(
-            "ListV1ModelPacksSuccessResponse", ("items", "summary"), required=("items", "summary"), closed=True
-        ),
-    ),
-    ("GET", "/v1/model-packs/{pack_id}"): (
-        "GetV1ModelPackSuccessResponse",
-        _operation_schema("GetV1ModelPackSuccessResponse", ("model_pack",), required=("model_pack",), closed=True),
-    ),
-    ("POST", "/v1/model-packs"): (
-        "CreateV1ModelPackSuccessResponse",
-        _operation_schema("CreateV1ModelPackSuccessResponse", ("model_pack",), required=("model_pack",), closed=True),
-    ),
-    ("POST", "/v1/model-packs/{pack_id}/bind"): (
-        "BindV1ModelPackSuccessResponse",
-        _operation_schema("BindV1ModelPackSuccessResponse", ("binding",), required=("binding",), closed=True),
-    ),
-    ("GET", "/v1/workspaces/{workspace_id}/model-pack-binding"): (
-        "GetV1WorkspaceModelPackBindingSuccessResponse",
-        _operation_schema(
-            "GetV1WorkspaceModelPackBindingSuccessResponse", ("binding",), required=("binding",), closed=True
-        ),
-    ),
     ("POST", "/v1/runtime/invoke"): (
         "InvokeV1RuntimeSuccessResponse",
         _operation_schema(
@@ -2105,400 +2025,6 @@ OPENAPI_OPERATION_RESPONSE_SCHEMAS: dict[tuple[str, str], tuple[str, dict[str, o
                 "trace",
             ),
             closed=False,
-        ),
-    ),
-    ("POST", "/v1/devices/link/start"): (
-        "StartV1DeviceLinkSuccessResponse",
-        _operation_schema("StartV1DeviceLinkSuccessResponse", ("challenge",), required=("challenge",), closed=True),
-    ),
-    ("POST", "/v1/devices/link/confirm"): (
-        "ConfirmV1DeviceLinkSuccessResponse",
-        _operation_schema("ConfirmV1DeviceLinkSuccessResponse", ("device",), required=("device",), closed=True),
-    ),
-    ("GET", "/v1/devices"): (
-        "ListV1DevicesSuccessResponse",
-        _operation_schema(
-            "ListV1DevicesSuccessResponse", ("items", "summary"), required=("items", "summary"), closed=True
-        ),
-    ),
-    ("DELETE", "/v1/devices/{device_id}"): (
-        "DeleteV1DeviceSuccessResponse",
-        _operation_schema("DeleteV1DeviceSuccessResponse", ("device",), required=("device",), closed=True),
-    ),
-    ("GET", "/v1/preferences"): (
-        "GetV1PreferencesSuccessResponse",
-        _operation_schema("GetV1PreferencesSuccessResponse", ("preferences",), required=("preferences",), closed=True),
-    ),
-    ("PATCH", "/v1/preferences"): (
-        "PatchV1PreferencesSuccessResponse",
-        _operation_schema(
-            "PatchV1PreferencesSuccessResponse", ("preferences",), required=("preferences",), closed=True
-        ),
-    ),
-    ("GET", "/v1/admin/hosted/overview"): (
-        "GetV1AdminHostedOverviewSuccessResponse",
-        _operation_schema(
-            "GetV1AdminHostedOverviewSuccessResponse",
-            (
-                "overview",
-                "status",
-            ),
-        ),
-    ),
-    ("GET", "/v1/admin/hosted/design-partners/dashboard"): (
-        "GetV1AdminHostedDesignPartnerDashboardSuccessResponse",
-        _operation_schema(
-            "GetV1AdminHostedDesignPartnerDashboardSuccessResponse",
-            (
-                "dashboard",
-                "status",
-            ),
-        ),
-    ),
-    ("GET", "/v1/admin/hosted/design-partners"): (
-        "GetV1AdminHostedDesignPartnersSuccessResponse",
-        _operation_schema(
-            "GetV1AdminHostedDesignPartnersSuccessResponse",
-            (
-                "items",
-                "summary",
-            ),
-        ),
-    ),
-    ("POST", "/v1/admin/hosted/design-partners"): (
-        "PostV1AdminHostedDesignPartnerSuccessResponse",
-        _operation_schema(
-            "PostV1AdminHostedDesignPartnerSuccessResponse",
-            (
-                "design_partner",
-                "status",
-            ),
-        ),
-    ),
-    ("GET", "/v1/admin/hosted/design-partners/{design_partner_id}"): (
-        "GetV1AdminHostedDesignPartnerDetailSuccessResponse",
-        _operation_schema(
-            "GetV1AdminHostedDesignPartnerDetailSuccessResponse",
-            (
-                "design_partner",
-                "status",
-            ),
-        ),
-    ),
-    ("PATCH", "/v1/admin/hosted/design-partners/{design_partner_id}"): (
-        "PatchV1AdminHostedDesignPartnerSuccessResponse",
-        _operation_schema(
-            "PatchV1AdminHostedDesignPartnerSuccessResponse",
-            (
-                "design_partner",
-                "status",
-            ),
-        ),
-    ),
-    ("POST", "/v1/admin/hosted/design-partners/{design_partner_id}/workspaces"): (
-        "PostV1AdminHostedDesignPartnerWorkspaceSuccessResponse",
-        _operation_schema(
-            "PostV1AdminHostedDesignPartnerWorkspaceSuccessResponse",
-            (
-                "workspace",
-                "status",
-            ),
-        ),
-    ),
-    ("POST", "/v1/admin/hosted/design-partners/{design_partner_id}/feedback"): (
-        "PostV1AdminHostedDesignPartnerFeedbackSuccessResponse",
-        _operation_schema(
-            "PostV1AdminHostedDesignPartnerFeedbackSuccessResponse",
-            (
-                "feedback",
-                "status",
-            ),
-        ),
-    ),
-    ("GET", "/v1/admin/hosted/workspaces"): (
-        "GetV1AdminHostedWorkspacesSuccessResponse",
-        _operation_schema(
-            "GetV1AdminHostedWorkspacesSuccessResponse",
-            ("items", "summary"),
-            required=("items", "summary"),
-            closed=True,
-        ),
-    ),
-    ("GET", "/v1/admin/hosted/delivery-receipts"): (
-        "GetV1AdminHostedDeliveryReceiptsSuccessResponse",
-        _operation_schema(
-            "GetV1AdminHostedDeliveryReceiptsSuccessResponse",
-            ("items", "summary"),
-            required=("items", "summary"),
-            closed=True,
-        ),
-    ),
-    ("GET", "/v1/admin/hosted/incidents"): (
-        "GetV1AdminHostedIncidentsSuccessResponse",
-        _operation_schema(
-            "GetV1AdminHostedIncidentsSuccessResponse", ("items", "summary"), required=("items", "summary"), closed=True
-        ),
-    ),
-    ("GET", "/v1/admin/hosted/rollout-flags"): (
-        "GetV1AdminHostedRolloutFlagsSuccessResponse",
-        _operation_schema(
-            "GetV1AdminHostedRolloutFlagsSuccessResponse",
-            ("items", "summary"),
-            required=("items", "summary"),
-            closed=True,
-        ),
-    ),
-    ("PATCH", "/v1/admin/hosted/rollout-flags"): (
-        "PatchV1AdminHostedRolloutFlagsSuccessResponse",
-        _operation_schema(
-            "PatchV1AdminHostedRolloutFlagsSuccessResponse",
-            ("items", "summary", "updated"),
-            required=("items", "summary", "updated"),
-            closed=True,
-        ),
-    ),
-    ("GET", "/v1/admin/hosted/analytics"): (
-        "GetV1AdminHostedAnalyticsSuccessResponse",
-        _operation_schema(
-            "GetV1AdminHostedAnalyticsSuccessResponse", ("analytics",), required=("analytics",), closed=True
-        ),
-    ),
-    ("GET", "/v1/admin/hosted/rate-limits"): (
-        "GetV1AdminHostedRateLimitsSuccessResponse",
-        _operation_schema(
-            "GetV1AdminHostedRateLimitsSuccessResponse",
-            (
-                "items",
-                "summary",
-            ),
-        ),
-    ),
-    ("POST", "/v1/channels/telegram/link/start"): (
-        "StartV1TelegramLinkSuccessResponse",
-        _operation_schema(
-            "StartV1TelegramLinkSuccessResponse",
-            ("challenge", "instructions", "workspace_id"),
-            required=("challenge", "instructions", "workspace_id"),
-            closed=True,
-        ),
-    ),
-    ("POST", "/v1/channels/telegram/link/confirm"): (
-        "ConfirmV1TelegramLinkSuccessResponse",
-        _operation_schema(
-            "ConfirmV1TelegramLinkSuccessResponse",
-            ("challenge", "identity"),
-            required=("challenge", "identity"),
-            closed=True,
-        ),
-    ),
-    ("POST", "/v1/channels/telegram/unlink"): (
-        "UnlinkV1TelegramSuccessResponse",
-        _operation_schema("UnlinkV1TelegramSuccessResponse", ("identity",), required=("identity",), closed=True),
-    ),
-    ("GET", "/v1/channels/telegram/status"): (
-        "GetV1TelegramStatusSuccessResponse",
-        _operation_schema(
-            "GetV1TelegramStatusSuccessResponse",
-            (
-                "telegram",
-                "status",
-            ),
-        ),
-    ),
-    ("POST", "/v1/channels/telegram/webhook"): (
-        "IngestV1TelegramWebhookSuccessResponse",
-        _operation_schema(
-            "IngestV1TelegramWebhookSuccessResponse",
-            ("ingest", "status"),
-            required=("ingest", "status"),
-            closed=True,
-        ),
-    ),
-    ("GET", "/v1/channels/telegram/messages"): (
-        "ListV1TelegramMessagesSuccessResponse",
-        _operation_schema(
-            "ListV1TelegramMessagesSuccessResponse", ("items", "summary"), required=("items", "summary"), closed=True
-        ),
-    ),
-    ("GET", "/v1/channels/telegram/threads"): (
-        "ListV1TelegramThreadsSuccessResponse",
-        _operation_schema(
-            "ListV1TelegramThreadsSuccessResponse", ("items", "summary"), required=("items", "summary"), closed=True
-        ),
-    ),
-    ("POST", "/v1/channels/telegram/messages/{message_id}/dispatch"): (
-        "DispatchV1TelegramMessageSuccessResponse",
-        _operation_schema(
-            "DispatchV1TelegramMessageSuccessResponse",
-            ("message", "receipt"),
-            required=("message", "receipt"),
-            closed=True,
-        ),
-    ),
-    ("GET", "/v1/channels/telegram/delivery-receipts"): (
-        "ListV1TelegramDeliveryReceiptsSuccessResponse",
-        _operation_schema(
-            "ListV1TelegramDeliveryReceiptsSuccessResponse",
-            ("items", "summary"),
-            required=("items", "summary"),
-            closed=True,
-        ),
-    ),
-    ("GET", "/v1/channels/telegram/notification-preferences"): (
-        "GetV1TelegramNotificationPreferencesSuccessResponse",
-        _operation_schema(
-            "GetV1TelegramNotificationPreferencesSuccessResponse",
-            (
-                "items",
-                "summary",
-            ),
-        ),
-    ),
-    ("PATCH", "/v1/channels/telegram/notification-preferences"): (
-        "PatchV1TelegramNotificationPreferencesSuccessResponse",
-        _operation_schema(
-            "PatchV1TelegramNotificationPreferencesSuccessResponse",
-            (
-                "notification_preference",
-                "status",
-            ),
-        ),
-    ),
-    ("GET", "/v1/channels/telegram/daily-brief"): (
-        "GetV1TelegramDailyBriefSuccessResponse",
-        _operation_schema(
-            "GetV1TelegramDailyBriefSuccessResponse",
-            (
-                "daily_brief",
-                "status",
-            ),
-        ),
-    ),
-    ("POST", "/v1/channels/telegram/daily-brief/deliver"): (
-        "PostV1TelegramDailyBriefDeliverSuccessResponse",
-        _operation_schema(
-            "PostV1TelegramDailyBriefDeliverSuccessResponse",
-            (
-                "daily_brief",
-                "status",
-            ),
-        ),
-    ),
-    ("GET", "/v1/channels/telegram/open-loop-prompts"): (
-        "ListV1TelegramOpenLoopPromptsSuccessResponse",
-        _operation_schema(
-            "ListV1TelegramOpenLoopPromptsSuccessResponse",
-            (
-                "items",
-                "summary",
-            ),
-        ),
-    ),
-    ("POST", "/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver"): (
-        "PostV1TelegramOpenLoopPromptDeliverSuccessResponse",
-        _operation_schema(
-            "PostV1TelegramOpenLoopPromptDeliverSuccessResponse",
-            (
-                "open_loop_prompt",
-                "status",
-            ),
-        ),
-    ),
-    ("GET", "/v1/channels/telegram/scheduler/jobs"): (
-        "ListV1TelegramSchedulerJobsSuccessResponse",
-        _operation_schema(
-            "ListV1TelegramSchedulerJobsSuccessResponse",
-            (
-                "items",
-                "summary",
-            ),
-        ),
-    ),
-    ("POST", "/v1/channels/telegram/messages/{message_id}/handle"): (
-        "HandleV1TelegramMessageSuccessResponse",
-        _operation_schema(
-            "HandleV1TelegramMessageSuccessResponse",
-            (
-                "message",
-                "status",
-            ),
-        ),
-    ),
-    ("GET", "/v1/channels/telegram/messages/{message_id}/result"): (
-        "GetV1TelegramMessageResultSuccessResponse",
-        _operation_schema(
-            "GetV1TelegramMessageResultSuccessResponse",
-            (
-                "items",
-                "summary",
-            ),
-        ),
-    ),
-    ("GET", "/v1/channels/telegram/recall"): (
-        "ListV1TelegramRecallSuccessResponse",
-        _operation_schema(
-            "ListV1TelegramRecallSuccessResponse",
-            ("recall", "workspace_id"),
-            required=("recall", "workspace_id"),
-            closed=True,
-        ),
-    ),
-    ("GET", "/v1/channels/telegram/resume"): (
-        "GetV1TelegramResumptionBriefSuccessResponse",
-        _operation_schema(
-            "GetV1TelegramResumptionBriefSuccessResponse",
-            ("resume", "workspace_id"),
-            required=("resume", "workspace_id"),
-            closed=True,
-        ),
-    ),
-    ("GET", "/v1/channels/telegram/open-loops"): (
-        "GetV1TelegramOpenLoopsSuccessResponse",
-        _operation_schema(
-            "GetV1TelegramOpenLoopsSuccessResponse",
-            ("open_loops", "workspace_id"),
-            required=("open_loops", "workspace_id"),
-            closed=True,
-        ),
-    ),
-    ("POST", "/v1/channels/telegram/open-loops/{open_loop_id}/review-action"): (
-        "ReviewActionV1TelegramOpenLoopSuccessResponse",
-        _operation_schema(
-            "ReviewActionV1TelegramOpenLoopSuccessResponse",
-            (
-                "review_action",
-                "status",
-            ),
-        ),
-    ),
-    ("GET", "/v1/channels/telegram/approvals"): (
-        "ListV1TelegramApprovalsSuccessResponse",
-        _operation_schema(
-            "ListV1TelegramApprovalsSuccessResponse",
-            (
-                "items",
-                "summary",
-            ),
-        ),
-    ),
-    ("POST", "/v1/channels/telegram/approvals/{approval_id}/approve"): (
-        "ApproveV1TelegramApprovalSuccessResponse",
-        _operation_schema(
-            "ApproveV1TelegramApprovalSuccessResponse",
-            (
-                "approval",
-                "status",
-            ),
-        ),
-    ),
-    ("POST", "/v1/channels/telegram/approvals/{approval_id}/reject"): (
-        "RejectV1TelegramApprovalSuccessResponse",
-        _operation_schema(
-            "RejectV1TelegramApprovalSuccessResponse",
-            (
-                "approval",
-                "status",
-            ),
         ),
     ),
 }
@@ -2515,7 +2041,6 @@ _OPENAPI_EXPLICIT_PROPERTY_SCHEMAS: dict[tuple[str, str], dict[str, dict[str, ob
         integers=("trace_event_count",),
         strings=("trace_id",),
     ),
-    ("POST", "/v0/responses"): _typed_properties(objects=("assistant", "detail", "metadata", "response_job", "trace")),
     ("POST", "/v0/memories/admit"): _typed_properties(
         objects=("open_loop",),
         nullable_objects=("memory", "revision"),
@@ -2572,19 +2097,12 @@ _OPENAPI_EXPLICIT_PROPERTY_SCHEMAS: dict[tuple[str, str], dict[str, dict[str, ob
     ("POST", "/v0/vnext/open-loops/extract"): _typed_properties(
         object_arrays=("open_loops",), integers=("created_count",)
     ),
-    ("POST", "/v1/auth/magic-link/start"): _typed_properties(objects=("challenge", "delivery")),
-    ("POST", "/v1/auth/logout"): _typed_properties(strings=("status",)),
-    ("POST", "/v1/workspaces"): _typed_properties(objects=("workspace",)),
-    ("GET", "/v1/workspaces/current"): _typed_properties(objects=("workspace",)),
     ("POST", "/v1/workspaces/bootstrap"): _typed_properties(
-        objects=("bootstrap", "preferences", "workspace"),
-        string_arrays=("feature_flags",),
-        strings=("telegram_state",),
+        objects=("bootstrap", "workspace"),
+        integers=("seeded_provider_count",),
     ),
     ("GET", "/v1/workspaces/bootstrap/status"): _typed_properties(
         objects=("bootstrap", "workspace"),
-        string_arrays=("feature_flags",),
-        strings=("telegram_state",),
     ),
     ("POST", "/v1/providers"): _typed_properties(objects=("capabilities", "provider")),
     ("POST", "/v1/providers/ollama/register"): _typed_properties(objects=("capabilities", "provider")),
@@ -2595,43 +2113,9 @@ _OPENAPI_EXPLICIT_PROPERTY_SCHEMAS: dict[tuple[str, str], dict[str, dict[str, ob
     ("GET", "/v1/providers/{provider_id}"): _typed_properties(objects=("capabilities", "provider")),
     ("PATCH", "/v1/providers/{provider_id}"): _typed_properties(objects=("capabilities", "provider")),
     ("POST", "/v1/providers/test"): _typed_properties(objects=("capabilities", "provider", "result")),
-    ("GET", "/v1/model-packs"): _typed_properties(objects=("summary",), object_arrays=("items",)),
-    ("GET", "/v1/model-packs/{pack_id}"): _typed_properties(objects=("model_pack",)),
-    ("POST", "/v1/model-packs"): _typed_properties(objects=("model_pack",)),
-    ("POST", "/v1/model-packs/{pack_id}/bind"): _typed_properties(objects=("binding",)),
-    ("GET", "/v1/workspaces/{workspace_id}/model-pack-binding"): _typed_properties(nullable_objects=("binding",)),
     ("POST", "/v1/runtime/invoke"): _typed_properties(
         objects=("assistant", "detail", "metadata", "response_job", "trace")
     ),
-    ("POST", "/v1/devices/link/start"): _typed_properties(objects=("challenge",)),
-    ("POST", "/v1/devices/link/confirm"): _typed_properties(objects=("device",)),
-    ("GET", "/v1/devices"): _typed_properties(objects=("summary",), object_arrays=("items",)),
-    ("DELETE", "/v1/devices/{device_id}"): _typed_properties(objects=("device",)),
-    ("GET", "/v1/preferences"): _typed_properties(objects=("preferences",)),
-    ("PATCH", "/v1/preferences"): _typed_properties(objects=("preferences",)),
-    ("GET", "/v1/admin/hosted/workspaces"): _typed_properties(objects=("summary",), object_arrays=("items",)),
-    ("GET", "/v1/admin/hosted/delivery-receipts"): _typed_properties(objects=("summary",), object_arrays=("items",)),
-    ("GET", "/v1/admin/hosted/incidents"): _typed_properties(objects=("summary",), object_arrays=("items",)),
-    ("GET", "/v1/admin/hosted/rollout-flags"): _typed_properties(objects=("summary",), object_arrays=("items",)),
-    ("PATCH", "/v1/admin/hosted/rollout-flags"): _typed_properties(
-        objects=("summary",), object_arrays=("items", "updated")
-    ),
-    ("GET", "/v1/admin/hosted/analytics"): _typed_properties(objects=("analytics",)),
-    ("POST", "/v1/channels/telegram/link/start"): _typed_properties(
-        objects=("challenge", "instructions"), strings=("workspace_id",)
-    ),
-    ("POST", "/v1/channels/telegram/link/confirm"): _typed_properties(objects=("challenge", "identity")),
-    ("POST", "/v1/channels/telegram/unlink"): _typed_properties(objects=("identity",)),
-    ("POST", "/v1/channels/telegram/webhook"): _typed_properties(objects=("ingest",), strings=("status",)),
-    ("GET", "/v1/channels/telegram/messages"): _typed_properties(objects=("summary",), object_arrays=("items",)),
-    ("GET", "/v1/channels/telegram/threads"): _typed_properties(objects=("summary",), object_arrays=("items",)),
-    ("POST", "/v1/channels/telegram/messages/{message_id}/dispatch"): _typed_properties(objects=("message", "receipt")),
-    ("GET", "/v1/channels/telegram/delivery-receipts"): _typed_properties(
-        objects=("summary",), object_arrays=("items",)
-    ),
-    ("GET", "/v1/channels/telegram/recall"): _typed_properties(objects=("recall",), strings=("workspace_id",)),
-    ("GET", "/v1/channels/telegram/resume"): _typed_properties(objects=("resume",), strings=("workspace_id",)),
-    ("GET", "/v1/channels/telegram/open-loops"): _typed_properties(objects=("open_loops",), strings=("workspace_id",)),
 }
 
 
@@ -2890,69 +2374,6 @@ _OPENAPI_EXPLICIT_PROPERTY_SCHEMAS.update(
         ("GET", "/v0/entities"): _typed_properties(objects=("summary",), object_arrays=("items",)),
         ("GET", "/v0/entities/{entity_id}/edges"): _typed_properties(objects=("summary",), object_arrays=("items",)),
         ("GET", "/v0/entities/{entity_id}"): _typed_properties(objects=("entity",), strings=("status",)),
-        ("POST", "/v1/auth/magic-link/verify"): {
-            "magic_link": {"type": "object", "additionalProperties": True},
-            "status": {"type": "string"},
-            "expires_at": {"type": "string", "format": "date-time"},
-        },
-        ("GET", "/v1/auth/session"): _typed_properties(objects=("summary",), object_arrays=("items",)),
-        ("GET", "/v1/admin/hosted/overview"): _typed_properties(objects=("overview",), strings=("status",)),
-        ("GET", "/v1/admin/hosted/design-partners/dashboard"): _typed_properties(
-            objects=("dashboard",), strings=("status",)
-        ),
-        ("GET", "/v1/admin/hosted/design-partners"): _typed_properties(objects=("summary",), object_arrays=("items",)),
-        ("POST", "/v1/admin/hosted/design-partners"): _typed_properties(
-            objects=("design_partner",), strings=("status",)
-        ),
-        ("GET", "/v1/admin/hosted/design-partners/{design_partner_id}"): _typed_properties(
-            objects=("design_partner",), strings=("status",)
-        ),
-        ("PATCH", "/v1/admin/hosted/design-partners/{design_partner_id}"): _typed_properties(
-            objects=("design_partner",), strings=("status",)
-        ),
-        ("POST", "/v1/admin/hosted/design-partners/{design_partner_id}/workspaces"): _typed_properties(
-            objects=("workspace",), strings=("status",)
-        ),
-        ("POST", "/v1/admin/hosted/design-partners/{design_partner_id}/feedback"): _typed_properties(
-            objects=("feedback",), strings=("status",)
-        ),
-        ("GET", "/v1/admin/hosted/rate-limits"): _typed_properties(objects=("summary",), object_arrays=("items",)),
-        ("GET", "/v1/channels/telegram/status"): _typed_properties(objects=("telegram",), strings=("status",)),
-        ("GET", "/v1/channels/telegram/notification-preferences"): _typed_properties(
-            objects=("summary",), object_arrays=("items",)
-        ),
-        ("PATCH", "/v1/channels/telegram/notification-preferences"): _typed_properties(
-            objects=("notification_preference",), strings=("status",)
-        ),
-        ("GET", "/v1/channels/telegram/daily-brief"): _typed_properties(objects=("daily_brief",), strings=("status",)),
-        ("POST", "/v1/channels/telegram/daily-brief/deliver"): _typed_properties(
-            objects=("daily_brief",), strings=("status",)
-        ),
-        ("GET", "/v1/channels/telegram/open-loop-prompts"): _typed_properties(
-            objects=("summary",), object_arrays=("items",)
-        ),
-        ("POST", "/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver"): _typed_properties(
-            objects=("open_loop_prompt",), strings=("status",)
-        ),
-        ("GET", "/v1/channels/telegram/scheduler/jobs"): _typed_properties(
-            objects=("summary",), object_arrays=("items",)
-        ),
-        ("POST", "/v1/channels/telegram/messages/{message_id}/handle"): _typed_properties(
-            objects=("message",), strings=("status",)
-        ),
-        ("GET", "/v1/channels/telegram/messages/{message_id}/result"): _typed_properties(
-            objects=("summary",), object_arrays=("items",)
-        ),
-        ("POST", "/v1/channels/telegram/open-loops/{open_loop_id}/review-action"): _typed_properties(
-            objects=("review_action",), strings=("status",)
-        ),
-        ("GET", "/v1/channels/telegram/approvals"): _typed_properties(objects=("summary",), object_arrays=("items",)),
-        ("POST", "/v1/channels/telegram/approvals/{approval_id}/approve"): _typed_properties(
-            objects=("approval",), strings=("status",)
-        ),
-        ("POST", "/v1/channels/telegram/approvals/{approval_id}/reject"): _typed_properties(
-            objects=("approval",), strings=("status",)
-        ),
     }
 )
 
@@ -3088,24 +2509,7 @@ _OPENAPI_CONTRACT_RESPONSE_TYPES: dict[tuple[str, str], str] = {
     ("GET", "/v0/entities/{entity_id}"): "EntityDetailResponse",
 }
 
-_OPENAPI_OTHER_AUTHORITATIVE_RESPONSE_TYPES: dict[tuple[str, str], tuple[str, str]] = {
-    ("GET", "/v1/admin/hosted/design-partners"): (
-        "alicebot_api.design_partners",
-        "DesignPartnerListPayload",
-    ),
-    ("GET", "/v1/channels/telegram/approvals"): (
-        "alicebot_api.telegram_continuity",
-        "_TelegramApprovalListPayload",
-    ),
-    ("POST", "/v1/channels/telegram/approvals/{approval_id}/approve"): (
-        "alicebot_api.telegram_continuity",
-        "_TelegramApprovalResolutionPayload",
-    ),
-    ("POST", "/v1/channels/telegram/approvals/{approval_id}/reject"): (
-        "alicebot_api.telegram_continuity",
-        "_TelegramApprovalResolutionPayload",
-    ),
-}
+_OPENAPI_OTHER_AUTHORITATIVE_RESPONSE_TYPES: dict[tuple[str, str], tuple[str, str]] = {}
 
 for _operation_key, _type_name in _OPENAPI_CONTRACT_RESPONSE_TYPES.items():
     _component_name, _previous_schema = OPENAPI_OPERATION_RESPONSE_SCHEMAS[_operation_key]
@@ -3585,83 +2989,6 @@ _OPENAPI_SOURCE_AUDITED_RESPONSES: dict[
         None,
     ),
     ("POST", "/v0/vnext/open-loops/{loop_id}/review"): (_OPEN_LOOP_RESPONSE_FIELDS, None),
-    ("POST", "/v1/auth/magic-link/verify"): (
-        ("session", "user_account", "workspace", "preferences", "feature_flags", "telegram_state"),
-        None,
-    ),
-    ("GET", "/v1/auth/session"): (
-        ("session", "user_account", "workspace", "preferences", "feature_flags", "telegram_state"),
-        None,
-    ),
-    ("GET", "/v1/admin/hosted/overview"): (
-        (
-            "window_hours",
-            "window_start",
-            "workspaces",
-            "delivery_receipts",
-            "chat_telemetry",
-            "rollout_flags",
-            "incidents",
-        ),
-        None,
-    ),
-    ("GET", "/v1/admin/hosted/design-partners/dashboard"): (("dashboard",), None),
-    ("POST", "/v1/admin/hosted/design-partners"): (("design_partner",), None),
-    ("GET", "/v1/admin/hosted/design-partners/{design_partner_id}"): (
-        ("design_partner", "feedback"),
-        None,
-    ),
-    ("PATCH", "/v1/admin/hosted/design-partners/{design_partner_id}"): (("design_partner",), None),
-    ("POST", "/v1/admin/hosted/design-partners/{design_partner_id}/workspaces"): (("design_partner",), None),
-    ("POST", "/v1/admin/hosted/design-partners/{design_partner_id}/feedback"): (
-        ("design_partner", "feedback"),
-        None,
-    ),
-    ("GET", "/v1/admin/hosted/rate-limits"): (
-        ("window_hours", "window_start", "summary", "items"),
-        None,
-    ),
-    ("GET", "/v1/channels/telegram/status"): (
-        ("workspace_id", "channel_type", "linked", "identity", "latest_challenge", "recent_transport"),
-        None,
-    ),
-    ("GET", "/v1/channels/telegram/notification-preferences"): (
-        ("workspace_id", "notification_preferences"),
-        None,
-    ),
-    ("PATCH", "/v1/channels/telegram/notification-preferences"): (
-        ("workspace_id", "notification_preferences"),
-        None,
-    ),
-    ("GET", "/v1/channels/telegram/daily-brief"): (
-        ("workspace_id", "brief", "chief_of_staff_summary", "preview_message_text", "delivery_policy"),
-        None,
-    ),
-    ("POST", "/v1/channels/telegram/daily-brief/deliver"): (
-        ("workspace_id", "job", "brief_record", "delivery_receipt", "idempotent_replay"),
-        None,
-    ),
-    ("GET", "/v1/channels/telegram/open-loop-prompts"): (
-        ("workspace_id", "notification_preferences", "items", "summary"),
-        None,
-    ),
-    ("POST", "/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver"): (
-        ("workspace_id", "job", "delivery_receipt", "prompt", "idempotent_replay"),
-        None,
-    ),
-    ("GET", "/v1/channels/telegram/scheduler/jobs"): (
-        ("workspace_id", "notification_preferences", "items", "summary"),
-        None,
-    ),
-    ("POST", "/v1/channels/telegram/messages/{message_id}/handle"): (
-        ("message", "intent", "outbound_message", "delivery_receipt"),
-        None,
-    ),
-    ("GET", "/v1/channels/telegram/messages/{message_id}/result"): (("message_id", "intent"), None),
-    ("POST", "/v1/channels/telegram/open-loops/{open_loop_id}/review-action"): (
-        ("continuity_object", "correction_event", "review_action", "lifecycle_outcome", "review_log"),
-        None,
-    ),
 }
 
 _OPENAPI_ARTIFACT_ROW_OPERATIONS = {
@@ -3715,8 +3042,86 @@ _OPENAPI_POLYMORPHIC_VARIANTS = [
         },
     },
 ]
-for _operation_key in (("POST", "/v0/responses"), ("POST", "/v1/runtime/invoke")):
-    OPENAPI_OPERATION_RESPONSE_SCHEMAS[_operation_key][1]["oneOf"] = _OPENAPI_POLYMORPHIC_VARIANTS
+OPENAPI_OPERATION_RESPONSE_SCHEMAS[("POST", "/v1/runtime/invoke")][1]["oneOf"] = (
+    _OPENAPI_POLYMORPHIC_VARIANTS
+)
+
+
+# Phase 1 removes these public operations permanently.  Keep the inventory exact
+# and fail closed if a deleted operation is accidentally reintroduced into the
+# exported response registry. Historical migrations remain intentionally inert.
+PERMANENTLY_REMOVED_OPENAPI_OPERATIONS = frozenset(
+    {
+        ("POST", "/v0/responses"),
+        ("GET", "/v0/chief-of-staff"),
+        ("POST", "/v0/chief-of-staff/recommendation-outcomes"),
+        ("POST", "/v0/chief-of-staff/handoff-review-actions"),
+        ("POST", "/v0/chief-of-staff/execution-routing-actions"),
+        ("POST", "/v0/chief-of-staff/handoff-outcomes"),
+        ("GET", "/v1/model-packs"),
+        ("POST", "/v1/model-packs"),
+        ("GET", "/v1/model-packs/{pack_id}"),
+        ("POST", "/v1/model-packs/{pack_id}/bind"),
+        ("GET", "/v1/workspaces/{workspace_id}/model-pack-binding"),
+        ("POST", "/v1/auth/magic-link/start"),
+        ("POST", "/v1/auth/magic-link/verify"),
+        ("POST", "/v1/auth/logout"),
+        ("GET", "/v1/auth/session"),
+        ("POST", "/v1/workspaces"),
+        ("GET", "/v1/workspaces/current"),
+        ("POST", "/v1/devices/link/start"),
+        ("POST", "/v1/devices/link/confirm"),
+        ("GET", "/v1/devices"),
+        ("DELETE", "/v1/devices/{device_id}"),
+        ("GET", "/v1/preferences"),
+        ("PATCH", "/v1/preferences"),
+        ("GET", "/v1/admin/hosted/overview"),
+        ("GET", "/v1/admin/hosted/design-partners/dashboard"),
+        ("GET", "/v1/admin/hosted/design-partners"),
+        ("POST", "/v1/admin/hosted/design-partners"),
+        ("GET", "/v1/admin/hosted/design-partners/{design_partner_id}"),
+        ("PATCH", "/v1/admin/hosted/design-partners/{design_partner_id}"),
+        ("POST", "/v1/admin/hosted/design-partners/{design_partner_id}/workspaces"),
+        ("POST", "/v1/admin/hosted/design-partners/{design_partner_id}/feedback"),
+        ("GET", "/v1/admin/hosted/workspaces"),
+        ("GET", "/v1/admin/hosted/delivery-receipts"),
+        ("GET", "/v1/admin/hosted/incidents"),
+        ("GET", "/v1/admin/hosted/rollout-flags"),
+        ("PATCH", "/v1/admin/hosted/rollout-flags"),
+        ("GET", "/v1/admin/hosted/analytics"),
+        ("GET", "/v1/admin/hosted/rate-limits"),
+        ("POST", "/v1/channels/telegram/link/start"),
+        ("POST", "/v1/channels/telegram/link/confirm"),
+        ("POST", "/v1/channels/telegram/unlink"),
+        ("GET", "/v1/channels/telegram/status"),
+        ("POST", "/v1/channels/telegram/webhook"),
+        ("GET", "/v1/channels/telegram/messages"),
+        ("GET", "/v1/channels/telegram/threads"),
+        ("POST", "/v1/channels/telegram/messages/{message_id}/dispatch"),
+        ("GET", "/v1/channels/telegram/delivery-receipts"),
+        ("GET", "/v1/channels/telegram/notification-preferences"),
+        ("PATCH", "/v1/channels/telegram/notification-preferences"),
+        ("GET", "/v1/channels/telegram/daily-brief"),
+        ("POST", "/v1/channels/telegram/daily-brief/deliver"),
+        ("GET", "/v1/channels/telegram/open-loop-prompts"),
+        ("POST", "/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver"),
+        ("GET", "/v1/channels/telegram/scheduler/jobs"),
+        ("POST", "/v1/channels/telegram/messages/{message_id}/handle"),
+        ("GET", "/v1/channels/telegram/messages/{message_id}/result"),
+        ("GET", "/v1/channels/telegram/recall"),
+        ("GET", "/v1/channels/telegram/resume"),
+        ("GET", "/v1/channels/telegram/open-loops"),
+        ("POST", "/v1/channels/telegram/open-loops/{open_loop_id}/review-action"),
+        ("GET", "/v1/channels/telegram/approvals"),
+        ("POST", "/v1/channels/telegram/approvals/{approval_id}/approve"),
+        ("POST", "/v1/channels/telegram/approvals/{approval_id}/reject"),
+    }
+)
+if len(PERMANENTLY_REMOVED_OPENAPI_OPERATIONS) != 63:
+    raise RuntimeError("permanently removed OpenAPI inventory must contain exactly 63 operations")
+for _operation_key in PERMANENTLY_REMOVED_OPENAPI_OPERATIONS:
+    OPENAPI_OPERATION_RESPONSE_SCHEMAS.pop(_operation_key, None)
+    _OPENAPI_EXPLICIT_PROPERTY_SCHEMAS.pop(_operation_key, None)
 
 
 _closed_operations = {
@@ -3732,7 +3137,6 @@ if _untyped_closed_operations:
 
 
 OPENAPI_INTENTIONALLY_POLYMORPHIC_OPERATIONS: dict[tuple[str, str], str] = {
-    ("POST", "/v0/responses"): ("Returns a completed response for terminal work or an accepted in-progress job."),
     ("POST", "/v1/runtime/invoke"): (
         "Returns a completed invocation for terminal work or an accepted in-progress job."
     ),

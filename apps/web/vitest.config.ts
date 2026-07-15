@@ -14,6 +14,7 @@ export default defineConfig({
     include: ["./**/*.{test,spec}.{ts,tsx}"],
     exclude: [
       "test/browser/**",
+      "test/browser-legacy/**",
       "test/browser-outage/**",
       "test/browser-partial-outage/**",
       "**/node_modules/**",
@@ -43,6 +44,12 @@ export default defineConfig({
         lines: 80,
         statements: 80,
         "app/page.tsx": {
+          branches: 90,
+          functions: 100,
+          lines: 95,
+          statements: 95,
+        },
+        "components/home-page-content.tsx": {
           branches: 90,
           functions: 100,
           lines: 95,

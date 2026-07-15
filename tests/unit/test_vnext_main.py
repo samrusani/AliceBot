@@ -2402,13 +2402,14 @@ def test_live_capture_connector_api_endpoints(monkeypatch) -> None:
         main_module.VNextConnectorConfigRequest(
             user_id=user_id,
             enabled=True,
-            secret_ref="env:TELEGRAM_BOT_TOKEN",
+            sync_mode="on_demand",
             config_json={"allowed_chat_ids": ["999001"]},
         ),
     )
     telegram_response = main_module.sync_vnext_telegram_connector(
         main_module.VNextTelegramSyncRequest(
             user_id=user_id,
+            allowed_chat_ids=["999001"],
             updates=[
                 {
                     "update_id": 1,
@@ -2444,12 +2445,11 @@ def test_live_capture_connector_api_endpoints(monkeypatch) -> None:
     assert any(item["connector_name"] == "telegram" for item in health_payload["items"])
 
 
-def test_connector_external_io_runs_without_database_connection(monkeypatch, tmp_path) -> None:
+def test_local_folder_external_io_runs_without_database_connection(monkeypatch, tmp_path) -> None:
     store = FakeVNextStore(None)
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
     connection_depth = 0
-    poll_depths: list[int] = []
     scan_depths: list[int] = []
 
     @contextmanager
@@ -2465,38 +2465,15 @@ def test_connector_external_io_runs_without_database_connection(monkeypatch, tmp
 
     original_scan_local_folder = main_module.scan_local_folder
 
-    def fake_poll_telegram_updates(_context, **_kwargs):
-        poll_depths.append(connection_depth)
-        return [
-            {
-                "update_id": 7,
-                "message": {
-                    "message_id": 70,
-                    "date": 1_778_400_000,
-                    "chat": {"id": 999001},
-                    "from": {"id": 1001, "username": "samir"},
-                    "text": "Fact: Telegram polling releases the database connection.",
-                },
-            }
-        ]
-
     def tracked_scan_local_folder(*args, **kwargs):
         scan_depths.append(connection_depth)
         return original_scan_local_folder(*args, **kwargs)
 
     monkeypatch.setattr(main_module, "user_connection", tracked_user_connection)
-    monkeypatch.setattr(main_module, "poll_telegram_updates", fake_poll_telegram_updates)
     monkeypatch.setattr(main_module, "scan_local_folder", tracked_scan_local_folder)
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-test-token")
     watched_file = tmp_path / "release-note.md"
     watched_file.write_text("Fact: local folder scans release the database connection.", encoding="utf-8")
 
-    telegram_response = main_module.sync_vnext_telegram_connector(
-        main_module.VNextTelegramSyncRequest(
-            user_id=user_id,
-            allowed_chat_ids=["999001"],
-        )
-    )
     local_response = main_module.sync_vnext_local_folder_connector(
         main_module.VNextLocalFolderSyncRequest(
             user_id=user_id,
@@ -2504,9 +2481,7 @@ def test_connector_external_io_runs_without_database_connection(monkeypatch, tmp
         )
     )
 
-    assert telegram_response.status_code == 201
     assert local_response.status_code == 201
-    assert poll_depths == [0]
     assert scan_depths == [0]
     assert connection_depth == 0
 

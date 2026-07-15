@@ -9,15 +9,19 @@ const {
   getApprovalDetailMock,
   getToolExecutionMock,
   hasLiveApiConfigMock,
+  legacySurfacesEnabledMock,
   listApprovalsMock,
   listToolExecutionsMock,
+  notFoundMock,
 } = vi.hoisted(() => ({
   getApiConfigMock: vi.fn(),
   getApprovalDetailMock: vi.fn(),
   getToolExecutionMock: vi.fn(),
   hasLiveApiConfigMock: vi.fn(),
+  legacySurfacesEnabledMock: vi.fn(),
   listApprovalsMock: vi.fn(),
   listToolExecutionsMock: vi.fn(),
+  notFoundMock: vi.fn(),
 }));
 
 vi.mock("next/link", () => ({
@@ -27,7 +31,12 @@ vi.mock("next/link", () => ({
 }));
 
 vi.mock("next/navigation", () => ({
+  notFound: notFoundMock,
   useRouter: () => ({ refresh: vi.fn() }),
+}));
+
+vi.mock("../../lib/legacy-surfaces.server", () => ({
+  legacySurfacesEnabled: legacySurfacesEnabledMock,
 }));
 
 vi.mock("../../lib/api", async () => {
@@ -86,16 +95,32 @@ describe("ApprovalsPage", () => {
       getApprovalDetailMock,
       getToolExecutionMock,
       hasLiveApiConfigMock,
+      legacySurfacesEnabledMock,
       listApprovalsMock,
       listToolExecutionsMock,
+      notFoundMock,
     ]) {
       mock.mockReset();
     }
     getApiConfigMock.mockReturnValue({ apiBaseUrl: "", userId: "" });
     hasLiveApiConfigMock.mockReturnValue(false);
+    legacySurfacesEnabledMock.mockReturnValue(true);
+    notFoundMock.mockImplementation(() => {
+      throw new Error("NEXT_NOT_FOUND");
+    });
   });
 
   afterEach(cleanup);
+
+  it("returns not found before any reads when legacy surfaces are disabled", async () => {
+    legacySurfacesEnabledMock.mockReturnValue(false);
+
+    await expect(ApprovalsPage({ searchParams: Promise.resolve({}) })).rejects.toThrow(
+      "NEXT_NOT_FOUND",
+    );
+    expect(notFoundMock).toHaveBeenCalledOnce();
+    expect(listApprovalsMock).not.toHaveBeenCalled();
+  });
 
   it("renders an explicit fixture-backed inbox without issuing live reads", async () => {
     render(await ApprovalsPage({ searchParams: Promise.resolve({}) }));

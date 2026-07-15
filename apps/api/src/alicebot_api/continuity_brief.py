@@ -21,7 +21,7 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     TASK_BRIEF_SECTION_ITEM_ORDER,
-    ChiefOfStaffRecommendationConfidencePosture,
+    RecommendationConfidencePosture,
     ContinuityBriefConflictSection,
     ContinuityBriefConflictSummary,
     ContinuityBriefProvenanceBundle,
@@ -46,6 +46,7 @@ from alicebot_api.contracts import (
     ContradictionCaseRecord,
     MemoryTrustClass,
     TaskBriefCompileRequestInput,
+    TaskBriefingStrategy,
     TaskBriefMode,
     TrustSignalListQueryInput,
     TrustSignalRecord,
@@ -58,7 +59,7 @@ class ContinuityBriefValidationError(ValueError):
     """Raised when a continuity brief request is invalid."""
 
 
-_BRIEF_TYPE_TO_MODE: dict[str, tuple[TaskBriefMode, str | None]] = {
+_BRIEF_TYPE_TO_MODE: dict[str, tuple[TaskBriefMode, TaskBriefingStrategy | None]] = {
     "general": ("user_recall", None),
     "resume": ("resume", None),
     "agent_handoff": ("agent_handoff", None),
@@ -142,7 +143,7 @@ def _validate_request(request: ContinuityBriefRequestInput) -> None:
 
 
 def _task_brief_request_for(request: ContinuityBriefRequestInput) -> TaskBriefCompileRequestInput:
-    task_brief_mode, model_pack_strategy = _BRIEF_TYPE_TO_MODE[request.brief_type]
+    task_brief_mode, briefing_strategy = _BRIEF_TYPE_TO_MODE[request.brief_type]
     return TaskBriefCompileRequestInput(
         mode=task_brief_mode,
         query=request.query,
@@ -154,7 +155,7 @@ def _task_brief_request_for(request: ContinuityBriefRequestInput) -> TaskBriefCo
         until=request.until,
         include_non_promotable_facts=request.include_non_promotable_facts,
         provider_strategy=f"continuity_brief.{request.brief_type}",
-        model_pack_strategy=model_pack_strategy,
+        briefing_strategy=briefing_strategy,
     )
 
 
@@ -365,7 +366,7 @@ def _weakest_provenance_posture(
     return weakest
 
 
-def _confidence_posture(average_confidence: float) -> ChiefOfStaffRecommendationConfidencePosture:
+def _confidence_posture(average_confidence: float) -> RecommendationConfidencePosture:
     if average_confidence >= 0.8:
         return "high"
     if average_confidence >= 0.55:
@@ -477,7 +478,7 @@ def _build_next_suggested_action(
     next_action_item: ContinuityRecallResultRecord | None,
     open_loop_items: list[ContinuityRecallResultRecord],
     relevant_facts: list[ContinuityRecallResultRecord],
-    confidence_posture: ChiefOfStaffRecommendationConfidencePosture,
+    confidence_posture: RecommendationConfidencePosture,
 ) -> ContinuityBriefSuggestedActionRecord:
     target: ContinuityRecallResultRecord | None = next_action_item
     reason = "Selected explicit next action from continuity resumption."
@@ -616,7 +617,7 @@ def compile_continuity_brief(
     selection_strategy: ContinuityBriefSelectionStrategyRecord = {
         "task_brief_mode": task_brief["mode"],
         "provider_strategy": task_brief["strategy"]["provider_strategy"],
-        "model_pack_strategy": task_brief["strategy"]["model_pack_strategy"],
+        "briefing_strategy": task_brief["strategy"]["briefing_strategy"],
         "token_budget": task_brief["strategy"]["token_budget"],
         "budget_source": task_brief["strategy"]["budget_source"],
     }

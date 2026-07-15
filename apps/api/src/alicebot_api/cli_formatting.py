@@ -444,7 +444,7 @@ def format_continuity_brief_output(payload: ContinuityBriefResponse) -> str:
             "selection_strategy: "
             f"mode={brief['selection_strategy']['task_brief_mode']} "
             f"provider={brief['selection_strategy']['provider_strategy']} "
-            f"model_pack={brief['selection_strategy']['model_pack_strategy']} "
+            f"briefing={brief['selection_strategy']['briefing_strategy']} "
             f"token_budget={brief['selection_strategy']['token_budget']} "
             f"budget_source={brief['selection_strategy']['budget_source']}"
         ),
@@ -561,7 +561,7 @@ def format_task_brief_output(payload: TaskBriefResponse) -> str:
         f"created_at: {persistence['created_at']}",
         (
             f"strategy: provider={strategy['provider_strategy']} "
-            f"model_pack={strategy['model_pack_strategy']} "
+            f"briefing={strategy['briefing_strategy']} "
             f"token_budget={strategy['token_budget']} "
             f"budget_source={strategy['budget_source']}"
         ),

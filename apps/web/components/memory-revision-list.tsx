@@ -109,7 +109,7 @@ export function MemoryRevisionList({
                   <span className="meta-pill">{revision.source_event_ids.length} source events</span>
                 </div>
 
-                <div className="key-value-grid key-value-grid--compact">
+                <dl className="key-value-grid key-value-grid--compact">
                   <div>
                     <dt>Previous value</dt>
                     <dd className="mono">{formatValue(revision.previous_value)}</dd>
@@ -118,7 +118,7 @@ export function MemoryRevisionList({
                     <dt>New value</dt>
                     <dd className="mono">{formatValue(revision.new_value)}</dd>
                   </div>
-                </div>
+                </dl>
               </article>
             ))}
           </div>

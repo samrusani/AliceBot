@@ -76,7 +76,8 @@ The API exposes the same local runtime posture through:
 - `GET /v0/vnext/connectors/health`
 - `GET /v0/vnext/connectors/status`
 - `PATCH /v0/vnext/connectors/{connector_name}/config`
-- `POST /v0/vnext/connectors/telegram/sync`
+- `POST /v0/vnext/connectors/telegram/sync` (operator-supplied raw updates;
+  no polling, token ownership, or scheduled delivery)
 - `POST /v0/vnext/connectors/local-folder/sync`
 - `GET /v0/vnext/dogfooding`
 - `GET /v0/vnext/doctor`
@@ -130,6 +131,6 @@ The model-backed smoke seeds a scheduled model-backed workflow and verifies that
 
 The live-capture connector smoke verifies allowlisted Telegram import, rejected Telegram chat isolation, local folder import with generated-folder ignore rules, browser clipper capture, review-only agent output ingestion, and connector health telemetry. The capture-to-brief smoke verifies that a fresh browser clip can enter retrieval, produce a reviewable Daily Brief, record a quality rating, and show up in dogfooding telemetry.
 
-The connector-hardening smoke verifies dedicated connector settings/state rows, Telegram cursor persistence, rejected-chat logging, local-folder generated-output ignores, restart dedupe, and health counters. The local-cors smoke verifies the explicit localhost CORS allowlist and public browser API env needed by `/vnext?mode=live`. The secret-redaction smoke verifies that Telegram and browser clipper secrets never appear in persisted source/event output. The dogfood-doctor smoke verifies migration readiness, default connector rows, scheduler posture, configured secret references, and blocking failure counts. The operator-console smoke verifies the live daily operation path across source review, memory review, artifact review/rating, source-backed open loops, scheduler run-now, connector health, doctor readiness, event logging, and capture-to-brief traceability.
+The connector-hardening smoke verifies dedicated connector settings/state rows, Telegram cursor persistence, rejected-chat logging, local-folder generated-output ignores, restart dedupe, and health counters. The local-cors smoke verifies the explicit localhost CORS allowlist and public browser API env needed by `/vnext?mode=live`. The secret-redaction smoke verifies that browser clipper capture tokens never appear in persisted source/event output. The dogfood-doctor smoke verifies migration readiness, default connector rows, scheduler posture, configured secret references, and blocking failure counts. The operator-console smoke verifies the live daily operation path across source review, memory review, artifact review/rating, source-backed open loops, scheduler run-now, connector health, doctor readiness, event logging, and capture-to-brief traceability.
 
 The agent-integration-pack smoke verifies the public-preview agent path: OpenClaw identity, scoped project context, review-only output ingestion, review-only memory proposal creation, no auto-promotion, event logging, restricted-domain policy blocking, and Agent Activity visibility. The `alicebot vnext alpha check` command remains the preview-readiness wrapper for technical users.

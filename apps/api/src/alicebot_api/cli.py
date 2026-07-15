@@ -180,6 +180,7 @@ from alicebot_api.public_evals import (
 )
 from alicebot_api.retrieval_evaluation import get_retrieval_evaluation_summary
 from alicebot_api.store import ContinuityStore, JsonObject as ContinuityJsonObject
+from alicebot_api.surface_flags import legacy_surfaces_enabled
 from alicebot_api.temporal_state import (
     TemporalStateValidationError,
     get_temporal_explain,
@@ -216,12 +217,10 @@ from alicebot_api.vnext_connections import (
     VNextConnectionValidationError,
 )
 from alicebot_api.vnext_connectors import (
-    TelegramPollContext,
     VNextConnectorService,
     VNextConnectorValidationError,
     list_connector_definitions,
     load_connector_items_from_file,
-    poll_telegram_updates,
     scan_local_folder,
 )
 from alicebot_api.vnext_context_tree import (
@@ -297,7 +296,7 @@ from alicebot_api.vnext_memory_commit import (
     VNextMemoryCommitValidationError,
     memory_commit_request_from_payload,
 )
-from alicebot_api.vnext_secrets import InMemorySecretProvider, VNextSecretError, default_secret_provider
+from alicebot_api.vnext_secrets import InMemorySecretProvider
 from alicebot_api.vnext_store import PostgresVNextStore
 
 DEFAULT_CLI_USER_ID = "00000000-0000-0000-0000-000000000001"
@@ -450,22 +449,6 @@ def _add_model_generation_arguments(parser: argparse.ArgumentParser) -> None:
 def _add_task_brief_arguments(parser: argparse.ArgumentParser) -> None:
     _add_scope_filter_arguments(parser)
     parser.add_argument(
-        "--workspace-id",
-        type=_parse_uuid,
-        default=None,
-        help="Optional workspace UUID used to resolve model-pack briefing defaults.",
-    )
-    parser.add_argument(
-        "--pack-id",
-        default=None,
-        help="Optional model-pack id to resolve within the workspace.",
-    )
-    parser.add_argument(
-        "--pack-version",
-        default=None,
-        help="Optional model-pack version to resolve within the workspace.",
-    )
-    parser.add_argument(
         "--mode",
         required=True,
         choices=("user_recall", "resume", "worker_subtask", "agent_handoff"),
@@ -482,9 +465,10 @@ def _add_task_brief_arguments(parser: argparse.ArgumentParser) -> None:
         help="Optional provider briefing strategy label.",
     )
     parser.add_argument(
-        "--model-pack-strategy",
+        "--briefing-strategy",
+        choices=("balanced", "compact", "detailed"),
         default=None,
-        help="Optional model-pack briefing strategy override.",
+        help="Optional briefing strategy override.",
     )
     parser.add_argument(
         "--token-budget",
@@ -881,6 +865,11 @@ def _run_vnext_connectors_list(_ctx: CLIContext, _args: argparse.Namespace) -> s
 
 
 def _run_vnext_connectors_ingest(ctx: CLIContext, args: argparse.Namespace) -> str:
+    if str(args.connector_name).strip().casefold() == "telegram":
+        raise VNextConnectorValidationError(
+            "Telegram payloads must use POST /v0/vnext/connectors/telegram/sync "
+            "so chat allowlist enforcement cannot be bypassed"
+        )
     items = load_connector_items_from_file(args.payload_path)
     with _vnext_store_context(ctx) as store:
         result = VNextConnectorService(store, defer_embeddings=True).sync_items(
@@ -973,90 +962,6 @@ def _run_vnext_connectors_health(ctx: CLIContext, _args: argparse.Namespace) -> 
     with _vnext_store_context(ctx) as store:
         payload = VNextConnectorService(store).connector_health_all()
     return _json_dumps(payload)
-
-
-def _run_vnext_telegram_configure(ctx: CLIContext, args: argparse.Namespace) -> str:
-    args.connector_name = "telegram"
-    args.secret_ref = args.secret_ref or (
-        "telegram.bot_token.default" if getattr(args, "bot_token", None) else f"env:{args.bot_token_env}"
-    )
-    if getattr(args, "bot_token", None):
-        with _vnext_store_context(ctx) as store:
-            VNextConnectorService(store).set_connector_secret(
-                "telegram",
-                secret_ref=args.secret_ref,
-                secret_value=args.bot_token,
-            )
-    return _run_vnext_connectors_configure(ctx, args)
-
-
-def _run_vnext_telegram_test(ctx: CLIContext, args: argparse.Namespace) -> str:
-    with _vnext_store_context(ctx) as store:
-        service = VNextConnectorService(store)
-        config = service.get_config("telegram")
-        config_json = _object_dict(config.get("config_json"))
-        cursor = service.get_cursor("telegram")
-        secret_ref = str(config.get("secret_ref") or f"env:{args.bot_token_env}")
-
-    # Secret-file access and the live network poll are both external I/O. Keep
-    # them outside the connector store transaction used for config/cursor reads.
-    secret_provider = default_secret_provider()
-    try:
-        token = secret_provider.get_secret(secret_ref) or os.environ.get(args.bot_token_env)
-    except VNextSecretError as exc:
-        raise VNextConnectorValidationError("telegram bot token could not be resolved") from exc
-    payload = {
-        "connector_name": "telegram",
-        "configured": bool(config.get("configured")),
-        "enabled": bool(config.get("enabled")),
-        "secret_ref": secret_ref,
-        "secret_resolved": bool(token),
-        "allowed_chat_ids_configured": bool(config_json.get("allowed_chat_ids")),
-        "cursor": cursor,
-    }
-    if getattr(args, "live", False):
-        if not token:
-            raise VNextConnectorValidationError("telegram bot token is not configured")
-        poll_telegram_updates(
-            TelegramPollContext(token=token, cursor=cursor, secret_ref=secret_ref),
-            timeout=1,
-            limit=1,
-            retries=0,
-        )
-        payload["live_poll"] = "ok"
-    return _json_dumps(payload)
-
-
-def _run_vnext_telegram_sync(ctx: CLIContext, args: argparse.Namespace) -> str:
-    updates = load_connector_items_from_file(args.payload_path) if args.payload_path else None
-    with _vnext_store_context(ctx) as store:
-        service = VNextConnectorService(store, defer_embeddings=True)
-        poll_context = None if updates is not None else service.prepare_telegram_poll(bot_token_env=args.bot_token_env)
-        config = service.get_config("telegram")
-        config_json = _object_dict(config.get("config_json"))
-        configured_allowed = _object_list(config_json.get("allowed_chat_ids"))
-        allowed_chat_ids = tuple(
-            args.allowed_chat_id or [str(value) for value in configured_allowed if isinstance(value, (str, int))]
-        )
-    if poll_context is not None:
-        updates = poll_telegram_updates(
-            poll_context,
-            timeout=args.timeout,
-            limit=args.limit,
-            retries=args.retries,
-        )
-    if updates is None:
-        raise RuntimeError("telegram sync did not load updates")
-    with _vnext_store_context(ctx) as store:
-        service = VNextConnectorService(store, defer_embeddings=True)
-        result = service.sync_telegram_updates(
-            updates,
-            allowed_chat_ids=allowed_chat_ids,
-            default_domain=args.domain,
-            default_sensitivity=args.sensitivity,
-        )
-    _persist_deferred_capture_embeddings(ctx, result)
-    return _checked_batch_output(result.to_record())
 
 
 def _run_vnext_local_folder_sync(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -2810,7 +2715,6 @@ def _run_vnext_smoke_live_capture_connectors(ctx: CLIContext, _args: argparse.Na
             service.update_config(
                 "telegram",
                 enabled=True,
-                secret_ref="env:TELEGRAM_BOT_TOKEN",
                 config_json={"allowed_chat_ids": ["999001"]},
             )
             service.update_config("browser_clipper", enabled=True, secret_ref="browser.capture_token.live_smoke")
@@ -2973,13 +2877,16 @@ def _run_vnext_smoke_operator_console(ctx: CLIContext, _args: argparse.Namespace
     secrets = InMemorySecretProvider(
         {
             "browser.capture_token.operator_console": browser_capture_token,
-            "telegram.bot_token.default": "operator-console-smoke-telegram",
         }
     )
     with _vnext_store_context(ctx) as store:
         connector_service = VNextConnectorService(store, secret_provider=secrets, defer_embeddings=True)
         connector_service.ensure_default_settings()
-        connector_service.update_config("telegram", enabled=False, secret_ref="telegram.bot_token.default")
+        connector_service.update_config(
+            "telegram",
+            enabled=False,
+            config_json={"allowed_chat_ids": ["999001"]},
+        )
         connector_service.update_config(
             "browser_clipper", enabled=True, secret_ref="browser.capture_token.operator_console"
         )
@@ -3775,8 +3682,6 @@ def _check_headless_mcp_import() -> JsonObject:
 def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
     alpha_secret_provider = InMemorySecretProvider(
         {
-            "env:TELEGRAM_BOT_TOKEN": "alpha-check-placeholder",
-            "telegram.bot_token.default": "alpha-check-placeholder",
             "browser.capture_token.default": "alpha-check-placeholder",
         }
     )
@@ -3889,7 +3794,6 @@ def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
 def _run_vnext_smoke_connector_hardening(ctx: CLIContext, _args: argparse.Namespace) -> str:
     smoke_id = str(uuid4())
     telegram_update_id = int(time.time() * 1000)
-    secrets = InMemorySecretProvider({"telegram.bot_token.default": "smoke-telegram-token"})
     with tempfile.TemporaryDirectory(prefix="alice-connector-hardening-") as temp_dir:
         root = Path(temp_dir)
         note_path = root / "daily.md"
@@ -3899,14 +3803,11 @@ def _run_vnext_smoke_connector_hardening(ctx: CLIContext, _args: argparse.Namesp
         (generated_dir / "loop.md").write_text("Fact: generated output should not recapture.\n", encoding="utf-8")
         local_scan = scan_local_folder((root,))
         with _vnext_store_context(ctx) as store:
-            service = VNextConnectorService(store, secret_provider=secrets, defer_embeddings=True)
+            service = VNextConnectorService(store, defer_embeddings=True)
             service.ensure_default_settings()
             service.update_config(
                 "telegram",
                 enabled=True,
-                secret_ref="telegram.bot_token.default",
-                sync_mode="polling",
-                poll_interval_seconds=30,
                 config_json={"allowed_chat_ids": ["999001"]},
             )
             service.update_config(
@@ -3940,7 +3841,7 @@ def _run_vnext_smoke_connector_hardening(ctx: CLIContext, _args: argparse.Namesp
                 ],
                 allowed_chat_ids=("999001",),
             )
-            restarted = VNextConnectorService(store, secret_provider=secrets, defer_embeddings=True)
+            restarted = VNextConnectorService(store, defer_embeddings=True)
             repeated = restarted.sync_telegram_updates(
                 [
                     {
@@ -4002,18 +3903,11 @@ def _run_vnext_smoke_connector_hardening(ctx: CLIContext, _args: argparse.Namesp
 def _run_vnext_smoke_secret_redaction(ctx: CLIContext, _args: argparse.Namespace) -> str:
     secrets = InMemorySecretProvider(
         {
-            "telegram.bot_token.default": "123456:secret-token",
             "browser.capture_token.default": "clip-token",
         }
     )
     with _vnext_store_context(ctx) as store:
         service = VNextConnectorService(store, secret_provider=secrets, defer_embeddings=True)
-        service.update_config(
-            "telegram",
-            enabled=True,
-            secret_ref="telegram.bot_token.default",
-            config_json={"allowed_chat_ids": ["999001"]},
-        )
         service.update_config("browser_clipper", enabled=True, secret_ref="browser.capture_token.default")
         clip = service.capture_browser_clip(
             {
@@ -4029,7 +3923,6 @@ def _run_vnext_smoke_secret_redaction(ctx: CLIContext, _args: argparse.Namespace
     serialized = _json_dumps({"sources": sources, "events": events})
     gates = {
         "clip_imported_or_deduped": clip.imported_count + clip.duplicate_count >= 1,
-        "telegram_token_absent": "123456:secret-token" not in serialized,
         "browser_token_absent": "clip-token" not in serialized,
         "capture_token_redacted": '"capture_token": "***"' in serialized,
     }
@@ -4043,7 +3936,7 @@ def _run_vnext_smoke_dogfood_doctor(ctx: CLIContext, _args: argparse.Namespace) 
     with _vnext_store_context(ctx) as store:
         payload = VNextDoctorService(
             store,
-            secret_provider=InMemorySecretProvider({"telegram.bot_token.default": "smoke-telegram-token"}),
+            secret_provider=InMemorySecretProvider({}),
         ).run(fix_safe=True, ci=True)
     gates = {
         "doctor_ran": payload.get("status") in {"pass", "warn"},
@@ -4485,9 +4378,6 @@ def _task_brief_request_from_args(args: argparse.Namespace) -> TaskBriefCompileR
     return TaskBriefCompileRequestInput(
         mode=args.mode,
         query=args.query,
-        workspace_id=args.workspace_id,
-        pack_id=args.pack_id,
-        pack_version=args.pack_version,
         thread_id=args.thread_id,
         task_id=args.task_id,
         project=args.project,
@@ -4496,7 +4386,7 @@ def _task_brief_request_from_args(args: argparse.Namespace) -> TaskBriefCompileR
         until=args.until,
         include_non_promotable_facts=args.include_non_promotable_facts,
         provider_strategy=args.provider_strategy,
-        model_pack_strategy=args.model_pack_strategy,
+        briefing_strategy=args.briefing_strategy,
         token_budget=args.token_budget,
     )
 
@@ -4525,9 +4415,6 @@ def _run_task_brief_compare(ctx: CLIContext, args: argparse.Namespace) -> str:
     secondary_request = TaskBriefCompileRequestInput(
         mode=args.compare_to_mode,
         query=args.query,
-        workspace_id=args.workspace_id,
-        pack_id=args.pack_id,
-        pack_version=args.pack_version,
         thread_id=args.thread_id,
         task_id=args.task_id,
         project=args.project,
@@ -4536,7 +4423,7 @@ def _run_task_brief_compare(ctx: CLIContext, args: argparse.Namespace) -> str:
         until=args.until,
         include_non_promotable_facts=args.include_non_promotable_facts,
         provider_strategy=args.provider_strategy,
-        model_pack_strategy=args.compare_model_pack_strategy or args.model_pack_strategy,
+        briefing_strategy=args.compare_briefing_strategy or args.briefing_strategy,
         token_budget=args.compare_token_budget,
     )
     with _store_context(ctx) as store:
@@ -5300,7 +5187,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable or disable the connector; omit to preserve its current state.",
     )
     vnext_connectors_configure_parser.add_argument(
-        "--secret-ref", default=None, help="Secret reference such as env:TELEGRAM_BOT_TOKEN."
+        "--secret-ref", default=None, help="Connector secret reference such as env:CONNECTOR_TOKEN."
     )
     vnext_connectors_configure_parser.add_argument(
         "--sync-mode",
@@ -5345,7 +5232,7 @@ def build_parser() -> argparse.ArgumentParser:
         "ingest",
         help="Ingest already-exported connector payload items into vNext sources.",
     )
-    vnext_connectors_ingest_parser.add_argument("connector_name", help="Connector name, such as telegram.")
+    vnext_connectors_ingest_parser.add_argument("connector_name", help="Connector name, such as browser_clipper.")
     vnext_connectors_ingest_parser.add_argument("payload_path", help="JSON payload file, or CSV for csv_table.")
     vnext_connectors_ingest_parser.add_argument("--domain", default=None, help="Connector default domain override.")
     vnext_connectors_ingest_parser.add_argument(
@@ -5354,71 +5241,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Connector default sensitivity override.",
     )
     vnext_connectors_ingest_parser.set_defaults(handler=_run_vnext_connectors_ingest)
-
-    vnext_connectors_telegram_parser = vnext_connectors_subparsers.add_parser(
-        "telegram", help="Live Telegram capture controls."
-    )
-    vnext_telegram_subparsers = vnext_connectors_telegram_parser.add_subparsers(
-        dest="vnext_telegram_command", required=True
-    )
-    vnext_telegram_configure_parser = vnext_telegram_subparsers.add_parser(
-        "configure", help="Configure local Telegram bot capture."
-    )
-    vnext_telegram_configure_parser.add_argument(
-        "--enabled",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Enable or disable Telegram capture; omit to preserve its current state.",
-    )
-    vnext_telegram_configure_parser.add_argument(
-        "--bot-token-env", default="TELEGRAM_BOT_TOKEN", help="Environment variable holding bot token."
-    )
-    vnext_telegram_configure_parser.add_argument(
-        "--bot-token", default=None, help="Store/update the bot token in the local secret store."
-    )
-    vnext_telegram_configure_parser.add_argument("--secret-ref", default=None, help="Secret reference.")
-    vnext_telegram_configure_parser.add_argument(
-        "--sync-mode", choices=("polling", "manual", "disabled"), default="polling"
-    )
-    vnext_telegram_configure_parser.add_argument("--poll-interval-seconds", type=int, default=60)
-    vnext_telegram_configure_parser.add_argument(
-        "--allowed-chat-id", action="append", default=[], required=True, help="Allowed chat id. Repeatable."
-    )
-    vnext_telegram_configure_parser.add_argument("--domain", default="personal", help="Default domain.")
-    vnext_telegram_configure_parser.add_argument("--sensitivity", default="private", help="Default sensitivity.")
-    vnext_telegram_configure_parser.set_defaults(handler=_run_vnext_telegram_configure)
-    vnext_telegram_test_parser = vnext_telegram_subparsers.add_parser(
-        "test", help="Check Telegram connector local configuration."
-    )
-    vnext_telegram_test_parser.add_argument(
-        "--bot-token-env", default="TELEGRAM_BOT_TOKEN", help="Environment variable holding bot token."
-    )
-    vnext_telegram_test_parser.add_argument(
-        "--live", action="store_true", help="Perform a one-item live Telegram poll."
-    )
-    vnext_telegram_test_parser.set_defaults(handler=_run_vnext_telegram_test)
-    vnext_telegram_sync_parser = vnext_telegram_subparsers.add_parser("sync", help="Poll or ingest Telegram updates.")
-    vnext_telegram_sync_parser.add_argument(
-        "--payload-path", default=None, help="Optional JSON file of Telegram updates."
-    )
-    vnext_telegram_sync_parser.add_argument(
-        "--allowed-chat-id", action="append", default=[], help="Allowed chat id. Repeatable."
-    )
-    vnext_telegram_sync_parser.add_argument(
-        "--bot-token-env", default="TELEGRAM_BOT_TOKEN", help="Environment variable holding bot token."
-    )
-    vnext_telegram_sync_parser.add_argument("--timeout", type=int, default=10, help="Telegram polling timeout.")
-    vnext_telegram_sync_parser.add_argument("--limit", type=int, default=100, help="Telegram update limit.")
-    vnext_telegram_sync_parser.add_argument(
-        "--retries", type=int, default=1, help="Network retry count before failing."
-    )
-    vnext_telegram_sync_parser.add_argument("--domain", default=None, help="Default domain.")
-    vnext_telegram_sync_parser.add_argument("--sensitivity", default=None, help="Default sensitivity.")
-    vnext_telegram_sync_parser.set_defaults(handler=_run_vnext_telegram_sync)
-    vnext_telegram_status_parser = vnext_telegram_subparsers.add_parser(
-        "status", help="Show Telegram connector status."
-    )
-    vnext_telegram_status_parser.set_defaults(connector_name="telegram", handler=_run_vnext_connectors_status)
 
     vnext_connectors_local_parser = vnext_connectors_subparsers.add_parser(
         "local-folder", help="Local folder and Obsidian capture controls."
@@ -6410,49 +6232,51 @@ def build_parser() -> argparse.ArgumentParser:
     )
     resume_parser.set_defaults(handler=_run_resume)
 
-    task_briefs_parser = subparsers.add_parser(
-        "task-briefs",
-        help="Compile, compare, and inspect task-adaptive briefs.",
-    )
-    task_briefs_subparsers = task_briefs_parser.add_subparsers(dest="task_briefs_command", required=True)
+    if legacy_surfaces_enabled():
+        task_briefs_parser = subparsers.add_parser(
+            "task-briefs",
+            help="Compile, compare, and inspect task-adaptive briefs.",
+        )
+        task_briefs_subparsers = task_briefs_parser.add_subparsers(dest="task_briefs_command", required=True)
 
-    task_briefs_compile_parser = task_briefs_subparsers.add_parser(
-        "compile",
-        help="Compile and persist one task-adaptive brief.",
-    )
-    _add_task_brief_arguments(task_briefs_compile_parser)
-    task_briefs_compile_parser.set_defaults(handler=_run_task_brief_compile)
+        task_briefs_compile_parser = task_briefs_subparsers.add_parser(
+            "compile",
+            help="Compile and persist one task-adaptive brief.",
+        )
+        _add_task_brief_arguments(task_briefs_compile_parser)
+        task_briefs_compile_parser.set_defaults(handler=_run_task_brief_compile)
 
-    task_briefs_show_parser = task_briefs_subparsers.add_parser(
-        "show",
-        help="Load one persisted task brief.",
-    )
-    task_briefs_show_parser.add_argument("task_brief_id", type=_parse_uuid, help="Task brief UUID.")
-    task_briefs_show_parser.set_defaults(handler=_run_task_brief_show)
+        task_briefs_show_parser = task_briefs_subparsers.add_parser(
+            "show",
+            help="Load one persisted task brief.",
+        )
+        task_briefs_show_parser.add_argument("task_brief_id", type=_parse_uuid, help="Task brief UUID.")
+        task_briefs_show_parser.set_defaults(handler=_run_task_brief_show)
 
-    task_briefs_compare_parser = task_briefs_subparsers.add_parser(
-        "compare",
-        help="Compare two task brief modes for the same scope.",
-    )
-    _add_task_brief_arguments(task_briefs_compare_parser)
-    task_briefs_compare_parser.add_argument(
-        "--compare-to-mode",
-        required=True,
-        choices=("user_recall", "resume", "worker_subtask", "agent_handoff"),
-        help="Secondary mode for comparison.",
-    )
-    task_briefs_compare_parser.add_argument(
-        "--compare-model-pack-strategy",
-        default=None,
-        help="Optional model-pack strategy override for the comparison brief.",
-    )
-    task_briefs_compare_parser.add_argument(
-        "--compare-token-budget",
-        type=int,
-        default=None,
-        help=f"Optional comparison token budget (1-{MAX_TASK_BRIEF_TOKEN_BUDGET}).",
-    )
-    task_briefs_compare_parser.set_defaults(handler=_run_task_brief_compare)
+        task_briefs_compare_parser = task_briefs_subparsers.add_parser(
+            "compare",
+            help="Compare two task brief modes for the same scope.",
+        )
+        _add_task_brief_arguments(task_briefs_compare_parser)
+        task_briefs_compare_parser.add_argument(
+            "--compare-to-mode",
+            required=True,
+            choices=("user_recall", "resume", "worker_subtask", "agent_handoff"),
+            help="Secondary mode for comparison.",
+        )
+        task_briefs_compare_parser.add_argument(
+            "--compare-briefing-strategy",
+            choices=("balanced", "compact", "detailed"),
+            default=None,
+            help="Optional briefing strategy override for the comparison brief.",
+        )
+        task_briefs_compare_parser.add_argument(
+            "--compare-token-budget",
+            type=int,
+            default=None,
+            help=f"Optional comparison token budget (1-{MAX_TASK_BRIEF_TOKEN_BUDGET}).",
+        )
+        task_briefs_compare_parser.set_defaults(handler=_run_task_brief_compare)
 
     open_loops_parser = subparsers.add_parser(
         "open-loops",

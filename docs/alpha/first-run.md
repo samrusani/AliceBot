@@ -14,7 +14,7 @@ Use this checklist after a fresh clone.
 | 8. Open `/vnext` | `http://localhost:3000/vnext` | live mode loads or shows a clear empty state |
 | 8a. Authenticate `/vnext` after any key is active | create an unbound `admin_agent` key with `alicebot agent keys create --agent-id vnext-operator --profile admin_agent --label "Local review console"`, then enter the one-time value in **Unbound admin_agent API key** | the full console reloads with session-only Bearer authentication; `trusted_local_agent` is not full admin-review parity |
 | 9. Configure Brain Charter | [../vnext/ALICE.example.md](../vnext/ALICE.example.md) | Brain Charter is visible in Settings |
-| 10. Configure one capture path | local folder, browser clipper, or Telegram | connector health becomes configured |
+| 10. Configure one capture path | local folder or browser clipper | connector health becomes configured |
 | 11. Capture first source | `alicebot vnext sources capture-text "Fact: first alpha source" --domain project --sensitivity private` | source appears in Inbox |
 | 12. Review captured source | `/vnext` Inbox | review event appears in Timeline |
 | 13. Generate artifact | `alicebot daily-brief --generate --domain project` | artifact appears in Generated |

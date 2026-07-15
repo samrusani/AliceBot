@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 import json
 from pathlib import Path
 import re
-import subprocess
 import tomllib
 
 
@@ -32,52 +30,8 @@ _PUBLISHED_FUTURE_STATE_PATTERN = re.compile(
 # v0.10.3 is an immutable published baseline whose historical prose cannot be
 # rewritten. Enforce publication-neutral notes for every later release.
 _FUTURE_STATE_ENFORCEMENT_AFTER = (0, 10, 3)
-_ACTIVE_REMEDIATION_HANDOFF = Path("docs/handoff/2026-07-14-v0.10.4-remediation")
-_ACTIVE_REMEDIATION_VERSION = "0.10.4"
-_ACTIVE_REMEDIATION_CODE_COMMIT = "41641fbfa5dc8198bf47bad8849c828dbb519617"
-_ACTIVE_REMEDIATION_CODE_TREE = "dade94f367fc42a2fa9c6906c1f3bd91bf392fea"
-_ACTIVE_REMEDIATION_CODE_PARENT = "d52e32114eb0b4ef63499e53be14b70dc0864487"
-_ACTIVE_REMEDIATION_AUDIT_COMMIT = "42b8c2d470a7535ec39d4028c2ef3868dcd4598a"
-_ACTIVE_REMEDIATION_AUDIT_TREE = "96a7f4d940bcf1154d31d730450e00935ba06341"
-# Recipe: read `git ls-tree -r -z --full-tree <revision>` in Git's byte order,
-# remove records whose path is in the correction/publication-truth allowlists,
-# retain every remaining `<mode> <type> <object>\t<path>\0` byte, then SHA-256
-# the concatenation. This exact v0.10.4 code-boundary manifest can be verified
-# from HEAD in a real depth-1 clone without weakening content coverage.
-_ACTIVE_REMEDIATION_FILTERED_TREE_SHA256 = "90cc8c16c9c94adee1585740e16be5f6c73d481a2e7b870191d5a638a20a0b53"
-_ACTIVE_REMEDIATION_FILTERED_TREE_RECORDS = 1172
-_ACTIVE_REMEDIATION_FILTERED_TREE_BYTES = 115611
-_ACTIVE_REMEDIATION_CONTENT_HASHES: dict[str, str] = {
-    "pyproject.toml": "f9eeb11ba086223523374c5e5fad6044d81bd40a23925fa44a7c09fb9ec6e099",
-    "apps/web/package.json": "17c1a093afa6f8ff606414ff6ea741b28da019076fe67eb577ab2dd58169e164",
-    "apps/web/scripts/npm-advisory-audit.mjs": ("8ede1ef336b1bf57f83b5d05cef07fc18c33a40e9e7668280e9bf6badc613616"),
-    ".github/workflows/tests.yml": ("dedcec40527969db2dcc9023840496eb0df3277a89c70044fb7aeda22f6d60a2"),
-}
-_ACTIVE_REMEDIATION_CORRECTION_PATHS: tuple[str, ...] = (
-    "docs/handoff/2026-07-14-v0.10.4-remediation/README.md",
-    "docs/handoff/2026-07-14-v0.10.4-remediation/ENGINEER_HANDOFF.md",
-    "docs/handoff/2026-07-14-v0.10.4-remediation/BUILD_REPORT.md",
-    "docs/handoff/2026-07-14-v0.10.4-remediation/FIX_MATRIX.md",
-    "docs/handoff/2026-07-14-v0.10.4-remediation/SURFACE_INVENTORY.md",
-    "scripts/check_control_doc_truth.py",
-    "tests/unit/test_control_doc_truth.py",
-)
-_ACTIVE_REMEDIATION_FUTURE_TRUTH_PATHS: tuple[str, ...] = (
-    "README.md",
-    "ARCHITECTURE.md",
-    "CHANGELOG.md",
-    "CURRENT_STATE.md",
-    "PRODUCT_BRIEF.md",
-    "RELEASING.md",
-    "ROADMAP.md",
-    ".ai/handoff/CURRENT_STATE.md",
-    "docs/alpha/headless-ubuntu-install.md",
-    "docs/integrations/reference-paths.md",
-    "docs/vnext/README.md",
-    "docs/release/v0.10.4-release-notes.md",
-    "docs/release/v0.10.4-checksums.txt",
-)
-_ACTIVE_REMEDIATION_MARKERS: dict[str, tuple[str, ...]] = {
+_HISTORICAL_REMEDIATION_HANDOFF = Path("docs/handoff/2026-07-14-v0.10.4-remediation")
+_HISTORICAL_REMEDIATION_MARKERS: dict[str, tuple[str, ...]] = {
     "README.md": (
         "Repair Batch 16 is the current bounded correction",
         "29-codepoint `chr()`-enumerated",
@@ -112,7 +66,7 @@ _ACTIVE_REMEDIATION_MARKERS: dict[str, tuple[str, ...]] = {
         "NBSP and U+001C",
     ),
 }
-_ACTIVE_FINALIZATION_MARKERS: dict[str, tuple[str, ...]] = {
+_HISTORICAL_FINALIZATION_MARKERS: dict[str, tuple[str, ...]] = {
     "README.md": (
         "Code remediation commit `41641fbfa5dc8198bf47bad8849c828dbb519617`",
         "npm advisory endpoint commit `42b8c2d470a7535ec39d4028c2ef3868dcd4598a`",
@@ -137,7 +91,7 @@ _ACTIVE_FINALIZATION_MARKERS: dict[str, tuple[str, ...]] = {
         "historical pre-edit inventory",
     ),
 }
-_ACTIVE_REMEDIATION_FORBIDDEN_MARKERS: dict[str, tuple[str, ...]] = {
+_HISTORICAL_REMEDIATION_FORBIDDEN_MARKERS: dict[str, tuple[str, ...]] = {
     "README.md": (
         "Repair Batch 14 is the current bounded correction",
         "Independent review and release approval remain pending",
@@ -164,7 +118,7 @@ _ACTIVE_REMEDIATION_FORBIDDEN_MARKERS: dict[str, tuple[str, ...]] = {
         "## Repair Batch 14 correction appendix",
     ),
 }
-_ACTIVE_FINALIZATION_FORBIDDEN_MARKERS: dict[str, tuple[str, ...]] = {
+_HISTORICAL_FINALIZATION_FORBIDDEN_MARKERS: dict[str, tuple[str, ...]] = {
     "README.md": (
         "control-tower handoff for the uncommitted v0.10.4 remediation",
         "The tree is intentionally uncommitted. No version source was bumped",
@@ -184,6 +138,43 @@ _ACTIVE_FINALIZATION_FORBIDDEN_MARKERS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+_ACTIVE_SPRINT_PACKET = Path(".ai/active/SPRINT_PACKET.md")
+_ACTIVE_SPRINT_PACKET_MAX_LINES = 120
+_ACTIVE_SPRINT_PACKET_MAX_BYTES = 8_192
+_ACTIVE_SPRINT_FORBIDDEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "stale live-repair ledger claim",
+        re.compile(
+            r"(?:\b(?:repair|remediation)\s+(?:batch|ledger)\s+\d+\b|"
+            r"\b(?:live|current)\s+(?:repair|remediation)\s+ledger\b|"
+            r"\bmandatory\s+repair\s+pass\s+(?:is\s+)?active\b|"
+            r"\bcurrent\s+bounded\s+correction\b)",
+            flags=re.IGNORECASE,
+        ),
+    ),
+    (
+        "Phase 2 active-work claim",
+        re.compile(
+            r"(?:\bphase\s*2\b.{0,80}\b(?:active|underway|in\s+progress|"
+            r"authorized|current\s+(?:work|sprint))\b|"
+            r"\b(?:active|underway|in\s+progress|authorized|current\s+(?:work|sprint))"
+            r"\b.{0,80}\bphase\s*2\b)",
+            flags=re.IGNORECASE,
+        ),
+    ),
+    (
+        "Alice OCR/transcription execution claim",
+        re.compile(
+            r"(?:\balice(?:\s+(?:itself|directly))?\s+"
+            r"(?:performs?|executes?|runs?|provides?|transcribes?)\s+(?:\w+\s+){0,4}"
+            r"(?:ocr|transcription)\b|"
+            r"\b(?:ocr|transcription)\b(?:(?!\bnot\b).){0,60}\b"
+            r"(?:performed|executed|run|provided)\s+by\s+alice\b)",
+            flags=re.IGNORECASE,
+        ),
+    ),
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ControlDocTruthRule:
@@ -199,6 +190,16 @@ class VersionAlignedDocRule:
 
 
 CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
+    ControlDocTruthRule(
+        relative_path=str(_ACTIVE_SPRINT_PACKET),
+        required_markers=(
+            "<!-- alice-sprint-scope: phase-1-only -->",
+            "Alice v0.11.0 Phase 1 periphery cut and product-identity reconciliation.",
+            "Text extraction happens outside Alice.",
+            "Alice does not perform OCR or transcription.",
+            "Stop after that handoff; do not begin Phase 2.",
+        ),
+    ),
     ControlDocTruthRule(
         relative_path="README.md",
         required_markers=(
@@ -296,7 +297,30 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ),
     ControlDocTruthRule(
         relative_path="docs/archive/process/README.md",
-        required_markers=("historical build-process artifacts",),
+        required_markers=(
+            "historical build-process artifacts",
+            "[Phase 2 and Phase 3 closeout history](phase2-phase3-closeout-history.md)",
+        ),
+    ),
+    ControlDocTruthRule(
+        relative_path="docs/archive/process/phase2-phase3-closeout-history.md",
+        required_markers=(
+            "# Phase 2 and Phase 3 Closeout History",
+            "Historical record only.",
+            "The former active runbooks were retired during the v0.11.0 Phase 1 periphery cut.",
+            "This record does not authorize Phase 2 or Phase 3 work.",
+            "../../../.ai/active/SPRINT_PACKET.md",
+        ),
+    ),
+    ControlDocTruthRule(
+        relative_path="docs/handoff/history/v0.10.4-repair-batches.md",
+        required_markers=(
+            "# v0.10.4 Repair-Batch History",
+            "Entries are historical evidence.",
+            "| 16 | Embedding-CAS semantics approved; documentation-truth correction followed |",
+            "docs/release/v0.10.4-release-notes.md",
+            "docs/release/v0.10.4-checksums.txt",
+        ),
     ),
 )
 
@@ -423,32 +447,13 @@ def _validate_package_description(root_dir: Path, project: object) -> list[str]:
     return issues
 
 
-def _governed_versions(root_dir: Path) -> tuple[str | None, str | None]:
-    python_version: str | None = None
-    web_version: str | None = None
-    try:
-        with (root_dir / "pyproject.toml").open("rb") as handle:
-            project = tomllib.load(handle).get("project")
-        if isinstance(project, dict) and isinstance(project.get("version"), str):
-            python_version = project["version"]
-    except (OSError, tomllib.TOMLDecodeError):
-        pass
-    try:
-        package = json.loads((root_dir / "apps/web/package.json").read_text(encoding="utf-8"))
-        if isinstance(package, dict) and isinstance(package.get("version"), str):
-            web_version = package["version"]
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        pass
-    return python_version, web_version
-
-
-def _validate_active_remediation_handoff(root_dir: Path) -> list[str]:
-    handoff_dir = root_dir / _ACTIVE_REMEDIATION_HANDOFF
+def _validate_historical_remediation_handoff(root_dir: Path) -> list[str]:
+    handoff_dir = root_dir / _HISTORICAL_REMEDIATION_HANDOFF
     if not handoff_dir.is_dir():
-        return []
+        return [f"{_HISTORICAL_REMEDIATION_HANDOFF}: missing directory"]
 
     issues: list[str] = []
-    for relative_path, markers in _ACTIVE_REMEDIATION_MARKERS.items():
+    for relative_path, markers in _HISTORICAL_REMEDIATION_MARKERS.items():
         path = handoff_dir / relative_path
         try:
             text = path.read_text(encoding="utf-8")
@@ -459,183 +464,44 @@ def _validate_active_remediation_handoff(root_dir: Path) -> list[str]:
             if marker not in text:
                 issues.append(f"{path.relative_to(root_dir)}: missing Repair Batch 16 truth marker {marker!r}")
         normalized_text = " ".join(text.split()).casefold()
-        for marker in _ACTIVE_REMEDIATION_FORBIDDEN_MARKERS.get(relative_path, ()):
+        for marker in _HISTORICAL_REMEDIATION_FORBIDDEN_MARKERS.get(relative_path, ()):
             normalized_marker = " ".join(marker.split()).casefold()
             if normalized_marker in normalized_text:
                 issues.append(f"{path.relative_to(root_dir)}: contains stale remediation marker {marker!r}")
-        for marker in _ACTIVE_FINALIZATION_MARKERS.get(relative_path, ()):
+        for marker in _HISTORICAL_FINALIZATION_MARKERS.get(relative_path, ()):
             normalized_marker = " ".join(marker.split()).casefold()
             if normalized_marker not in normalized_text:
                 issues.append(f"{path.relative_to(root_dir)}: missing finalization truth marker {marker!r}")
-        for marker in _ACTIVE_FINALIZATION_FORBIDDEN_MARKERS.get(relative_path, ()):
+        for marker in _HISTORICAL_FINALIZATION_FORBIDDEN_MARKERS.get(relative_path, ()):
             normalized_marker = " ".join(marker.split()).casefold()
             if normalized_marker in normalized_text:
                 issues.append(f"{path.relative_to(root_dir)}: contains stale finalization marker {marker!r}")
     return issues
 
 
-def _run_git(root_dir: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
-        ("git", "-C", str(root_dir), *args),
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+def _validate_active_sprint_packet(root_dir: Path) -> list[str]:
+    path = root_dir / _ACTIVE_SPRINT_PACKET
+    if not path.is_file():
+        return []  # The static control-document rule reports absence.
 
-
-def _git_stdout(root_dir: Path, *args: str) -> tuple[str | None, str | None]:
-    result = _run_git(root_dir, *args)
-    if result.returncode != 0:
-        detail = result.stderr.decode("utf-8", errors="replace").strip() or f"exit {result.returncode}"
-        return None, detail
-    return result.stdout.decode("utf-8", errors="strict").strip(), None
-
-
-def _filtered_tree_manifest(
-    root_dir: Path,
-    revision: str,
-) -> tuple[tuple[str, int, int] | None, str | None]:
-    result = _run_git(root_dir, "ls-tree", "-r", "-z", "--full-tree", revision)
-    if result.returncode != 0:
-        detail = result.stderr.decode("utf-8", errors="replace").strip() or f"exit {result.returncode}"
-        return None, detail
-
-    excluded_paths = {
-        path.encode("utf-8")
-        for path in (*_ACTIVE_REMEDIATION_CORRECTION_PATHS, *_ACTIVE_REMEDIATION_FUTURE_TRUTH_PATHS)
-    }
-    digest = hashlib.sha256()
-    record_count = 0
-    byte_count = 0
-    for record in result.stdout.split(b"\0"):
-        if not record:
-            continue
-        _, separator, path = record.partition(b"\t")
-        if not separator:
-            return None, "git ls-tree returned a malformed NUL-delimited record"
-        if path in excluded_paths:
-            continue
-        digest.update(record)
-        digest.update(b"\0")
-        record_count += 1
-        byte_count += len(record) + 1
-    return (digest.hexdigest(), record_count, byte_count), None
-
-
-def _validate_active_remediation_code_receipt(root_dir: Path) -> list[str]:
-    if not (root_dir / _ACTIVE_REMEDIATION_HANDOFF).is_dir():
-        return []
-
+    payload = path.read_bytes()
     issues: list[str] = []
-    python_version, web_version = _governed_versions(root_dir)
-    if (python_version, web_version) != (_ACTIVE_REMEDIATION_VERSION, _ACTIVE_REMEDIATION_VERSION):
+    if len(payload) > _ACTIVE_SPRINT_PACKET_MAX_BYTES:
         issues.append(
-            "governed version sources must both equal "
-            f"{_ACTIVE_REMEDIATION_VERSION}; got pyproject={python_version!r}, web={web_version!r}"
+            f"{_ACTIVE_SPRINT_PACKET}: exceeds {_ACTIVE_SPRINT_PACKET_MAX_BYTES}-byte control-document limit"
         )
 
-    # Source archives intentionally omit Git metadata. In that mode this rule
-    # still requires aligned governed versions, while archive/package parity,
-    # provenance, and content are enforced by their dedicated release gates.
-    if not (root_dir / ".git").exists():
-        return issues
-
-    current_manifest, manifest_error = _filtered_tree_manifest(root_dir, "HEAD")
-    expected_manifest = (
-        _ACTIVE_REMEDIATION_FILTERED_TREE_SHA256,
-        _ACTIVE_REMEDIATION_FILTERED_TREE_RECORDS,
-        _ACTIVE_REMEDIATION_FILTERED_TREE_BYTES,
-    )
-    if manifest_error is not None:
-        issues.append(f"unable to compute current HEAD filtered content manifest ({manifest_error})")
-    elif current_manifest != expected_manifest:
+    text = payload.decode("utf-8")
+    line_count = len(text.splitlines())
+    if line_count > _ACTIVE_SPRINT_PACKET_MAX_LINES:
         issues.append(
-            "current HEAD filtered content manifest must equal exact code boundary "
-            f"{expected_manifest!r}, got {current_manifest!r}"
+            f"{_ACTIVE_SPRINT_PACKET}: exceeds {_ACTIVE_SPRINT_PACKET_MAX_LINES}-line control-document limit"
         )
 
-    shallow_value, shallow_error = _git_stdout(root_dir, "rev-parse", "--is-shallow-repository")
-    if shallow_error is not None or shallow_value not in {"true", "false"}:
-        shallow_detail = shallow_error or f"unexpected output {shallow_value!r}"
-        issues.append(f"unable to determine whether repository history is shallow ({shallow_detail})")
-        is_shallow = True
-    else:
-        is_shallow = shallow_value == "true"
-
-    if not is_shallow:
-        receipt_rows = (
-            (
-                "remediation",
-                _ACTIVE_REMEDIATION_CODE_COMMIT,
-                _ACTIVE_REMEDIATION_CODE_TREE,
-                _ACTIVE_REMEDIATION_CODE_PARENT,
-            ),
-            (
-                "npm advisory endpoint",
-                _ACTIVE_REMEDIATION_AUDIT_COMMIT,
-                _ACTIVE_REMEDIATION_AUDIT_TREE,
-                _ACTIVE_REMEDIATION_CODE_COMMIT,
-            ),
-        )
-        for label, commit, expected_tree, expected_parent in receipt_rows:
-            resolved_commit, error = _git_stdout(root_dir, "rev-parse", "--verify", f"{commit}^{{commit}}")
-            if error is not None or resolved_commit != commit:
-                issues.append(f"{label} code receipt: commit {commit} is unavailable or resolves incorrectly ({error})")
-                continue
-            resolved_tree, error = _git_stdout(root_dir, "rev-parse", "--verify", f"{commit}^{{tree}}")
-            if error is not None or resolved_tree != expected_tree:
-                issues.append(f"{label} code receipt: tree must be {expected_tree}, got {resolved_tree!r} ({error})")
-            resolved_parent, error = _git_stdout(root_dir, "rev-parse", "--verify", f"{commit}^")
-            if error is not None or resolved_parent != expected_parent:
-                issues.append(
-                    f"{label} code receipt: parent must be {expected_parent}, got {resolved_parent!r} ({error})"
-                )
-
-        ancestry = _run_git(root_dir, "merge-base", "--is-ancestor", _ACTIVE_REMEDIATION_AUDIT_COMMIT, "HEAD")
-        if ancestry.returncode != 0:
-            issues.append(f"current HEAD must descend from exact code boundary {_ACTIVE_REMEDIATION_AUDIT_COMMIT}")
-
-        committed_exclusions = (*_ACTIVE_REMEDIATION_CORRECTION_PATHS, *_ACTIVE_REMEDIATION_FUTURE_TRUTH_PATHS)
-        committed_pathspecs = (".", *(f":(exclude){path}" for path in committed_exclusions))
-        committed_content = _run_git(
-            root_dir,
-            "diff",
-            "--quiet",
-            _ACTIVE_REMEDIATION_AUDIT_COMMIT,
-            "HEAD",
-            "--",
-            *committed_pathspecs,
-        )
-        if committed_content.returncode == 1:
-            issues.append("current HEAD changes tracked content outside the handoff-truth correction allowlist")
-        elif committed_content.returncode != 0:
-            issues.append(f"unable to compare current HEAD with code boundary (exit {committed_content.returncode})")
-
-    working_pathspecs = (".", *(f":(exclude){path}" for path in _ACTIVE_REMEDIATION_CORRECTION_PATHS))
-    working_content = _run_git(root_dir, "diff", "--quiet", "HEAD", "--", *working_pathspecs)
-    if working_content.returncode == 1:
-        issues.append("working tree changes tracked content outside the handoff-truth correction allowlist")
-    elif working_content.returncode != 0:
-        issues.append(f"unable to validate working-tree correction scope (exit {working_content.returncode})")
-
-    for relative_path, expected_hash in _ACTIVE_REMEDIATION_CONTENT_HASHES.items():
-        if not is_shallow:
-            committed = _run_git(root_dir, "show", f"{_ACTIVE_REMEDIATION_AUDIT_COMMIT}:{relative_path}")
-            if committed.returncode != 0:
-                issues.append(f"code receipt: unable to read {relative_path} from {_ACTIVE_REMEDIATION_AUDIT_COMMIT}")
-            else:
-                committed_hash = hashlib.sha256(committed.stdout).hexdigest()
-                if committed_hash != expected_hash:
-                    issues.append(
-                        f"code receipt: committed {relative_path} SHA-256 must be {expected_hash}, got {committed_hash}"
-                    )
-        try:
-            working_hash = hashlib.sha256((root_dir / relative_path).read_bytes()).hexdigest()
-        except OSError:
-            issues.append(f"code receipt: current {relative_path} is missing or unreadable")
-            continue
-        if working_hash != expected_hash:
-            issues.append(f"code receipt: current {relative_path} SHA-256 must be {expected_hash}, got {working_hash}")
+    normalized_text = " ".join(text.split())
+    for label, pattern in _ACTIVE_SPRINT_FORBIDDEN_PATTERNS:
+        if pattern.search(normalized_text) is not None:
+            issues.append(f"{_ACTIVE_SPRINT_PACKET}: contains {label}")
     return issues
 
 
@@ -789,8 +655,8 @@ def run_control_doc_truth_check(
     if not version:
         issues.append("pyproject.toml: missing project.version")
     issues.extend(_validate_package_description(root_dir, project))
-    issues.extend(_validate_active_remediation_handoff(root_dir))
-    issues.extend(_validate_active_remediation_code_receipt(root_dir))
+    issues.extend(_validate_historical_remediation_handoff(root_dir))
+    issues.extend(_validate_active_sprint_packet(root_dir))
     release_mode, release_state_issues = _read_release_document_mode(root_dir=root_dir, version=version)
     issues.extend(release_state_issues)
     latest_published_version = (

@@ -7,7 +7,6 @@ import {
   combinePageModes,
   connectCalendarAccount,
   connectGmailAccount,
-  createThread,
   createContinuityCapture,
   captureVNextBrowserClip,
   confirmVNextMemory,
@@ -16,7 +15,6 @@ import {
   createVNextOpenLoop,
   createVNextProject,
   createVNextSource,
-  deriveThreadWorkflowState,
   createOpenLoop,
   generateVNextDailyBrief,
   generateVNextProjectUpdate,
@@ -26,7 +24,6 @@ import {
   getGmailAccountDetail,
   getOpenLoopDetail,
   getTaskArtifactDetail,
-  getTaskWorkspaceDetail,
   getEntityDetail,
   getContinuityCaptureDetail,
   getContinuityReviewDetail,
@@ -47,17 +44,8 @@ import {
   getVNextSchedulerFailures,
   getVNextSourceTrace,
   getVNextWorkspace,
-  getThreadDetail,
-  getThreadEvents,
-  getThreadResumptionBrief,
   getContinuityResumptionBrief,
-  getChiefOfStaffPriorityBrief,
-  captureChiefOfStaffExecutionRoutingAction,
-  captureChiefOfStaffHandoffOutcome,
-  captureChiefOfStaffHandoffReviewAction,
-  captureChiefOfStaffRecommendationOutcome,
   clearVNextOperatorAgentApiKey,
-  getThreadSessions,
   executeApproval,
   ingestCalendarEvent,
   ingestGmailMessage,
@@ -76,18 +64,14 @@ import {
   listMemoryLabels,
   listMemoryReviewQueue,
   listTaskRuns,
-  listAgentProfiles,
   getToolExecution,
   getTraceDetail,
   getTraceEvents,
-  listThreads,
   listTraces,
   queryContinuityRecall,
   getContinuityRetrievalEvaluation,
   hasLiveApiConfig,
   isLocalApiBaseUrl,
-  isAssistantResponseAccepted,
-  isSupportedApiBaseUrl,
   requestJson,
   sanitizeApiBaseUrl,
   sanitizePublicErrorText,
@@ -103,14 +87,13 @@ import {
   runVNextDoctor,
   runVNextSchedulerDue,
   runVNextSchedulerWorkflowNow,
-  shouldExpectThreadExecutionReview,
-  submitAssistantResponse,
-  submitApprovalRequest,
-  captureExplicitSignals,
   extractExplicitCommitments,
   applyContinuityOpenLoopReviewAction,
   submitMemoryLabel,
+  syncVNextTelegramConnector,
   updateOpenLoopStatus,
+  updateVNextConnectorConfig,
+  updateVNextTelegramConnectorConfig,
   upsertVNextBrainCharter,
 } from "./api";
 
@@ -134,14 +117,11 @@ describe("api helpers", () => {
     expect(pageModeLabel("mixed")).toBe("Mixed fallback");
   });
 
-  it("keeps the generic console loopback-only while validating hosted HTTPS separately", () => {
+  it("keeps live console reads loopback-only", () => {
     expect(isLocalApiBaseUrl("http://127.0.0.1:8000")).toBe(true);
     expect(isLocalApiBaseUrl("https://[::1]:8443")).toBe(true);
     expect(isLocalApiBaseUrl("ftp://localhost:8000")).toBe(false);
     expect(isLocalApiBaseUrl("https://api.example.com")).toBe(false);
-    expect(isSupportedApiBaseUrl("https://api.example.com")).toBe(true);
-    expect(isSupportedApiBaseUrl("http://api.example.com")).toBe(false);
-    expect(isSupportedApiBaseUrl("https://user:secret@api.example.com")).toBe(false);
     expect(
       hasLiveApiConfig({
         apiBaseUrl: "http://localhost:8000",
@@ -160,6 +140,103 @@ describe("api helpers", () => {
         userId: "user-1",
       }),
     ).toBe(false);
+  });
+
+  it("keeps Telegram configuration on-demand and strips the retired secret and polling contract", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          connector_name: "telegram",
+          enabled: true,
+          configured: true,
+          default_domain: "personal",
+          default_sensitivity: "private",
+          sync_mode: "on_demand",
+          config_json: { allowed_chat_ids: ["999001"] },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await updateVNextTelegramConnectorConfig("https://api.example.com", {
+      user_id: "user-1",
+      enabled: true,
+      default_domain: "personal",
+      default_sensitivity: "private",
+      config_json: { allowed_chat_ids: ["999001"] },
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body));
+    expect(url).toBe("https://api.example.com/v0/vnext/connectors/telegram/config");
+    expect(init.method).toBe("PATCH");
+    expect(body).toEqual({
+      user_id: "user-1",
+      enabled: true,
+      default_domain: "personal",
+      default_sensitivity: "private",
+      config_json: { allowed_chat_ids: ["999001"] },
+    });
+    expect(body).not.toHaveProperty("secret_ref");
+    expect(body).not.toHaveProperty("sync_mode");
+    expect(body).not.toHaveProperty("poll_interval_seconds");
+    expect(() =>
+      updateVNextConnectorConfig("https://api.example.com", "telegram", {
+        user_id: "user-1",
+        secret_ref: "retired.telegram.token",
+        sync_mode: "polling",
+        poll_interval_seconds: 60,
+      }),
+    ).toThrow(/on-demand/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    fetchMock.mockClear();
+    expect(() =>
+      updateVNextTelegramConnectorConfig("https://api.example.com", {
+        user_id: "user-1",
+        config_json: { allowed_chat_ids: [] },
+      }),
+    ).toThrow(/explicit chat allowlist/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("sends Telegram ingestion only with caller-supplied updates and an explicit allowlist", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ status: "ok" }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const update = { update_id: 17, message: { chat: { id: 999001 }, text: "Release note" } };
+
+    await syncVNextTelegramConnector("https://api.example.com", {
+      user_id: "user-1",
+      updates: [update],
+      allowed_chat_ids: ["999001"],
+      default_domain: "project",
+      default_sensitivity: "private",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.example.com/v0/vnext/connectors/telegram/sync");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      user_id: "user-1",
+      updates: [update],
+      allowed_chat_ids: ["999001"],
+      default_domain: "project",
+      default_sensitivity: "private",
+    });
+
+    fetchMock.mockClear();
+    expect(() =>
+      syncVNextTelegramConnector("https://api.example.com", {
+        user_id: "user-1",
+        updates: [],
+        allowed_chat_ids: [],
+      } as never),
+    ).toThrow(/supplied updates and an explicit chat allowlist/);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("sanitizes configured API URLs and public error text", () => {
@@ -236,7 +313,7 @@ describe("api helpers", () => {
     await requestJson("https://localhost:8443", "/v0/vnext/workspace");
     await requestJson("https://api.example.com", "/v0/vnext/workspace");
     await requestJson("http://127.0.0.1:8000", "/v0/threads");
-    await requestJson("http://127.0.0.1:8000", "/v1/admin/hosted/overview");
+    await requestJson("http://127.0.0.1:8000", "/v1/providers");
     await requestJson("http://127.0.0.1:8000", "/v0/vnextish/workspace");
     await requestJson("http://127.0.0.1:8000/alice", "/v0/vnext/workspace");
 
@@ -327,552 +404,6 @@ describe("api helpers", () => {
     expect(serialized).not.toContain(agentApiKey);
   });
 
-  it("does not borrow an older unrelated execution from the same thread", () => {
-    const approval = {
-      id: "approval-new",
-      thread_id: "thread-1",
-      task_run_id: null,
-      task_step_id: "step-new",
-      status: "approved",
-      request: {
-        thread_id: "thread-1",
-        tool_id: "tool-1",
-        action: "place_order",
-        scope: "supplements",
-        domain_hint: "ecommerce",
-        risk_hint: "purchase",
-        attributes: {},
-      },
-      tool: {
-        id: "tool-1",
-        tool_key: "merchant_proxy",
-        name: "Merchant Proxy",
-        description: "Proxy",
-        version: "0.1.0",
-        metadata_version: "tool_metadata_v0",
-        active: true,
-        tags: [],
-        action_hints: [],
-        scope_hints: [],
-        domain_hints: [],
-        risk_hints: [],
-        metadata: {},
-        created_at: "2026-03-17T00:00:00Z",
-      },
-      routing: {
-        decision: "require_approval",
-        reasons: [],
-        trace: {
-          trace_id: "trace-approval-new",
-          trace_event_count: 3,
-        },
-      },
-      created_at: "2026-03-18T10:00:00Z",
-      resolution: {
-        resolved_at: "2026-03-18T10:05:00Z",
-        resolved_by_user_id: "user-1",
-      },
-    };
-
-    const olderApproval = {
-      ...approval,
-      id: "approval-old",
-      task_step_id: "step-old",
-      created_at: "2026-03-17T10:00:00Z",
-    };
-
-    const task = {
-      id: "task-new",
-      thread_id: "thread-1",
-      tool_id: "tool-1",
-      status: "approved",
-      request: approval.request,
-      tool: approval.tool,
-      latest_approval_id: "approval-new",
-      latest_execution_id: null,
-      created_at: "2026-03-18T10:00:00Z",
-      updated_at: "2026-03-18T10:05:00Z",
-    };
-
-    const olderTask = {
-      ...task,
-      id: "task-old",
-      latest_approval_id: "approval-old",
-      latest_execution_id: "execution-old",
-      created_at: "2026-03-17T10:00:00Z",
-      updated_at: "2026-03-17T10:10:00Z",
-    };
-
-    const olderExecution = {
-      id: "execution-old",
-      approval_id: "approval-old",
-      task_run_id: null,
-      task_step_id: "step-old",
-      thread_id: "thread-1",
-      tool_id: "tool-1",
-      trace_id: "trace-execution-old",
-      request_event_id: "request-event-old",
-      result_event_id: "result-event-old",
-      status: "completed",
-      handler_key: "proxy.echo",
-      idempotency_key: null,
-      request: approval.request,
-      tool: approval.tool,
-      result: {
-        handler_key: "proxy.echo",
-        status: "completed",
-        output: { ok: true },
-        reason: null,
-      },
-      executed_at: "2026-03-17T10:10:00Z",
-    };
-
-    const workflow = deriveThreadWorkflowState(
-      "thread-1",
-      [olderApproval, approval],
-      [olderTask, task],
-      [olderExecution],
-    );
-
-    expect(workflow.approval?.id).toBe("approval-new");
-    expect(workflow.task?.id).toBe("task-new");
-    expect(workflow.execution).toBeNull();
-    expect(shouldExpectThreadExecutionReview(workflow.approval, workflow.task)).toBe(true);
-  });
-
-  it("returns explicitly linked execution when the selected task carries latest_execution_id", () => {
-    const approval = {
-      id: "approval-1",
-      thread_id: "thread-1",
-      task_run_id: null,
-      task_step_id: "step-1",
-      status: "approved",
-      request: {
-        thread_id: "thread-1",
-        tool_id: "tool-1",
-        action: "place_order",
-        scope: "supplements",
-        domain_hint: "ecommerce",
-        risk_hint: "purchase",
-        attributes: {},
-      },
-      tool: {
-        id: "tool-1",
-        tool_key: "merchant_proxy",
-        name: "Merchant Proxy",
-        description: "Proxy",
-        version: "0.1.0",
-        metadata_version: "tool_metadata_v0",
-        active: true,
-        tags: [],
-        action_hints: [],
-        scope_hints: [],
-        domain_hints: [],
-        risk_hints: [],
-        metadata: {},
-        created_at: "2026-03-17T00:00:00Z",
-      },
-      routing: {
-        decision: "require_approval",
-        reasons: [],
-        trace: {
-          trace_id: "trace-approval-1",
-          trace_event_count: 3,
-        },
-      },
-      created_at: "2026-03-18T10:00:00Z",
-      resolution: {
-        resolved_at: "2026-03-18T10:05:00Z",
-        resolved_by_user_id: "user-1",
-      },
-    };
-
-    const task = {
-      id: "task-1",
-      thread_id: "thread-1",
-      tool_id: "tool-1",
-      status: "executed",
-      request: approval.request,
-      tool: approval.tool,
-      latest_approval_id: "approval-1",
-      latest_execution_id: "execution-1",
-      created_at: "2026-03-18T10:00:00Z",
-      updated_at: "2026-03-18T10:06:00Z",
-    };
-
-    const execution = {
-      id: "execution-1",
-      approval_id: "approval-1",
-      task_run_id: null,
-      task_step_id: "step-1",
-      thread_id: "thread-1",
-      tool_id: "tool-1",
-      trace_id: "trace-execution-1",
-      request_event_id: "request-event-1",
-      result_event_id: "result-event-1",
-      status: "completed",
-      handler_key: "proxy.echo",
-      idempotency_key: null,
-      request: approval.request,
-      tool: approval.tool,
-      result: {
-        handler_key: "proxy.echo",
-        status: "completed",
-        output: { ok: true },
-        reason: null,
-      },
-      executed_at: "2026-03-18T10:06:00Z",
-    };
-
-    const workflow = deriveThreadWorkflowState("thread-1", [approval], [task], [execution]);
-
-    expect(workflow.execution?.id).toBe("execution-1");
-  });
-
-  it("posts governed approval requests to the shipped endpoint", async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          request: {
-            thread_id: "thread-1",
-            tool_id: "tool-1",
-            action: "place_order",
-            scope: "supplements",
-            domain_hint: "ecommerce",
-            risk_hint: "purchase",
-            attributes: { quantity: "1" },
-          },
-          decision: "approval_required",
-          tool: {
-            id: "tool-1",
-            tool_key: "merchant_proxy",
-            name: "Merchant Proxy",
-            description: "Proxy",
-            version: "0.1.0",
-            metadata_version: "tool_metadata_v0",
-            active: true,
-            tags: [],
-            action_hints: [],
-            scope_hints: [],
-            domain_hints: [],
-            risk_hints: [],
-            metadata: {},
-            created_at: "2026-03-17T00:00:00Z",
-          },
-          reasons: [],
-          task: {
-            id: "task-1",
-            thread_id: "thread-1",
-            tool_id: "tool-1",
-            status: "pending_approval",
-            request: {
-              thread_id: "thread-1",
-              tool_id: "tool-1",
-              action: "place_order",
-              scope: "supplements",
-              domain_hint: "ecommerce",
-              risk_hint: "purchase",
-              attributes: { quantity: "1" },
-            },
-            tool: {
-              id: "tool-1",
-              tool_key: "merchant_proxy",
-              name: "Merchant Proxy",
-              description: "Proxy",
-              version: "0.1.0",
-              metadata_version: "tool_metadata_v0",
-              active: true,
-              tags: [],
-              action_hints: [],
-              scope_hints: [],
-              domain_hints: [],
-              risk_hints: [],
-              metadata: {},
-              created_at: "2026-03-17T00:00:00Z",
-            },
-            latest_approval_id: "approval-1",
-            latest_execution_id: null,
-            created_at: "2026-03-17T00:00:00Z",
-            updated_at: "2026-03-17T00:00:00Z",
-          },
-          approval: null,
-          routing_trace: {
-            trace_id: "route-trace-1",
-            trace_event_count: 3,
-          },
-          trace: {
-            trace_id: "request-trace-1",
-            trace_event_count: 6,
-          },
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-
-    await submitApprovalRequest("https://api.example.com", {
-      user_id: "user-1",
-      thread_id: "thread-1",
-      tool_id: "tool-1",
-      action: "place_order",
-      scope: "supplements",
-      domain_hint: "ecommerce",
-      risk_hint: "purchase",
-      attributes: { quantity: "1" },
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v0/approvals/requests",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({ "Content-Type": "application/json" }),
-      }),
-    );
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
-      user_id: "user-1",
-      thread_id: "thread-1",
-      tool_id: "tool-1",
-      action: "place_order",
-      scope: "supplements",
-      domain_hint: "ecommerce",
-      risk_hint: "purchase",
-      attributes: { quantity: "1" },
-    });
-  });
-
-  it("posts assistant messages to the shipped response endpoint", async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          assistant: {
-            event_id: "assistant-event-1",
-            sequence_no: 3,
-            text: "You prefer oat milk.",
-            model_provider: "openai_responses",
-            model: "gpt-5-mini",
-          },
-          trace: {
-            compile_trace_id: "compile-trace-1",
-            compile_trace_event_count: 3,
-            response_trace_id: "response-trace-1",
-            response_trace_event_count: 2,
-          },
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-
-    await submitAssistantResponse(
-      "https://api.example.com",
-      {
-        user_id: "user-1",
-        thread_id: "thread-1",
-        message: "What do I usually take in coffee?",
-      },
-      "response-request-1",
-    );
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v0/responses",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          "Content-Type": "application/json",
-          "idempotency-key": "response-request-1",
-        }),
-      }),
-    );
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
-      user_id: "user-1",
-      thread_id: "thread-1",
-      message: "What do I usually take in coffee?",
-    });
-  });
-
-  it("models an accepted assistant response job without terminal-only fields", async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          detail: {
-            code: "response_generation_in_progress",
-            message: "response generation is already in progress",
-          },
-          response_job: {
-            id: "job-1",
-            state: "running",
-            endpoint: "/v0/responses",
-            created_at: "2026-07-13T10:00:00Z",
-            updated_at: "2026-07-13T10:00:01Z",
-            completed_at: null,
-          },
-        }),
-        { status: 202, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-
-    const result = await submitAssistantResponse(
-      "https://api.example.com",
-      { user_id: "user-1", thread_id: "thread-1", message: "Continue" },
-      "stable-response-key",
-    );
-
-    expect(isAssistantResponseAccepted(result)).toBe(true);
-    if (isAssistantResponseAccepted(result)) {
-      expect(result.response_job).toMatchObject({ id: "job-1", state: "running" });
-    }
-  });
-
-  it("uses the shipped continuity endpoints for thread create and review", async () => {
-    fetchMock
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            thread: {
-              id: "thread-1",
-              title: "Gamma thread",
-              agent_profile_id: "coach_default",
-              created_at: "2026-03-17T10:00:00Z",
-              updated_at: "2026-03-17T10:00:00Z",
-            },
-          }),
-          { status: 201, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            items: [
-              {
-                id: "thread-1",
-                title: "Gamma thread",
-                agent_profile_id: "coach_default",
-                created_at: "2026-03-17T10:00:00Z",
-                updated_at: "2026-03-17T10:00:00Z",
-              },
-            ],
-            summary: {
-              total_count: 1,
-              order: ["created_at_desc", "id_desc"],
-            },
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            thread: {
-              id: "thread-1",
-              title: "Gamma thread",
-              agent_profile_id: "coach_default",
-              created_at: "2026-03-17T10:00:00Z",
-              updated_at: "2026-03-17T10:00:00Z",
-            },
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            items: [
-              {
-                id: "session-1",
-                thread_id: "thread-1",
-                status: "active",
-                started_at: "2026-03-17T10:00:00Z",
-                ended_at: null,
-                created_at: "2026-03-17T10:00:00Z",
-              },
-            ],
-            summary: {
-              thread_id: "thread-1",
-              total_count: 1,
-              order: ["started_at_asc", "created_at_asc", "id_asc"],
-            },
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            items: [
-              {
-                id: "event-1",
-                thread_id: "thread-1",
-                session_id: "session-1",
-                sequence_no: 1,
-                kind: "message.user",
-                payload: { text: "Hello" },
-                created_at: "2026-03-17T10:00:00Z",
-              },
-            ],
-            summary: {
-              thread_id: "thread-1",
-              total_count: 1,
-              order: ["sequence_no_asc"],
-            },
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            items: [
-              {
-                id: "assistant_default",
-                name: "Assistant Default",
-                description: "General-purpose assistant profile for baseline conversations.",
-              },
-              {
-                id: "coach_default",
-                name: "Coach Default",
-                description: "Coaching-oriented profile focused on guidance and accountability.",
-              },
-            ],
-            summary: {
-              total_count: 2,
-              order: ["id_asc"],
-            },
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      );
-
-    const createPayload = await createThread("https://api.example.com", {
-      user_id: "user-1",
-      title: "Gamma thread",
-      agent_profile_id: "coach_default",
-    });
-    const threadListPayload = await listThreads("https://api.example.com", "user-1");
-    const threadDetailPayload = await getThreadDetail("https://api.example.com", "thread-1", "user-1");
-    await getThreadSessions("https://api.example.com", "thread-1", "user-1");
-    await getThreadEvents("https://api.example.com", "thread-1", "user-1");
-    const profileRegistryPayload = await listAgentProfiles("https://api.example.com");
-
-    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
-      "https://api.example.com/v0/threads",
-      "https://api.example.com/v0/threads?user_id=user-1",
-      "https://api.example.com/v0/threads/thread-1?user_id=user-1",
-      "https://api.example.com/v0/threads/thread-1/sessions?user_id=user-1",
-      "https://api.example.com/v0/threads/thread-1/events?user_id=user-1",
-      "https://api.example.com/v0/agent-profiles",
-    ]);
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
-      user_id: "user-1",
-      title: "Gamma thread",
-      agent_profile_id: "coach_default",
-    });
-    expect(createPayload.thread.agent_profile_id).toBe("coach_default");
-    expect(threadListPayload.items[0]?.agent_profile_id).toBe("coach_default");
-    expect(threadDetailPayload.thread.agent_profile_id).toBe("coach_default");
-    expect(profileRegistryPayload.items.map((item) => item.id)).toEqual([
-      "assistant_default",
-      "coach_default",
-    ]);
-  });
-
   it("throws ApiError when approval resolution returns a backend error envelope", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ detail: "approval conflict" }), {
@@ -905,7 +436,7 @@ describe("api helpers", () => {
       }),
     );
 
-    await expect(listThreads("https://api.example.com", "user-1")).rejects.toEqual(
+    await expect(listMemories("https://api.example.com", "user-1")).rejects.toEqual(
       expect.objectContaining({
         message: "Field required; Invalid domain",
         status: 422,
@@ -934,7 +465,7 @@ describe("api helpers", () => {
       ),
     );
 
-    const error = await listThreads("https://api.example.com", "user-1").catch((value) => value);
+    const error = await listMemories("https://api.example.com", "user-1").catch((value) => value);
 
     expect(error).toEqual(
       expect.objectContaining({
@@ -962,7 +493,7 @@ describe("api helpers", () => {
       ),
     );
 
-    const error = await listThreads("https://api.example.com", "user-1").catch((value) => value);
+    const error = await listMemories("https://api.example.com", "user-1").catch((value) => value);
 
     expect(error).toEqual(
       expect.objectContaining({
@@ -975,7 +506,7 @@ describe("api helpers", () => {
   });
 
   it("rejects credential-bearing base URLs without exposing them", async () => {
-    const error = await listThreads(
+    const error = await listMemories(
       "https://user:secret@api.example.com?token=secret#trace",
       "user-1",
     ).catch((value) => value);
@@ -1001,7 +532,7 @@ describe("api helpers", () => {
         }),
     );
 
-    const request = listThreads("https://api.example.com", "user-1");
+    const request = listMemories("https://api.example.com", "user-1");
     const rejection = expect(request).rejects.toEqual(
       expect.objectContaining({
         message: "Request timed out after 15 seconds",
@@ -1026,14 +557,14 @@ describe("api helpers", () => {
         }),
     );
 
-    const request = submitAssistantResponse(
+    const request = ingestGmailMessage(
       "https://api.example.com",
+      "gmail-1",
+      "message-1",
       {
         user_id: "user-1",
-        thread_id: "thread-1",
-        message: "Run the model-backed response path.",
+        task_workspace_id: "workspace-1",
       },
-      "long-running-response-key",
     );
     const rejection = expect(request).rejects.toEqual(
       expect.objectContaining({
@@ -1291,69 +822,6 @@ describe("api helpers", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.com/v0/tasks/task-1/steps?user_id=user-1",
-      expect.objectContaining({
-        cache: "no-store",
-        headers: expect.objectContaining({ "Content-Type": "application/json" }),
-      }),
-    );
-  });
-
-  it("reads resumption briefs from the shipped thread endpoint with bounded query params", async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          brief: {
-            assembly_version: "resumption_brief_v0",
-            thread: {
-              id: "thread-1",
-              title: "Gamma thread",
-              created_at: "2026-03-17T10:00:00Z",
-              updated_at: "2026-03-17T10:05:00Z",
-            },
-            conversation: {
-              items: [],
-              summary: {
-                limit: 1,
-                returned_count: 0,
-                total_count: 0,
-                order: ["sequence_no_asc"],
-                kinds: ["message.user", "message.assistant"],
-              },
-            },
-            open_loops: {
-              items: [],
-              summary: {
-                limit: 1,
-                returned_count: 0,
-                total_count: 0,
-                order: ["opened_at_desc", "created_at_desc", "id_desc"],
-              },
-            },
-            memory_highlights: {
-              items: [],
-              summary: {
-                limit: 1,
-                returned_count: 0,
-                total_count: 0,
-                order: ["updated_at_asc", "created_at_asc", "id_asc"],
-              },
-            },
-            workflow: null,
-            sources: ["threads", "events", "open_loops", "memories"],
-          },
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-
-    await getThreadResumptionBrief("https://api.example.com", "thread-1", "user-1", {
-      maxEvents: 1,
-      maxOpenLoops: 1,
-      maxMemories: 1,
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v0/threads/thread-1/resumption-brief?user_id=user-1&max_events=1&max_open_loops=1&max_memories=1",
       expect.objectContaining({
         cache: "no-store",
         headers: expect.objectContaining({ "Content-Type": "application/json" }),
@@ -1946,21 +1414,6 @@ describe("api helpers", () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          workspace: {
-            id: "workspace-1",
-            task_id: "task-1",
-            status: "active",
-            local_path: "/tmp/workspace/task-1",
-            created_at: "2026-03-18T00:00:00Z",
-            updated_at: "2026-03-18T00:00:00Z",
-          },
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
           items: [
             {
               id: "artifact-1",
@@ -2028,7 +1481,6 @@ describe("api helpers", () => {
     );
 
     await listTaskWorkspaces("https://api.example.com", "user-1");
-    await getTaskWorkspaceDetail("https://api.example.com", "workspace-1", "user-1");
     await listTaskArtifacts("https://api.example.com", "user-1");
     await getTaskArtifactDetail("https://api.example.com", "artifact-1", "user-1");
     await listTaskArtifactChunks("https://api.example.com", "artifact-1", "user-1");
@@ -2036,12 +1488,6 @@ describe("api helpers", () => {
     expect(fetchMock.mock.calls).toEqual([
       [
         "https://api.example.com/v0/task-workspaces?user_id=user-1",
-        expect.objectContaining({
-          cache: "no-store",
-        }),
-      ],
-      [
-        "https://api.example.com/v0/task-workspaces/workspace-1?user_id=user-1",
         expect.objectContaining({
           cache: "no-store",
         }),
@@ -2698,108 +2144,6 @@ describe("api helpers", () => {
     });
   });
 
-  it("posts unified explicit signal capture requests to the shipped endpoint", async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          preferences: {
-            candidates: [],
-            admissions: [],
-            summary: {
-              source_event_id: "event-1",
-              source_event_kind: "message.user",
-              candidate_count: 0,
-              admission_count: 0,
-              persisted_change_count: 0,
-              noop_count: 0,
-            },
-          },
-          commitments: {
-            candidates: [
-              {
-                memory_key: "user.commitment.submit_tax_forms",
-                value: {
-                  kind: "explicit_commitment",
-                  text: "submit tax forms",
-                },
-                source_event_ids: ["event-1"],
-                delete_requested: false,
-                pattern: "remind_me_to",
-                commitment_text: "submit tax forms",
-                open_loop_title: "Remember to submit tax forms",
-              },
-            ],
-            admissions: [],
-            summary: {
-              source_event_id: "event-1",
-              source_event_kind: "message.user",
-              candidate_count: 1,
-              admission_count: 0,
-              persisted_change_count: 0,
-              noop_count: 0,
-              open_loop_created_count: 0,
-              open_loop_noop_count: 0,
-            },
-          },
-          summary: {
-            source_event_id: "event-1",
-            source_event_kind: "message.user",
-            candidate_count: 1,
-            admission_count: 0,
-            persisted_change_count: 0,
-            noop_count: 0,
-            open_loop_created_count: 0,
-            open_loop_noop_count: 0,
-            preference_candidate_count: 0,
-            preference_admission_count: 0,
-            commitment_candidate_count: 1,
-            commitment_admission_count: 0,
-          },
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-
-    await captureExplicitSignals("https://api.example.com", {
-      user_id: "user-1",
-      source_event_id: "event-1",
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v0/memories/capture-explicit-signals",
-      expect.objectContaining({
-        method: "POST",
-      }),
-    );
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
-      user_id: "user-1",
-      source_event_id: "event-1",
-    });
-  });
-
-  it("throws ApiError when unified explicit signal capture returns a backend error envelope", async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          detail: "source_event_id must reference an existing message.user event",
-        }),
-        { status: 400, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-
-    await expect(
-      captureExplicitSignals("https://api.example.com", {
-        user_id: "user-1",
-        source_event_id: "missing-event",
-      }),
-    ).rejects.toEqual(
-      expect.objectContaining({
-        message: "source_event_id must reference an existing message.user event",
-        status: 400,
-      }),
-    );
-  });
-
   it("posts and reads continuity capture inbox endpoints", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
@@ -3146,585 +2490,6 @@ describe("api helpers", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.com/v0/continuity/resumption-brief?user_id=user-1&thread_id=thread-1&max_recent_changes=4&max_open_loops=3",
       expect.objectContaining({ cache: "no-store" }),
-    );
-  });
-
-  it("reads chief-of-staff priority briefs with deterministic scope parameters", async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          brief: {
-            assembly_version: "chief_of_staff_priority_brief_v0",
-            scope: { thread_id: "thread-1", since: null, until: null },
-            ranked_items: [],
-            overdue_items: [],
-            stale_waiting_for_items: [],
-            slipped_commitments: [],
-            escalation_posture: {
-              posture: "watch",
-              reason: "No active follow-through escalations are present.",
-              total_follow_through_count: 0,
-              nudge_count: 0,
-              defer_count: 0,
-              escalate_count: 0,
-              close_loop_candidate_count: 0,
-            },
-            draft_follow_up: {
-              status: "none",
-              mode: "draft_only",
-              approval_required: true,
-              auto_send: false,
-              reason: "No follow-through targets are currently queued for drafting.",
-              target_metadata: {
-                continuity_object_id: null,
-                capture_event_id: null,
-                object_type: null,
-                priority_posture: null,
-                follow_through_posture: null,
-                recommendation_action: null,
-                thread_id: "thread-1",
-              },
-              content: {
-                subject: "",
-                body: "",
-              },
-            },
-            recommended_next_action: {
-              action_type: "capture_new_priority",
-              title: "Capture one concrete next action",
-              target_priority_id: null,
-              priority_posture: null,
-              confidence_posture: "low",
-              reason: "No active priority items are present.",
-              provenance_references: [],
-              deterministic_rank_key: "none",
-            },
-            preparation_brief: {
-              scope: { thread_id: "thread-1", since: null, until: null },
-              context_items: [],
-              last_decision: null,
-              open_loops: [],
-              next_action: null,
-              confidence_posture: "low",
-              confidence_reason: "Memory quality posture is weak.",
-              summary: {
-                limit: 6,
-                returned_count: 0,
-                total_count: 0,
-                order: ["rank_asc", "created_at_desc", "id_desc"],
-              },
-            },
-            what_changed_summary: {
-              items: [],
-              confidence_posture: "low",
-              confidence_reason: "Memory quality posture is weak.",
-              summary: {
-                limit: 6,
-                returned_count: 0,
-                total_count: 0,
-                order: ["rank_asc", "created_at_desc", "id_desc"],
-              },
-            },
-            prep_checklist: {
-              items: [],
-              confidence_posture: "low",
-              confidence_reason: "Memory quality posture is weak.",
-              summary: {
-                limit: 6,
-                returned_count: 0,
-                total_count: 0,
-                order: ["rank_asc", "created_at_desc", "id_desc"],
-              },
-            },
-            suggested_talking_points: {
-              items: [],
-              confidence_posture: "low",
-              confidence_reason: "Memory quality posture is weak.",
-              summary: {
-                limit: 6,
-                returned_count: 0,
-                total_count: 0,
-                order: ["rank_asc", "created_at_desc", "id_desc"],
-              },
-            },
-            resumption_supervision: {
-              recommendations: [],
-              confidence_posture: "low",
-              confidence_reason: "Memory quality posture is weak.",
-              summary: {
-                limit: 3,
-                returned_count: 0,
-                total_count: 0,
-                order: ["rank_asc"],
-              },
-            },
-            weekly_review_brief: {
-              scope: { thread_id: "thread-1", since: null, until: null },
-              rollup: {
-                total_count: 0,
-                waiting_for_count: 0,
-                blocker_count: 0,
-                stale_count: 0,
-                correction_recurrence_count: 0,
-                freshness_drift_count: 0,
-                next_action_count: 0,
-                posture_order: ["waiting_for", "blocker", "stale", "next_action"],
-              },
-              guidance: [
-                {
-                  rank: 1,
-                  action: "escalate",
-                  signal_count: 0,
-                  rationale: "Escalate where blockers (0) and escalate actions (0) indicate execution risk.",
-                },
-                {
-                  rank: 2,
-                  action: "close",
-                  signal_count: 0,
-                  rationale:
-                    "Close loops where close candidates (0) and actionable next steps (0) support deterministic closure.",
-                },
-                {
-                  rank: 3,
-                  action: "defer",
-                  signal_count: 0,
-                  rationale:
-                    "Defer or park work where defer actions (0), stale items (0), and waiting-for load (0) are concentrated.",
-                },
-              ],
-              summary: {
-                guidance_order: ["close", "defer", "escalate"],
-                guidance_item_order: ["signal_count_desc", "action_desc"],
-              },
-            },
-            recommendation_outcomes: {
-              items: [],
-              summary: {
-                returned_count: 0,
-                total_count: 0,
-                outcome_counts: { accept: 0, defer: 0, ignore: 0, rewrite: 0 },
-                order: ["created_at_desc", "id_desc"],
-              },
-            },
-            priority_learning_summary: {
-              total_count: 0,
-              accept_count: 0,
-              defer_count: 0,
-              ignore_count: 0,
-              rewrite_count: 0,
-              acceptance_rate: 0,
-              override_rate: 0,
-              defer_hotspots: [],
-              ignore_hotspots: [],
-              priority_shift_explanation:
-                "No recommendation outcomes are captured yet; prioritization remains anchored to current continuity and trust signals.",
-              hotspot_order: ["count_desc", "key_asc"],
-            },
-            pattern_drift_summary: {
-              posture: "insufficient_signal",
-              reason: "No recommendation outcomes are available yet, so drift posture is informational only.",
-              supporting_signals: [],
-            },
-            summary: {
-              limit: 7,
-              returned_count: 0,
-              total_count: 0,
-              posture_order: ["urgent", "important", "waiting", "blocked", "stale", "defer"],
-              order: ["score_desc", "created_at_desc", "id_desc"],
-              follow_through_posture_order: ["overdue", "stale_waiting_for", "slipped_commitment"],
-              follow_through_item_order: [
-                "recommendation_action_desc",
-                "age_hours_desc",
-                "created_at_desc",
-                "id_desc",
-              ],
-              follow_through_total_count: 0,
-              overdue_count: 0,
-              stale_waiting_for_count: 0,
-              slipped_commitment_count: 0,
-              trust_confidence_posture: "low",
-              trust_confidence_reason: "Memory quality posture is weak.",
-              quality_gate_status: "insufficient_sample",
-              retrieval_status: "pass",
-            },
-            sources: ["continuity_recall", "memory_trust_dashboard"],
-          },
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-
-    await getChiefOfStaffPriorityBrief("https://api.example.com", "user-1", {
-      threadId: "thread-1",
-      limit: 7,
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v0/chief-of-staff?user_id=user-1&thread_id=thread-1&limit=7",
-      expect.objectContaining({ cache: "no-store" }),
-    );
-  });
-
-  it("captures chief-of-staff recommendation outcomes through the deterministic seam", async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          outcome: {
-            id: "outcome-1",
-            capture_event_id: "capture-outcome-1",
-            outcome: "accept",
-            recommendation_action_type: "execute_next_action",
-            recommendation_title: "Next Action: Ship dashboard",
-            rewritten_title: null,
-            target_priority_id: "priority-1",
-            rationale: "Accepted in weekly review.",
-            provenance_references: [],
-            created_at: "2026-03-31T12:00:00Z",
-            updated_at: "2026-03-31T12:00:00Z",
-          },
-          recommendation_outcomes: {
-            items: [],
-            summary: {
-              returned_count: 0,
-              total_count: 1,
-              outcome_counts: { accept: 1, defer: 0, ignore: 0, rewrite: 0 },
-              order: ["created_at_desc", "id_desc"],
-            },
-          },
-          priority_learning_summary: {
-            total_count: 1,
-            accept_count: 1,
-            defer_count: 0,
-            ignore_count: 0,
-            rewrite_count: 0,
-            acceptance_rate: 1,
-            override_rate: 0,
-            defer_hotspots: [],
-            ignore_hotspots: [],
-            priority_shift_explanation:
-              "Prioritization is reinforcing currently accepted recommendation patterns while tracking defer/override hotspots.",
-            hotspot_order: ["count_desc", "key_asc"],
-          },
-          pattern_drift_summary: {
-            posture: "improving",
-            reason:
-              "Accepted outcomes are leading with bounded defers/overrides, indicating improving recommendation fit.",
-            supporting_signals: [],
-          },
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-
-    await captureChiefOfStaffRecommendationOutcome("https://api.example.com", {
-      user_id: "user-1",
-      outcome: "accept",
-      recommendation_action_type: "execute_next_action",
-      recommendation_title: "Next Action: Ship dashboard",
-      target_priority_id: "priority-1",
-      thread_id: "thread-1",
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v0/chief-of-staff/recommendation-outcomes",
-      expect.objectContaining({
-        method: "POST",
-        cache: "no-store",
-      }),
-    );
-  });
-
-  it("captures chief-of-staff handoff queue review actions through the deterministic seam", async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          review_action: {
-            id: "review-1",
-            capture_event_id: "capture-review-1",
-            handoff_item_id: "handoff-1",
-            review_action: "mark_stale",
-            previous_lifecycle_state: "ready",
-            next_lifecycle_state: "stale",
-            reason: "Operator review action moved queue posture to stale.",
-            note: null,
-            provenance_references: [],
-            created_at: "2026-04-01T09:00:00Z",
-            updated_at: "2026-04-01T09:00:00Z",
-          },
-          handoff_queue_summary: {
-            total_count: 1,
-            ready_count: 0,
-            pending_approval_count: 0,
-            executed_count: 0,
-            stale_count: 1,
-            expired_count: 0,
-            state_order: ["ready", "pending_approval", "executed", "stale", "expired"],
-            group_order: ["ready", "pending_approval", "executed", "stale", "expired"],
-            item_order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
-            review_action_order: ["mark_ready", "mark_pending_approval", "mark_executed", "mark_stale", "mark_expired"],
-          },
-          handoff_queue_groups: {
-            ready: {
-              items: [],
-              summary: {
-                lifecycle_state: "ready",
-                returned_count: 0,
-                total_count: 0,
-                order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
-              },
-              empty_state: { is_empty: true, message: "No ready handoff items for this scope." },
-            },
-            pending_approval: {
-              items: [],
-              summary: {
-                lifecycle_state: "pending_approval",
-                returned_count: 0,
-                total_count: 0,
-                order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
-              },
-              empty_state: { is_empty: true, message: "No handoff items are currently pending approval." },
-            },
-            executed: {
-              items: [],
-              summary: {
-                lifecycle_state: "executed",
-                returned_count: 0,
-                total_count: 0,
-                order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
-              },
-              empty_state: { is_empty: true, message: "No handoff items are currently marked executed." },
-            },
-            stale: {
-              items: [
-                {
-                  queue_rank: 1,
-                  handoff_rank: 1,
-                  handoff_item_id: "handoff-1",
-                  lifecycle_state: "stale",
-                  state_reason: "Latest operator review action 'mark_stale' set lifecycle state to 'stale'.",
-                  source_kind: "recommended_next_action",
-                  source_reference_id: "priority-1",
-                  title: "Next Action: Ship dashboard",
-                  recommendation_action: "execute_next_action",
-                  priority_posture: "urgent",
-                  confidence_posture: "low",
-                  score: 1650,
-                  age_hours_relative_to_latest: 0,
-                  review_action_order: ["mark_ready", "mark_pending_approval", "mark_executed", "mark_stale", "mark_expired"],
-                  available_review_actions: ["mark_ready", "mark_pending_approval", "mark_executed", "mark_expired"],
-                  last_review_action: null,
-                  provenance_references: [],
-                },
-              ],
-              summary: {
-                lifecycle_state: "stale",
-                returned_count: 1,
-                total_count: 1,
-                order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
-              },
-              empty_state: { is_empty: false, message: "No stale handoff items are currently surfaced." },
-            },
-            expired: {
-              items: [],
-              summary: {
-                lifecycle_state: "expired",
-                returned_count: 0,
-                total_count: 0,
-                order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
-              },
-              empty_state: { is_empty: true, message: "No expired handoff items are currently surfaced." },
-            },
-          },
-          handoff_review_actions: [],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-
-    await captureChiefOfStaffHandoffReviewAction("https://api.example.com", {
-      user_id: "user-1",
-      handoff_item_id: "handoff-1",
-      review_action: "mark_stale",
-      thread_id: "thread-1",
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v0/chief-of-staff/handoff-review-actions",
-      expect.objectContaining({
-        method: "POST",
-        cache: "no-store",
-      }),
-    );
-  });
-
-  it("captures chief-of-staff execution routing actions through the deterministic seam", async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          routing_action: {
-            id: "routing-1",
-            capture_event_id: "capture-routing-1",
-            handoff_item_id: "handoff-1",
-            route_target: "task_workflow_draft",
-            transition: "routed",
-            previously_routed: false,
-            route_state: true,
-            reason: "Operator routed handoff 'handoff-1' to 'task_workflow_draft'.",
-            note: null,
-            provenance_references: [],
-            created_at: "2026-04-01T09:30:00Z",
-            updated_at: "2026-04-01T09:30:00Z",
-          },
-          execution_routing_summary: {
-            total_handoff_count: 1,
-            routed_handoff_count: 1,
-            unrouted_handoff_count: 0,
-            task_workflow_draft_count: 1,
-            approval_workflow_draft_count: 0,
-            follow_up_draft_only_count: 0,
-            route_target_order: ["task_workflow_draft", "approval_workflow_draft", "follow_up_draft_only"],
-            routed_item_order: ["handoff_rank_asc", "handoff_item_id_asc"],
-            audit_order: ["created_at_desc", "id_desc"],
-            transition_order: ["routed", "reaffirmed"],
-            approval_required: true,
-            non_autonomous_guarantee:
-              "No task, approval, connector send, or external side effect is executed by this endpoint.",
-            reason: "Routing transitions are explicit and auditable.",
-          },
-          routed_handoff_items: [],
-          routing_audit_trail: [],
-          execution_readiness_posture: {
-            posture: "approval_required_draft_only",
-            approval_required: true,
-            autonomous_execution: false,
-            external_side_effects_allowed: false,
-            approval_path_visible: true,
-            route_target_order: ["task_workflow_draft", "approval_workflow_draft", "follow_up_draft_only"],
-            required_route_targets: ["task_workflow_draft", "approval_workflow_draft"],
-            transition_order: ["routed", "reaffirmed"],
-            non_autonomous_guarantee:
-              "No task, approval, connector send, or external side effect is executed by this endpoint.",
-            reason: "Execution routing remains draft-only.",
-          },
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-
-    await captureChiefOfStaffExecutionRoutingAction("https://api.example.com", {
-      user_id: "user-1",
-      handoff_item_id: "handoff-1",
-      route_target: "task_workflow_draft",
-      thread_id: "thread-1",
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v0/chief-of-staff/execution-routing-actions",
-      expect.objectContaining({
-        method: "POST",
-        cache: "no-store",
-      }),
-    );
-  });
-
-  it("captures chief-of-staff handoff outcomes through the deterministic seam", async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          handoff_outcome: {
-            id: "handoff-outcome-1",
-            capture_event_id: "capture-handoff-outcome-1",
-            handoff_item_id: "handoff-1",
-            outcome_status: "executed",
-            previous_outcome_status: null,
-            is_latest_outcome: true,
-            reason: "Operator captured routed handoff outcome 'executed' for 'handoff-1'.",
-            note: null,
-            provenance_references: [],
-            created_at: "2026-04-07T09:30:00Z",
-            updated_at: "2026-04-07T09:30:00Z",
-          },
-          handoff_outcome_summary: {
-            returned_count: 1,
-            total_count: 1,
-            latest_total_count: 1,
-            status_counts: {
-              reviewed: 0,
-              approved: 0,
-              rejected: 0,
-              rewritten: 0,
-              executed: 1,
-              ignored: 0,
-              expired: 0,
-            },
-            latest_status_counts: {
-              reviewed: 0,
-              approved: 0,
-              rejected: 0,
-              rewritten: 0,
-              executed: 1,
-              ignored: 0,
-              expired: 0,
-            },
-            status_order: ["reviewed", "approved", "rejected", "rewritten", "executed", "ignored", "expired"],
-            order: ["created_at_desc", "id_desc"],
-          },
-          handoff_outcomes: [],
-          closure_quality_summary: {
-            posture: "healthy",
-            reason: "Closed-loop outcomes are leading with bounded unresolved and ignored outcomes.",
-            closed_loop_count: 1,
-            unresolved_count: 0,
-            rejected_count: 0,
-            ignored_count: 0,
-            expired_count: 0,
-            closure_rate: 1,
-            explanation: "Closure quality uses latest immutable outcomes.",
-          },
-          conversion_signal_summary: {
-            total_handoff_count: 1,
-            latest_outcome_count: 1,
-            executed_count: 1,
-            approved_count: 0,
-            reviewed_count: 0,
-            rewritten_count: 0,
-            rejected_count: 0,
-            ignored_count: 0,
-            expired_count: 0,
-            recommendation_to_execution_conversion_rate: 1,
-            recommendation_to_closure_conversion_rate: 1,
-            capture_coverage_rate: 1,
-            explanation: "Conversion signals are derived from latest immutable outcomes.",
-          },
-          stale_ignored_escalation_posture: {
-            posture: "watch",
-            reason: "No stale queue pressure or ignored/expired latest outcomes are currently detected.",
-            stale_queue_count: 0,
-            ignored_count: 0,
-            expired_count: 0,
-            trigger_count: 0,
-            guidance_posture_explanation:
-              "Guidance posture is derived from stale queue load plus ignored/expired latest outcome counts.",
-            supporting_signals: ["stale_queue_count=0", "ignored_count=0", "expired_count=0", "trigger_count=0"],
-          },
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-
-    await captureChiefOfStaffHandoffOutcome("https://api.example.com", {
-      user_id: "user-1",
-      handoff_item_id: "handoff-1",
-      outcome_status: "executed",
-      thread_id: "thread-1",
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v0/chief-of-staff/handoff-outcomes",
-      expect.objectContaining({
-        method: "POST",
-        cache: "no-store",
-      }),
     );
   });
 

@@ -20,7 +20,7 @@ def _resolve_python_executable() -> str:
 
 def main() -> int:
     command = [_resolve_python_executable(), str(TARGET_SCRIPT), *sys.argv[1:]]
-    print("MVP readiness compatibility alias -> scripts/run_phase2_readiness_gates.py", flush=True)
+    print("Compatibility readiness alias -> scripts/run_phase2_readiness_gates.py", flush=True)
     print(shlex.join(command), flush=True)
     completed = subprocess.run(
         command,

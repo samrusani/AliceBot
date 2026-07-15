@@ -108,6 +108,7 @@ from alicebot_api.contracts import (
     MemoryOperationGenerateInput,
     MemoryOperationListInput,
     TaskBriefCompileRequestInput,
+    TaskBriefingStrategy,
     TemporalExplainQueryInput,
     TemporalStateAtQueryInput,
     TemporalTimelineQueryInput,
@@ -119,6 +120,12 @@ from alicebot_api.config import get_settings
 from alicebot_api.db import user_connection
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user, sqlite_user_connection
 from alicebot_api.store import ContinuityStore, JsonObject, JsonValue
+from alicebot_api.surface_flags import (
+    LEGACY_SURFACES_ENV,
+    MCP_LEGACY_TOOLS_ENV,
+    legacy_surfaces_enabled,
+    mcp_legacy_tools_enabled,
+)
 from alicebot_api.temporal_state import (
     TemporalStateValidationError,
     get_temporal_explain,
@@ -249,8 +256,6 @@ _REVIEW_APPLY_TO_CORRECTION_ACTION = {
     "reject": "delete",
     "supersede-existing": "supersede",
 }
-MCP_LEGACY_TOOLS_ENV = "ALICE_MCP_LEGACY_TOOLS"
-_LEGACY_ENABLED_VALUES = {"1", "true", "yes", "on"}
 _DEFAULT_SENSITIVITY_ALLOWED = ("public", "internal", "private", "unknown")
 _RECALL_DEFAULT_LIMIT = 8
 _RECALL_MAX_LIMIT = 50
@@ -734,9 +739,6 @@ def _parse_task_brief_request(
     return TaskBriefCompileRequestInput(
         mode=normalized_mode,  # type: ignore[arg-type]
         query=_parse_optional_text(arguments, "query"),
-        workspace_id=_parse_optional_uuid(arguments, "workspace_id"),
-        pack_id=_parse_optional_text(arguments, "pack_id"),
-        pack_version=_parse_optional_text(arguments, "pack_version"),
         thread_id=_parse_optional_uuid(arguments, "thread_id"),
         task_id=_parse_optional_uuid(arguments, "task_id"),
         project=_parse_optional_text(arguments, "project"),
@@ -749,7 +751,10 @@ def _parse_task_brief_request(
             default=False,
         ),
         provider_strategy=_parse_optional_text(arguments, "provider_strategy"),
-        model_pack_strategy=_parse_optional_text(arguments, "model_pack_strategy"),
+        briefing_strategy=cast(
+            TaskBriefingStrategy | None,
+            _parse_optional_text(arguments, "briefing_strategy"),
+        ),
         token_budget=parsed_token_budget,
     )
 
@@ -1489,8 +1494,8 @@ def _handle_alice_task_brief_compare(
     primary_request = _parse_task_brief_request(arguments)
     secondary_arguments = dict(arguments)
     secondary_arguments["mode"] = compare_to_mode
-    if "compare_model_pack_strategy" in arguments:
-        secondary_arguments["model_pack_strategy"] = arguments["compare_model_pack_strategy"]
+    if "compare_briefing_strategy" in arguments:
+        secondary_arguments["briefing_strategy"] = arguments["compare_briefing_strategy"]
     if "compare_token_budget" in arguments:
         secondary_arguments["token_budget"] = arguments["compare_token_budget"]
 
@@ -5273,7 +5278,7 @@ _CONTINUITY_CAPTURE_CANDIDATE_SCHEMA: dict[str, object] = {
 }
 
 # The default MCP surface. Exactly these eleven tools are listed and callable
-# unless ALICE_MCP_LEGACY_TOOLS=1 also enables the legacy long tail below.
+# unless ALICE_MCP_LEGACY_TOOLS enables the legacy long tail below.
 _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
     {
         "name": "alice_capture",
@@ -6149,9 +6154,6 @@ _LEGACY_TOOL_DEFINITIONS: list[dict[str, object]] = [
                     "enum": ["user_recall", "resume", "worker_subtask", "agent_handoff"],
                 },
                 "query": {"type": "string"},
-                "workspace_id": {"type": "string", "format": "uuid"},
-                "pack_id": {"type": "string"},
-                "pack_version": {"type": "string"},
                 "thread_id": {"type": "string", "format": "uuid"},
                 "task_id": {"type": "string", "format": "uuid"},
                 "project": {"type": "string"},
@@ -6160,7 +6162,10 @@ _LEGACY_TOOL_DEFINITIONS: list[dict[str, object]] = [
                 "until": {"type": "string", "format": "date-time"},
                 "include_non_promotable_facts": {"type": "boolean"},
                 "provider_strategy": {"type": "string"},
-                "model_pack_strategy": {"type": "string"},
+                "briefing_strategy": {
+                    "type": "string",
+                    "enum": ["balanced", "compact", "detailed"],
+                },
                 "token_budget": {"type": "integer", "minimum": 1, "maximum": MAX_TASK_BRIEF_TOKEN_BUDGET},
             },
         },
@@ -6194,9 +6199,6 @@ _LEGACY_TOOL_DEFINITIONS: list[dict[str, object]] = [
                     "enum": ["user_recall", "resume", "worker_subtask", "agent_handoff"],
                 },
                 "query": {"type": "string"},
-                "workspace_id": {"type": "string", "format": "uuid"},
-                "pack_id": {"type": "string"},
-                "pack_version": {"type": "string"},
                 "thread_id": {"type": "string", "format": "uuid"},
                 "task_id": {"type": "string", "format": "uuid"},
                 "project": {"type": "string"},
@@ -6205,8 +6207,14 @@ _LEGACY_TOOL_DEFINITIONS: list[dict[str, object]] = [
                 "until": {"type": "string", "format": "date-time"},
                 "include_non_promotable_facts": {"type": "boolean"},
                 "provider_strategy": {"type": "string"},
-                "model_pack_strategy": {"type": "string"},
-                "compare_model_pack_strategy": {"type": "string"},
+                "briefing_strategy": {
+                    "type": "string",
+                    "enum": ["balanced", "compact", "detailed"],
+                },
+                "compare_briefing_strategy": {
+                    "type": "string",
+                    "enum": ["balanced", "compact", "detailed"],
+                },
                 "token_budget": {"type": "integer", "minimum": 1, "maximum": MAX_TASK_BRIEF_TOKEN_BUDGET},
                 "compare_token_budget": {
                     "type": "integer",
@@ -7043,6 +7051,13 @@ _TOOL_HANDLERS = {
 
 _CORE_TOOL_NAMES = frozenset(str(tool["name"]) for tool in _CORE_TOOL_DEFINITIONS)
 _LEGACY_TOOL_NAMES = frozenset(str(tool["name"]) for tool in _LEGACY_TOOL_DEFINITIONS)
+_TASK_BRIEF_TOOL_NAMES = frozenset(
+    {
+        "alice_task_brief",
+        "alice_task_brief_show",
+        "alice_task_brief_compare",
+    }
+)
 _TOOL_DEFINITIONS_BY_NAME = {str(tool["name"]): tool for tool in (*_CORE_TOOL_DEFINITIONS, *_LEGACY_TOOL_DEFINITIONS)}
 
 
@@ -7234,12 +7249,19 @@ def _legacy_tools_enabled() -> bool:
     # as a key-bound agent, even if the opt-in legacy flag is also set.
     if (os.environ.get(AGENT_API_KEY_ENV) or "").strip():
         return False
-    return os.environ.get(MCP_LEGACY_TOOLS_ENV, "").strip().casefold() in _LEGACY_ENABLED_VALUES
+    return mcp_legacy_tools_enabled()
 
 
 def _enabled_tool_definitions() -> list[dict[str, object]]:
     if _legacy_tools_enabled():
-        return [*_CORE_TOOL_DEFINITIONS, *_LEGACY_TOOL_DEFINITIONS]
+        legacy_definitions = _LEGACY_TOOL_DEFINITIONS
+        if not legacy_surfaces_enabled():
+            legacy_definitions = [
+                definition
+                for definition in legacy_definitions
+                if str(definition["name"]) not in _TASK_BRIEF_TOOL_NAMES
+            ]
+        return [*_CORE_TOOL_DEFINITIONS, *legacy_definitions]
     return list(_CORE_TOOL_DEFINITIONS)
 
 
@@ -7265,6 +7287,11 @@ def call_mcp_tool(
         raise MCPToolNotFoundError(
             f"tool '{name}' is part of the legacy MCP surface and is currently disabled; "
             f"set {MCP_LEGACY_TOOLS_ENV}=1 in the MCP server environment to enable legacy tools"
+        )
+    if name in _TASK_BRIEF_TOOL_NAMES and not legacy_surfaces_enabled():
+        raise MCPToolNotFoundError(
+            f"tool '{name}' is part of the legacy task surface and is currently disabled; "
+            f"set {LEGACY_SURFACES_ENV}=1 in addition to {MCP_LEGACY_TOOLS_ENV} to enable it"
         )
 
     parsed_arguments = _normalize_arguments(arguments)

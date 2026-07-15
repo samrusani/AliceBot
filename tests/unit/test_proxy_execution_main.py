@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from uuid import uuid4
 
 import alicebot_api.main as main_module
+from alicebot_api import proxy_execution as proxy_execution_module
 from alicebot_api.config import Settings
 from alicebot_api.approvals import ApprovalNotFoundError
 from alicebot_api.proxy_execution import (
@@ -75,7 +76,11 @@ def test_execute_approved_proxy_endpoint_returns_payload(monkeypatch) -> None:
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "execute_approved_proxy_request", fake_execute_approved_proxy_request)
+    monkeypatch.setattr(
+        proxy_execution_module,
+        "execute_approved_proxy_request",
+        fake_execute_approved_proxy_request,
+    )
 
     response = main_module.execute_approved_proxy(
         approval_id,
@@ -112,7 +117,11 @@ def test_execute_approved_proxy_endpoint_maps_missing_approval_to_404(monkeypatc
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "execute_approved_proxy_request", fake_execute_approved_proxy_request)
+    monkeypatch.setattr(
+        proxy_execution_module,
+        "execute_approved_proxy_request",
+        fake_execute_approved_proxy_request,
+    )
 
     response = main_module.execute_approved_proxy(
         approval_id,
@@ -139,7 +148,11 @@ def test_execute_approved_proxy_endpoint_maps_blocked_approval_to_409(monkeypatc
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "execute_approved_proxy_request", fake_execute_approved_proxy_request)
+    monkeypatch.setattr(
+        proxy_execution_module,
+        "execute_approved_proxy_request",
+        fake_execute_approved_proxy_request,
+    )
 
     response = main_module.execute_approved_proxy(
         approval_id,
@@ -168,7 +181,11 @@ def test_execute_approved_proxy_endpoint_maps_missing_handler_to_409(monkeypatch
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "execute_approved_proxy_request", fake_execute_approved_proxy_request)
+    monkeypatch.setattr(
+        proxy_execution_module,
+        "execute_approved_proxy_request",
+        fake_execute_approved_proxy_request,
+    )
 
     response = main_module.execute_approved_proxy(
         approval_id,
@@ -197,7 +214,11 @@ def test_execute_approved_proxy_endpoint_maps_linkage_error_to_409(monkeypatch) 
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "execute_approved_proxy_request", fake_execute_approved_proxy_request)
+    monkeypatch.setattr(
+        proxy_execution_module,
+        "execute_approved_proxy_request",
+        fake_execute_approved_proxy_request,
+    )
 
     response = main_module.execute_approved_proxy(
         approval_id,
@@ -278,7 +299,11 @@ def test_execute_approved_proxy_endpoint_returns_budget_blocked_payload(monkeypa
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "execute_approved_proxy_request", fake_execute_approved_proxy_request)
+    monkeypatch.setattr(
+        proxy_execution_module,
+        "execute_approved_proxy_request",
+        fake_execute_approved_proxy_request,
+    )
 
     response = main_module.execute_approved_proxy(
         approval_id,
@@ -363,7 +388,11 @@ def test_execute_approved_proxy_endpoint_returns_invalid_context_budget_blocked_
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "execute_approved_proxy_request", fake_execute_approved_proxy_request)
+    monkeypatch.setattr(
+        proxy_execution_module,
+        "execute_approved_proxy_request",
+        fake_execute_approved_proxy_request,
+    )
 
     response = main_module.execute_approved_proxy(
         approval_id,

@@ -41,6 +41,11 @@ CORE_TOOL_NAMES = [
     "alice_memory_manage",
     "alice_explain",
 ]
+TASK_BRIEF_TOOL_NAMES = {
+    "alice_task_brief",
+    "alice_task_brief_show",
+    "alice_task_brief_compare",
+}
 
 _DESCRIPTION_JARGON = ("continuity object", "bridge policy", "posture", "vnext", "deterministic")
 
@@ -59,11 +64,15 @@ _INVALID_CONFIDENCE_CASES = [
 @pytest.fixture
 def core_surface(monkeypatch) -> None:
     monkeypatch.delenv(mcp_tools_module.MCP_LEGACY_TOOLS_ENV, raising=False)
+    monkeypatch.delenv(mcp_tools_module.LEGACY_SURFACES_ENV, raising=False)
+    monkeypatch.delenv(mcp_tools_module.AGENT_API_KEY_ENV, raising=False)
 
 
 @pytest.fixture
 def legacy_tools_enabled(monkeypatch) -> None:
     monkeypatch.setenv(mcp_tools_module.MCP_LEGACY_TOOLS_ENV, "1")
+    monkeypatch.setenv(mcp_tools_module.LEGACY_SURFACES_ENV, "1")
+    monkeypatch.delenv(mcp_tools_module.AGENT_API_KEY_ENV, raising=False)
 
 
 @pytest.fixture
@@ -121,6 +130,108 @@ def test_legacy_flag_exposes_the_long_tail_after_the_core_tools(legacy_tools_ena
         "alice_vnext_scheduler_resume",
     ):
         assert legacy_name in names
+
+
+@pytest.mark.parametrize(
+    ("mcp_legacy_value", "legacy_surfaces_value", "expected_count", "task_briefs_enabled"),
+    [
+        pytest.param(None, None, 11, False, id="both-disabled"),
+        pytest.param("1", None, 73, False, id="mcp-long-tail-only"),
+        pytest.param(None, "1", 11, False, id="legacy-http-only"),
+        pytest.param("1", "1", 76, True, id="both-enabled"),
+    ],
+)
+def test_mcp_gate_combinations_have_exact_tool_counts(
+    monkeypatch,
+    mcp_legacy_value: str | None,
+    legacy_surfaces_value: str | None,
+    expected_count: int,
+    task_briefs_enabled: bool,
+) -> None:
+    monkeypatch.delenv(mcp_tools_module.AGENT_API_KEY_ENV, raising=False)
+    for name, value in (
+        (mcp_tools_module.MCP_LEGACY_TOOLS_ENV, mcp_legacy_value),
+        (mcp_tools_module.LEGACY_SURFACES_ENV, legacy_surfaces_value),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+    names = [str(tool["name"]) for tool in list_mcp_tools()]
+
+    assert len(names) == len(set(names)) == expected_count
+    assert names[: len(CORE_TOOL_NAMES)] == CORE_TOOL_NAMES
+    assert TASK_BRIEF_TOOL_NAMES.issubset(names) is task_briefs_enabled
+
+
+@pytest.mark.parametrize("enabled_value", ["1", "true", "TRUE", "yes", "on", " On "])
+def test_mcp_long_tail_preserves_preexisting_truthy_flag_values(monkeypatch, enabled_value: str) -> None:
+    monkeypatch.setenv(mcp_tools_module.MCP_LEGACY_TOOLS_ENV, enabled_value)
+    monkeypatch.delenv(mcp_tools_module.LEGACY_SURFACES_ENV, raising=False)
+    monkeypatch.delenv(mcp_tools_module.AGENT_API_KEY_ENV, raising=False)
+
+    assert len(list_mcp_tools()) == 73
+
+
+def test_task_brief_mcp_tools_use_neutral_public_arguments(legacy_tools_enabled) -> None:
+    tools = {str(tool["name"]): tool for tool in list_mcp_tools()}
+    forbidden_arguments = {
+        "workspace_id",
+        "pack_id",
+        "pack_version",
+        "model_pack_strategy",
+        "compare_model_pack_strategy",
+    }
+
+    compile_properties = tools["alice_task_brief"]["inputSchema"]["properties"]
+    compare_properties = tools["alice_task_brief_compare"]["inputSchema"]["properties"]
+
+    assert forbidden_arguments.isdisjoint(compile_properties)
+    assert forbidden_arguments.isdisjoint(compare_properties)
+    assert compile_properties["briefing_strategy"]["enum"] == ["balanced", "compact", "detailed"]
+    assert compare_properties["compare_briefing_strategy"]["enum"] == ["balanced", "compact", "detailed"]
+
+
+def test_task_brief_mcp_tools_require_both_gates_and_reject_old_arguments(monkeypatch) -> None:
+    monkeypatch.setenv(mcp_tools_module.MCP_LEGACY_TOOLS_ENV, "1")
+    monkeypatch.delenv(mcp_tools_module.LEGACY_SURFACES_ENV, raising=False)
+    monkeypatch.delenv(mcp_tools_module.AGENT_API_KEY_ENV, raising=False)
+
+    with pytest.raises(MCPToolNotFoundError, match="ALICE_LEGACY_SURFACES"):
+        call_mcp_tool(_mcp_context(), name="alice_task_brief", arguments={"mode": "resume"})
+
+    monkeypatch.setenv(mcp_tools_module.LEGACY_SURFACES_ENV, "1")
+    monkeypatch.setitem(
+        mcp_tools_module._TOOL_HANDLERS,
+        "alice_task_brief",
+        lambda _context, arguments: {"arguments": dict(arguments)},
+    )
+
+    assert call_mcp_tool(
+        _mcp_context(),
+        name="alice_task_brief",
+        arguments={"mode": "resume", "briefing_strategy": "compact"},
+    ) == {"arguments": {"briefing_strategy": "compact", "mode": "resume"}}
+    with pytest.raises(MCPToolError, match="does not accept additional properties: model_pack_strategy"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_task_brief",
+            arguments={"mode": "resume", "model_pack_strategy": "compact"},
+        )
+
+
+def test_mcp_tool_names_fence_deleted_surface_vocabulary() -> None:
+    # The base registry had no such names, so this is a forward-looking fence;
+    # the old-failing proof is the neutral task-brief argument test above.
+    forbidden_fragments = ("telegram", "chief_of_staff", "model_pack", "hosted", "response", "_chat_")
+    names = set(mcp_tools_module._CORE_TOOL_NAMES) | set(mcp_tools_module._LEGACY_TOOL_NAMES)
+
+    assert not {
+        name
+        for name in names
+        if any(fragment in name for fragment in forbidden_fragments)
+    }
 
 
 def test_every_tool_definition_has_a_handler_and_vice_versa() -> None:
@@ -6039,8 +6150,11 @@ def test_core_mcp_authentication_fails_before_the_tool_handler(monkeypatch) -> N
 def test_key_bound_mcp_server_hides_and_rejects_the_legacy_surface(monkeypatch) -> None:
     context, _store = _key_bound_context_and_store(monkeypatch)
     monkeypatch.setenv(mcp_tools_module.MCP_LEGACY_TOOLS_ENV, "1")
+    monkeypatch.setenv(mcp_tools_module.LEGACY_SURFACES_ENV, "1")
 
-    listed = {str(tool["name"]) for tool in list_mcp_tools()}
+    listed_tools = list_mcp_tools()
+    listed = {str(tool["name"]) for tool in listed_tools}
+    assert len(listed_tools) == 11
     assert listed == set(CORE_TOOL_NAMES)
     assert "alice_recall_debug" not in listed
 

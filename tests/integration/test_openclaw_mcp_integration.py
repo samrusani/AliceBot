@@ -15,7 +15,19 @@ from alicebot_api.store import ContinuityStore
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OPENCLAW_FIXTURE_PATH = REPO_ROOT / "fixtures" / "openclaw" / "workspace_v1.json"
-THREAD_ID = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+CORE_TOOL_NAMES = {
+    "alice_capture",
+    "alice_recall",
+    "alice_resume",
+    "alice_context_pack",
+    "alice_open_loops",
+    "alice_recent_decisions",
+    "alice_memory_review",
+    "alice_memory_correct",
+    "alice_explain",
+    "alice_memory_commit",
+    "alice_memory_manage",
+}
 
 
 def seed_user(database_url: str, *, email: str) -> UUID:
@@ -29,9 +41,8 @@ def build_runtime_env(*, database_url: str, user_id: UUID) -> dict[str, str]:
     env = os.environ.copy()
     env["DATABASE_URL"] = database_url
     env["ALICEBOT_AUTH_USER_ID"] = str(user_id)
-    # These suites exercise the legacy long-tail tools as well as the core
-    # nine, so enable the legacy MCP surface for the spawned server.
-    env["ALICE_MCP_LEGACY_TOOLS"] = "1"
+    env.pop("ALICE_MCP_LEGACY_TOOLS", None)
+    env.pop("ALICE_LEGACY_SURFACES", None)
     pythonpath_entries = [str(REPO_ROOT / "apps" / "api" / "src"), str(REPO_ROOT / "workers")]
     existing_pythonpath = env.get("PYTHONPATH")
     if existing_pythonpath:
@@ -148,26 +159,79 @@ def test_openclaw_imported_data_is_usable_from_shipped_mcp_recall_and_resume_too
         assert summary["imported_count"] == 4
         assert summary["provenance_source_label"] == "OpenClaw"
 
+    fixture = json.loads(OPENCLAW_FIXTURE_PATH.read_text(encoding="utf-8"))
+    imported_items = fixture["durable_memory"]
+    imported_decision = next(item for item in imported_items if item["type"] == "decision")
+    imported_next_action = next(item for item in imported_items if item["type"] == "next_action")
+
     client = start_mcp_client(database_url=migrated_database_urls["app"], user_id=user_id)
     try:
-        # Imported OpenClaw data lands in the legacy continuity store, which is
-        # served by the flag-gated debug views rather than the canonical vNext
-        # core recall/resume tools.
+        listed_tools = client.request("tools/list")["result"]["tools"]
+        listed_names = {tool["name"] for tool in listed_tools}
+        assert len(listed_tools) == 11
+        assert listed_names == CORE_TOOL_NAMES
+
+        # The importer preserves its source archive and continuity records. A
+        # user can then promote selected imported records into the canonical
+        # memory plane through the default core tool, retaining source links.
+        decision_commit = _call_tool(
+            client,
+            name="alice_memory_commit",
+            arguments={
+                "title": "OpenClaw interoperability decision",
+                "canonical_text": imported_decision["content"],
+                "memory_type": "decision",
+                "domain": "project",
+                "sensitivity": "internal",
+                "confidence": imported_decision["confidence"],
+                "source_refs": [
+                    f"openclaw:{imported_decision['id']}",
+                    f"continuity-object:{summary['imported_object_ids'][0]}",
+                ],
+                "rationale": "Promote the user-selected OpenClaw import into canonical memory.",
+                "idempotency_key": "openclaw-core-decision",
+            },
+        )
+        next_action_commit = _call_tool(
+            client,
+            name="alice_memory_commit",
+            arguments={
+                "title": "OpenClaw import verification",
+                "canonical_text": imported_next_action["content"],
+                "memory_type": "open_loop",
+                "domain": "project",
+                "sensitivity": "internal",
+                "confidence": imported_next_action["confidence"],
+                "source_refs": [
+                    f"openclaw:{imported_next_action['id']}",
+                    f"continuity-object:{summary['imported_object_ids'][1]}",
+                ],
+                "rationale": "Promote the user-selected OpenClaw import into canonical memory.",
+                "idempotency_key": "openclaw-core-next-action",
+            },
+        )
+        assert decision_commit["status"] == "committed"
+        assert next_action_commit["status"] == "committed"
+        decision_source_refs = decision_commit["memory"]["metadata_json"]["agentic_memory"]["source_refs"]
+        next_action_source_refs = next_action_commit["memory"]["metadata_json"]["agentic_memory"]["source_refs"]
+        assert f"openclaw:{imported_decision['id']}" in decision_source_refs
+        assert f"continuity-object:{summary['imported_object_ids'][0]}" in decision_source_refs
+        assert f"openclaw:{imported_next_action['id']}" in next_action_source_refs
+        assert f"continuity-object:{summary['imported_object_ids'][1]}" in next_action_source_refs
+
         recall_payload = _call_tool(
             client,
-            name="alice_recall_debug",
+            name="alice_recall",
             arguments={
-                "thread_id": str(THREAD_ID),
-                "project": "Alice Public Core",
-                "query": "MCP tool surface",
-                "limit": 20,
+                "query": "OpenClaw MCP tool surface import verification",
+                "limit": 10,
             },
         )
         resume_payload = _call_tool(
             client,
-            name="alice_resume_debug",
+            name="alice_resume",
             arguments={
-                "thread_id": str(THREAD_ID),
+                "query": "OpenClaw",
                 "max_recent_changes": 10,
                 "max_open_loops": 10,
             },
@@ -175,14 +239,14 @@ def test_openclaw_imported_data_is_usable_from_shipped_mcp_recall_and_resume_too
     finally:
         client.close()
 
-    assert recall_payload["summary"]["returned_count"] >= 1
-    assert any(item["provenance"]["source_kind"] == "openclaw_import" for item in recall_payload["items"])
-    assert any(item["provenance"].get("source_label") == "OpenClaw" for item in recall_payload["items"])
+    recalled_text = {item["text"] for item in recall_payload["results"]}
+    assert recall_payload["count"] == 2
+    assert imported_decision["content"] in recalled_text
+    assert imported_next_action["content"] in recalled_text
 
     brief = resume_payload["brief"]
-    assert brief["last_decision"]["item"] is not None
-    assert brief["last_decision"]["item"]["provenance"]["source_kind"] == "openclaw_import"
-    assert brief["last_decision"]["item"]["provenance"]["source_label"] == "OpenClaw"
-    assert brief["next_action"]["item"] is not None
-    assert brief["next_action"]["item"]["provenance"]["source_kind"] == "openclaw_import"
-    assert brief["next_action"]["item"]["provenance"]["source_label"] == "OpenClaw"
+    assert brief["mode"] == "vnext"
+    assert brief["last_decision"]["canonical_text"] == imported_decision["content"]
+    assert brief["last_decision"]["memory_type"] == "decision"
+    assert brief["next_action"]["canonical_text"] == imported_next_action["content"]
+    assert brief["next_action"]["memory_type"] == "open_loop"

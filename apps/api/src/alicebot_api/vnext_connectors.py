@@ -14,10 +14,9 @@ from pathlib import Path
 import tempfile
 import time
 from typing import Any, Protocol, cast
-from urllib import parse, request
 from uuid import uuid4
 
-from alicebot_api.telegram_channels import normalize_telegram_update
+from alicebot_api.connector_payloads import ConnectorPayloadValidationError, normalize_telegram_source_item
 from alicebot_api.vnext_capture import SourceCaptureInput, VNextCaptureService, VNextCaptureStore
 from alicebot_api.vnext_embeddings import DeferredMemoryEmbedding
 from alicebot_api.vnext_event_log import append_event
@@ -119,13 +118,6 @@ class ConnectorSyncResult:
 
 
 @dataclass(frozen=True, slots=True)
-class TelegramPollContext:
-    token: str
-    cursor: str | None
-    secret_ref: str
-
-
-@dataclass(frozen=True, slots=True)
 class LocalFolderScan:
     items: tuple[JsonObject, ...]
     path_count: int
@@ -157,14 +149,14 @@ class AgentOutputIngestResult:
 SUPPORTED_CONNECTORS: tuple[ConnectorDefinition, ...] = (
     ConnectorDefinition(
         name="telegram",
-        display_name="Telegram capture",
-        phase="phase_2",
+        display_name="Telegram source import",
+        phase="on_demand",
         source_type="telegram_message",
         default_domain="personal",
         default_sensitivity="private",
-        raw_evidence_kind="telegram_webhook_json",
+        raw_evidence_kind="telegram_source_json",
         cursor_field="provider_update_id",
-        description="Captures already-received Telegram webhook payloads into raw source evidence.",
+        description="Imports operator-supplied Telegram payloads into allowlisted raw source evidence.",
     ),
     ConnectorDefinition(
         name="browser_clipper",
@@ -329,6 +321,17 @@ def _as_optional_text(value: object) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _telegram_source_config(value: object) -> JsonObject:
+    """Keep only the allowlist used by operator-supplied Telegram source imports."""
+
+    if not isinstance(value, dict):
+        return {}
+    allowed_chat_ids = value.get("allowed_chat_ids")
+    if not isinstance(allowed_chat_ids, list):
+        return {}
+    return {"allowed_chat_ids": list(allowed_chat_ids)}
 
 
 def _required_text(payload: Mapping[str, object], keys: Sequence[str], *, connector_name: str) -> str:
@@ -564,7 +567,10 @@ def _agent_artifact_type(output_type: str | None) -> str:
 
 
 def _normalize_telegram_item(payload: JsonObject) -> NormalizedConnectorItem:
-    normalized = normalize_telegram_update(cast(dict[str, Any], payload), bot_username=None)
+    try:
+        normalized = normalize_telegram_source_item(cast(dict[str, Any], payload))
+    except ConnectorPayloadValidationError as exc:
+        raise VNextConnectorValidationError(str(exc)) from exc
     text = normalized["message_text"].strip()
     if text == "":
         raise VNextConnectorValidationError("telegram item requires non-empty message text")
@@ -914,41 +920,6 @@ def load_connector_items_from_file(path: str | Path) -> list[JsonObject]:
     return items
 
 
-def poll_telegram_updates(
-    context: TelegramPollContext,
-    *,
-    timeout: int = 10,
-    limit: int = 100,
-    retries: int = 1,
-) -> list[JsonObject]:
-    """Poll Telegram without requiring or retaining a database connection."""
-
-    query: dict[str, str] = {"timeout": str(timeout), "limit": str(limit)}
-    if context.cursor is not None and context.cursor.isdecimal():
-        query["offset"] = str(int(context.cursor) + 1)
-    url = f"https://api.telegram.org/bot{parse.quote(context.token)}/getUpdates?{parse.urlencode(query)}"
-    last_error: Exception | None = None
-    attempts = max(1, retries + 1)
-    for attempt in range(attempts):
-        try:
-            with request.urlopen(  # noqa: S310 - Telegram Bot API endpoint.
-                url,
-                timeout=timeout + 5,
-            ) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            break
-        except Exception as exc:  # noqa: BLE001 - normalized at connector boundary
-            last_error = exc
-            if attempt + 1 < attempts:
-                time.sleep(min(2.0, 0.25 * (2**attempt)))
-                continue
-    else:
-        raise VNextConnectorValidationError("telegram polling failed") from last_error
-    if not isinstance(payload, dict) or payload.get("ok") is not True or not isinstance(payload.get("result"), list):
-        raise VNextConnectorValidationError("telegram polling returned an invalid response")
-    return [cast(JsonObject, item) for item in payload["result"] if isinstance(item, dict)]
-
-
 def scan_local_folder(
     paths: Sequence[str | Path],
     *,
@@ -1063,13 +1034,11 @@ class VNextConnectorService:
     def _default_setting_payload(self, connector_name: str) -> JsonObject:
         definition = get_connector_definition(connector_name)
         sync_mode = (
-            "polling"
-            if definition.name == "telegram"
-            else "watch"
+            "watch"
             if definition.name == "local_folder"
             else "on_demand"
         )
-        interval = 60 if definition.name == "telegram" else 30 if definition.name == "local_folder" else None
+        interval = 30 if definition.name == "local_folder" else None
         return {
             "connector_name": definition.name,
             "enabled": False,
@@ -1089,10 +1058,12 @@ class VNextConnectorService:
         config_json = cast(dict[str, object], metadata).get("config_json") if isinstance(metadata, dict) else {}
         if not isinstance(config_json, dict):
             config_json = {}
+        if definition.name == "telegram":
+            config_json = _telegram_source_config(config_json)
         validation_errors = row.get("validation_errors_json")
         if not isinstance(validation_errors, list):
             validation_errors = []
-        secret_ref = _as_optional_text(row.get("secret_ref"))
+        secret_ref = None if definition.name == "telegram" else _as_optional_text(row.get("secret_ref"))
         return {
             "connector_id": str(row.get("id")) if row.get("id") is not None else None,
             "connector_name": definition.name,
@@ -1102,8 +1073,8 @@ class VNextConnectorService:
             "secret_configured": bool(secret_ref),
             "default_domain": row.get("default_domain") or definition.default_domain,
             "default_sensitivity": row.get("default_sensitivity") or definition.default_sensitivity,
-            "sync_mode": row.get("sync_mode") or "manual",
-            "poll_interval_seconds": row.get("poll_interval_seconds"),
+            "sync_mode": "on_demand" if definition.name == "telegram" else row.get("sync_mode") or "manual",
+            "poll_interval_seconds": None if definition.name == "telegram" else row.get("poll_interval_seconds"),
             "config_json": cast(JsonObject, config_json),
             "validation_errors": validation_errors,
             "created_at": row.get("created_at"),
@@ -1163,6 +1134,14 @@ class VNextConnectorService:
         config_json: JsonObject | None = None,
     ) -> JsonObject:
         definition = get_connector_definition(connector_name)
+        if definition.name == "telegram" and (
+            secret_ref is not None
+            or poll_interval_seconds is not None
+            or sync_mode not in {None, "on_demand"}
+        ):
+            raise VNextConnectorValidationError(
+                "telegram source ingestion is on-demand and does not accept polling or secret configuration"
+            )
         existing_config = self.get_config(definition.name)
         existing_config_json = (
             existing_config.get("config_json") if isinstance(existing_config.get("config_json"), dict) else {}
@@ -1179,14 +1158,14 @@ class VNextConnectorService:
             raise VNextConnectorValidationError(f"invalid connector default sensitivity: {sensitivity}")
         incoming_config = cast(JsonObject, redact_secret_fields(config_json or {}))
         sanitized_config = cast(JsonObject, {**cast(dict[str, object], existing_config_json), **incoming_config})
+        if definition.name == "telegram":
+            sanitized_config = _telegram_source_config(sanitized_config)
         existing_sync_mode = _as_optional_text(existing_config.get("sync_mode"))
         normalized_sync_mode = (
             sync_mode
             or existing_sync_mode
             or (
-                "polling"
-                if definition.name == "telegram"
-                else "watch"
+                "watch"
                 if definition.name == "local_folder"
                 else "on_demand"
             )
@@ -1197,6 +1176,10 @@ class VNextConnectorService:
         resolved_poll_interval = (
             poll_interval_seconds if poll_interval_seconds is not None else existing_config.get("poll_interval_seconds")
         )
+        if definition.name == "telegram":
+            normalized_sync_mode = "on_demand"
+            resolved_secret_ref = None
+            resolved_poll_interval = None
         validation_errors: list[str] = []
         if definition.name == "telegram":
             allowed = sanitized_config.get("allowed_chat_ids")
@@ -1204,8 +1187,6 @@ class VNextConnectorService:
                 item for item in allowed if isinstance(item, (str, int)) and str(item).strip()
             ]:
                 validation_errors.append("allowed_chat_ids_required")
-            if not resolved_secret_ref:
-                validation_errors.append("secret_ref_required")
         if definition.name == "local_folder":
             paths = sanitized_config.get("paths")
             if enabled and (not isinstance(paths, list) or len(paths) == 0):
@@ -1264,7 +1245,28 @@ class VNextConnectorService:
         if events:
             payload = events[0].get("payload_json")
             if isinstance(payload, dict):
-                return cast(JsonObject, payload)
+                config = cast(JsonObject, {**payload})
+                if definition.name == "telegram":
+                    validation_errors = payload.get("validation_errors")
+                    if not isinstance(validation_errors, list):
+                        validation_errors = []
+                    config = {
+                        "connector_name": "telegram",
+                        "enabled": bool(payload.get("enabled")),
+                        "configured": bool(payload.get("configured")),
+                        "secret_ref": None,
+                        "secret_configured": False,
+                        "default_domain": payload.get("default_domain") or definition.default_domain,
+                        "default_sensitivity": (
+                            payload.get("default_sensitivity") or definition.default_sensitivity
+                        ),
+                        "sync_mode": "on_demand",
+                        "poll_interval_seconds": None,
+                        "config_json": _telegram_source_config(payload.get("config_json")),
+                        "validation_errors": validation_errors,
+                        "updated_at": payload.get("updated_at"),
+                    }
+                return config
         return {
             "connector_name": definition.name,
             "enabled": False,
@@ -1273,7 +1275,7 @@ class VNextConnectorService:
             "secret_configured": False,
             "default_domain": definition.default_domain,
             "default_sensitivity": definition.default_sensitivity,
-            "sync_mode": "manual",
+            "sync_mode": "on_demand" if definition.name == "telegram" else "manual",
             "poll_interval_seconds": None,
             "config_json": {},
             "validation_errors": [],
@@ -1386,6 +1388,10 @@ class VNextConnectorService:
 
     def set_connector_secret(self, connector_name: str, *, secret_ref: str, secret_value: str) -> JsonObject:
         definition = get_connector_definition(connector_name)
+        if definition.name == "telegram":
+            raise VNextConnectorValidationError(
+                "telegram source ingestion does not accept or store connector secrets"
+            )
         if not secret_value.strip():
             raise VNextConnectorValidationError("connector secret value is required")
         self.secret_provider.set_secret(secret_ref, secret_value)
@@ -1485,7 +1491,7 @@ class VNextConnectorService:
                 )
                 continue
             accepted.append(update)
-        result = self.sync_items(
+        result = self._sync_items(
             "telegram",
             accepted,
             default_domain=default_domain,
@@ -1495,57 +1501,6 @@ class VNextConnectorService:
             safe_cursor_override=safe_cursor,
         )
         return result
-
-    def fetch_telegram_updates(
-        self,
-        *,
-        bot_token: str | None = None,
-        bot_token_env: str = "TELEGRAM_BOT_TOKEN",
-        timeout: int = 10,
-        limit: int = 100,
-        retries: int = 1,
-    ) -> list[JsonObject]:
-        context = self.prepare_telegram_poll(
-            bot_token=bot_token,
-            bot_token_env=bot_token_env,
-        )
-        try:
-            return poll_telegram_updates(
-                context,
-                timeout=timeout,
-                limit=limit,
-                retries=retries,
-            )
-        except VNextConnectorValidationError as exc:
-            self._log_event(
-                event_type="connector.sync_failed",
-                connector_name="telegram",
-                payload={
-                    "connector_name": "telegram",
-                    "error_type": type(exc.__cause__ or exc).__name__,
-                    "error_message": str(exc),
-                    "sync_cursor": context.cursor,
-                    "secret_ref": context.secret_ref,
-                    "attempts": max(1, retries + 1),
-                },
-            )
-            raise
-
-    def prepare_telegram_poll(
-        self,
-        *,
-        bot_token: str | None = None,
-        bot_token_env: str = "TELEGRAM_BOT_TOKEN",
-    ) -> TelegramPollContext:
-        """Resolve durable poll inputs in a short database transaction."""
-
-        config = self.get_config("telegram")
-        secret_ref = _as_optional_text(config.get("secret_ref")) or f"env:{bot_token_env}"
-        token = bot_token or self._resolve_secret(secret_ref) or os.environ.get(bot_token_env)
-        if not token:
-            raise VNextConnectorValidationError("telegram bot token is not configured")
-        cursor = self.get_cursor("telegram")
-        return TelegramPollContext(token=token, cursor=cursor, secret_ref=secret_ref)
 
     def sync_local_folder(
         self,
@@ -1822,6 +1777,34 @@ class VNextConnectorService:
         extra_skipped_count: int = 0,
         safe_cursor_override: str | None = None,
     ) -> ConnectorSyncResult:
+        definition = get_connector_definition(connector_name)
+        if definition.name == "telegram":
+            raise VNextConnectorValidationError(
+                "telegram items require sync_telegram_updates with an explicit chat allowlist"
+            )
+        return self._sync_items(
+            definition.name,
+            items,
+            default_domain=default_domain,
+            default_sensitivity=default_sensitivity,
+            use_cursor=use_cursor,
+            original_item_count=original_item_count,
+            extra_skipped_count=extra_skipped_count,
+            safe_cursor_override=safe_cursor_override,
+        )
+
+    def _sync_items(
+        self,
+        connector_name: str,
+        items: Sequence[Mapping[str, object]],
+        *,
+        default_domain: str | None = None,
+        default_sensitivity: str | None = None,
+        use_cursor: bool = True,
+        original_item_count: int | None = None,
+        extra_skipped_count: int = 0,
+        safe_cursor_override: str | None = None,
+    ) -> ConnectorSyncResult:
         started_at = time.perf_counter()
         definition = get_connector_definition(connector_name)
         config = self.get_config(definition.name)
@@ -2004,7 +1987,6 @@ __all__ = [
     "LocalFolderScan",
     "NormalizedConnectorItem",
     "SUPPORTED_CONNECTORS",
-    "TelegramPollContext",
     "VNextConnectorService",
     "VNextConnectorStore",
     "VNextConnectorValidationError",
@@ -2012,6 +1994,5 @@ __all__ = [
     "list_connector_definitions",
     "load_connector_items_from_file",
     "normalize_connector_item",
-    "poll_telegram_updates",
     "scan_local_folder",
 ]

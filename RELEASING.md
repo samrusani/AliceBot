@@ -1,7 +1,7 @@
 # Releasing Alice
 
-`v0.10.4` is the latest published release. Preparing a future candidate
-does not authorize a tag, PyPI upload, or GitHub Release.
+`v0.10.4` is the latest published release. `v0.11.0` is the current unpublished candidate.
+Preparing it does not authorize a tag, PyPI upload, or GitHub Release.
 
 ## One Release Identity
 

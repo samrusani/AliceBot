@@ -8,4 +8,8 @@ These documents describe how earlier versions of Alice were planned and shipped.
 - They do not describe current behavior, scope, or roadmap.
 - Internal links inside these files may be stale; they were written against older repo layouts.
 
+The [Phase 2 and Phase 3 closeout history](phase2-phase3-closeout-history.md)
+explains why those former live runbooks were retired and where current scope is
+defined.
+
 For current documentation, start at the repository [README](../../../README.md) and [docs/alpha/quickstart.md](../../alpha/quickstart.md).

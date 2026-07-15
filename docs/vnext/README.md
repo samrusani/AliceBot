@@ -8,8 +8,8 @@ capture, hardened connector settings/state/secrets, agent-facing context packs
 and context trees, governed agent proposals, and a local scheduler runtime.
 
 The vNext architecture is now the active Alice product line.
-`v0.10.4` is the latest published release. Alice remains
-local-first rather than a hosted launch; install the
+`v0.10.4` is the latest published release. `v0.11.0` is the current unpublished candidate.
+Alice remains local-first rather than a hosted launch; install the
 package entrypoints for normal use and use an editable checkout only for
 contributor workflows.
 
@@ -31,8 +31,15 @@ Alice vNext has three functional layers:
 - Quality review: artifact ratings for usefulness, accuracy, source grounding, novel connections, actionability, hallucination risk, verbosity, missed context, and comments.
 - Agentic control plane: scoped agent identities, permission profiles, policy decisions, explicit trusted memory commits, inline confirmations, memory proposals, undo/correction/forget lifecycle controls, and Agent Activity audit surface.
 - Governed scheduler: disabled-by-default workflow controls, a local daemon runner, due scans, run history, trace IDs, failures, duplicate-run locks, and reviewable artifacts.
-- Connectors: allowlisted Telegram sync, local folder/Obsidian scan and watch, browser clipper capture endpoint, Hermes/OpenClaw-style agent output ingestion, dedicated settings/state rows, local encrypted secret references, retry/cursor hardening, plus deterministic PDF, DOCX, CSV, screenshot OCR, and voice transcript payload ingestion.
-- UI: live/fixture-backed `/vnext` workspace for source review, source archive, capture-to-brief traces, Ask Alice, briefs, queue, projects, Agent Activity, trusted memory commit audit, inline confirmations, Schedules, beliefs, graph, live connector configuration, connector health/defaults/bookmarklet guidance, dogfooding readiness telemetry, doctor/readiness checks, privacy settings, model comparison, and quality ratings.
+- Connectors: local folder/Obsidian scan and watch, browser clipper capture,
+  allowlist-aware ingestion of operator-supplied Telegram raw updates (no
+  polling/token ownership), generic agent-output ingestion, dedicated settings/state rows, local encrypted
+  secret references, retry/cursor hardening, plus deterministic PDF, DOCX, CSV,
+  externally extracted screenshot-text, and externally produced voice-transcript
+  payload ingestion. Alice does not execute OCR or transcription.
+- UI: the local `/vnext` review workspace plus memory, continuity, trace,
+  entity, and artifact views. Hosted onboarding/admin, channel, chat,
+  chief-of-staff, model-pack, and response pages are not part of v0.11.
 - Evals: six production-path suites — `retrieval_quality`,
   `correction_suppression`, `decision_recovery`, `provenance_explanation`,
   `entity_resolution`, and `graph_hop_retrieval`. They run against the backend
@@ -44,7 +51,9 @@ Alice vNext has three functional layers:
 
 1. Follow the [alpha quickstart](../alpha/quickstart.md) for the install path.
 2. Use [first-run checklist](../alpha/first-run.md) and [doctor](../alpha/doctor.md) for onboarding.
-3. Review [headless Ubuntu install](../alpha/headless-ubuntu-install.md), [Hermes dogfood on Ubuntu](../alpha/hermes-dogfood-ubuntu.md), [agent integration pack](../alpha/agent-integration.md), [MCP tools](../alpha/mcp-tools.md), [Hermes skill](../alpha/hermes-skill.md), and [OpenClaw skill](../alpha/openclaw-skill.md).
+3. Review [headless Ubuntu install](../alpha/headless-ubuntu-install.md), the
+   [agent integration pack](../alpha/agent-integration.md), and
+   [MCP tools](../alpha/mcp-tools.md).
 4. Follow [vNext quickstart](quickstart.md) for the broader local workflow.
 5. Review [architecture](architecture.md).
 6. Review [security and privacy](security-privacy.md) and the [public-preview security posture](../alpha/security-and-privacy.md).
@@ -65,5 +74,5 @@ The public alpha should prove that a technical user can install Alice locally,
 capture live local evidence, configure local connector defaults safely, run
 readiness checks, and generate a first daily brief. It must not claim managed
 connector OAuth, packaged browser extensions, hosted connector polling, cloud
-sync, a hosted SLA, or automatic promotion of generated artifacts into trusted
-memory.
+sync, channel transport, OCR/transcription execution, a hosted SLA, or automatic
+promotion of generated artifacts into trusted memory.

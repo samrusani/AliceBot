@@ -25,13 +25,7 @@ Use this checklist before relying on Alice vNext for daily local-alpha use. The 
    alicebot vnext dogfooding dashboard
    ```
 
-4. If Telegram is enabled, verify the secret reference resolves without printing the token:
-
-   ```bash
-   alicebot vnext connectors telegram test
-   ```
-
-5. If the scheduler is enabled locally, verify daemon status:
+4. If the scheduler is enabled locally, verify daemon status:
 
    ```bash
    alicebot vnext scheduler daemon status
@@ -43,7 +37,6 @@ Use this checklist before relying on Alice vNext for daily local-alpha use. The 
 Use the narrowest connector needed for the day:
 
 ```bash
-alicebot vnext connectors telegram sync --allowed-chat-id 999001 --retries 3
 alicebot vnext connectors local-folder sync
 alicebot vnext connectors browser-clipper capture \
   --url https://example.test/day-note \
@@ -75,8 +68,6 @@ alicebot vnext smoke agentic-scheduler
 ## Failure Triage
 
 - Missing `connector_settings` or `connector_state`: run `./scripts/migrate.sh`, then `alicebot vnext doctor --fix-safe`.
-- Telegram secret unresolved: update `--secret-ref env:TELEGRAM_BOT_TOKEN` or store a local token with `--bot-token`.
-- Repeated Telegram rejections: verify `--allowed-chat-id` values before live polling.
 - Local folder recapture noise: check ignored generated folders, extensions, and allowed roots.
 - Browser clipper unauthorized: pass the configured local capture token or clear the browser clipper `secret_ref`.
 - Scheduler stale or failing: inspect `alicebot vnext scheduler failures`, then keep generated artifacts review-only until the root cause is fixed.

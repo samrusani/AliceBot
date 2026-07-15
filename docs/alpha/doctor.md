@@ -11,7 +11,7 @@ Doctor checks:
 - required vNext migration tables
 - connector settings rows
 - connector state rows
-- Telegram secret reference posture
+- surviving connector secret-reference posture
 - scheduler daemon posture
 - connector failure posture
 - local `/vnext?mode=live` CORS posture when a browser API URL is configured
@@ -28,7 +28,7 @@ Common fixes:
 ```bash
 ./scripts/migrate.sh
 alicebot vnext doctor --fix-safe --ci
-alicebot vnext connectors telegram configure --secret-ref env:TELEGRAM_BOT_TOKEN --allowed-chat-id 123456
+alicebot vnext connectors health
 alicebot vnext scheduler daemon start --foreground --once
 CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000
 ```

@@ -6,7 +6,9 @@ One continuity call is the default integration path for external agents:
 - CLI: `alice brief`
 - MCP: core `alice_resume` / `alice_context_pack`; `alice_brief` is keyless-local legacy compatibility only
 
-This surface composes the shipped recall, resumption, contradiction, trust, and task-briefing systems into one response bundle so callers do not need tool choreography.
+This surface composes the shipped recall, resumption, contradiction, and trust
+systems into one response bundle so callers do not need tool choreography. The
+separately persisted task-brief compatibility surface is not required.
 
 ## Defaults
 
@@ -44,7 +46,7 @@ Example:
 
 ```bash
 curl -X POST http://localhost:8000/v1/continuity/brief \
-  -H "Authorization: Bearer $ALICE_SESSION_TOKEN" \
+  -H "X-AliceBot-User-Id: $ALICE_USER_ID" \
   -H "Content-Type: application/json" \
   -d '{
     "brief_type": "general",
@@ -93,4 +95,6 @@ Example:
 
 - use `alice_recall` (core) when you only need ranked facts
 - use `alice_resume` (core) when you only need a resumption brief
-- use `alice_task_brief` only on a deliberately keyless local legacy server when you explicitly want persisted task-adaptive briefing output
+- use `alice_task_brief` only on a deliberately keyless local legacy server with
+  both `ALICE_MCP_LEGACY_TOOLS=1` and `ALICE_LEGACY_SURFACES=1` when you
+  explicitly want deprecated persisted task-adaptive briefing output

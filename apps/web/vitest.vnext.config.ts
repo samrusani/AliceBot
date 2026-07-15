@@ -14,6 +14,7 @@ export default defineConfig({
     ],
     exclude: [
       "test/browser/**",
+      "test/browser-legacy/**",
       "test/browser-outage/**",
       "test/browser-partial-outage/**",
       "**/node_modules/**",

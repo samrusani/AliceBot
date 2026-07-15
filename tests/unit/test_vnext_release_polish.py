@@ -4,6 +4,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -75,7 +77,7 @@ def test_public_alpha_packaging_docs_and_commands_are_discoverable() -> None:
     output_examples = _read("docs/alpha/agent-output-ingestion.md")
     limitations = _read("docs/alpha/known-limitations.md")
     security = _read("docs/alpha/security-and-privacy.md")
-    onboarding = _read("docs/alpha/design-partner-onboarding.md")
+    onboarding = _read("docs/alpha/onboarding.md")
     troubleshooting = _read("docs/alpha/troubleshooting.md")
     release_notes = _read("docs/alpha/release-notes.md")
     cto_summary = _read("docs/archive/process/vnext-public-alpha-packaging-cto-summary.md")
@@ -116,7 +118,7 @@ def test_public_alpha_packaging_docs_and_commands_are_discoverable() -> None:
     assert "OpenClaw Sprint Summary" in output_examples
     assert "no hosted cloud" in limitations
     assert "trusted memory is not auto-promoted" in security
-    assert "failing command output" in onboarding
+    assert "failing command and sanitized output" in onboarding
     assert "Unable to load live workspace: Load failed" in troubleshooting
     assert "alicebot vnext smoke local-cors" in quickstart
     assert "not hosted SaaS" in release_notes
@@ -195,6 +197,22 @@ def test_headless_ubuntu_packaging_is_discoverable_and_safe_by_default() -> None
     assert "__ALICE_RUNTIME_DIR__/vnext-scheduler" in scheduler_service
     assert "headless-ubuntu" in cli
     assert "--headless" in cli
+
+
+def test_ubuntu_installer_uses_template_without_retired_telegram_secrets() -> None:
+    template_path = "packaging/ubuntu/alicebot.env.example"
+    env_template = _read(template_path)
+    installer = _read("scripts/install-ubuntu.sh")
+
+    for retired_marker in (
+        "TELEGRAM_BOT_TOKEN",
+        "telegram.bot_token.default",
+        "X-Telegram-Bot-Api-Secret-Token",
+    ):
+        assert retired_marker not in env_template
+
+    rendered_template = f'"${{INSTALL_DIR}}/{template_path}" > "${{ENV_FILE}}"'
+    assert rendered_template in installer
 
 
 def test_installation_issue_regressions_are_guarded() -> None:
@@ -476,13 +494,28 @@ def test_env_validator_rejects_unquoted_values_with_spaces(tmp_path: Path) -> No
 
     assert result.returncode == 0
 
+
+
+@pytest.mark.parametrize(
+    "s3_lines",
+    [
+        (),
+        ("S3_ACCESS_KEY=alicebot", "S3_SECRET_KEY=alicebot-secret"),
+    ],
+)
+def test_env_validator_accepts_core_only_production_without_s3_credentials_or_overrides(
+    tmp_path: Path,
+    s3_lines: tuple[str, ...],
+) -> None:
+    env_file = tmp_path / ".env"
     env_file.write_text(
         "\n".join(
             [
                 "APP_ENV=production",
                 "DATABASE_URL=postgresql://alicebot_app:custom@localhost:5432/alicebot",
                 "DATABASE_ADMIN_URL=postgresql://alicebot_admin:custom@localhost:5432/alicebot",
-                'ALICE_MCP_COMMAND="/tmp/alicebot/.venv/bin/python -m alicebot_api.mcp_server"',
+                "ALICEBOT_AUTH_USER_ID=00000000-0000-4000-8000-000000000001",
+                *s3_lines,
             ]
         ),
         encoding="utf-8",
@@ -495,5 +528,4 @@ def test_env_validator_rejects_unquoted_values_with_spaces(tmp_path: Path) -> No
         capture_output=True,
     )
 
-    assert result.returncode == 1
-    assert "TELEGRAM_WEBHOOK_SECRET is required when APP_ENV=production" in result.stderr
+    assert result.returncode == 0, result.stderr

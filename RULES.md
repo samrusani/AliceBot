@@ -23,13 +23,17 @@ These are the standing rules for building Alice. They replace the earlier phase/
 - A change that affects retrieval or memory-commit behavior needs eval results from the production code path before it merges.
 
 ## Interfaces
-- The core MCP surface stays small. New tools need a reason the existing eleven cannot cover. Legacy tools require `ALICE_MCP_LEGACY_TOOLS=1` and a keyless local-operator deployment; key-bound MCP is core-only and fails closed.
+- The core MCP surface stays small. New tools need a reason the existing eleven cannot cover. Retained long-tail memory tools require `ALICE_MCP_LEGACY_TOOLS=1`; exactly the three task-brief tools additionally require `ALICE_LEGACY_SURFACES=1`. Every compatibility tool is limited to a keyless local-operator deployment; key-bound MCP is core-only and fails closed.
 - Every new tool, endpoint, or CLI command ships with parameter descriptions. No undocumented parameters.
 - Agent access to the HTTP API is authenticated with per-agent API keys.
 
 ## Durable Invariants
 - Keep credentials, tokens, and secret references out of logs, docs, and outward-facing errors.
-- Any workspace-scoped hosted table ships with row-level security enablement, workspace access policies, and a regression test for that access posture.
+- Alice is local-first and single-workspace by default. Do not add hosted identity,
+  tenancy, or control-plane tables to the current product. If a future hosted
+  offering is separately approved, it needs its own threat model, row-level
+  isolation contract, migration plan, and regression suite before it may share
+  this repository's runtime.
 - Provenance is preserved: memory writes, corrections, and supersessions keep their links to source evidence and review history.
 - Migrations are additive-first: no destructive schema change without an explicit, documented migration and rollback path.
 - Keep local filesystem paths, workstation usernames, and machine-specific identifiers out of committed docs and reports.
@@ -39,3 +43,5 @@ These are the standing rules for building Alice. They replace the earlier phase/
 - Docs describe shipped behavior. Aspirational features belong in ROADMAP.md, clearly marked as not shipped.
 - Never claim a hosted service, published SDKs, automatic conversation capture, or OCR/transcription execution unless it actually ships.
 - Keep CURRENT_STATE.md factual and short; keep ROADMAP.md future-facing and short.
+- Historical build and repair ledgers belong under `docs/handoff/`, not in the
+  live roadmap or current-state summary.
