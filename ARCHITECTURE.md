@@ -2,10 +2,10 @@
 
 ## Scope Boundary
 
-- **Published boundary:** `v0.10.4` is the latest published release. It is
+- **Published boundary:** `v0.11.0` is the latest published release. It is
   tagged and immutable, with artifact digests in
-  `docs/release/v0.10.4-checksums.txt`.
-- **Candidate boundary:** `v0.11.0` is the current unpublished candidate. Its
+  `docs/release/v0.11.0-checksums.txt`.
+- **Shipped boundary:** `v0.11.0` is the latest published release. Its
   default runtime is the continuity/memory layer for external AI agents, not a
   hosted product, channel platform, or bundled chat runtime.
 - **Product priorities:** (1) a small, easy-to-integrate agent interface over
@@ -202,9 +202,9 @@ usage justifies a separately reviewed boundary.
 
 ## Current Architectural Posture
 
-- `v0.10.4` remains the latest published release; later candidate changes are
+- `v0.10.4` is the prior published release; later changes were
   not part of its immutable artifacts.
-- `v0.11.0` is an unpublished candidate that reconciles runtime and product
+- `v0.11.0` reconciles runtime and product
   identity around the agent interface plus retrieval/memory quality.
 - The default deployment is local-first and single-workspace. A future hosted
   offering is a clean-sheet roadmap decision, not dormant product code.
