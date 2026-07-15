@@ -1,8 +1,8 @@
 # Reference Integration Paths
 
 This page is the path-selection guide for external builders adopting Alice on
-top of the latest published `v0.10.3` baseline. Later changes on `main` are
-the uncommitted `v0.10.4` remediation candidate until they receive a release
+top of the latest published `v0.10.4` baseline. Later changes on `main` are
+unreleased until they receive a release
 identity and publication evidence.
 
 ## Default Recommendation

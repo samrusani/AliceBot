@@ -136,8 +136,7 @@ search degrades to full-text only and says so explicitly in the retrieval trace.
 
 ## Status
 
-`v0.10.3` is the latest published release.
-`v0.10.4` is the current release-hardening candidate. It is not published.
+`v0.10.4` is the latest published release.
 Alice is a public-alpha, pre-1.0 project.
 What that means in practice:
 
@@ -158,7 +157,7 @@ What that means in practice:
 - [Known limitations](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/known-limitations.md)
 - [Backup and restore](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/backup-and-restore.md)
 - [Security and privacy](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/security-and-privacy.md)
-- [v0.10.3 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.10.3-release-notes.md)
+- [v0.10.4 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.10.4-release-notes.md)
 - [Release procedure](https://github.com/samrusani/AliceBot/blob/main/RELEASING.md)
 - [Architecture](https://github.com/samrusani/AliceBot/blob/main/ARCHITECTURE.md)
 - [Roadmap](https://github.com/samrusani/AliceBot/blob/main/ROADMAP.md)

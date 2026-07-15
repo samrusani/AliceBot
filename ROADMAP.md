@@ -2,11 +2,13 @@
 
 ## Baseline (Not Roadmap Work)
 
-- `v0.10.3`: latest published release. It carries the fourth-audit remediation
-  on top of the v0.10.2 semantic-vector, capture-deduplication, lifecycle,
+- `v0.10.4`: latest published release. It carries the fifth-audit remediation
+  and is tagged and immutable on GitHub and published on PyPI; exact artifact
+  digests are in `docs/release/v0.10.4-checksums.txt`.
+- `v0.10.3`: prior published release carrying the fourth-audit remediation on
+  top of the v0.10.2 semantic-vector, capture-deduplication, lifecycle,
   scoped-retrieval, pgvector 0.8+, typing, web-quality, installed-artifact, and
-  structured-attestation baseline. It is tagged and immutable on GitHub and
-  published on PyPI; exact artifact digests are in
+  structured-attestation baseline. Its digests are in
   `docs/release/v0.10.3-checksums.txt`.
 - `v0.9.4`: prior published release. It remains available as historical
   evidence but is superseded by v0.10.3.
@@ -25,7 +27,7 @@
 
 ## Current Remediation
 
-`v0.10.4` is the current release-hardening candidate. It fixes the
+`v0.10.4` shipped the release-hardening remediation. It fixes the
 fifth-audit correctness, workspace-selection, project-update lifecycle,
 SQLite-scope, API-contract, provider, documentation, and release-truth defects
 forward from the immutable v0.10.3 release.

@@ -1,12 +1,12 @@
 # Architecture
 
 ## Scope Boundary
-- **Shipped baseline:** `v0.10.3` is the latest published pre-1.0 release. It
+- **Shipped baseline:** `v0.10.4` is the latest published pre-1.0 release. It
   is tagged and immutable, with Trusted Publishing provenance and artifact
-  digests in `docs/release/v0.10.3-checksums.txt`.
-- **Current execution posture:** `v0.10.4` is the remediation
-  candidate on top of the published v0.10.3 boundary. It has no release
-  identity or publication evidence yet.
+  digests in `docs/release/v0.10.4-checksums.txt`.
+- **Current execution posture:** `v0.10.4` shipped the fifth-audit
+  remediation on top of the sound v0.10.3 boundary; `main` matches the
+  published release.
 
 ## Current System Overview
 Alice is the continuity layer for AI agents: a modular continuity platform with shared continuity semantics across local, hosted, provider-runtime, CLI, MCP, Hermes-integrated, and imported-workflow surfaces.
@@ -166,11 +166,11 @@ Alice is the continuity layer for AI agents: a modular continuity platform with 
 - docs verification is part of feature completion, not cleanup work
 
 ## Current Architectural Posture
-- `v0.10.3` is the active published release boundary and latest published
+- `v0.10.4` is the active published release boundary and latest published
   release. Later `main` commits are not part of that immutable artifact set.
-- `v0.10.4` is the current release-hardening candidate. At this handoff point
-  its remediation is a release candidate; unrelated feature work stays
-  paused until the repaired tree, independent re-review, canonical gates, and
+- `v0.10.4` shipped the release-hardening remediation. Unrelated feature
+  work stayed paused until the repaired tree, independent re-review,
+  canonical gates, and
   protected semantic evidence pass against one exact clean source SHA and its
   installed artifacts.
 - Alice is now a broader continuity platform with provider/runtime portability, model packs, runnable external-builder integrations, pilot launch/admin support, and safe local logging defaults.
