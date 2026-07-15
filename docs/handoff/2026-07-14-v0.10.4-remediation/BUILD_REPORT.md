@@ -2,11 +2,16 @@
 
 ## Build identity and constraints
 
-- Base/current HEAD during build:
+- Historical dirty-tree build base:
   `d52e32114eb0b4ef63499e53be14b70dc0864487` on `main`.
-- Package version intentionally remains `0.10.3` until release-engineer
-  finalization.
-- No commit, push, tag, GitHub Release, or PyPI publication was performed.
+- Code remediation was committed as
+  `41641fbfa5dc8198bf47bad8849c828dbb519617`; its direct npm-audit child is
+  `42b8c2d470a7535ec39d4028c2ef3868dcd4598a` with tree
+  `96a7f4d940bcf1154d31d730450e00935ba06341`.
+- Both governed package versions are `0.10.4`. At control-tower delivery, only
+  the bounded documentation/control correction described below is unstaged
+  and uncommitted for review.
+- No tag, GitHub Release, or PyPI publication was performed by the builder.
 - `docs/release/v0.10.3-release-notes.md` and
   `docs/release/v0.10.3-checksums.txt` have no diff.
 - Pre-existing untracked `coverage.json` and `uv.lock` were preserved.
@@ -156,7 +161,7 @@ report. These exclusions are explicit through the fixed allowlist rather than
 name filtering. The historical Batch 8 manifest and fingerprints are recorded
 in its status section below.
 
-## Builder Repair Batch 8 scope and current status
+## Historical Builder Repair Batch 8 scope and status (review rejected)
 
 Repair Batch 8 replaces two claims that remained too broad after Refreeze 7:
 
@@ -988,15 +993,17 @@ also excluded explicitly. Batch 15 was builder-frozen on these fingerprints
 and subsequently approved. The Batch 16 engineering finding supersedes that
 approval, so neither Batch 14 nor Batch 15 evidence approves the current tree.
 
-## Builder Repair Batch 16 scope and current status
+## Historical Builder Repair Batch 16 dirty-tree scope and status
 
-Repair Batch 16 is the current bounded correction for the engineering-team
+Repair Batch 16 was the bounded dirty-tree correction for the engineering-team
 whitespace finding discovered after independent approval of Batch 15. The
 approved Batch 15 carrier still mirrored Python `str.strip()` with PostgreSQL's
 locale-dependent POSIX `[[:space:]]`, which deterministically omitted
 U+001C–U+001F and could disagree for NBSP-class whitespace. Batch 15 evidence
-and `REVIEW_REPORT.md` are historical and do not approve changed Batch 16
-bytes; the builder did not edit or delete the reviewer-owned report.
+and `REVIEW_REPORT.md` were historical and did not approve changed Batch 16
+bytes; the builder did not edit or delete the reviewer-owned report. That
+dirty-tree evidence was later superseded by the committed exact-code receipt
+at `42b8c2d` below; the production semantics remain part of the candidate.
 
 The production change is limited to
 `apps/api/src/alicebot_api/vnext_store.py`. A private runtime constant repeats
@@ -1013,7 +1020,7 @@ and `chr(160)`—and no POSIX trim. The live role-separated PostgreSQL regressio
 uses NBSP, U+001C, and mixed blank/deduplicated fields and proves successful
 CAS, no re-embed loop, and signed vector participation.
 
-### Current Repair Batch 16 verification
+### Historical Repair Batch 16 dirty-tree verification
 
 - Focused SQL-shape/CAS units: 4 passed, 78 deselected.
 - Complete affected unit file: 82 passed.
@@ -1132,7 +1139,8 @@ workspace SHA-256 values:
 9050f5e809ddcb36dfabc492f0e0022437c977f94a8ee343bf7e6956a11a0f4a  apps/api/alembic/versions/20260714_0090_project_scope_identity.py
 ```
 
-Expanded status is 101 modified, 16 untracked, 0 deleted, and 0 staged paths;
+At the historical Batch 16 dirty-tree freeze, expanded status was 101 modified,
+16 untracked, 0 deleted, and 0 staged paths;
 the 117-line status manifest SHA-256 is
 `6ae8331d205f5e186e85f74d5ec8df59bdae88600c510c524313be1b4a4c9eed`.
 Immutable v0.10.3 release notes/checksums remain
@@ -1145,8 +1153,11 @@ and
 `65239f714c5a0fbccb1555f2270f08dc465671d2ddd71055ffb38582c23b8e52`.
 Reviewer-owned historical `REVIEW_REPORT.md` remains byte-identical at
 `b2f495174504d77e1d574d821ef45ea08e6c3721fc71be923559cce75173578e`.
-CURRENT_STATE mirrors match exactly, the package version remains `0.10.3`,
-and no commit, tag, push, publication, or security work was performed.
+CURRENT_STATE mirrors matched exactly, the package version was `0.10.3`, and
+no commit, tag, push, publication, or security work had been performed. The
+later `41641fb` and `42b8c2d` commits supersede only those historical
+commit/version/status statements; the recorded Batch 16 bytes and review
+outcome remain historical evidence.
 
 This `BUILD_REPORT.md` is self-excluded to avoid a recursive digest. The
 reviewer report and user-owned files are excluded explicitly. Batch 16 was
@@ -1414,3 +1425,395 @@ terminal evidence model, immutable v0.10.3 release-file readback, preservation
 of user-owned `coverage.json` and `uv.lock`, and two matching post-gate
 fingerprint reconstructions. Batch 8 requires its own final repository
 readback and fingerprints; its current gates are recorded above.
+
+## Refreeze 17 exact-code handoff truth
+
+### Code, ancestry, and version receipt
+
+The exact code boundary is branch/upstream
+`codex/v0104-audit-remediation` at
+`42b8c2d470a7535ec39d4028c2ef3868dcd4598a`, tree
+`96a7f4d940bcf1154d31d730450e00935ba06341`. It is the direct child of
+v0.10.4 remediation commit
+`41641fbfa5dc8198bf47bad8849c828dbb519617`, tree
+`dade94f367fc42a2fa9c6906c1f3bd91bf392fea`, whose parent is the immutable
+v0.10.3 post-publication `main` head
+`d52e32114eb0b4ef63499e53be14b70dc0864487`.
+
+The final release SHA is deliberately not predicted. At control-tower
+delivery, this documentation/control correction is intentionally unstaged and
+uncommitted. The release engineer must obtain independent approval, commit
+only the allowlisted correction, merge it, and run required CI and semantic
+gates on the resulting merge SHA before selecting or tagging a release SHA.
+
+Exact code-boundary inputs are:
+
+```text
+f9eeb11ba086223523374c5e5fad6044d81bd40a23925fa44a7c09fb9ec6e099  pyproject.toml
+17c1a093afa6f8ff606414ff6ea741b28da019076fe67eb577ab2dd58169e164  apps/web/package.json
+8ede1ef336b1bf57f83b5d05cef07fc18c33a40e9e7668280e9bf6badc613616  apps/web/scripts/npm-advisory-audit.mjs
+dedcec40527969db2dcc9023840496eb0df3277a89c70044fb7aeda22f6d60a2  .github/workflows/tests.yml
+```
+
+Both governed package files report `0.10.4`. Pending v0.10.4 release notes were
+an exact package/check input at SHA-256
+`68407071498ac04e8f21208d3073045f277fcc9d221c78a906757c6e3d11e4d3`.
+That pending-note digest is evidence for this candidate run, not an immutable
+guard pin: the documented post-publication truth lifecycle must be able to
+change the note and add checksums.
+
+### Exact-code Python and PostgreSQL matrix
+
+- The isolated exact-HEAD unit gate passed **3,333 tests in 75.27 seconds**.
+  Combined statement/branch coverage was 49,500/65,365 (75.7286%);
+  statement coverage was 40,526/51,561 (78.5982%); branch coverage was
+  8,974/13,804 (65.0101%). `main.py` statement coverage was 3,775/6,899
+  (54.7181%, above 45%) and combined coverage was 4,126/7,839 (52.6343%).
+  The 1,191-entry NUL-delimited input manifest SHA-256 was
+  `8b825fe259b8a22ad48ea85cbfd95630750fddb7f8cade241b44898bde7cab2b`;
+  the source archive SHA-256 was
+  `b5884408c79a93307e959ee9ef35fd7454e65a1203bbd158ead65e44513635f6`.
+- The complete isolated role-separated PostgreSQL gate passed **463 tests in
+  558.73 seconds**, with zero failures or errors. Admin/app-role preflight
+  passed. Its 335-file manifest reproduced before and after at
+  `82084d80ff0a8a706319f4f2a5391db99f3f58dbc6d8d6f29ba1b26fc5a53826`:
+  production 137
+  `29f367976c148db1b1923096ca3f1fe45587c5b22a0968aee84ac2dfd3afe572`,
+  migration/schema 93
+  `b8dfc30c78c59ed4c4ec1cc1941847713e7250e2cfad727debd9f9fc6273b32b`,
+  integration 95
+  `d56347b58a730b1201cf405d91e407bf18e92d0dc52ed0df103bac193e492b75`,
+  and fixtures 10
+  `ffd3fd172cd4afd393d2dd6eb4c7ae150a070df42f50f75af15a6a5467290cb1`.
+  A discarded archive-only attempt lacked `.venv`; the accepted run restarted
+  from zero after linking the existing environment into the disposable copy.
+
+### Exact-code LongMem and web matrix
+
+- LongMem passed **127 tests in 2.36 seconds** and the seven-arm evidence
+  replay passed; total target wall time was 3.0956 seconds. The 45-file scoped
+  manifest was
+  `a044ce071b0dda2736ee8394060a53fca80a66367d92dbc62385817d1f1885af`.
+  The 892-row baseline remained
+  `027db2960a761d44bb3b20e9ed04a5f434a16d88a3ff9cf65b43a64a3b96589f`.
+- The exact **203 tracked web inputs** hashed to
+  `519faded5b73857d91ad85c4e363f903ab209cc58838cec25fdf68d57e4a2013`.
+  Frozen offline install passed. Vitest passed 71 files / **280 tests**.
+  Core coverage passed 267 tests and every floor at 89.56% statements,
+  74.33% branches, 89.96% functions, and 89.56% lines. vNext coverage passed
+  13 tests and every floor at 80.69%, 66.84%, 54.74%, and 80.69%.
+  TypeScript and ESLint passed with zero errors/warnings. Next generated 19/19
+  artifacts and a 17-route table. All budgets passed: `/` 106,168/120,000,
+  `/chat` 124,526/140,000, `/continuity` 113,759/130,000, and `/vnext`
+  137,328/155,000 bytes. Playwright passed all 10 navigation, accessibility,
+  configured-outage, and partial-outage cases.
+- A rebuilt production server returned 200 plus expected markers for `/`,
+  `/chat`, `/continuity`, `/vnext`, and `/settings`, and the unknown route
+  returned 404. These are smoke observations, not performance claims.
+- The committed npm advisory helper passed live production/full audits (55/525
+  packages, zero matching advisories). Controlled regressions proved HTTP 503
+  and malformed JSON exit 2, a matching high-severity React advisory exits 1,
+  and an unknown audit level exits 2 before network access.
+
+### Exact-code static and package matrix
+
+- Before this correction, the exact code boundary's control checker passed 14
+  documents, all **45 control tests** passed, and `make release-static` passed
+  with exact output `Release check: PASS (alice-memory 0.10.4)`, Ruff, and mypy
+  across 146 source files. That baseline also confirmed the fail-on-old gap:
+  the old checker accepted active handoff claims that version sources remained
+  0.10.3/uncommitted. Post-correction control/static evidence is recorded in
+  the correction receipt below.
+- Two fresh 1,191-file snapshots produced byte-identical v0.10.4 artifacts
+  using exact `SOURCE_DATE_EPOCH=1784096425`; snapshot manifest SHA-256 was
+  `9a50e72e3adebc6c89d843f74bce78a0cb1e209572ba64b2d1aacff555964df8`.
+  Builds took 3.81/3.78 seconds and sdist normalization 0.40/0.39 seconds.
+  Wheel `alice_memory-0.10.4-py3-none-any.whl` is 1,225,284 bytes with SHA-256
+  `30244f0111430216662d751500161e80af95228c357d20a3a3f96a36610b018d`.
+  Normalized sdist `alice_memory-0.10.4.tar.gz` is 1,071,462 bytes with SHA-256
+  `7dbf3148cfb8128c3cb088e0890c7a2fd88ce7d82f55667da864ecfc226fb9ba`.
+  Twine and release-check passed; the primary directory contained exactly two
+  artifacts and no checksum. Installed wheel/sdist smokes passed in
+  14.92/16.52 seconds. Seven critical files and the evergreen description
+  matched across workspace/wheel/sdist; tests, handoff, release documents,
+  `apps/web`, and the npm helper were correctly absent from Python archives.
+
+### Future-SHA-safe correction receipt
+
+The first Refreeze 17 review reproduced a real CI blocker: the control job in
+`tests.yml` uses the checkout action's default depth 1, so an ancestry-only
+receipt falsely treated unavailable `41641fb`/`42b8c2d` history as code drift.
+That implementation is rejected and superseded by the corrected receipt.
+
+Every Git checkout now computes SHA-256 over the NUL-delimited output of
+`git ls-tree -r -z --full-tree HEAD` after excluding exactly the seven
+correction paths and explicit future publication-truth lifecycle paths. Each
+retained record is the original `<mode> <type> <object-id>\t<path>\0` bytes,
+so additions, deletions, mode changes, path changes, and content changes all
+alter the digest. The exact `42b8c2d` filtered pin is 1,172 records / 115,611
+bytes / SHA-256
+`90cc8c16c9c94adee1585740e16be5f6c73d481a2e7b870191d5a638a20a0b53`.
+
+That complete manifest plus the governed versions, four current byte hashes,
+and tracked working-tree restriction is mandatory in both shallow and full
+history. A shallow checkout passes only when its complete non-lifecycle HEAD
+content equals the pin; it does not claim ancestry. A full-history checkout
+also verifies the two exact commits, their direct parents and trees,
+`42b8c2d` ancestry, and the boundary diff. The default test workflow exercises
+the shallow proof; publish and semantic workflows use `fetch-depth: 0` and
+exercise the ancestry proof. Source archives intentionally have no Git receipt:
+this rule checks aligned governed versions there, while the dedicated artifact
+parity/provenance gates own archive content.
+
+Tests retain the complete-history descendant case and add a real `file://`,
+`--depth 1` clone. Both accept a later documentation correction and
+post-publication note transition; committed production drift fails the complete
+manifest. Explicit cases cover governed-version mismatch and the documented
+no-`.git` archive behavior. This binds engineering content without hard-coding
+the future merge/release SHA or freezing mutable publication truth.
+
+The second Refreeze 17 review found one final activation bypass: the first
+shallow-safe revision enabled finalization/receipt checks only when either
+governed version already equaled `0.10.4`. Changing both to `0.10.3` (or both
+to a future value) therefore skipped the exact check it was supposed to
+enforce. That presence-conditional logic is rejected. The active handoff
+directory now unconditionally enables every finalization marker and code
+receipt check; exact `0.10.4`/`0.10.4` is mandatory before any Git/no-Git
+branch. Missing, symmetric downgrade/advance, and asymmetric values fail.
+
+`BUILD_REPORT.md` remains self-excluded from the deterministic correction-patch
+digest to avoid recursion. The final twice-reproduced patch SHA-256, protected
+file readback, post-correction gate results, and exact allowlist are recorded
+below after the correction is stable. The report's own final SHA-256 is supplied
+separately in the control-tower handoff.
+
+### Historical first Refreeze 17 correction receipt (review rejected)
+
+The following receipt describes the first Refreeze 17 builder delivery. Its
+bytes and gates remain historical evidence, but independent review rejected
+its depth-1-incompatible ancestry implementation. It does not approve or
+fingerprint the corrected carrier.
+
+The deterministic correction patch excludes only this self-referential report
+and contains these six paths in fixed order:
+
+```text
+docs/handoff/2026-07-14-v0.10.4-remediation/ENGINEER_HANDOFF.md
+docs/handoff/2026-07-14-v0.10.4-remediation/FIX_MATRIX.md
+docs/handoff/2026-07-14-v0.10.4-remediation/README.md
+docs/handoff/2026-07-14-v0.10.4-remediation/SURFACE_INVENTORY.md
+scripts/check_control_doc_truth.py
+tests/unit/test_control_doc_truth.py
+```
+
+Two independent `git diff --binary HEAD -- <ordered-paths>` reconstructions
+were byte-identical: 54,666 bytes, 956 lines, SHA-256
+`a17ff7e75814851089f69b399ad4eabbe2f6da93e5abfc5fc5ea79605cb2a1b5`.
+The seventh allowlisted modified path is this self-excluded
+`BUILD_REPORT.md`. The index is empty. The only other workspace entries are
+the preserved, pre-existing untracked `coverage.json` and `uv.lock`; no
+production, migration, package, workflow, release-record, root-control, or
+reviewer-owned path has a diff.
+
+Post-correction verification passed:
+
+- Ruff formatting and lint for the checker and its tests;
+- bytecode compilation for both Python files;
+- the control-document truth checker across all 14 governed documents;
+- all 51 `test_control_doc_truth.py` tests in 1.03 seconds, including stale
+  line-wrapped finalization claims, a future descendant correction commit, a
+  permitted later publication-note transition, and rejected production drift;
+- `make release-static`, including `Release check: PASS (alice-memory
+  0.10.4)`, Ruff, and mypy with zero issues across 146 source files; and
+- `git diff --check`.
+
+Protected/current readback SHA-256 values are:
+
+```text
+8c4ba0ef3df7eca278bdf0758efa4cb6a124826d2d76f016b36440e0ddbc9312  README.md
+5bf299df1653ac7aec2b624029fee59c37667fbd3014aa12c14a36f3b5eaed0a  ROADMAP.md
+8dbed442431a55e95ae548727b6546e09d49ec7a9d75573c0fd6bd7185b4cfd5  CHANGELOG.md
+7776a2eaf8209a191c0c2af8ba1b3d4a4738b9f0d65b99e0ba7b6b26998190af  RELEASING.md
+aa6f505af6a43fb615e7e238c93b83319af22d854d0a848ad304c6cbf58aaf59  CURRENT_STATE.md
+aa6f505af6a43fb615e7e238c93b83319af22d854d0a848ad304c6cbf58aaf59  .ai/handoff/CURRENT_STATE.md
+f9eeb11ba086223523374c5e5fad6044d81bd40a23925fa44a7c09fb9ec6e099  pyproject.toml
+17c1a093afa6f8ff606414ff6ea741b28da019076fe67eb577ab2dd58169e164  apps/web/package.json
+8ede1ef336b1bf57f83b5d05cef07fc18c33a40e9e7668280e9bf6badc613616  apps/web/scripts/npm-advisory-audit.mjs
+dedcec40527969db2dcc9023840496eb0df3277a89c70044fb7aeda22f6d60a2  .github/workflows/tests.yml
+463a6b0d4a54b23a577126ce17202736f0aeeebcb2a5ee314416ed5283415938  docs/release/v0.10.3-release-notes.md
+57e4cc30bbbb9c7438b54954fecb4fdd88f15d0f2874e62ea66faa45612a6387  docs/release/v0.10.3-checksums.txt
+68407071498ac04e8f21208d3073045f277fcc9d221c78a906757c6e3d11e4d3  docs/release/v0.10.4-release-notes.md
+b2f495174504d77e1d574d821ef45ea08e6c3721fc71be923559cce75173578e  docs/handoff/2026-07-14-v0.10.4-remediation/REVIEW_REPORT.md
+57ff783feb003358b0195b6b03538827a8efe73bfa9d79652b807e0ec501d711  coverage.json
+65239f714c5a0fbccb1555f2270f08dc465671d2ddd71055ffb38582c23b8e52  uv.lock
+```
+
+The two `CURRENT_STATE.md` copies are byte-identical. Final branch, upstream,
+HEAD, parent, and tree readback remained
+`codex/v0104-audit-remediation`, the matching upstream,
+`42b8c2d470a7535ec39d4028c2ef3868dcd4598a`,
+`41641fbfa5dc8198bf47bad8849c828dbb519617`, and
+`96a7f4d940bcf1154d31d730450e00935ba06341`, respectively. This correction is
+left unstaged and uncommitted for independent review; its delivery-state
+wording is deliberately historical so the approved commit will not describe
+itself falsely.
+
+### Historical second Refreeze 17 delivery receipt (review rejected)
+
+The following shallow-safe receipt remains valid historical evidence, but the
+second independent review rejected its version-membership activation bypass.
+It does not approve or fingerprint the final corrected carrier.
+
+The corrected deterministic patch again excludes only this self-referential
+report. Its six fixed-order paths are:
+
+```text
+docs/handoff/2026-07-14-v0.10.4-remediation/ENGINEER_HANDOFF.md
+docs/handoff/2026-07-14-v0.10.4-remediation/FIX_MATRIX.md
+docs/handoff/2026-07-14-v0.10.4-remediation/README.md
+docs/handoff/2026-07-14-v0.10.4-remediation/SURFACE_INVENTORY.md
+scripts/check_control_doc_truth.py
+tests/unit/test_control_doc_truth.py
+```
+
+Two independent `git diff --binary HEAD -- <ordered-paths>` reconstructions
+were byte-identical: 69,154 bytes, 1,258 lines, SHA-256
+`7d6dae6880a3ed2aa11711bd852953dd2b55d70024c617c3bbb63ce462e01223`.
+The seventh and only self-excluded modified path is this `BUILD_REPORT.md`.
+
+The complete filtered-tree pin independently reproduced as 1,172 records,
+115,611 bytes, SHA-256
+`90cc8c16c9c94adee1585740e16be5f6c73d481a2e7b870191d5a638a20a0b53`.
+The retained records are the original NUL-delimited mode/type/object/path
+bytes from `git ls-tree`, not a filename-only inventory.
+
+Real depth-1 evidence used a local `file://` clone, not a local-path clone that
+silently ignores `--depth`:
+
+- `git rev-parse --is-shallow-repository` returned `true` at exact boundary
+  `42b8c2d470a7535ec39d4028c2ef3868dcd4598a`; the checker passed with the
+  corrected allowlisted working diff.
+- After committing the six BUILD-excluded correction paths as depth-1
+  descendant `689343c0066fafeaf677094c16dee65b7591fd1c` (leaving this report as
+  an allowed working-tree correction), the checker passed again without the
+  unavailable `41641fb`/`42b8c2d` ancestors.
+- Deliberate committed production drift at test descendant
+  `d22eff6ed1bd1573b7ba5ae4e613c65ca327f0d4` failed exactly on the complete
+  manifest: expected
+  `90cc8c16c9c94adee1585740e16be5f6c73d481a2e7b870191d5a638a20a0b53`,
+  got
+  `686922bdc396fb56ebe86508f7cf325e5abb6825cd947c9e27397d0aa11376bd`.
+
+Post-edit verification passed:
+
+- Ruff formatting and lint for the checker and focused tests;
+- bytecode compilation for both changed Python files;
+- all **60** focused control tests in 2.07 seconds, including a real depth-1
+  clone, a retained full-history descendant, governed-version mismatch,
+  source-archive behavior, uncommitted drift, and committed content, mode,
+  path, addition, and deletion drift;
+- the control-document truth checker across all 14 governed documents;
+- `make release-static`, including `Release check: PASS (alice-memory
+  0.10.4)`, Ruff, and mypy with zero issues across 146 source files; and
+- `git diff --check`.
+
+Final protected/current SHA-256 readback remained:
+
+```text
+8c4ba0ef3df7eca278bdf0758efa4cb6a124826d2d76f016b36440e0ddbc9312  README.md
+5bf299df1653ac7aec2b624029fee59c37667fbd3014aa12c14a36f3b5eaed0a  ROADMAP.md
+8dbed442431a55e95ae548727b6546e09d49ec7a9d75573c0fd6bd7185b4cfd5  CHANGELOG.md
+7776a2eaf8209a191c0c2af8ba1b3d4a4738b9f0d65b99e0ba7b6b26998190af  RELEASING.md
+aa6f505af6a43fb615e7e238c93b83319af22d854d0a848ad304c6cbf58aaf59  CURRENT_STATE.md
+aa6f505af6a43fb615e7e238c93b83319af22d854d0a848ad304c6cbf58aaf59  .ai/handoff/CURRENT_STATE.md
+f9eeb11ba086223523374c5e5fad6044d81bd40a23925fa44a7c09fb9ec6e099  pyproject.toml
+17c1a093afa6f8ff606414ff6ea741b28da019076fe67eb577ab2dd58169e164  apps/web/package.json
+8ede1ef336b1bf57f83b5d05cef07fc18c33a40e9e7668280e9bf6badc613616  apps/web/scripts/npm-advisory-audit.mjs
+dedcec40527969db2dcc9023840496eb0df3277a89c70044fb7aeda22f6d60a2  .github/workflows/tests.yml
+463a6b0d4a54b23a577126ce17202736f0aeeebcb2a5ee314416ed5283415938  docs/release/v0.10.3-release-notes.md
+57e4cc30bbbb9c7438b54954fecb4fdd88f15d0f2874e62ea66faa45612a6387  docs/release/v0.10.3-checksums.txt
+68407071498ac04e8f21208d3073045f277fcc9d221c78a906757c6e3d11e4d3  docs/release/v0.10.4-release-notes.md
+b2f495174504d77e1d574d821ef45ea08e6c3721fc71be923559cce75173578e  docs/handoff/2026-07-14-v0.10.4-remediation/REVIEW_REPORT.md
+57ff783feb003358b0195b6b03538827a8efe73bfa9d79652b807e0ec501d711  coverage.json
+65239f714c5a0fbccb1555f2270f08dc465671d2ddd71055ffb38582c23b8e52  uv.lock
+```
+
+`CURRENT_STATE.md` and `.ai/handoff/CURRENT_STATE.md` remain byte-identical.
+The index remains empty. The only modified tracked paths are the exact seven-
+path correction allowlist; the only untracked paths are the preserved,
+pre-existing `coverage.json` and `uv.lock`. Branch/upstream, HEAD, parent, and
+tree remain `codex/v0104-audit-remediation`, its matching upstream,
+`42b8c2d470a7535ec39d4028c2ef3868dcd4598a`,
+`41641fbfa5dc8198bf47bad8849c828dbb519617`, and
+`96a7f4d940bcf1154d31d730450e00935ba06341`. No commit, push, tag, release,
+publication, production edit, workflow edit, or release-record edit was
+performed in the working repository.
+
+### Final presence-activated Refreeze 17 delivery receipt
+
+The second review's activation bypass is closed without changing the manifest,
+shallow/full-history, allowlist, or archive-provenance design. The active
+handoff directory itself now activates finalization markers and the code
+receipt. There is no version-membership early return. Before the Git/no-Git
+branch, the receipt requires the exact pair `0.10.4`/`0.10.4`; missing,
+symmetric `0.10.3`, symmetric `0.10.5`, and asymmetric pairs all fail.
+No-`.git` source archives still delegate ancestry/content provenance to the
+package gates, but they cannot bypass the exact governed-version requirement.
+Future work may deliberately update, retire, or archive this active handoff;
+changing version sources alone cannot silently deactivate it.
+
+The final BUILD-excluded deterministic patch contains the same six fixed-order
+paths listed above. Two independent reconstructions were byte-identical:
+74,827 bytes, 1,370 lines, SHA-256
+`7b51c1d37cf9a92da617a55060b2cc7238716eaab00eb2c37046168621641816`.
+This report remains the seventh, self-excluded correction path.
+
+The complete filtered-tree pin is unchanged and reproduced again at 1,172
+records / 115,611 bytes / SHA-256
+`90cc8c16c9c94adee1585740e16be5f6c73d481a2e7b870191d5a638a20a0b53`.
+All prior real shallow exact-boundary/descendant passes, committed-production-
+drift failure, and full-history descendant/publication tests remain valid.
+
+A fresh real `file:// --depth 1` reproduction applied the final presence-
+activated correction to exact boundary `42b8c2d`; the checker passed with
+`git rev-parse --is-shallow-repository` equal to `true`. Changing only both
+governed working-tree versions from `0.10.4` to `0.10.3` then exited 1 with:
+
+- the exact governed-pair error (`pyproject='0.10.3', web='0.10.3'`);
+- the tracked working-tree scope error; and
+- both expected current-byte-pin mismatches.
+
+The downgraded pyproject/package test bytes hashed to
+`9c7de81fc2131ebdbcc83c5ae25d471d11c6e13cfec6b150caf01b3a3348b80a`
+and
+`f2664359915423d5412dace7782992657c9484f41725bf8ea4b69a2f2ebc0412`,
+respectively. The old presence-conditional guard returned no receipt issues for
+that exact class; the corrected full checker cannot pass it.
+
+Final focused/static verification passed:
+
+- Ruff formatting and lint plus bytecode compilation for both changed Python
+  files;
+- all **69** focused control tests in 2.22 seconds, including receipt-level and
+  full-checker symmetric downgrade/advance/missing cases, asymmetric and one-
+  sided-missing pairs, unconditional finalization-marker activation, exact
+  no-`.git` archive behavior, real shallow descendants, and all prior drift
+  classes;
+- the control-document truth checker across all 14 governed documents;
+- `make release-static`, including `Release check: PASS (alice-memory
+  0.10.4)`, Ruff, and mypy with zero issues across 146 source files; and
+- `git diff --check`.
+
+A fresh protected-path `git diff --quiet HEAD -- <paths>` readback passed. All
+16 SHA-256 values in the preceding corrected receipt reproduced exactly,
+including byte-identical `CURRENT_STATE.md` mirrors, immutable v0.10.3 release
+records, unchanged pending v0.10.4 notes, tracked npm audit helper/workflow,
+reviewer-owned report, and preserved `coverage.json`/`uv.lock`. The index is
+empty. Only the exact seven correction paths are modified and only the two
+preserved user files are untracked. Branch/upstream, HEAD, parent, and tree
+remain `codex/v0104-audit-remediation`, its matching upstream,
+`42b8c2d470a7535ec39d4028c2ef3868dcd4598a`,
+`41641fbfa5dc8198bf47bad8849c828dbb519617`, and
+`96a7f4d940bcf1154d31d730450e00935ba06341`. No working-repository commit,
+push, tag, release, publication, production edit, workflow edit, protected-doc
+edit, or release-record edit was performed.

@@ -10,15 +10,19 @@ Repair Batch 16 is the current bounded correction. It closes the PostgreSQL
 embedding-CAS whitespace parity finding with migration `0090`'s exact CPython
 3.12 29-codepoint trim table, fail-on-old SQL-shape coverage across all three
 CAS consumers, and live NBSP/U+001C no-reembed/vector-participation proof.
-Batch 16 implementation, tests, full gates, static/control checks,
-LongMemEval/evidence replay, unchanged-web readback, and reproducible package
-verification are green. The final tracked-patch and fixed 12-file remediation-
-bundle fingerprints reproduced twice and are recorded in the self-excluded
-builder report. The Batch 16 carrier was builder-frozen; its reviewer approved
-the production CAS semantics and returned changes required on one P3 contradiction
-in the handoff. Refreeze 17 changes only that stale Batch 15/current-review
-wording plus its fail-on-old control guard. Independent review of the exact
-Refreeze 17 carrier remains required, so it is not release-approved.
+Batch 16 implementation and its historical gates are green. The exact current
+code boundary adds only the committed npm advisory endpoint repair and has its
+own full Python, PostgreSQL, LongMem, web/browser/audit, static, and reproducible
+package matrix in `BUILD_REPORT.md`. The Batch 16 reviewer approved production
+CAS semantics and returned one P3 contradiction in the handoff. Refreeze 17
+corrects that truth. After the first Refreeze 17 review exposed a depth-1 CI
+failure, the guard was narrowed to full-history ancestry proof plus an always-
+enforced complete filtered-tree manifest. The second review found a final
+presence-conditional activation bypass: equal wrong versions skipped the whole
+receipt. Active handoff-directory presence now unconditionally requires exact
+`0.10.4` version alignment and finalization truth. At control-tower delivery,
+independent review of the final exact unstaged documentation/control correction
+is the next required gate; the delivery does not claim release approval.
 
 Repair Batch 15 was independently approved after closing the three P2s
 returned by review of Batch 14: string-only metadata `next_action` row
@@ -59,7 +63,7 @@ upgrade for such a database.
 | Canonical project identity | Confirmed, broader than original shorthand but bounded by brief | Shared presence/identity core, current predicates/backfills/dedupe, retrieval admission, policy/key comparisons, scheduler grouping, both stores, and forward `0090` completed. ASCII-only identity is case-insensitive; non-ASCII identity and Unicode whitespace are exact. Scope is a deduplicated set sorted by Unicode code-point order. Blank key bindings/claims fail closed. No transport redesign. |
 | Embedding CAS and migration raw-text `strip`/`btrim` mismatch | Confirmed, bounded | PostgreSQL digest SQL and migration `0090` now normalize raw text with CRLF/CR to LF followed by CPython 3.12's explicit locale-independent 29-codepoint `str.strip()` table. Project identifiers intentionally keep their separate six-ASCII-whitespace contract. Unit golden digests and live PostgreSQL upgrade/recapture regressions cover NBSP U+00A0, NEL U+0085, and EM SPACE U+2003 and prove no duplicate source is created. |
 | Web API base-path discard | Confirmed, bounded | URL construction preserves configured path prefixes for every `requestJson` caller and the browser-clipper displayed endpoint while retaining local operator-key routing; web tests cover prefixed URLs. |
-| Active release-document truth gaps | Confirmed, bounded | Active control docs identify v0.10.3 as latest published and v0.10.4 as uncommitted remediation; links, checksum pointers, install tag, and mirrors align. Truth checks now reconcile these fields and evergreen package metadata. Immutable historical release files were untouched. |
+| Active release-document truth gaps | Confirmed, bounded | Active control docs identify v0.10.3 as latest published and v0.10.4 as a committed, unpublished candidate; links, checksum pointers, install tag, and mirrors align. Truth checks reconcile these fields, evergreen package metadata, exact code ancestry/content, and the historical control-tower delivery state without predicting the future release SHA. Immutable historical release files were untouched. |
 | Hosted onboarding | Confirmed, resized | Truthful instruction/preview copy replaces claims of live provisioning. A real onboarding wizard remains a separate product feature. |
 | Navigation/copy omissions | Confirmed, bounded | Continuity and Chief-of-Staff navigation/cards are present; the landing page reports 16 views and live/fixture/mixed modes. |
 | Hosted rate-limit metric | Confirmed, bounded | UI uses the exact overview count with a deterministic summary fallback; fail-on-old web tests pass. |
@@ -92,7 +96,7 @@ upgrade for such a database.
   identity rule, exact lookup, source dedupe, generic memory lifecycle, and
   bootstrap/reopen idempotence.
 
-## Builder Repair Batch 2 closure
+## Historical Builder Repair Batch 2 closure
 
 The first independent review pass returned three bounded correctness gaps.
 The builder refreeze closes each without broadening release scope:
@@ -112,7 +116,7 @@ The builder refreeze closes each without broadening release scope:
    type, profile, project scope, run, and trace fields, then verifies the
    persisted identity and accepted-event actor/run/trace values.
 
-## Builder Repair Batch 3 closure
+## Historical Builder Repair Batch 3 closure
 
 The second independent review pass found two bounded gaps. The builder
 refreeze closes both without reopening other remediation classes:
@@ -127,7 +131,7 @@ refreeze closes both without reopening other remediation classes:
    inheriting live provenance, while the live list summary remains the bounded
    source for fields that were actually returned.
 
-## Builder Repair Batch 4 closure
+## Historical Builder Repair Batch 4 closure
 
 The third independent review pass found five bounded parity and evidence gaps.
 The final builder refreeze closes them without reopening other remediation
@@ -149,7 +153,7 @@ classes:
 5. Builder evidence now quotes the release check's actual output and describes
    the migration-guidance review without inventing a dedicated marker test.
 
-## Builder Repair Batch 5 closure (terminal detail superseded)
+## Historical Builder Repair Batch 5 closure (terminal detail superseded)
 
 The fourth independent review pass found four bounded gaps. Refreeze 5 closes
 three fully and introduced a terminal-consistency guard whose evidence model
@@ -210,7 +214,7 @@ Refreeze 7 changed only those untracked handoff carriers. Repair Batch 8
 supersedes both freezes; their results and hashes are not current-tree approval
 evidence.
 
-## Builder Repair Batch 8 closure
+## Historical Builder Repair Batch 8 closure
 
 The sixth independent review pass found two bounded defects. Batch 8 closes
 both without reopening other remediation classes:
@@ -276,7 +280,7 @@ fingerprints were recorded and reproduced twice. Its subsequent independent
 review returned changes required on five bounded findings, so independent
 review of the current carrier remains a separate gate.
 
-## Builder Repair Batch 10 closure
+## Historical Builder Repair Batch 10 closure
 
 The Batch 9 review returned changes required on five bounded findings. Batch
 10 remains constrained to those findings:
@@ -298,7 +302,7 @@ The subsequent independent review returned changes required on exactly two
 bounded findings; historical Batch 8/9/10 evidence does not approve the
 current carrier.
 
-## Builder Repair Batch 11 closure
+## Historical Builder Repair Batch 11 closure
 
 The Batch 10 review returned changes required on exactly two bounded findings.
 Batch 11 remains constrained to those findings:
@@ -403,7 +407,7 @@ Repair Batch 16 is limited to one release-blocking P2 class:
 
 | Finding | Disposition | Closure proof |
 | --- | --- | --- |
-| Embedding CAS Python-strip parity | Fixed; production semantics approved by review | `_MEMORY_EMBEDDING_CONTENT_SHA256_SQL` now trims title, canonical text, and summary with a private runtime copy of migration `0090`'s exact CPython 3.12 29-codepoint table expressed as `btrim(..., chr(...) || ...)`. It no longer uses POSIX `[[:space:]]`, and it preserves blank omission, first-occurrence deduplication, LF joining, and SHA-256. A fail-on-old unit test proves all 29 codepoints—especially U+001C–U+001F, NEL, and NBSP—appear in each of the three generated SQL consumers: signed vector freshness, embedding-update CAS, and missing-embedding selection. Live role-separated PostgreSQL passes NBSP, U+001C, and mixed blank/deduplicated field cases through CAS acceptance, empty missing-embedding selection, and signed vector participation. The complete affected unit/PostgreSQL files, 3,332-unit coverage gate, 463-case PostgreSQL matrix, release-static/control, LongMemEval/evidence, unchanged web readback, and reproducible package/parity/smoke gate pass. Batch 16 review approved those production semantics and returned changes required only on the stale handoff-truth P3 addressed by Refreeze 17. |
+| Embedding CAS Python-strip parity | Fixed; production semantics approved by review | `_MEMORY_EMBEDDING_CONTENT_SHA256_SQL` now trims title, canonical text, and summary with a private runtime copy of migration `0090`'s exact CPython 3.12 29-codepoint table expressed as `btrim(..., chr(...) || ...)`. It no longer uses POSIX `[[:space:]]`, and it preserves blank omission, first-occurrence deduplication, LF joining, and SHA-256. A fail-on-old unit test proves all 29 codepoints—especially U+001C–U+001F, NEL, and NBSP—appear in each of the three generated SQL consumers: signed vector freshness, embedding-update CAS, and missing-embedding selection. Live role-separated PostgreSQL passes NBSP, U+001C, and mixed blank/deduplicated field cases through CAS acceptance, empty missing-embedding selection, and signed vector participation. The historical Batch 16 dirty-tree gate passed 3,332 units and 463 PostgreSQL cases; the exact committed-code 3,333-unit/463-PostgreSQL, LongMem, full web/npm-audit, static, and reproducible-package rerun is recorded below and in `BUILD_REPORT.md`. Batch 16 review approved production semantics and returned only the handoff-truth P3 addressed by Refreeze 17. |
 
 No migration, Python embedding-text function, SQLite path, transport, provider,
 vector ranking, or unrelated normalization behavior changes in Batch 16.
@@ -418,6 +422,31 @@ truth checker now rejects the exact line-wrapped stale claim that Batch 15 is
 current while review is pending. Verification and final carrier fingerprints
 are recorded in the self-excluded `BUILD_REPORT.md`; independent Refreeze 17
 review remains required.
+
+## Refreeze 17 exact-code receipt
+
+The versioned remediation is commit
+`41641fbfa5dc8198bf47bad8849c828dbb519617`. Its direct child
+`42b8c2d470a7535ec39d4028c2ef3868dcd4598a` fixes the retired npm quick-audit
+endpoint and has code tree `96a7f4d940bcf1154d31d730450e00935ba06341`.
+Both version sources are already `0.10.4`. The correction guard verifies both
+version sources and four byte pins and always hashes every non-allowlisted HEAD
+tree record—including mode, object ID, and path—against the exact 1,172-record
+`42b8c2d` manifest. The active handoff directory, not a version-membership
+test, activates this receipt and all finalization markers. Therefore both
+versions must be exactly `0.10.4`; symmetric downgrade/advance, asymmetric, and
+missing values fail. In a complete clone the guard additionally verifies both
+commit objects, their direct parents and trees, `42b8c2d` ancestry, and the
+boundary diff. In a depth-1 clone it makes no false ancestry claim: passing
+means the complete non-lifecycle committed content equals the pin. A working-
+tree check still rejects tracked changes outside the seven correction paths in
+both modes. Source archives have no Git receipt, but active-handoff presence
+still requires their exact governed versions while dedicated package/parity
+gates own archive provenance. It permits a later correction commit and post-
+publication truth flip, so it does not predict or hard-code the future merge/
+release SHA. At control-tower delivery the correction itself is unstaged and
+uncommitted; that is a historical delivery receipt, not a required present-
+tense statement after the release engineer commits it.
 
 ## Explicit residual limitation
 

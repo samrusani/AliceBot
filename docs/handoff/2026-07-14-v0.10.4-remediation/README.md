@@ -1,13 +1,20 @@
 # Alice v0.10.4 Fifth-Audit Remediation Handoff
 
-This directory is the control-tower handoff for the uncommitted v0.10.4
-remediation built from `main` at
-`d52e32114eb0b4ef63499e53be14b70dc0864487`.
+This directory is the control-tower handoff for the v0.10.4 candidate. Code
+remediation commit `41641fbfa5dc8198bf47bad8849c828dbb519617` already set
+both governed version sources to `0.10.4`. The follow-up npm advisory endpoint
+commit `42b8c2d470a7535ec39d4028c2ef3868dcd4598a` is its direct child and has
+code tree `96a7f4d940bcf1154d31d730450e00935ba06341`.
 
-The tree is intentionally uncommitted. No version source was bumped, no tag or
-release was created, and the immutable v0.10.3 release notes and checksums were
-not edited. The release engineer owns commit selection, version finalization,
-the clean-SHA semantic gate, publication, and the post-publication truth flip.
+Both code commits are on `codex/v0104-audit-remediation` and its matching
+upstream. At control-tower delivery, this documentation correction is
+intentionally uncommitted for release-engineer and independent review. That is
+a delivery receipt, not a claim the final committed handoff must make about
+itself. The release engineer will commit the approved correction, merge it,
+run CI and semantic evidence on the resulting final merge SHA, and only then
+tag. Neither recorded code commit predicts that future release SHA. No tag,
+GitHub Release, or PyPI publication was created, and the immutable v0.10.3
+release notes and checksums were not edited.
 
 ## Package contents
 
@@ -35,18 +42,29 @@ The fail-on-old SQL-shape regression proves that all three consumers—signed
 vector freshness, signed embedding-update CAS, and missing-embedding
 selection—contain all 29 codepoints and no POSIX trim. Live role-separated
 PostgreSQL verifies NBSP, U+001C, and mixed blank/deduplicated fields through
-CAS acceptance, no re-embed loop, and signed vector participation. The full
-gate passed 3,332 units with coverage floors, 463 role-separated PostgreSQL
-integrations, release-static/control, 127 LongMemEval tests plus evidence
-replay, unchanged-web readback, and two byte-identical package builds with
-Twine, release-check, seven-file archive parity, and installed wheel/sdist
-smokes. The final tracked patch and fixed 12-file remediation bundle each
-reproduced twice and are recorded in the self-excluded builder report. Batch
-16 review approved the production CAS semantics and returned changes required
-on one documentation-truth P3. Refreeze 17 changes only the stale Batch 15/
-current-review wording plus its fail-on-old control guard. Independent review
-of the exact Refreeze 17 carrier remains required, so it is not release-
-approved.
+CAS acceptance, no re-embed loop, and signed vector participation. The exact
+code-boundary matrix passed 3,333 units with coverage floors, the complete
+role-separated PostgreSQL gate, release-static/control, 127 LongMemEval tests
+plus seven-arm replay, the complete web/coverage/browser/HTTP matrix including
+the tracked npm advisory audit, and two byte-identical v0.10.4 package builds
+with Twine, release-check, archive parity, and installed wheel/sdist smokes.
+Exact hashes and the PostgreSQL evidence boundary are in `BUILD_REPORT.md`.
+Batch 16 review approved the production CAS semantics and returned changes
+required on one documentation-truth P3. Refreeze 17 corrects that truth and
+adds a future-SHA-safe fail-on-old guard. Its first independent review found a
+real depth-1 CI blocker in the ancestry-only implementation. The corrected
+guard now always verifies a complete 1,172-record Git-tree manifest pinned to
+the exact `42b8c2d` non-lifecycle content. Default depth-1 CI proves that
+complete content equality without claiming unavailable ancestry; full-history
+publication and semantic workflows additionally verify the exact commits,
+trees, parents, and ancestry. At control-tower delivery, independent review of
+that correction found one final activation bypass: matching wrong versions
+could disable the receipt. Active handoff-directory presence now
+unconditionally requires both governed versions to equal `0.10.4` and enables
+all finalization markers. Missing, downgraded, advanced, or asymmetric versions
+fail in full, shallow, and no-`.git` archive modes. Independent review of this
+final narrow correction is the next required gate; the delivery itself does
+not claim release approval.
 
 Batch 15 is historical, independently approved, and superseded. Its open-loop
 row parity, alpha documentation, fake ordering, full gates, package receipts,
@@ -92,6 +110,6 @@ web carrier, two byte-identical package builds, Twine/release-check/archive
 parity, isolated wheel/sdist smokes, and twice-reproduced fingerprints also
 passed. Its subsequent independent review returned changes required on exactly
 two bounded findings, so Batch 10 evidence is historical and does not approve
-the current tree; the same is true of Batches 8 and 9. Clean-SHA semantic
-attestation, version finalization, commit selection, and publication remain
-external release-engineer gates after Batch 15 review.
+the current tree; the same is true of Batches 8 and 9. Correction review and
+commit, merge-SHA CI and semantic attestation, tag verification, and
+publication remain external release-engineer gates.

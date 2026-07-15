@@ -13,13 +13,15 @@
 - Immutable files excluded from edits:
   `docs/release/v0.10.3-release-notes.md` and
   `docs/release/v0.10.3-checksums.txt`.
-- Version sources remain `0.10.3` during this uncommitted remediation. The
-  release engineer selects and commits the next version only after review.
+- Version sources were committed at `0.10.4` by remediation commit
+  `41641fbfa5dc8198bf47bad8849c828dbb519617`; npm advisory endpoint commit
+  `42b8c2d470a7535ec39d4028c2ef3868dcd4598a` is its direct child.
 
-This inventory was completed before source-code edits. It records every
-reachable HTTP, MCP, CLI, scheduler, web, PostgreSQL, and SQLite surface for
-the fifth-audit findings. A dash means that the behavior has no implementation
-on that surface, not that the surface was skipped.
+This is the historical pre-edit inventory completed before source-code edits.
+It records every reachable HTTP, MCP, CLI, scheduler, web, PostgreSQL, and
+SQLite surface for the fifth-audit findings. The appended repair sections bind
+that snapshot to current code truth. A dash means that the behavior has no
+implementation on that surface, not that the surface was skipped.
 
 ## Summary matrix
 
@@ -417,10 +419,10 @@ Active consumers to update without claiming publication:
 - `scripts/check_control_doc_truth.py` and unit tests
 - `scripts/release_check.py` and artifact tests
 
-Candidate-mode truth must continue to identify v0.10.3 as the latest
-published immutable release while describing the current tree as uncommitted
-v0.10.4 remediation. Latest-release notes, checksum pointers, and install tags
-must all resolve to v0.10.3 until the release engineer performs the structured
+Candidate-mode truth must continue to identify v0.10.3 as the latest published
+immutable release while describing v0.10.4 as a committed but unpublished
+candidate. Latest-release notes, checksum pointers, and install tags must all
+resolve to v0.10.3 until the release engineer performs the structured
 post-publication truth update.
 
 ## Migration inventory
@@ -443,7 +445,7 @@ candidate source intended for v0.10.4; its revision ID and ordering are
 unchanged. This does not rewrite the v0.10.3 tag, wheel, sdist, release notes,
 or checksums. All other migration repairs remain additive/fix-forward.
 
-## Repair Batch 8 correction appendix
+## Historical Repair Batch 8 correction appendix
 
 This appendix corrects two incomplete conclusions in the historical pre-edit
 inventory above. It describes the Batch 8 code-frozen tree; the original
@@ -568,7 +570,7 @@ focused and full builder gates, including reproducible package/install proof,
 were green and its final fingerprints were reproduced twice; its subsequent
 independent review also returned changes required on five bounded findings.
 
-## Repair Batch 10 correction appendix
+## Historical Repair Batch 10 correction appendix
 
 The Batch 9 review returned changes required on five bounded findings. Batch
 10 changes only these surfaces:
@@ -598,7 +600,7 @@ unchanged web-carrier readback were green. Final tracked-patch and bundle
 fingerprints were reproduced twice; the subsequent review returned changes
 required on exactly two bounded findings.
 
-## Repair Batch 11 correction appendix
+## Historical Repair Batch 11 correction appendix
 
 The Batch 10 review identified two remaining gaps. Batch 11 changes only these
 surfaces:
@@ -787,11 +789,23 @@ of the 29 `chr()` codepoints, and absence of the old POSIX trim. Live
 role-separated PostgreSQL covers NBSP and U+001C boundaries plus a mixed blank
 and duplicate-field case; each proves CAS acceptance, zero missing-embedding
 rows afterward, and signed vector participation. Focused and complete affected
-files, 3,332 full units with coverage floors, all 463 PostgreSQL integrations,
-release-static/control, LongMemEval/evidence, exact unchanged-web readback, and
-the reproducible package/parity/smoke gate pass. Final tracked-patch and fixed
-12-file bundle fingerprints reproduced twice and are recorded in the self-
-excluded builder report. Batch 16 review approved the production CAS semantics
-and returned changes required on one documentation-truth P3. Refreeze 17
-changes only that stale Batch 15/current-review wording plus its fail-on-old
-control guard; independent review of the Refreeze 17 carrier remains required.
+files and the historical 3,332-unit/463-PostgreSQL Batch 16 gate passed. The
+exact current code boundary reran 3,333 units with coverage floors, the complete
+PostgreSQL matrix, LongMem/evidence, release-static, all 203 tracked web inputs
+including the npm audit helper, and reproducible v0.10.4 package/parity/smoke
+gates. Exact hashes and timings are in `BUILD_REPORT.md`. Batch 16 review
+approved the production CAS semantics and returned changes required on one
+documentation-truth P3. Refreeze 17 corrects that truth and adds a
+future-SHA-safe content guard. The first Refreeze 17 review found that its
+ancestry-only receipt failed in the default depth-1 test checkout. The
+corrected guard always verifies a complete filtered HEAD-tree manifest of
+modes, object IDs, and paths against the exact `42b8c2d` pin. Full-history
+release checkouts additionally verify commits, trees, direct parents, ancestry,
+and the boundary diff; shallow checkouts do not claim history they cannot see.
+Both modes enforce current byte/version pins and the working-tree allowlist.
+The second review found that equal wrong versions could disable those checks.
+Active handoff-directory presence now activates finalization markers and the
+receipt unconditionally: exact `0.10.4`/`0.10.4` is required even without
+`.git`, while missing, symmetric downgrade/advance, and asymmetric values fail.
+At control-tower delivery, independent review of the final corrected exact
+documentation/control diff is the next required gate.

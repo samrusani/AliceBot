@@ -2,7 +2,17 @@
 
 ## Start here
 
-Review the uncommitted tree in this order:
+Code boundary `42b8c2d470a7535ec39d4028c2ef3868dcd4598a` is the
+direct child of remediation commit
+`41641fbfa5dc8198bf47bad8849c828dbb519617`; its exact tree is
+`96a7f4d940bcf1154d31d730450e00935ba06341`. Both governed version
+sources are already `0.10.4`. At control-tower delivery, the documentation
+correction itself is intentionally uncommitted for review. That wording is a
+historical delivery receipt and remains true after the correction is committed.
+Do not treat either code commit as the future release SHA.
+
+Review the code boundary and the bounded documentation/control diff in this
+order:
 
 1. `SURFACE_INVENTORY.md` for the frozen pre-edit class enumeration.
 2. `FIX_MATRIX.md` for disposition, implementation boundary, and parity.
@@ -23,13 +33,28 @@ Review the uncommitted tree in this order:
 10. `BUILD_REPORT.md`, the historical Batch 15 `REVIEW_REPORT.md`, then the
     independent Refreeze 17 review when supplied.
 
-Do not select a release commit until Batch 16's production gates and Refreeze
-17's truth gates have passed, the final tracked-patch and bundle fingerprints
-have been recorded and reproduced, and the reviewer has approved that exact
-Refreeze 17 carrier.
+Do not select the final release SHA until the bounded correction has been
+independently approved, committed, merged through protected `main`, and the
+required CI and semantic gates have passed on that resulting merge SHA. The
+recorded code commits are ancestry/content receipts, not predictions of the
+eventual release SHA.
 
 ## High-risk review points
 
+- Confirm the control-truth receipt always compares HEAD's complete filtered
+  Git-tree manifest—mode, object ID, and path—to the exact `42b8c2d` pin.
+  A real depth-1 clone must pass a descendant correction and publication-note
+  transition without claiming ancestry, then fail committed production drift.
+  A full-history clone must additionally validate the two exact commits,
+  trees, direct parents, ancestry, and boundary diff. Both modes must retain
+  the working-tree restriction and four current byte hashes. A source archive
+  has no Git receipt and therefore validates governed versions here while its
+  dedicated package/parity gates own archive provenance.
+- Confirm active handoff-directory presence—not version membership—activates
+  both finalization markers and the code receipt. Exact `0.10.4`/`0.10.4` is
+  mandatory; symmetric downgrade or advance, asymmetric values, and missing
+  values must fail. The same version requirement applies without `.git` even
+  though archive ancestry/content remains delegated to package/parity gates.
 - Confirm memory embedding CAS SQL uses the explicit CPython 3.12 29-codepoint
   `chr()` table from migration `0090`, including U+001C–U+001F, NEL, and NBSP,
   without POSIX `[[:space:]]`. Confirm vector freshness, signed update CAS,
@@ -158,7 +183,7 @@ Refreeze 17 carrier.
   `unavailable` provenance after `Promise.allSettled`, including both
   asymmetric partial-outage directions.
 
-## Builder Repair Batch 2 review deltas
+## Historical Builder Repair Batch 2 review deltas
 
 The initial independent review found three bounded gaps after the first
 builder freeze. The refrozen tree adds:
@@ -175,7 +200,7 @@ The final independent reviewer must review these deltas on the new bundle
 fingerprint in `BUILD_REPORT.md`; the first-pass approval does not carry over
 automatically.
 
-## Builder Repair Batch 3 review deltas
+## Historical Builder Repair Batch 3 review deltas
 
 The second independent review found two bounded gaps after the second builder
 freeze. The refrozen tree adds:
@@ -189,7 +214,7 @@ freeze. The refrozen tree adds:
 The final reviewer must evaluate these changes on the Refreeze 3 fingerprints;
 no approval from an earlier tree carries over.
 
-## Builder Repair Batch 4 review deltas
+## Historical Builder Repair Batch 4 review deltas
 
 The third independent review found five bounded truth/parity gaps after the
 third builder freeze. The final refrozen tree adds:
@@ -205,7 +230,7 @@ third builder freeze. The final refrozen tree adds:
 The final reviewer must evaluate these changes on the Refreeze 4 fingerprints;
 no approval from an earlier tree carries over.
 
-## Builder Repair Batch 5 review deltas
+## Historical Builder Repair Batch 5 review deltas
 
 The fourth independent review found four bounded correctness and evidence
 gaps after the fourth builder freeze. The Refreeze 5 tree adds:
@@ -269,7 +294,7 @@ Repair Batch 8 and do not approve the current tree. Clean-SHA semantic
 attestation, version finalization, and publication remain external gates, and
 no approval from an earlier tree carries over.
 
-## Builder Repair Batch 8 review deltas
+## Historical Builder Repair Batch 8 review deltas
 
 The sixth independent review found two bounded defects after the Refreeze 7
 carrier:
@@ -342,7 +367,7 @@ were recorded in the self-excluded builder report and reproduced twice. The
 subsequent independent review returned changes required on five bounded
 findings, so that evidence does not approve the current tree.
 
-## Builder Repair Batch 10 review deltas
+## Historical Builder Repair Batch 10 review deltas
 
 The Batch 9 review returned changes required on five bounded findings. Repair
 Batch 10 closes only those findings:
@@ -376,7 +401,7 @@ passed. Its final fingerprints reproduced twice. The subsequent independent
 review returned changes required on exactly two bounded findings, so no Batch
 10 result or hash approves the current tree.
 
-## Builder Repair Batch 11 review deltas
+## Historical Builder Repair Batch 11 review deltas
 
 Repair Batch 11 closes only the two findings returned by the Batch 10 review:
 
@@ -522,18 +547,24 @@ codepoint and rejects the POSIX trim. Live cases cover NBSP, U+001C, and a
 mixed blank/deduplicated field shape through successful CAS, empty re-embed
 selection, and signed vector participation. Focused verification passed 4
 selected units, all 82 affected units, 3 focused PostgreSQL cases, and all 4
-affected PostgreSQL cases. The full unit gate passed 3,332 tests at 75.7255%
-branch-inclusive coverage; `main.py` statement coverage was 54.7181%, above
-its 45% floor. All 463 role-separated PostgreSQL integrations passed.
-Release-static/control, 127 LongMemEval tests plus evidence replay, exact
-unchanged-web readback, and two byte-identical package builds with Twine,
-release-check, seven-file archive parity, and isolated wheel/sdist smokes
-passed. Final tracked-patch and fixed 12-file bundle fingerprints reproduced
-twice and are recorded in the self-excluded builder report. Batch 16 review
-approved the production CAS semantics and returned changes required on one
-documentation-truth P3. Refreeze 17 changes only that stale Batch 15/current-
-review wording plus its fail-on-old control guard. Independent review of the
-exact Refreeze 17 carrier remains required.
+affected PostgreSQL cases. The historical Batch 16 dirty-tree gate passed
+3,332 units with coverage floors and all 463 role-separated PostgreSQL
+integrations. Batch 16 review approved the production CAS semantics and
+returned changes required on one documentation-truth P3.
+
+The exact committed code boundary was then rerun: 3,333 units with coverage
+floors, all 463 role-separated PostgreSQL integrations, 127 LongMem tests plus
+seven-arm replay, all 203 tracked web inputs through 280 tests, coverage,
+type/lint/build/budgets, 10 browser cases, HTTP smoke, and npm-audit success and
+failure modes, plus two byte-identical v0.10.4 package builds with Twine,
+release-check, parity, exclusions, and installed smokes. `BUILD_REPORT.md`
+contains exact timings, coverage fractions, manifests, and artifact hashes.
+Refreeze 17 changes only documentation/control truth and its fail-on-old guard.
+The first independent Refreeze 17 review rejected an ancestry-only guard that
+failed in default depth-1 CI; this correction adds complete shallow-checkout
+content proof. The second review rejected a final version-membership activation
+bypass; active handoff presence now makes exact version truth unconditional.
+Independent review of the final corrected delivery remains required.
 
 ## Copy-ready protected-path metadata
 
@@ -570,7 +601,7 @@ Take and verify a restorable backup. Before migration, run the documented 0087 a
 
 ### Validation
 
-Batch 16 review approved the production CAS semantics and returned changes required on one documentation-truth P3. Refreeze 17 changes only the stale Batch 15/current-review wording and its fail-on-old control guard. Its focused and final verification plus fingerprints are recorded in the self-excluded builder report. Independent review of the exact Refreeze 17 carrier remains required; historical Batch 15 and Batch 16 reviews do not satisfy that gate.
+Batch 16 review approved the production CAS semantics and returned changes required on one documentation-truth P3. Refreeze 17 corrects the stale pre-finalization/current-review wording and adds a future-SHA-safe content guard: active handoff presence unconditionally requires exact 0.10.4 versions, every checkout verifies the complete filtered HEAD tree against the exact code pin, and full-history checkouts additionally verify commit ancestry. Real depth-1 and full-history fail-on-old tests cover correction and publication descendants, production drift, symmetric downgrade/advance, missing and asymmetric versions, and source-archive behavior. Exact committed-code and post-correction evidence plus the BUILD-excluded patch fingerprint are recorded in the self-excluded builder report. At control-tower delivery, independent review of the final corrected exact documentation/control diff is the next required gate; historical Batch 15 and Batch 16 reviews do not satisfy it.
 
 ### Historical pre-review Batch 16 Validation
 
@@ -610,34 +641,37 @@ approving v0.10.4 for such a database:
 ## Finalization sequence
 
 1. Preserve the immutable v0.10.3 release notes/checksums and historical tag.
-   Do not begin finalization until `BUILD_REPORT.md` contains the complete
-   Batch 16 focused, full Python/PostgreSQL, web, package, documentation,
-   repository-readback, and fingerprint evidence and the independent reviewer
-   has approved the exact Refreeze 17 truth carrier. Batch 16 review approved
-   the production CAS semantics and returned one documentation P3; Batch 15
-   was independently approved before the engineering-team CAS finding and is
-   now historical. Neither historical review satisfies the Refreeze 17 gate.
-2. Review `git diff` and remove no user-owned files. `coverage.json` and
-   `uv.lock` predate this remediation and remain untracked.
-3. Before the finalization commit, bump every governed version source to
-   `0.10.4`, including `pyproject.toml` and `apps/web/package.json`, and align
-   the candidate-mode control documents. Move the candidate changelog entries
-   under a dated v0.10.4 heading and finalize the v0.10.4 release-note
-   title/body with the exact line-2 structured state still
-   `pending`/`pending`. Do **not** create
-   `docs/release/v0.10.4-checksums.txt` yet.
-4. Before committing, prepare the pull-request body with the completed Upgrade
-   Overview above and validate it locally. Commit and push the finalization
-   tree, then run the actual protected-path guard against the real pull-request
-   event. Merge through protected `main` only after that guard and review pass.
-   Select the resulting clean SHA only after confirming it is the exact remote
-   `main` head.
+   `BUILD_REPORT.md` must contain the exact `42b8c2d` matrix and the
+   independent reviewer must approve this documentation/control correction.
+   Batch 16 review approved the production CAS semantics and returned one
+   documentation P3; the historical Batch 15/16 reviews do not approve the
+   correction now being handed off.
+2. Review the intentionally unstaged correction against exact code boundary
+   `42b8c2d470a7535ec39d4028c2ef3868dcd4598a`. It may change only the seven
+   paths listed by the truth guard. Remove no user-owned files; `coverage.json`
+   and `uv.lock` predate this correction and remain untracked.
+3. Verify, rather than repeat, the already-completed version finalization:
+   `pyproject.toml` and `apps/web/package.json` are both `0.10.4`; the
+   candidate changelog heading is dated; and the v0.10.4 release note remains
+   exactly `pending`/`pending`. Do **not** create
+   `docs/release/v0.10.4-checksums.txt` before publication.
+4. After independent approval, commit only the correction allowlist, prepare
+   the pull-request body with the completed Upgrade Overview, and validate it
+   locally. Push that commit, run the actual protected-path guard against the
+   real pull-request event, and merge through protected `main` only after the
+   guard and review pass. Neither `41641fb` nor `42b8c2d` is asserted to be the
+   final release SHA; select the resulting clean merge SHA only after confirming
+   it is the exact remote `main` head.
 5. Run the complete clean-SHA release matrix from `RELEASING.md` using the
    copy-paste block below. It requires brand-new empty `DIST_DIR` and
    `REPRO_DIST_DIR` paths, role-separated PostgreSQL, the `0082`→head
    migration-chain regression, web gates, reproducible distributions,
    `make release-finalization-check`, and the required GitHub checks on that
    exact SHA. Never reuse or clear user-owned artifact directories.
+   The default test workflow may exercise the truth guard in a depth-1
+   checkout and therefore proves the complete pinned non-lifecycle tree. The
+   publish and semantic-release workflows use `fetch-depth: 0`; their checker
+   run must additionally prove the exact commit/tree/parent ancestry chain.
 6. Run the provider-backed semantic release gate against that exact SHA with
    the configured OpenAI embedding provider. Inspect the credential-free
    report and attestation and confirm their source SHA, report digest, passing
@@ -698,9 +732,10 @@ wheel, sdist, and `SHA256SUMS` to `DIST_DIR` and the comparison build to
 evidence, and never delete, overwrite, or rely on ignored historical
 `dist/` artifacts.
 
-## External-only items intentionally not performed
+## External-only items intentionally not performed at control-tower delivery
 
-- Version bump and release commit selection.
+- Documentation-correction commit, protected merge, and final release-SHA
+  selection.
 - Provider-backed semantic attestation for the final clean SHA.
 - GitHub Actions/release-environment approval.
 - Tag, push, GitHub Release, PyPI publication, or public metadata readback.
