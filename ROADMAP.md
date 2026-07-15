@@ -2,10 +2,10 @@
 
 ## Baseline (Not Roadmap Work)
 
-- `v0.10.4` is the latest published release. Its immutable release record is
+- `v0.11.0` is the latest published release. Its immutable release record is
   `docs/release/v0.10.4-release-notes.md`, with artifact digests in
-  `docs/release/v0.10.4-checksums.txt`.
-- `v0.11.0` is the current unpublished candidate. Phase 1 narrows the default
+  `docs/release/v0.11.0-checksums.txt`.
+- `v0.11.0` shipped Phase 1, narrowing the default
   product to Alice's agent interface and retrieval/memory-quality core; it does
   not authorize publication.
 - The historical **79.4% (397/500)** LongMemEval_s result is one run from

@@ -2,17 +2,17 @@
 
 ## Snapshot
 
-- `v0.10.4` is the latest published release. It is available from PyPI and
+- `v0.11.0` is the latest published release. It is available from PyPI and
   GitHub; exact artifact digests are in
-  `docs/release/v0.10.4-checksums.txt`.
-- `v0.11.0` is the current unpublished candidate. Phase 1 removes product
+  `docs/release/v0.11.0-checksums.txt`.
+- `v0.11.0` shipped the Phase 1 periphery cut, removing product
   periphery so the default runtime matches Alice's two priorities: a small
   agent interface and high-quality, explainable retrieval/memory.
 - The historical LongMemEval_s result is **79.4% (397/500)** from one run on
   2026-07-07. It is not a repeated estimate or a measurement of this candidate.
 - Alice remains public-alpha, pre-1.0, local-first, single-user, and self-hosted.
 
-## What `v0.11.0` Changes
+## What `v0.11.0` Shipped
 
 - Keeps the eleven-tool core MCP surface, core HTTP/CLI memory workflows,
   per-agent keys, continuity, provenance, retrieval, traces, entities,
@@ -50,12 +50,15 @@
 
 ## Release Boundary
 
-`v0.10.4` is tagged, published, and immutable. Its authoritative records are:
+`v0.11.0` is tagged, published, and immutable. Its authoritative records are:
 
-- `docs/release/v0.10.4-release-notes.md`
-- `docs/release/v0.10.4-checksums.txt`
+- `docs/release/v0.11.0-release-notes.md`
+- `docs/release/v0.11.0-checksums.txt`
 
-`v0.11.0` remains an unpublished candidate until exact-SHA gates, independent
+`v0.10.4` is the prior published release; its records remain at
+`docs/release/v0.10.4-release-notes.md` and `docs/release/v0.10.4-checksums.txt`.
+
+Historically, the candidate remained unpublished until exact-SHA gates, independent
 review, artifact reproducibility, PyPI publication, and GitHub finalization all
 succeed through the transactional release workflow.
 
