@@ -3143,7 +3143,7 @@ export function shouldExpectThreadExecutionReview(
   );
 }
 
-function buildApiUrl(
+export function buildApiUrl(
   apiBaseUrl: string,
   path: string,
   query?: Record<string, string | undefined>,
@@ -3152,7 +3152,8 @@ function buildApiUrl(
   if (!sanitizedBaseUrl) {
     throw new ApiError("The configured API base URL is invalid", 0, "invalid_api_base_url");
   }
-  const url = new URL(path, `${sanitizedBaseUrl.replace(/\/$/, "")}/`);
+  const logicalPath = path.replace(/^\/+/, "");
+  const url = new URL(logicalPath, `${sanitizedBaseUrl.replace(/\/$/, "")}/`);
   for (const [key, value] of Object.entries(query ?? {})) {
     if (value) {
       url.searchParams.set(key, value);
@@ -3161,20 +3162,16 @@ function buildApiUrl(
   return url.toString();
 }
 
-function shouldAttachVNextOperatorAgentApiKey(requestUrl: string) {
+function shouldAttachVNextOperatorAgentApiKey(apiBaseUrl: string, path: string) {
   if (!vNextOperatorAgentApiKey) {
     return false;
   }
 
-  try {
-    const parsed = new URL(requestUrl);
-    return (
-      isLocalApiBaseUrl(parsed.origin) &&
-      (parsed.pathname === "/v0/vnext" || parsed.pathname.startsWith("/v0/vnext/"))
-    );
-  } catch {
-    return false;
-  }
+  const logicalPath = `/${path.replace(/^\/+/, "")}`;
+  return (
+    isLocalApiBaseUrl(apiBaseUrl) &&
+    (logicalPath === "/v0/vnext" || logicalPath.startsWith("/v0/vnext/"))
+  );
 }
 
 function serializeRequestHeaders(headers: Headers) {
@@ -3271,7 +3268,7 @@ export async function requestJson<T>(
     }
     let autoAttachedAgentApiKey = "";
     if (
-      shouldAttachVNextOperatorAgentApiKey(requestUrl) &&
+      shouldAttachVNextOperatorAgentApiKey(apiBaseUrl, path) &&
       !requestHeaders.has("Authorization")
     ) {
       autoAttachedAgentApiKey = vNextOperatorAgentApiKey;

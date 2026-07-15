@@ -1,12 +1,17 @@
 """Per-operation OpenAPI success response schemas.
 
 This registry deliberately uses literal ``(METHOD, path)`` keys so route coverage can
-be checked without executing the application. Schemas that are not yet backed by a
-TypedDict remain open, but still expose operation-specific top-level fields instead
-of falling back to a domain-wide catch-all component.
+be checked without executing the application. Named response helpers generate their
+schemas from the authoritative ``TypedDict`` contract. Direct service/store returns
+use source-audited, closed top-level envelopes. Only the two genuinely polymorphic
+async response operations remain open, with closed variants for each known shape.
 """
 
 from __future__ import annotations
+
+from importlib import import_module
+
+from pydantic import TypeAdapter
 
 
 def _typed_properties(
@@ -83,6 +88,25 @@ _ARTIFACT_RESPONSE_FIELDS = (
     "user_id",
 )
 
+# VNextSchedulerService.status() returns the first twelve fields on every call;
+# GET /v0/vnext/scheduler/status adds the daemon snapshot as the final field.
+# Keep this inventory literal so a runtime/schema drift is visible in review.
+_SCHEDULER_STATUS_RESPONSE_FIELDS = (
+    "mode",
+    "disabled_by_default",
+    "workflows",
+    "recent_runs",
+    "enabled_count",
+    "paused_count",
+    "last_failure",
+    "recent_failures",
+    "last_due_scan",
+    "next_due_workflow",
+    "currently_running_workflow",
+    "last_success_by_workflow",
+    "daemon",
+)
+
 
 def _artifact_response_properties() -> dict[str, dict[str, object]]:
     """Describe the artifact object returned directly by generator handlers."""
@@ -105,12 +129,8 @@ def _artifact_response_properties() -> dict[str, dict[str, object]]:
             "id": {"type": "string", "format": "uuid"},
             "user_id": {"type": "string", "format": "uuid"},
             "created_at": {"type": "string", "format": "date-time"},
-            "reviewed_at": {
-                "anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]
-            },
-            "promoted_at": {
-                "anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]
-            },
+            "reviewed_at": {"anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]},
+            "promoted_at": {"anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]},
         }
     )
     return properties
@@ -137,6 +157,90 @@ def _operation_schema(
     elif closed:
         schema["required"] = list(fields)
     return schema
+
+
+def _inline_local_definitions(
+    value: object,
+    definitions: dict[str, object],
+    *,
+    resolving: frozenset[str] = frozenset(),
+) -> object:
+    """Inline Pydantic's local definitions so registry components are self-contained.
+
+    Registry components are inserted into the application OpenAPI document by
+    ``AliceFastAPI``.  A raw ``#/$defs/...`` reference would point at the document
+    root rather than at the component that owns it, so resolve those references
+    before handing the schema to the application.
+    """
+
+    if isinstance(value, list):
+        return [_inline_local_definitions(item, definitions, resolving=resolving) for item in value]
+    if not isinstance(value, dict):
+        return value
+    reference = value.get("$ref")
+    if isinstance(reference, str) and reference.startswith("#/$defs/"):
+        name = reference.removeprefix("#/$defs/")
+        definition = definitions.get(name)
+        if definition is None:
+            raise RuntimeError(f"OpenAPI response type references unknown definition {name!r}")
+        if name in resolving:
+            # JSON values are intentionally recursive.  Keep that nested value
+            # unconstrained instead of publishing a dangling document-level
+            # reference; the response envelope itself remains exact and closed.
+            return {}
+        return _inline_local_definitions(definition, definitions, resolving=resolving | {name})
+    return {
+        str(key): _inline_local_definitions(child, definitions, resolving=resolving)
+        for key, child in value.items()
+        if key != "$defs"
+    }
+
+
+def _schema_from_authoritative_response_type(
+    *,
+    module_name: str,
+    type_name: str,
+    title: str,
+) -> dict[str, object]:
+    """Build a closed schema from the response type returned by the handler helper."""
+
+    response_type = getattr(import_module(module_name), type_name)
+    raw_schema = TypeAdapter(response_type).json_schema()
+    definitions_value = raw_schema.pop("$defs", {})
+    definitions = definitions_value if isinstance(definitions_value, dict) else {}
+    schema_value = _inline_local_definitions(raw_schema, definitions)
+    if not isinstance(schema_value, dict):  # pragma: no cover - TypeAdapter invariant
+        raise RuntimeError(f"OpenAPI response type {module_name}.{type_name} did not produce an object schema")
+    schema: dict[str, object] = {str(key): value for key, value in schema_value.items()}
+    if schema.get("type") != "object" or not isinstance(schema.get("properties"), dict):
+        raise RuntimeError(f"OpenAPI response type {module_name}.{type_name} must be an object")
+    schema["title"] = title
+    schema["additionalProperties"] = False
+    return schema
+
+
+def _closed_source_schema(
+    title: str,
+    fields: tuple[str, ...],
+    *,
+    required: tuple[str, ...] | None = None,
+    properties: dict[str, dict[str, object]] | None = None,
+) -> dict[str, object]:
+    """Describe a source-audited success envelope without guessing nested types."""
+
+    field_properties = properties or {field: {} for field in fields}
+    if set(field_properties) != set(fields):
+        raise RuntimeError(f"OpenAPI source schema {title} property inventory drifted")
+    required_fields = fields if required is None else required
+    if not set(required_fields) <= set(fields):
+        raise RuntimeError(f"OpenAPI source schema {title} requires an unknown property")
+    return {
+        "title": title,
+        "type": "object",
+        "properties": field_properties,
+        "required": list(required_fields),
+        "additionalProperties": False,
+    }
 
 
 OPENAPI_OPERATION_RESPONSE_SCHEMAS: dict[tuple[str, str], tuple[str, dict[str, object]]] = {
@@ -1410,7 +1514,11 @@ OPENAPI_OPERATION_RESPONSE_SCHEMAS: dict[tuple[str, str], tuple[str, dict[str, o
     ),
     ("GET", "/v0/vnext/scheduler/status"): (
         "GetVnextSchedulerStatusSuccessResponse",
-        _operation_schema("GetVnextSchedulerStatusSuccessResponse", ("daemon",), required=("daemon",), closed=True),
+        _operation_schema(
+            "GetVnextSchedulerStatusSuccessResponse",
+            _SCHEDULER_STATUS_RESPONSE_FIELDS,
+            closed=True,
+        ),
     ),
     ("GET", "/v0/vnext/scheduler/runs"): (
         "ListVnextSchedulerRunsSuccessResponse",
@@ -2445,7 +2553,14 @@ _OPENAPI_EXPLICIT_PROPERTY_SCHEMAS: dict[tuple[str, str], dict[str, dict[str, ob
     ("POST", "/v0/vnext/open-loops"): _typed_properties(objects=("open_loop",)),
     ("GET", "/v0/vnext/settings/brain-charter"): _typed_properties(objects=("brain_charter",)),
     ("PUT", "/v0/vnext/settings/brain-charter"): _typed_properties(objects=("brain_charter",)),
-    ("GET", "/v0/vnext/scheduler/status"): _typed_properties(objects=("daemon",)),
+    ("GET", "/v0/vnext/scheduler/status"): _typed_properties(
+        objects=("daemon", "last_success_by_workflow"),
+        nullable_objects=("currently_running_workflow", "last_due_scan", "last_failure", "next_due_workflow"),
+        object_arrays=("recent_failures", "recent_runs", "workflows"),
+        strings=("mode",),
+        integers=("enabled_count", "paused_count"),
+        booleans=("disabled_by_default",),
+    ),
     ("GET", "/v0/vnext/scheduler/runs"): _typed_properties(object_arrays=("items",), integers=("count",)),
     ("GET", "/v0/vnext/scheduler/failures"): _typed_properties(object_arrays=("items",), integers=("count",)),
     ("GET", "/v0/vnext/agents/policy-telemetry"): _typed_properties(objects=("summary",)),
@@ -2857,10 +2972,733 @@ for _operation_key, _property_schemas in _OPENAPI_EXPLICIT_PROPERTY_SCHEMAS.item
     _component_schema["properties"] = _property_schemas
 
 
+# These operations return named TypedDict envelopes from their handler helper.
+# Generate the public response schema from that same runtime type instead of
+# maintaining a second, speculative list of wrapper fields here.
+_OPENAPI_CONTRACT_RESPONSE_TYPES: dict[tuple[str, str], str] = {
+    ("GET", "/v0/traces"): "TraceReviewListResponse",
+    ("GET", "/v0/traces/{trace_id}"): "TraceReviewDetailResponse",
+    ("GET", "/v0/traces/{trace_id}/events"): "TraceReviewEventListResponse",
+    ("GET", "/v0/open-loops"): "OpenLoopListResponse",
+    ("GET", "/v0/open-loops/{open_loop_id}"): "OpenLoopDetailResponse",
+    ("POST", "/v0/open-loops"): "OpenLoopCreateResponse",
+    ("POST", "/v0/open-loops/{open_loop_id}/status"): "OpenLoopStatusUpdateResponse",
+    ("POST", "/v0/consents"): "ConsentUpsertResponse",
+    ("GET", "/v0/consents"): "ConsentListResponse",
+    ("POST", "/v0/policies"): "PolicyCreateResponse",
+    ("GET", "/v0/policies"): "PolicyListResponse",
+    ("GET", "/v0/policies/{policy_id}"): "PolicyDetailResponse",
+    ("POST", "/v0/policies/evaluate"): "PolicyEvaluationResponse",
+    ("POST", "/v0/tools"): "ToolCreateResponse",
+    ("GET", "/v0/tools"): "ToolListResponse",
+    ("POST", "/v0/tools/allowlist/evaluate"): "ToolAllowlistEvaluationResponse",
+    ("POST", "/v0/tools/route"): "ToolRoutingResponse",
+    ("POST", "/v0/approvals/requests"): "ApprovalRequestCreateResponse",
+    ("GET", "/v0/approvals"): "ApprovalListResponse",
+    ("GET", "/v0/approvals/{approval_id}"): "ApprovalDetailResponse",
+    ("POST", "/v0/approvals/{approval_id}/approve"): "ApprovalResolutionResponse",
+    ("POST", "/v0/approvals/{approval_id}/reject"): "ApprovalResolutionResponse",
+    ("POST", "/v0/approvals/{approval_id}/execute"): "ProxyExecutionResponse",
+    ("GET", "/v0/tasks"): "TaskListResponse",
+    ("GET", "/v0/tasks/{task_id}"): "TaskDetailResponse",
+    ("POST", "/v0/tasks/{task_id}/runs"): "TaskRunCreateResponse",
+    ("GET", "/v0/tasks/{task_id}/runs"): "TaskRunListResponse",
+    ("GET", "/v0/task-runs/{task_run_id}"): "TaskRunDetailResponse",
+    ("POST", "/v0/task-runs/{task_run_id}/tick"): "TaskRunMutationResponse",
+    ("POST", "/v0/task-runs/{task_run_id}/pause"): "TaskRunMutationResponse",
+    ("POST", "/v0/task-runs/{task_run_id}/resume"): "TaskRunMutationResponse",
+    ("POST", "/v0/task-runs/{task_run_id}/cancel"): "TaskRunMutationResponse",
+    ("POST", "/v0/gmail-accounts"): "GmailAccountConnectResponse",
+    ("GET", "/v0/gmail-accounts"): "GmailAccountListResponse",
+    ("GET", "/v0/gmail-accounts/{gmail_account_id}"): "GmailAccountDetailResponse",
+    ("POST", "/v0/gmail-accounts/{gmail_account_id}/messages/{provider_message_id}/ingest"): (
+        "GmailMessageIngestionResponse"
+    ),
+    ("POST", "/v0/calendar-accounts"): "CalendarAccountConnectResponse",
+    ("GET", "/v0/calendar-accounts"): "CalendarAccountListResponse",
+    ("GET", "/v0/calendar-accounts/{calendar_account_id}"): "CalendarAccountDetailResponse",
+    ("GET", "/v0/calendar-accounts/{calendar_account_id}/events"): "CalendarEventListResponse",
+    ("POST", "/v0/calendar-accounts/{calendar_account_id}/events/{provider_event_id}/ingest"): (
+        "CalendarEventIngestionResponse"
+    ),
+    ("POST", "/v0/tasks/{task_id}/workspace"): "TaskWorkspaceCreateResponse",
+    ("GET", "/v0/task-workspaces"): "TaskWorkspaceListResponse",
+    ("GET", "/v0/task-workspaces/{task_workspace_id}"): "TaskWorkspaceDetailResponse",
+    ("GET", "/v0/tasks/{task_id}/steps"): "TaskStepListResponse",
+    ("GET", "/v0/task-steps/{task_step_id}"): "TaskStepDetailResponse",
+    ("POST", "/v0/task-workspaces/{task_workspace_id}/artifacts"): "TaskArtifactCreateResponse",
+    ("GET", "/v0/task-artifacts"): "TaskArtifactListResponse",
+    ("GET", "/v0/task-artifacts/{task_artifact_id}"): "TaskArtifactDetailResponse",
+    ("POST", "/v0/task-artifacts/{task_artifact_id}/ingest"): "TaskArtifactIngestionResponse",
+    ("GET", "/v0/task-artifacts/{task_artifact_id}/chunks"): "TaskArtifactChunkListResponse",
+    ("POST", "/v0/tasks/{task_id}/artifact-chunks/retrieve"): "TaskArtifactChunkRetrievalResponse",
+    ("POST", "/v0/task-artifacts/{task_artifact_id}/chunks/retrieve"): "TaskArtifactChunkRetrievalResponse",
+    ("POST", "/v0/tasks/{task_id}/artifact-chunks/semantic-retrieval"): ("TaskArtifactChunkSemanticRetrievalResponse"),
+    ("POST", "/v0/task-artifacts/{task_artifact_id}/chunks/semantic-retrieval"): (
+        "TaskArtifactChunkSemanticRetrievalResponse"
+    ),
+    ("POST", "/v0/tasks/{task_id}/steps"): "TaskStepNextCreateResponse",
+    ("POST", "/v0/task-steps/{task_step_id}/transition"): "TaskStepTransitionResponse",
+    ("POST", "/v0/execution-budgets"): "ExecutionBudgetCreateResponse",
+    ("GET", "/v0/execution-budgets"): "ExecutionBudgetListResponse",
+    ("GET", "/v0/execution-budgets/{execution_budget_id}"): "ExecutionBudgetDetailResponse",
+    ("POST", "/v0/execution-budgets/{execution_budget_id}/deactivate"): "ExecutionBudgetDeactivateResponse",
+    ("POST", "/v0/execution-budgets/{execution_budget_id}/supersede"): "ExecutionBudgetSupersedeResponse",
+    ("GET", "/v0/tool-executions"): "ToolExecutionListResponse",
+    ("GET", "/v0/tool-executions/{execution_id}"): "ToolExecutionDetailResponse",
+    ("GET", "/v0/tools/{tool_id}"): "ToolDetailResponse",
+    ("POST", "/v0/memories/extract-explicit-preferences"): "ExplicitPreferenceExtractionResponse",
+    ("POST", "/v0/open-loops/extract-explicit-commitments"): "ExplicitCommitmentExtractionResponse",
+    ("POST", "/v0/memories/capture-explicit-signals"): "ExplicitSignalCaptureResponse",
+    ("POST", "/v0/continuity/captures"): "ContinuityCaptureCreateResponse",
+    ("POST", "/v0/continuity/captures/candidates"): "ContinuityCaptureCandidatesResponse",
+    ("POST", "/v0/continuity/captures/commit"): "ContinuityCaptureCommitResponse",
+    ("POST", "/v1/memory/operations/candidates/generate"): "MemoryOperationCandidateGenerateResponse",
+    ("GET", "/v1/memory/operations/candidates"): "MemoryOperationCandidateListResponse",
+    ("POST", "/v1/memory/operations/commit"): "MemoryOperationCommitResponse",
+    ("GET", "/v1/memory/operations"): "MemoryOperationListResponse",
+    ("GET", "/v0/continuity/captures"): "ContinuityCaptureInboxResponse",
+    ("GET", "/v0/continuity/captures/{capture_event_id}"): "ContinuityCaptureDetailResponse",
+    ("POST", "/v0/continuity/review-queue/{continuity_object_id}/corrections"): ("ContinuityCorrectionApplyResponse"),
+    ("GET", "/v0/task-briefs/{task_brief_id}"): "TaskBriefResponse",
+    ("GET", "/v0/memories"): "MemoryReviewListResponse",
+    ("GET", "/v0/memories/review-queue"): "MemoryReviewQueueResponse",
+    ("GET", "/v0/memories/quality-gate"): "MemoryQualityGateResponse",
+    ("GET", "/v0/memories/evaluation-summary"): "MemoryEvaluationSummaryResponse",
+    ("POST", "/v0/memories/semantic-retrieval"): "SemanticMemoryRetrievalResponse",
+    ("GET", "/v0/memories/{memory_id}"): "MemoryReviewDetailResponse",
+    ("GET", "/v0/memories/{memory_id}/revisions"): "MemoryRevisionReviewListResponse",
+    ("POST", "/v0/memories/{memory_id}/labels"): "MemoryReviewLabelCreateResponse",
+    ("GET", "/v0/memories/{memory_id}/labels"): "MemoryReviewLabelListResponse",
+    ("POST", "/v0/embedding-configs"): "EmbeddingConfigCreateResponse",
+    ("GET", "/v0/embedding-configs"): "EmbeddingConfigListResponse",
+    ("POST", "/v0/memory-embeddings"): "MemoryEmbeddingUpsertResponse",
+    ("POST", "/v0/task-artifact-chunk-embeddings"): "TaskArtifactChunkEmbeddingWriteResponse",
+    ("GET", "/v0/memories/{memory_id}/embeddings"): "MemoryEmbeddingListResponse",
+    ("GET", "/v0/task-artifacts/{task_artifact_id}/chunk-embeddings"): ("TaskArtifactChunkEmbeddingListResponse"),
+    ("GET", "/v0/task-artifact-chunks/{task_artifact_chunk_id}/embeddings"): ("TaskArtifactChunkEmbeddingListResponse"),
+    ("GET", "/v0/memory-embeddings/{memory_embedding_id}"): "MemoryEmbeddingDetailResponse",
+    ("GET", "/v0/task-artifact-chunk-embeddings/{task_artifact_chunk_embedding_id}"): (
+        "TaskArtifactChunkEmbeddingDetailResponse"
+    ),
+    ("POST", "/v0/entities"): "EntityCreateResponse",
+    ("POST", "/v0/entity-edges"): "EntityEdgeCreateResponse",
+    ("GET", "/v0/entities"): "EntityListResponse",
+    ("GET", "/v0/entities/{entity_id}/edges"): "EntityEdgeListResponse",
+    ("GET", "/v0/entities/{entity_id}"): "EntityDetailResponse",
+}
+
+_OPENAPI_OTHER_AUTHORITATIVE_RESPONSE_TYPES: dict[tuple[str, str], tuple[str, str]] = {
+    ("GET", "/v1/admin/hosted/design-partners"): (
+        "alicebot_api.design_partners",
+        "DesignPartnerListPayload",
+    ),
+    ("GET", "/v1/channels/telegram/approvals"): (
+        "alicebot_api.telegram_continuity",
+        "_TelegramApprovalListPayload",
+    ),
+    ("POST", "/v1/channels/telegram/approvals/{approval_id}/approve"): (
+        "alicebot_api.telegram_continuity",
+        "_TelegramApprovalResolutionPayload",
+    ),
+    ("POST", "/v1/channels/telegram/approvals/{approval_id}/reject"): (
+        "alicebot_api.telegram_continuity",
+        "_TelegramApprovalResolutionPayload",
+    ),
+}
+
+for _operation_key, _type_name in _OPENAPI_CONTRACT_RESPONSE_TYPES.items():
+    _component_name, _previous_schema = OPENAPI_OPERATION_RESPONSE_SCHEMAS[_operation_key]
+    OPENAPI_OPERATION_RESPONSE_SCHEMAS[_operation_key] = (
+        _component_name,
+        _schema_from_authoritative_response_type(
+            module_name="alicebot_api.contracts",
+            type_name=_type_name,
+            title=_component_name,
+        ),
+    )
+
+for _operation_key, (_module_name, _type_name) in _OPENAPI_OTHER_AUTHORITATIVE_RESPONSE_TYPES.items():
+    _component_name, _previous_schema = OPENAPI_OPERATION_RESPONSE_SCHEMAS[_operation_key]
+    OPENAPI_OPERATION_RESPONSE_SCHEMAS[_operation_key] = (
+        _component_name,
+        _schema_from_authoritative_response_type(
+            module_name=_module_name,
+            type_name=_type_name,
+            title=_component_name,
+        ),
+    )
+
+
+_SOURCE_RESPONSE_FIELDS = (
+    "id",
+    "user_id",
+    "source_type",
+    "title",
+    "author",
+    "uri",
+    "raw_path",
+    "content_hash",
+    "dedupe_key",
+    "captured_at",
+    "source_created_at",
+    "source_modified_at",
+    "connector_name",
+    "external_id",
+    "domain",
+    "sensitivity",
+    "metadata_json",
+    "deleted_at",
+)
+_TASK_RESPONSE_FIELDS = (
+    "id",
+    "user_id",
+    "title",
+    "task_type",
+    "instructions",
+    "status",
+    "requested_by",
+    "scope_json",
+    "allowed_sources_json",
+    "domain",
+    "sensitivity",
+    "write_policy",
+    "scheduled_for",
+    "started_at",
+    "completed_at",
+    "failed_at",
+    "error_message",
+    "output_artifact_id",
+    "created_at",
+    "updated_at",
+    "metadata_json",
+)
+_GRAPH_EDGE_RESPONSE_FIELDS = (
+    "id",
+    "user_id",
+    "from_type",
+    "from_id",
+    "to_type",
+    "to_id",
+    "edge_type",
+    "confidence",
+    "explanation",
+    "created_by",
+    "created_at",
+    "observed_at",
+    "valid_from",
+    "valid_to",
+    "metadata_json",
+)
+_BELIEF_RESPONSE_FIELDS = (
+    "id",
+    "user_id",
+    "memory_id",
+    "claim",
+    "status",
+    "confidence",
+    "first_seen_at",
+    "last_reinforced_at",
+    "last_challenged_at",
+    "superseded_by",
+    "metadata_json",
+)
+_OPEN_LOOP_RESPONSE_FIELDS = (
+    "id",
+    "user_id",
+    "memory_id",
+    "title",
+    "status",
+    "opened_at",
+    "due_at",
+    "resolved_at",
+    "resolution_note",
+    "created_at",
+    "updated_at",
+    "description",
+    "priority",
+    "project_id",
+    "person_id",
+    "source_id",
+    "closed_at",
+    "domain",
+    "sensitivity",
+    "metadata_json",
+)
+_QUALITY_RATING_RESPONSE_FIELDS = (
+    "id",
+    "user_id",
+    "artifact_id",
+    "reviewer_id",
+    "usefulness",
+    "accuracy",
+    "source_grounding",
+    "novel_connections",
+    "actionability",
+    "hallucination_risk",
+    "verbosity",
+    "missed_context",
+    "comments",
+    "created_at",
+    "metadata_json",
+)
+_EVENT_RESPONSE_FIELDS = (
+    "id",
+    "user_id",
+    "event_type",
+    "actor_type",
+    "actor_id",
+    "target_type",
+    "target_id",
+    "occurred_at",
+    "payload_json",
+    "trace_id",
+    "run_id",
+    "integrity_hash",
+)
+_CONNECTOR_SYNC_RESPONSE_FIELDS = (
+    "status",
+    "connector_name",
+    "item_count",
+    "imported_count",
+    "duplicate_count",
+    "skipped_count",
+    "failed_count",
+    "previous_cursor",
+    "sync_cursor",
+    "source_ids",
+    "failed_external_ids",
+    "errors",
+)
+_CONNECTOR_CONFIG_RESPONSE_FIELDS = (
+    "connector_id",
+    "connector_name",
+    "enabled",
+    "configured",
+    "secret_ref",
+    "secret_configured",
+    "default_domain",
+    "default_sensitivity",
+    "sync_mode",
+    "poll_interval_seconds",
+    "config_json",
+    "validation_errors",
+    "created_at",
+    "updated_at",
+    "last_configured_at",
+)
+
+_OPENAPI_SOURCE_AUDITED_RESPONSES: dict[
+    tuple[str, str],
+    tuple[tuple[str, ...], tuple[str, ...] | None],
+] = {
+    ("GET", "/v0/vnext/workspace"): (
+        (
+            "mode",
+            "summary",
+            "sources",
+            "review_memories",
+            "samples",
+            "artifacts",
+            "quality_evals",
+            "connector_health",
+            "dogfooding",
+            "doctor",
+            "traceability",
+            "projects",
+            "project_dashboards",
+            "open_loops",
+            "people",
+            "beliefs",
+            "tasks",
+            "recent_events",
+            "agent_activity",
+            "policy_telemetry",
+            "scheduler",
+            "brain_charter",
+        ),
+        None,
+    ),
+    ("POST", "/v0/vnext/sources"): (
+        ("status", "source_id", "content_hash", "chunk_count", "candidate_memory_count", "duplicate", "errors"),
+        None,
+    ),
+    ("GET", "/v0/vnext/connectors/health"): (("items", "count", "order"), None),
+    ("PATCH", "/v0/vnext/connectors/{connector_name}/config"): (_CONNECTOR_CONFIG_RESPONSE_FIELDS, None),
+    ("POST", "/v0/vnext/connectors/{connector_name}/sync"): (_CONNECTOR_SYNC_RESPONSE_FIELDS, None),
+    ("POST", "/v0/vnext/connectors/telegram/sync"): (_CONNECTOR_SYNC_RESPONSE_FIELDS, None),
+    ("POST", "/v0/vnext/connectors/local-folder/sync"): (_CONNECTOR_SYNC_RESPONSE_FIELDS, None),
+    ("POST", "/v0/vnext/connectors/browser-clipper/capture"): (_CONNECTOR_SYNC_RESPONSE_FIELDS, None),
+    ("POST", "/v0/vnext/agents/ingest-output"): (
+        ("status", "source_id", "artifact_id", "memory_id", "policy_decision"),
+        None,
+    ),
+    ("GET", "/v0/vnext/dogfooding"): (
+        (
+            "sample_scope",
+            "captures_by_connector",
+            "captures_today",
+            "captures_this_week",
+            "capture_trend_by_day",
+            "capture_trend_by_week",
+            "candidate_memories_created",
+            "memory_status_counts",
+            "candidate_memory_review_rate",
+            "generated_artifacts_created",
+            "artifact_status_counts",
+            "artifact_quality_average",
+            "artifact_quality_rating_count",
+            "artifact_rating_trend",
+            "daily_brief_review_status",
+            "weekly_synthesis_review_status",
+            "connections_surfaced",
+            "contradictions_surfaced",
+            "open_loop_status_counts",
+            "open_loops_created",
+            "open_loops_closed",
+            "agent_context_packs_requested",
+            "agent_memory_proposals",
+            "policy_blocks_filters",
+            "connector_failures",
+            "top_failure_causes",
+            "scheduler_freshness",
+            "agent_activity_summary",
+            "policy_block_filter_summary",
+            "last_successful_scheduler_run",
+            "connector_health",
+            "dogfood_readiness",
+            "insight_feedback",
+        ),
+        None,
+    ),
+    ("GET", "/v0/vnext/doctor"): (
+        (
+            "status",
+            "fix_safe_applied",
+            "ci_mode",
+            "blocking_failure_count",
+            "warning_count",
+            "checks",
+            "recommended_fixes",
+            "migration_status",
+            "connector_health",
+        ),
+        None,
+    ),
+    ("POST", "/v0/vnext/doctor/run"): (
+        (
+            "status",
+            "fix_safe_applied",
+            "ci_mode",
+            "blocking_failure_count",
+            "warning_count",
+            "checks",
+            "recommended_fixes",
+            "migration_status",
+            "connector_health",
+        ),
+        None,
+    ),
+    ("POST", "/v0/vnext/artifacts/{artifact_id}/insight-feedback"): (_EVENT_RESPONSE_FIELDS, None),
+    ("GET", "/v0/vnext/sources/{source_id}"): (_SOURCE_RESPONSE_FIELDS, None),
+    ("GET", "/v0/vnext/traces/sources/{source_id}"): (
+        (
+            "trace_id",
+            "trace_kind",
+            "source",
+            "chunks",
+            "candidate_memories",
+            "artifacts",
+            "open_loops",
+            "events",
+            "sampling",
+            "summary",
+        ),
+        None,
+    ),
+    ("GET", "/v0/vnext/traces/artifacts/{artifact_id}"): (
+        ("trace_id", "trace_kind", "artifact", "sources", "quality_evals", "events", "summary"),
+        None,
+    ),
+    ("DELETE", "/v0/vnext/sources/{source_id}"): (_SOURCE_RESPONSE_FIELDS, None),
+    ("POST", "/v0/vnext/context-packs"): (
+        (
+            "context_pack_id",
+            "query_interpretation",
+            "entities",
+            "current_known_state",
+            "relevant_memories",
+            "relevant_beliefs",
+            "decisions",
+            "procedures",
+            "open_loops",
+            "supporting_evidence",
+            "contradicting_evidence",
+            "recent_changes",
+            "supersession_context",
+            "missing_information",
+            "sources",
+            "warnings",
+            "budget",
+            "context_depth",
+            "trace_id",
+            "trace",
+            "agent_identity",
+            "policy_decision",
+            "grounding",
+            "derived_values",
+        ),
+        (
+            "context_pack_id",
+            "query_interpretation",
+            "current_known_state",
+            "relevant_memories",
+            "open_loops",
+            "supporting_evidence",
+            "contradicting_evidence",
+            "missing_information",
+            "sources",
+            "warnings",
+            "budget",
+            "context_depth",
+            "trace_id",
+            "trace",
+            "agent_identity",
+            "policy_decision",
+        ),
+    ),
+    ("GET", "/v0/vnext/context-tree"): (
+        (
+            "schema_version",
+            "generated_at",
+            "trace_id",
+            "query",
+            "read_only",
+            "summary",
+            "roots",
+            "agent_identity",
+            "policy_decision",
+        ),
+        None,
+    ),
+    ("POST", "/v0/vnext/memories/commit"): (
+        (
+            "status",
+            "write_mode",
+            "reason",
+            "reasons",
+            "memory",
+            "idempotent_replay",
+            "confirmation_id",
+            "confirmation",
+            "proposal_id",
+            "policy_decision",
+        ),
+        ("status", "write_mode", "policy_decision"),
+    ),
+    ("POST", "/v0/vnext/memories/confirm"): (
+        ("status", "write_mode", "confirmation_id", "reason", "memory"),
+        ("status", "write_mode", "confirmation_id", "memory"),
+    ),
+    ("POST", "/v0/vnext/memories/undo"): (("status", "write_mode", "memory"), None),
+    ("POST", "/v0/vnext/memories/correct"): (("status", "write_mode", "memory"), None),
+    ("POST", "/v0/vnext/memories/forget"): (("status", "write_mode", "memory"), None),
+    ("POST", "/v0/vnext/memories/expire"): (("status", "memory", "valid_to", "policy_decision"), None),
+    ("POST", "/v0/vnext/memories/unexpire"): (
+        ("status", "memory", "policy_decision", "idempotent_replay", "note"),
+        ("status", "memory", "policy_decision", "idempotent_replay"),
+    ),
+    ("POST", "/v0/vnext/memories/accept-consolidation"): (
+        (
+            "status",
+            "memory",
+            "proposal_kind",
+            "superseded_member_ids",
+            "skipped_members",
+            "supersedes",
+            "policy_decision",
+            "idempotent_replay",
+            "note",
+        ),
+        (
+            "status",
+            "memory",
+            "proposal_kind",
+            "superseded_member_ids",
+            "skipped_members",
+            "supersedes",
+            "policy_decision",
+            "idempotent_replay",
+        ),
+    ),
+    ("POST", "/v0/vnext/memories/redact"): (
+        (
+            "status",
+            "memory",
+            "forgotten_first",
+            "redacted_revisions",
+            "redacted_events",
+            "redaction_marker",
+            "reason",
+        ),
+        None,
+    ),
+    ("GET", "/v0/vnext/memories/recent-commits"): (("recent_commits", "count"), None),
+    ("GET", "/v0/vnext/memories/{memory_id}/audit"): (
+        ("memory", "supersession_chain", "revisions", "events", "provenance_links"),
+        None,
+    ),
+    ("POST", "/v0/vnext/queue/tasks"): (_TASK_RESPONSE_FIELDS, None),
+    ("POST", "/v0/vnext/queue/process-next"): (
+        ("status", "task_id", "artifact_id", "error_message"),
+        None,
+    ),
+    ("POST", "/v0/vnext/artifacts/{artifact_id}/quality-ratings"): (_QUALITY_RATING_RESPONSE_FIELDS, None),
+    ("POST", "/v0/vnext/graph/edges/{edge_id}/review"): (_GRAPH_EDGE_RESPONSE_FIELDS, None),
+    ("GET", "/v0/vnext/graph/neighborhood/{target_id}"): (
+        ("target_id", "from_edges", "to_edges", "edge_count"),
+        None,
+    ),
+    ("POST", "/v0/vnext/beliefs/{belief_id}/review"): (_BELIEF_RESPONSE_FIELDS, None),
+    ("GET", "/v0/vnext/beliefs/{belief_id}/state"): (
+        ("belief_id", "current", "history", "previous_statuses"),
+        None,
+    ),
+    ("GET", "/v0/vnext/projects/{project_id}/dashboard"): (
+        ("project", "state", "memories", "open_loops", "artifacts", "counts"),
+        None,
+    ),
+    ("POST", "/v0/vnext/scheduler/workflows/{workflow_type}/run-now"): (
+        ("run", "artifact", "policy_decision"),
+        None,
+    ),
+    ("POST", "/v0/vnext/scheduler/run-due"): (
+        ("checked_at", "due_count", "failed_count", "reaped_count", "runs", "policy_decision"),
+        None,
+    ),
+    ("POST", "/v0/vnext/scheduler/pause"): (
+        ("workflows", "paused_count", "policy_decision"),
+        None,
+    ),
+    ("POST", "/v0/vnext/scheduler/resume"): (
+        ("workflows", "resumed_count", "policy_decision"),
+        None,
+    ),
+    ("POST", "/v0/vnext/open-loops/{loop_id}/review"): (_OPEN_LOOP_RESPONSE_FIELDS, None),
+    ("POST", "/v1/auth/magic-link/verify"): (
+        ("session", "user_account", "workspace", "preferences", "feature_flags", "telegram_state"),
+        None,
+    ),
+    ("GET", "/v1/auth/session"): (
+        ("session", "user_account", "workspace", "preferences", "feature_flags", "telegram_state"),
+        None,
+    ),
+    ("GET", "/v1/admin/hosted/overview"): (
+        (
+            "window_hours",
+            "window_start",
+            "workspaces",
+            "delivery_receipts",
+            "chat_telemetry",
+            "rollout_flags",
+            "incidents",
+        ),
+        None,
+    ),
+    ("GET", "/v1/admin/hosted/design-partners/dashboard"): (("dashboard",), None),
+    ("POST", "/v1/admin/hosted/design-partners"): (("design_partner",), None),
+    ("GET", "/v1/admin/hosted/design-partners/{design_partner_id}"): (
+        ("design_partner", "feedback"),
+        None,
+    ),
+    ("PATCH", "/v1/admin/hosted/design-partners/{design_partner_id}"): (("design_partner",), None),
+    ("POST", "/v1/admin/hosted/design-partners/{design_partner_id}/workspaces"): (("design_partner",), None),
+    ("POST", "/v1/admin/hosted/design-partners/{design_partner_id}/feedback"): (
+        ("design_partner", "feedback"),
+        None,
+    ),
+    ("GET", "/v1/admin/hosted/rate-limits"): (
+        ("window_hours", "window_start", "summary", "items"),
+        None,
+    ),
+    ("GET", "/v1/channels/telegram/status"): (
+        ("workspace_id", "channel_type", "linked", "identity", "latest_challenge", "recent_transport"),
+        None,
+    ),
+    ("GET", "/v1/channels/telegram/notification-preferences"): (
+        ("workspace_id", "notification_preferences"),
+        None,
+    ),
+    ("PATCH", "/v1/channels/telegram/notification-preferences"): (
+        ("workspace_id", "notification_preferences"),
+        None,
+    ),
+    ("GET", "/v1/channels/telegram/daily-brief"): (
+        ("workspace_id", "brief", "chief_of_staff_summary", "preview_message_text", "delivery_policy"),
+        None,
+    ),
+    ("POST", "/v1/channels/telegram/daily-brief/deliver"): (
+        ("workspace_id", "job", "brief_record", "delivery_receipt", "idempotent_replay"),
+        None,
+    ),
+    ("GET", "/v1/channels/telegram/open-loop-prompts"): (
+        ("workspace_id", "notification_preferences", "items", "summary"),
+        None,
+    ),
+    ("POST", "/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver"): (
+        ("workspace_id", "job", "delivery_receipt", "prompt", "idempotent_replay"),
+        None,
+    ),
+    ("GET", "/v1/channels/telegram/scheduler/jobs"): (
+        ("workspace_id", "notification_preferences", "items", "summary"),
+        None,
+    ),
+    ("POST", "/v1/channels/telegram/messages/{message_id}/handle"): (
+        ("message", "intent", "outbound_message", "delivery_receipt"),
+        None,
+    ),
+    ("GET", "/v1/channels/telegram/messages/{message_id}/result"): (("message_id", "intent"), None),
+    ("POST", "/v1/channels/telegram/open-loops/{open_loop_id}/review-action"): (
+        ("continuity_object", "correction_event", "review_action", "lifecycle_outcome", "review_log"),
+        None,
+    ),
+}
+
+_OPENAPI_ARTIFACT_ROW_OPERATIONS = {
+    ("POST", "/v0/vnext/artifacts/generate/daily-brief"),
+    ("POST", "/v0/vnext/artifacts/generate/weekly-synthesis"),
+    ("POST", "/v0/vnext/artifacts/generate/connections"),
+    ("POST", "/v0/vnext/artifacts/generate/contradictions"),
+    ("GET", "/v0/vnext/artifacts/{artifact_id}"),
+    ("POST", "/v0/vnext/artifacts/{artifact_id}/review"),
+    ("POST", "/v0/vnext/projects/update-candidates"),
+    ("POST", "/v0/vnext/projects/update-candidates/{artifact_id}/review"),
+}
+
+for _operation_key in _OPENAPI_ARTIFACT_ROW_OPERATIONS:
+    _component_name, _previous_schema = OPENAPI_OPERATION_RESPONSE_SCHEMAS[_operation_key]
+    OPENAPI_OPERATION_RESPONSE_SCHEMAS[_operation_key] = (
+        _component_name,
+        _closed_source_schema(
+            _component_name,
+            _ARTIFACT_RESPONSE_FIELDS,
+            properties=_artifact_response_properties(),
+        ),
+    )
+
+for _operation_key, (_fields, _required) in _OPENAPI_SOURCE_AUDITED_RESPONSES.items():
+    _component_name, _previous_schema = OPENAPI_OPERATION_RESPONSE_SCHEMAS[_operation_key]
+    OPENAPI_OPERATION_RESPONSE_SCHEMAS[_operation_key] = (
+        _component_name,
+        _closed_source_schema(_component_name, _fields, required=_required),
+    )
+
+
 _OPENAPI_POLYMORPHIC_VARIANTS = [
     {
         "type": "object",
         "required": ["assistant", "metadata", "trace"],
+        "additionalProperties": False,
         "properties": {
             "assistant": {"type": "object", "additionalProperties": True},
             "metadata": {"type": "object", "additionalProperties": True},
@@ -2870,6 +3708,7 @@ _OPENAPI_POLYMORPHIC_VARIANTS = [
     {
         "type": "object",
         "required": ["detail", "response_job"],
+        "additionalProperties": False,
         "properties": {
             "detail": {"type": "object", "additionalProperties": True},
             "response_job": {"type": "object", "additionalProperties": True},

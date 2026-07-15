@@ -8,6 +8,8 @@ import ast
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email import policy
+from email.parser import Parser
 from functools import lru_cache
 from hashlib import sha256
 import json
@@ -23,6 +25,26 @@ import zipfile
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+PACKAGE_DESCRIPTION_RELATIVE_PATH = "docs/pypi-description.md"
+_PACKAGE_DESCRIPTION_VERSION_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])v?\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?(?![A-Za-z0-9])",
+    flags=re.IGNORECASE,
+)
+_PACKAGE_DESCRIPTION_STATE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "latest-version claim",
+        re.compile(r"\blatest\s+(?:published\s+)?release\b", re.IGNORECASE),
+    ),
+    ("candidate state", re.compile(r"\bcandidate\b", re.IGNORECASE)),
+    (
+        "release-gating state",
+        re.compile(r"\brelease[ -]?gating\b", re.IGNORECASE),
+    ),
+    (
+        "publication state",
+        re.compile(r"\b(?:unpublished|publication\s+pending)\b", re.IGNORECASE),
+    ),
+)
 SEMANTIC_EVAL_ATTESTATION_SCHEMA_VERSION = "alice_semantic_eval_attestation_v1"
 EMBEDDING_SIGNATURE_IDENTITY_SCHEMA_VERSION = "alice_embedding_signature_identity_v1"
 REQUIRED_EMBEDDING_SIGNATURE_VERSION = 2
@@ -2281,6 +2303,40 @@ def read_release_metadata(root_dir: Path = ROOT_DIR) -> ReleaseMetadata:
     )
 
 
+def validate_package_description_source(root_dir: Path) -> tuple[str | None, list[str]]:
+    """Validate the evergreen long-description source used by package metadata."""
+
+    issues: list[str] = []
+    pyproject = _read_toml(root_dir / "pyproject.toml")
+    project = pyproject.get("project")
+    configured_readme = project.get("readme") if isinstance(project, dict) else None
+    if configured_readme != PACKAGE_DESCRIPTION_RELATIVE_PATH:
+        issues.append(
+            "pyproject.toml project.readme must point to the evergreen "
+            f"{PACKAGE_DESCRIPTION_RELATIVE_PATH!r}"
+        )
+
+    description_path = root_dir / PACKAGE_DESCRIPTION_RELATIVE_PATH
+    try:
+        description = description_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        issues.append(
+            f"{PACKAGE_DESCRIPTION_RELATIVE_PATH}: could not read package description: {exc}"
+        )
+        return None, issues
+
+    if _PACKAGE_DESCRIPTION_VERSION_PATTERN.search(description):
+        issues.append(
+            f"{PACKAGE_DESCRIPTION_RELATIVE_PATH}: contains a version literal"
+        )
+    for label, pattern in _PACKAGE_DESCRIPTION_STATE_PATTERNS:
+        if pattern.search(description):
+            issues.append(
+                f"{PACKAGE_DESCRIPTION_RELATIVE_PATH}: contains {label} language"
+            )
+    return description, issues
+
+
 def _app_constructor_uses_distribution_version(api_source: str) -> bool:
     """Return whether the exported top-level ``app`` receives ``__version__``.
 
@@ -2396,6 +2452,8 @@ def _package_version_uses_distribution_metadata(package_source: str) -> bool:
 def validate_metadata(root_dir: Path = ROOT_DIR) -> tuple[ReleaseMetadata, list[str]]:
     metadata = read_release_metadata(root_dir)
     issues: list[str] = []
+    _description, description_issues = validate_package_description_source(root_dir)
+    issues.extend(description_issues)
     if metadata.distribution_name != "alice-memory":
         issues.append(f"unexpected distribution name: {metadata.distribution_name!r}")
     if not re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", metadata.version):
@@ -2568,12 +2626,16 @@ def validate_git_state(
     return issues
 
 
-def _wheel_version(path: Path) -> str:
+def _wheel_metadata_text(path: Path) -> str:
     with zipfile.ZipFile(path) as archive:
         metadata_names = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
         if len(metadata_names) != 1:
             raise ValueError(f"wheel must contain one METADATA file, found {metadata_names}")
-        metadata_text = archive.read(metadata_names[0]).decode("utf-8")
+        return archive.read(metadata_names[0]).decode("utf-8")
+
+
+def _wheel_version(path: Path) -> str:
+    metadata_text = _wheel_metadata_text(path)
     for line in metadata_text.splitlines():
         if line.startswith("Version: "):
             return line.removeprefix("Version: ").strip()
@@ -2595,7 +2657,37 @@ def _sdist_pyproject_version(path: Path) -> str:
     return str(project.get("version", ""))
 
 
-def validate_distributions(dist_dir: Path, *, version: str) -> tuple[list[Path], list[str]]:
+def _sdist_pkg_info_text(path: Path) -> str:
+    with tarfile.open(path, mode="r:gz") as archive:
+        members = [
+            member
+            for member in archive.getmembers()
+            if member.name.endswith("/PKG-INFO") and member.name.count("/") == 1
+        ]
+        if len(members) != 1:
+            raise ValueError(
+                f"sdist must contain one top-level PKG-INFO, found {[m.name for m in members]}"
+            )
+        handle = archive.extractfile(members[0])
+        if handle is None:
+            raise ValueError("could not read sdist PKG-INFO")
+        return handle.read().decode("utf-8")
+
+
+def _metadata_description(metadata_text: str) -> str:
+    message = Parser(policy=policy.default).parsestr(metadata_text)
+    payload = message.get_payload()
+    if not isinstance(payload, str):
+        raise ValueError("distribution metadata long description is not text")
+    return payload
+
+
+def validate_distributions(
+    dist_dir: Path,
+    *,
+    version: str,
+    expected_description: str | None = None,
+) -> tuple[list[Path], list[str]]:
     wheels = sorted(dist_dir.glob("*.whl"))
     sdists = sorted(dist_dir.glob("*.tar.gz"))
     artifacts = [*wheels, *sdists]
@@ -2614,6 +2706,18 @@ def validate_distributions(dist_dir: Path, *, version: str) -> tuple[list[Path],
             issues.append(f"wheel metadata version does not match {version}")
         if _sdist_pyproject_version(sdist) != version:
             issues.append(f"sdist metadata version does not match {version}")
+        if expected_description is not None:
+            expected = expected_description.strip()
+            wheel_description = _metadata_description(_wheel_metadata_text(wheel)).strip()
+            sdist_description = _metadata_description(_sdist_pkg_info_text(sdist)).strip()
+            if wheel_description != expected:
+                issues.append(
+                    "wheel METADATA long description does not match the evergreen package description"
+                )
+            if sdist_description != expected:
+                issues.append(
+                    "sdist PKG-INFO long description does not match the evergreen package description"
+                )
     except (OSError, ValueError, tarfile.TarError, zipfile.BadZipFile) as exc:
         issues.append(f"could not inspect distributions: {exc}")
         return artifacts, issues
@@ -2861,6 +2965,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root_dir = args.root.resolve()
     metadata, issues = validate_metadata(root_dir)
+    package_description, _description_issues = validate_package_description_source(
+        root_dir
+    )
 
     if args.tag is not None and args.tag != metadata.tag:
         issues.append(f"release tag {args.tag!r} does not match package version tag {metadata.tag!r}")
@@ -2883,7 +2990,11 @@ def main(argv: list[str] | None = None) -> int:
 
     artifacts: list[Path] = []
     if args.dist_dir is not None:
-        artifacts, artifact_issues = validate_distributions(args.dist_dir.resolve(), version=metadata.version)
+        artifacts, artifact_issues = validate_distributions(
+            args.dist_dir.resolve(),
+            version=metadata.version,
+            expected_description=package_description,
+        )
         issues.extend(artifact_issues)
     elif args.write_checksums:
         issues.append("--write-checksums requires --dist-dir")
@@ -2892,7 +3003,9 @@ def main(argv: list[str] | None = None) -> int:
             issues.append("--compare-dist-dir requires --dist-dir")
         else:
             rebuilt, rebuilt_issues = validate_distributions(
-                args.compare_dist_dir.resolve(), version=metadata.version
+                args.compare_dist_dir.resolve(),
+                version=metadata.version,
+                expected_description=package_description,
             )
             issues.extend(rebuilt_issues)
             if artifacts and not rebuilt_issues:

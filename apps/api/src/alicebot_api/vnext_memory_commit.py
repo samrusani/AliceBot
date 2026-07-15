@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
-from typing import Mapping, cast
+from typing import Callable, Mapping, cast
 from uuid import UUID, uuid4
 
 from alicebot_api.vnext_agent_control import (
@@ -16,6 +16,7 @@ from alicebot_api.vnext_agent_control import (
     evaluate_agent_policy,
     resource_project_scope,
 )
+
 # Currency chains (stored currency): an approved supersession stamps the
 # retired row's valid_to with the replacement's event time — see the marked
 # block in _transition_memory.
@@ -49,6 +50,7 @@ from alicebot_api.vnext_lifecycle import (
     supersession_would_cycle,
 )
 from alicebot_api.vnext_memory_version import memory_matches_snapshot
+from alicebot_api.vnext_project_scope import project_scope_identity
 from alicebot_api.vnext_repositories import EventStore, JsonObject
 from alicebot_api.store import ContinuityStoreInvariantError
 from alicebot_api.vnext_store import PostgresVNextStore, VNextRow
@@ -483,10 +485,7 @@ def is_pending_consolidation_candidate(memory: Mapping[str, object]) -> bool:
     consolidation = metadata.get("consolidation")
     if not isinstance(consolidation, Mapping):
         candidate_kind = metadata.get("candidate_kind")
-        return (
-            isinstance(candidate_kind, str)
-            and candidate_kind in DERIVED_CONSOLIDATION_CANDIDATE_KINDS
-        )
+        return isinstance(candidate_kind, str) and candidate_kind in DERIVED_CONSOLIDATION_CANDIDATE_KINDS
     return not isinstance(consolidation.get("accepted"), Mapping)
 
 
@@ -658,9 +657,7 @@ class VNextMemoryCommitService:
         trace_id: str | None,
     ) -> None:
         if self._defer_embeddings:
-            self._deferred_embedding_inputs.append(
-                DeferredMemoryEmbedding.from_memory(memory)
-            )
+            self._deferred_embedding_inputs.append(DeferredMemoryEmbedding.from_memory(memory))
             return
         attach_memory_embedding(
             self.store,
@@ -715,8 +712,7 @@ class VNextMemoryCommitService:
             allowed = allowed | frozenset(CONSOLIDATION_ACCEPTABLE_STATUSES)
         if status not in allowed:
             raise VNextMemoryCommitValidationError(
-                f"superseding memory must be an accepted live successor; got status "
-                f"'{status or 'unknown'}'"
+                f"superseding memory must be an accepted live successor; got status '{status or 'unknown'}'"
             )
 
     def _guard_supersession_acyclic(
@@ -756,8 +752,7 @@ class VNextMemoryCommitService:
             raise VNextMemoryCommitValidationError(str(exc)) from exc
         if would_cycle:
             raise VNextMemoryCommitValidationError(
-                "cannot supersede a memory with one of its own predecessors; "
-                "that would create a supersession cycle"
+                "cannot supersede a memory with one of its own predecessors; that would create a supersession cycle"
             )
 
     def evaluate_policy(
@@ -938,7 +933,11 @@ class VNextMemoryCommitService:
         )
 
         previous_text = str(memory.get("canonical_text") or "")
-        next_text = _normalized_text(canonical_text, field_name="canonical_text") if canonical_text is not None else previous_text
+        next_text = (
+            _normalized_text(canonical_text, field_name="canonical_text")
+            if canonical_text is not None
+            else previous_text
+        )
         now = _utc_iso()
         if normalized_action == "reject":
             confirmation["status"] = "rejected"
@@ -1184,9 +1183,7 @@ class VNextMemoryCommitService:
         self.lock_supersession_graph()
         get_memory_for_update = getattr(self.store, "get_memory_for_update", None)
         memory = (
-            get_memory_for_update(memory_id)
-            if callable(get_memory_for_update)
-            else self.store.get_memory(memory_id)
+            get_memory_for_update(memory_id) if callable(get_memory_for_update) else self.store.get_memory(memory_id)
         )
         if memory is None:
             raise VNextMemoryCommitValidationError("memory was not found")
@@ -1286,9 +1283,7 @@ class VNextMemoryCommitService:
         self.lock_supersession_graph()
         get_memory_for_update = getattr(self.store, "get_memory_for_update", None)
         memory = (
-            get_memory_for_update(memory_id)
-            if callable(get_memory_for_update)
-            else self.store.get_memory(memory_id)
+            get_memory_for_update(memory_id) if callable(get_memory_for_update) else self.store.get_memory(memory_id)
         )
         if memory is None:
             raise VNextMemoryCommitValidationError("memory was not found")
@@ -1343,9 +1338,7 @@ class VNextMemoryCommitService:
         self.lock_supersession_graph()
         get_memory_for_update = getattr(self.store, "get_memory_for_update", None)
         memory = (
-            get_memory_for_update(memory_id)
-            if callable(get_memory_for_update)
-            else self.store.get_memory(memory_id)
+            get_memory_for_update(memory_id) if callable(get_memory_for_update) else self.store.get_memory(memory_id)
         )
         if memory is None:
             raise VNextMemoryCommitValidationError("memory was not found")
@@ -1375,9 +1368,7 @@ class VNextMemoryCommitService:
         status = str(memory.get("status") or "")
         invalidated_record = consolidation.get("invalidated")
         if status == "stale" and isinstance(invalidated_record, Mapping):
-            raise VNextMemoryCommitValidationError(
-                "consolidation candidate is stale; regenerate it before acceptance"
-            )
+            raise VNextMemoryCommitValidationError("consolidation candidate is stale; regenerate it before acceptance")
         if status not in CONSOLIDATION_ACCEPTABLE_STATUSES:
             raise VNextMemoryCommitValidationError(
                 "consolidation candidate must be in candidate or needs_review status"
@@ -1409,15 +1400,16 @@ class VNextMemoryCommitService:
         # must regenerate rather than apply stale intent.
         snapshot_rows = consolidation.get("member_snapshots")
         candidate_kind = metadata.get("candidate_kind")
-        strict_snapshots = (
-            isinstance(candidate_kind, str)
-            and candidate_kind in DERIVED_CONSOLIDATION_CANDIDATE_KINDS
+        strict_snapshots = isinstance(candidate_kind, str) and candidate_kind in DERIVED_CONSOLIDATION_CANDIDATE_KINDS
+        snapshots = (
+            {
+                str(snapshot.get("id")): snapshot
+                for snapshot in snapshot_rows
+                if isinstance(snapshot, Mapping) and snapshot.get("id") is not None
+            }
+            if isinstance(snapshot_rows, list)
+            else {}
         )
-        snapshots = {
-            str(snapshot.get("id")): snapshot
-            for snapshot in snapshot_rows
-            if isinstance(snapshot, Mapping) and snapshot.get("id") is not None
-        } if isinstance(snapshot_rows, list) else {}
         if strict_snapshots and not snapshots:
             raise VNextMemoryCommitValidationError(
                 "consolidation candidate lacks member version snapshots; regenerate it before acceptance"
@@ -1461,12 +1453,9 @@ class VNextMemoryCommitService:
 
         if strict_snapshots and dependency_ids:
             member_scope_keys = {
-                tuple(sorted(value.casefold() for value in resource_project_scope(member)))
-                for member in locked_members.values()
+                project_scope_identity(resource_project_scope(member)) for member in locked_members.values()
             }
-            candidate_scope_key = tuple(
-                sorted(value.casefold() for value in resource_project_scope(memory))
-            )
+            candidate_scope_key = project_scope_identity(resource_project_scope(memory))
             if len(member_scope_keys) != 1 or candidate_scope_key not in member_scope_keys:
                 raise VNextMemoryCommitValidationError(
                     "consolidation candidate crosses project scopes; regenerate it before acceptance"
@@ -1616,9 +1605,7 @@ class VNextMemoryCommitService:
         self.lock_supersession_graph()
         get_memory_for_update = getattr(self.store, "get_memory_for_update", None)
         memory = (
-            get_memory_for_update(memory_id)
-            if callable(get_memory_for_update)
-            else self.store.get_memory(memory_id)
+            get_memory_for_update(memory_id) if callable(get_memory_for_update) else self.store.get_memory(memory_id)
         )
         if memory is None:
             raise VNextMemoryCommitValidationError("memory was not found")
@@ -1634,7 +1621,9 @@ class VNextMemoryCommitService:
         validity = dict(validity_value) if isinstance(validity_value, Mapping) else {}
         validity_history_value = validity.get("history")
         history = list(validity_history_value) if isinstance(validity_history_value, list) else []
-        history.append({"op": "expired", "at": now, "valid_to": valid_to_iso, "reason": reason_text, "actor_id": actor_id})
+        history.append(
+            {"op": "expired", "at": now, "valid_to": valid_to_iso, "reason": reason_text, "actor_id": actor_id}
+        )
         validity.update({"state": "expired", "expired_at": now, "valid_to": valid_to_iso, "history": history})
         validity.pop("unbounded_sentinel", None)
         updated = self.store.update_memory(
@@ -1706,9 +1695,7 @@ class VNextMemoryCommitService:
         self.lock_supersession_graph()
         get_memory_for_update = getattr(self.store, "get_memory_for_update", None)
         memory = (
-            get_memory_for_update(memory_id)
-            if callable(get_memory_for_update)
-            else self.store.get_memory(memory_id)
+            get_memory_for_update(memory_id) if callable(get_memory_for_update) else self.store.get_memory(memory_id)
         )
         if memory is None:
             raise VNextMemoryCommitValidationError("memory was not found")
@@ -1886,19 +1873,43 @@ class VNextMemoryCommitService:
             replace_entity_links=False,
         )
 
-    def audit(self, *, memory_id: str) -> JsonObject:
+    def audit(
+        self,
+        *,
+        memory_id: str,
+        authorize_memory: Callable[[Mapping[str, object]], None] | None = None,
+    ) -> JsonObject:
+        """Return one memory's audit envelope after authorizing its full chain.
+
+        ``alice_explain`` can be called by a project-bound agent.  The root
+        memory is not the whole disclosure boundary: predecessor/successor
+        nodes are expanded into the response as well.  Letting the adapter
+        provide an authorizer keeps policy ownership at that boundary while
+        ensuring every fetched chain node is checked before traversal follows
+        any of its pointers or the wider audit envelope is assembled.
+        """
         memory = self.store.get_memory(memory_id)
         if memory is None:
             raise VNextMemoryCommitValidationError("memory was not found")
+        if authorize_memory is not None:
+            authorize_memory(memory)
         return {
             "memory": memory,
-            "supersession_chain": self._supersession_chain(memory),
+            "supersession_chain": self._supersession_chain(
+                memory,
+                authorize_memory=authorize_memory,
+            ),
             "revisions": self.store.list_revisions(memory_id),
             "events": self.store.list_events(target_type="memory", target_id=memory_id),
             "provenance_links": self.store.list_provenance_links(target_type="memory", target_id=memory_id),
         }
 
-    def _supersession_chain(self, memory: VNextRow) -> list[JsonObject]:
+    def _supersession_chain(
+        self,
+        memory: VNextRow,
+        *,
+        authorize_memory: Callable[[Mapping[str, object]], None] | None = None,
+    ) -> list[JsonObject]:
         """Full replacement history around ``memory``, oldest to newest.
 
         Walks the ``supersedes`` pointers backwards and the
@@ -1928,7 +1939,9 @@ class VNextMemoryCommitService:
                     break
                 row = self.store.get_memory(pointer)
                 if row is None:
-                    break
+                    raise VNextMemoryCommitValidationError("memory supersession chain contains an unresolved pointer")
+                if authorize_memory is not None:
+                    authorize_memory(row)
                 seen.add(pointer)
                 rows.append(row)
                 current = row
@@ -1945,11 +1958,7 @@ class VNextMemoryCommitService:
     def inline_confirmations(self, *, limit: int = 20) -> list[VNextRow]:
         rows: list[VNextRow] = []
         list_pending = getattr(self.store, "list_pending_inline_confirmations", None)
-        candidates = (
-            list_pending(limit=limit)
-            if callable(list_pending)
-            else self.store.list_memories(status=None)
-        )
+        candidates = list_pending(limit=limit) if callable(list_pending) else self.store.list_memories(status=None)
         for memory in candidates:
             agentic = _agentic_metadata(memory)
             confirmation = agentic.get("confirmation")
@@ -2036,9 +2045,7 @@ class VNextMemoryCommitService:
             (agentic.get("project_scope"), list(request.project_scope)),
         )
         if any(json_safe(stored) != json_safe(expected) for stored, expected in legacy_checks):
-            raise VNextMemoryCommitValidationError(
-                "idempotency_key was already used for a different memory request"
-            )
+            raise VNextMemoryCommitValidationError("idempotency_key was already used for a different memory request")
 
     def _create_memory_record(
         self,
@@ -2154,9 +2161,7 @@ class VNextMemoryCommitService:
         # keys ride the same best-effort post-create hook as embeddings.
         # use_env_provider=False keeps the commit path deterministic-tier
         # only -- commits never make a synchronous model call.
-        attach_memory_fact_keys(
-            self.store, memory, use_env_provider=False, actor_type=actor_type, actor_id=actor_id
-        )
+        attach_memory_fact_keys(self.store, memory, use_env_provider=False, actor_type=actor_type, actor_id=actor_id)
         self._append_revision(
             memory=memory,
             action="agentic_memory_confirmed" if confirmed_inline else "agentic_memory_commit",
@@ -2588,11 +2593,11 @@ class VNextMemoryCommitService:
                     "error_message": str(exc),
                 },
             )
-            raise ContinuityStoreInvariantError(
-                "content mutation could not expire obsolete entity links"
-            ) from exc
+            raise ContinuityStoreInvariantError("content mutation could not expire obsolete entity links") from exc
 
-    def _create_provenance_links(self, *, memory: Mapping[str, object], request: MemoryCommitRequest, actor_type: str) -> None:
+    def _create_provenance_links(
+        self, *, memory: Mapping[str, object], request: MemoryCommitRequest, actor_type: str
+    ) -> None:
         seen: set[str] = set()
         for source_ref in request.source_refs:
             source_id = _source_uuid(source_ref)
@@ -2751,11 +2756,7 @@ class VNextMemoryCommitService:
         metadata = _memory_metadata(memory)
         agentic = _agentic_metadata(memory)
         lifecycle_history_value = agentic.get("lifecycle_history")
-        history = (
-            list(lifecycle_history_value)
-            if isinstance(lifecycle_history_value, list)
-            else []
-        )
+        history = list(lifecycle_history_value) if isinstance(lifecycle_history_value, list) else []
         history.append({"status": lifecycle_status, "at": _utc_iso(), "reason": reason})
         agentic["lifecycle_status"] = lifecycle_status
         agentic["lifecycle_history"] = history

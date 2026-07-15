@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alice-memory"
-version = "0.10.3"
+version = "0.10.4"
 description = "Alice: the continuity layer for AI agents. Local-first memory with provenance, open loops, resumption, and review-governed writes."
-readme = "README.md"
+readme = "docs/pypi-description.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Sami Rusani" }]

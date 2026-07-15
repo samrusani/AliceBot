@@ -11,11 +11,25 @@ from alicebot_api.vnext_scheduler import (
     SchedulerRunRequest,
     VNextSchedulerService,
     VNextSchedulerValidationError,
+    _row_matches_projects,
     _workflow_digest,
     compute_next_run_at,
     default_schedule,
     validate_schedule,
 )
+
+
+def test_scheduler_project_matching_uses_canonical_scope_identity() -> None:
+    row = {
+        "metadata_json": {
+            "project_scope": [" Beta Project ", "ALICE", "alice"],
+            "agentic_memory": {"project_scope": ["stale-project"]},
+        }
+    }
+
+    assert _row_matches_projects(row, (" beta   project ",)) is True
+    assert _row_matches_projects(row, ("Alice",)) is True
+    assert _row_matches_projects(row, ("stale-project",)) is False
 
 
 def test_scheduler_logical_digest_excludes_volatile_agent_run_id() -> None:

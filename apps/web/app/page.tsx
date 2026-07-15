@@ -6,10 +6,10 @@ import { StatusBadge } from "../components/status-badge";
 
 const summaryCards = [
   {
-    value: "14",
+    value: "16",
     label: "Operator views",
     detail:
-      "Home, vNext brain workspace, hosted onboarding/settings/admin, request composition, approvals, task inspection, artifact review, Gmail review, Calendar review, memory review, entity review, and explainability are all exposed in one bounded shell.",
+      "Home, vNext brain workspace, hosted onboarding/settings/admin, requests, approvals, tasks, artifacts, Gmail, Calendar, memories, continuity, chief-of-staff, entities, and explainability are exposed in one bounded shell.",
   },
   {
     value: "9",
@@ -18,9 +18,10 @@ const summaryCards = [
       "Requests, approvals, tasks, artifact review, Gmail account/ingestion seams, Calendar account/ingestion seams, memory review, vNext brain review, and entity review stay visible instead of being hidden behind a consumer chat wrapper.",
   },
   {
-    value: "2",
+    value: "3",
     label: "Data modes",
-    detail: "Pages can read live backend seams when configured and degrade to explicit fixtures when no API contract is present.",
+    detail:
+      "Pages can show live backend data, explicit fixtures, or a mixed state when independent reads resolve from different sources.",
   },
   {
     value: "100%",
@@ -39,10 +40,10 @@ const routeCards = [
   },
   {
     href: "/onboarding",
-    title: "Hosted Onboarding",
+    title: "Hosted Onboarding Guide",
     description:
-      "Sign in by magic link, create/bootstrap a workspace, and confirm readiness for later Telegram linkage.",
-    status: "active",
+      "Read the instruction-only magic-link, workspace bootstrap, Settings handoff, and support sequence without implying that this page executes it.",
+    status: "preview",
   },
   {
     href: "/settings",
@@ -101,6 +102,20 @@ const routeCards = [
     title: "Memory Review",
     description: "Inspect active memory records, revisions, and review labels through the shipped memory-review seam.",
     status: "requires_review",
+  },
+  {
+    href: "/continuity",
+    title: "Continuity Workspace",
+    description:
+      "Capture and recall continuity, review corrections and open loops, and inspect daily, weekly, and resumption views.",
+    status: "active",
+  },
+  {
+    href: "/chief-of-staff",
+    title: "Chief-of-Staff",
+    description:
+      "Review deterministic priorities, preparation, handoffs, execution routing, follow-through, outcomes, and weekly learning.",
+    status: "active",
   },
   {
     href: "/entities",

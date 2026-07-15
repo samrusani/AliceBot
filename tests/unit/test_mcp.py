@@ -22,6 +22,8 @@ from alicebot_api.vnext_embeddings import (
     EMBEDDINGS_BASE_URL_ENV,
     EMBEDDINGS_MODEL_ENV,
 )
+from alicebot_api.vnext_event_log import build_event_log_record
+from alicebot_api.vnext_projects import PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE
 from alicebot_api.vnext_project_scope import memory_project_scope
 from alicebot_api.vnext_retrieval import VECTOR_STAGE_DISABLED_NO_PROVIDER, VECTOR_STAGE_ENABLED
 
@@ -980,12 +982,24 @@ def test_call_mcp_tool_maps_sqlite_integrity_errors_by_constraint_kind(monkeypat
         call_mcp_tool(context, name="alice_recall", arguments={})
 
 
+_ASCII_QUERY_CASE_TRANSLATION = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "abcdefghijklmnopqrstuvwxyz",
+)
+
+
+def _ascii_query_fold(value: str) -> str:
+    return value.translate(_ASCII_QUERY_CASE_TRANSLATION)
+
+
 class FakeVNextMCPStore:
     def __init__(self) -> None:
         self.events: list[dict[str, object]] = []
         self.sources: list[dict[str, object]] = []
         self.chunks: list[dict[str, object]] = []
         self.memories: list[dict[str, object]] = []
+        self.entities: dict[str, dict[str, object]] = {}
+        self.provenance_links: list[dict[str, object]] = []
         self.artifacts: dict[str, dict[str, object]] = {}
         self.open_loops: list[dict[str, object]] = []
         self.edges: dict[str, dict[str, object]] = {}
@@ -1038,10 +1052,16 @@ class FakeVNextMCPStore:
         self.sources.append(row)
         return row
 
+    def get_source(self, source_id: str) -> dict[str, object] | None:
+        return next((source for source in self.sources if str(source.get("id")) == source_id), None)
+
     def create_source_chunk(self, chunk: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**chunk, "id": f"chunk-{len(self.chunks) + 1}"}
         self.chunks.append(row)
         return row
+
+    def list_source_chunks(self, source_id: str) -> list[dict[str, object]]:
+        return [chunk for chunk in self.chunks if str(chunk.get("source_id")) == source_id]
 
     def get_artifact(self, artifact_id: str) -> dict[str, object] | None:
         return self.artifacts.get(artifact_id)
@@ -1049,9 +1069,23 @@ class FakeVNextMCPStore:
     def get_artifact_for_update(self, artifact_id: str) -> dict[str, object] | None:
         return self.artifacts.get(artifact_id)
 
-    def update_artifact_status(self, *, artifact_id: str, status: str, **_kwargs) -> dict[str, object]:
+    def update_artifact_status(
+        self,
+        *,
+        artifact_id: str,
+        status: str,
+        expected_status: str | None = None,
+        metadata_json: dict[str, object] | None = None,
+        **_kwargs,
+    ) -> dict[str, object] | None:
         artifact = self.artifacts[artifact_id]
+        if expected_status is not None and artifact.get("status") != expected_status:
+            return None
         artifact["status"] = status
+        if metadata_json is not None:
+            metadata = artifact.setdefault("metadata_json", {})
+            assert isinstance(metadata, dict)
+            metadata.update(metadata_json)
         return artifact
 
     def create_memory(self, memory: dict[str, object], **_kwargs) -> dict[str, object]:
@@ -1072,8 +1106,35 @@ class FakeVNextMCPStore:
     def get_memory_for_update(self, memory_id: str) -> dict[str, object] | None:
         return self.get_memory(memory_id)
 
-    def list_memories(self, *, status: str | None = None) -> list[dict[str, object]]:
-        return [memory for memory in self.memories if status is None or memory.get("status") == status]
+    def get_entity(self, entity_id: str) -> dict[str, object] | None:
+        return self.entities.get(entity_id)
+
+    def list_memories(self, *, status: str | None = None, **kwargs) -> list[dict[str, object]]:
+        statuses = kwargs.get("statuses")
+        memory_types = kwargs.get("memory_types")
+        projects = tuple(kwargs.get("projects") or ())
+        created_at_start = kwargs.get("created_at_start")
+        created_at_end = kwargs.get("created_at_end")
+        query = kwargs.get("query")
+        rows = [
+            memory
+            for memory in self.memories
+            if (status is None or memory.get("status") == status)
+            and (statuses is None or memory.get("status") in statuses)
+            and (memory_types is None or memory.get("memory_type") in memory_types)
+            and (not projects or mcp_tools_module._resource_matches_project_scope(memory, projects))
+            and mcp_tools_module._row_in_window(
+                memory,
+                key="created_at",
+                since=created_at_start,
+                until=created_at_end,
+            )
+            and mcp_tools_module._memory_matches_query(memory, query)
+        ]
+        if kwargs.get("order_by_created_at"):
+            rows.sort(key=mcp_tools_module._created_at_sort_key, reverse=True)
+        limit = kwargs.get("limit")
+        return rows[: int(limit)] if limit is not None else rows
 
     def list_rollup_input_memories(
         self,
@@ -1170,13 +1231,138 @@ class FakeVNextMCPStore:
 
     def list_open_loops(self, **_kwargs) -> list[dict[str, object]]:
         status = _kwargs.get("status", "open")
+        statuses = _kwargs.get("statuses")
+        query = _kwargs.get("query")
         project_id = _kwargs.get("project_id")
-        return [
+        scope_projects = tuple(_kwargs.get("scope_projects") or ())
+        scope_window_start = _kwargs.get("scope_window_start")
+        scope_window_end = _kwargs.get("scope_window_end")
+        normalized_query = str(query).strip() if query is not None else ""
+
+        def matches_query(row: dict[str, object]) -> bool:
+            if not normalized_query:
+                return True
+            needle = _ascii_query_fold(normalized_query)
+            metadata = row.get("metadata_json")
+            next_actions: list[object] = []
+            if isinstance(metadata, dict):
+                next_actions.append(metadata.get("next_action"))
+                agentic = metadata.get("agentic_memory")
+                if isinstance(agentic, dict):
+                    next_actions.append(agentic.get("next_action"))
+            return any(
+                isinstance(value, str) and needle in _ascii_query_fold(value)
+                for value in (row.get("title"), row.get("description"), *next_actions)
+            )
+
+        rows = [
             row
             for row in self.open_loops
             if (status is None or row.get("status") == status)
+            and (statuses is None or row.get("status") in statuses)
             and (project_id is None or row.get("project_id") == project_id)
+            and (not scope_projects or mcp_tools_module._resource_matches_project_scope(row, scope_projects))
+            and mcp_tools_module._row_in_window(
+                row,
+                key="opened_at",
+                since=scope_window_start,
+                until=scope_window_end,
+            )
+            and matches_query(row)
         ]
+        rows.sort(
+            key=lambda row: (
+                str(row.get("opened_at") or ""),
+                str(row.get("created_at") or ""),
+                str(row.get("id") or ""),
+            ),
+            reverse=True,
+        )
+        return rows[: int(_kwargs.get("limit", 8))]
+
+    def list_open_loop_events(self, **kwargs) -> list[dict[str, object]]:
+        statuses = kwargs.get("statuses")
+        projects = tuple(kwargs.get("scope_projects") or ())
+        query = kwargs.get("query")
+        normalized_query = str(query).strip() if query is not None else ""
+
+        def contains_query(value: object, needle: str) -> bool:
+            if isinstance(value, str):
+                return needle in _ascii_query_fold(value)
+            if isinstance(value, dict):
+                return any(contains_query(item, needle) for item in value.values())
+            if isinstance(value, list):
+                return any(contains_query(item, needle) for item in value)
+            return False
+
+        def matches_query(loop: dict[str, object], event: dict[str, object]) -> bool:
+            if not normalized_query:
+                return True
+            needle = _ascii_query_fold(normalized_query)
+            metadata = loop.get("metadata_json")
+            next_actions: list[object] = []
+            if isinstance(metadata, dict):
+                next_actions.append(metadata.get("next_action"))
+                agentic = metadata.get("agentic_memory")
+                if isinstance(agentic, dict):
+                    next_actions.append(agentic.get("next_action"))
+            row_values = (
+                loop.get("title"),
+                loop.get("description"),
+                *next_actions,
+            )
+            return any(
+                isinstance(value, str) and needle in _ascii_query_fold(value) for value in row_values
+            ) or contains_query(event.get("payload_json"), needle)
+
+        eligible_loops = {
+            str(row.get("id")): row
+            for row in self.open_loops
+            if (statuses is None or row.get("status") in statuses)
+            and (not projects or mcp_tools_module._resource_matches_project_scope(row, projects))
+        }
+        eligible_ids = {loop_id for loop_id in eligible_loops}
+        rows = [
+            event
+            for event in self.events
+            if event.get("target_type") == "open_loop"
+            and str(event.get("target_id")) in eligible_ids
+            and matches_query(eligible_loops[str(event.get("target_id"))], event)
+            and mcp_tools_module._row_in_window(
+                event,
+                key="occurred_at",
+                since=kwargs.get("occurred_at_start"),
+                until=kwargs.get("occurred_at_end"),
+            )
+        ]
+        rows.sort(key=lambda row: (str(row.get("occurred_at") or ""), str(row.get("id") or "")), reverse=True)
+        return rows[: int(kwargs.get("limit", 20))]
+
+    def list_resume_memory_events(self, **kwargs) -> list[dict[str, object]]:
+        statuses = kwargs.get("statuses")
+        projects = tuple(kwargs.get("projects") or ())
+        query = kwargs.get("query")
+        eligible_ids = {
+            str(row.get("id"))
+            for row in self.memories
+            if (statuses is None or row.get("status") in statuses)
+            and (not projects or mcp_tools_module._resource_matches_project_scope(row, projects))
+            and mcp_tools_module._memory_matches_query(row, query)
+        }
+        rows = [
+            event
+            for event in self.events
+            if event.get("target_type") == "memory"
+            and str(event.get("target_id")) in eligible_ids
+            and mcp_tools_module._row_in_window(
+                event,
+                key="occurred_at",
+                since=kwargs.get("occurred_at_start"),
+                until=kwargs.get("occurred_at_end"),
+            )
+        ]
+        rows.sort(key=lambda row: (str(row.get("occurred_at") or ""), str(row.get("id") or "")), reverse=True)
+        return rows[: int(kwargs.get("limit", 20))]
 
     def get_open_loop(self, loop_id: str) -> dict[str, object] | None:
         for loop in self.open_loops:
@@ -1271,6 +1457,8 @@ class FakeVNextMCPStore:
         *,
         target_type: str | None = None,
         target_id: str | None = None,
+        occurred_at_start: datetime | None = None,
+        occurred_at_end: datetime | None = None,
         limit: int | None = None,
     ) -> list[dict[str, object]]:
         rows = [
@@ -1278,7 +1466,14 @@ class FakeVNextMCPStore:
             for event in self.events
             if (target_type is None or event.get("target_type") == target_type)
             and (target_id is None or event.get("target_id") == target_id)
+            and mcp_tools_module._row_in_window(
+                event,
+                key="occurred_at",
+                since=occurred_at_start,
+                until=occurred_at_end,
+            )
         ]
+        rows.sort(key=lambda row: (str(row.get("occurred_at") or ""), str(row.get("id") or "")), reverse=True)
         return rows[:limit] if limit is not None else rows
 
     def upsert_scheduler_workflow(self, workflow: dict[str, object], **_kwargs) -> dict[str, object]:
@@ -1338,10 +1533,18 @@ class FakeVNextMCPStore:
         ][: kwargs.get("limit", 20)]
 
     def list_provenance_links(self, **_kwargs) -> list[dict[str, object]]:
-        return []
+        target_type = _kwargs.get("target_type")
+        target_id = _kwargs.get("target_id")
+        return [
+            row
+            for row in self.provenance_links
+            if (target_type is None or row.get("target_type") == target_type)
+            and (target_id is None or row.get("target_id") == target_id)
+        ]
 
     def create_provenance_link(self, link: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**link, "id": f"provenance-{len(self.events) + 1}"}
+        self.provenance_links.append(row)
         return row
 
 
@@ -1396,6 +1599,37 @@ def test_alice_vnext_context_tree_mcp_tool_returns_read_only_groups(monkeypatch,
     assert "root:memories" in root_ids
     assert payload["summary"]["projects"] == 1
     assert store.events[-1]["event_type"] == "context_tree.generated"
+
+
+def test_alice_vnext_context_tree_threads_effective_project_scope(monkeypatch, legacy_tools_enabled) -> None:
+    store = FakeVNextMCPStore()
+    captured: dict[str, object] = {}
+
+    class CapturingContextTreeService:
+        def __init__(self, _store) -> None:
+            pass
+
+        def build_tree(self, request):
+            captured["projects"] = request.projects
+            return {
+                "schema_version": "vnext_context_tree_v0",
+                "read_only": True,
+                "generated_at": "2026-07-14T00:00:00Z",
+                "query": request.query,
+                "roots": [],
+                "summary": {},
+            }
+
+    _patch_vnext_store(monkeypatch, store)
+    monkeypatch.setattr(mcp_tools_module, "VNextContextTreeService", CapturingContextTreeService)
+
+    call_mcp_tool(
+        _resolved_scoped_agent_context(profile="project_scoped_agent", project="project-a"),
+        name="alice_vnext_context_tree",
+        arguments={"query": "scope inheritance"},
+    )
+
+    assert captured["projects"] == ("project-a",)
 
 
 def test_alice_vnext_context_pack_mcp_tool_normalizes_row_scalars(monkeypatch, legacy_tools_enabled) -> None:
@@ -2024,6 +2258,11 @@ def test_alice_project_and_open_loop_mcp_tools(monkeypatch, legacy_tools_enabled
     assert extract_payload["open_loops"][0]["metadata_json"]["owner"] == "Samir"
     assert review_update_payload["status"] == "accepted"
     assert store.projects["project-1"]["current_state"] == "Project automation reviewed."
+    review_event = next(
+        event for event in store.events if event.get("event_type") == "project.update_candidate_accepted"
+    )
+    assert review_event["actor_type"] == "user"
+    assert review_event["actor_id"] == str(context.user_id)
     assert review_loop_payload["due_at"] == "2026-05-12T09:00:00Z"
     assert dashboard_payload["counts"]["open_loops"] == 1
 
@@ -2250,9 +2489,7 @@ def test_vnext_artifact_review_locks_and_authorizes_persisted_scope(monkeypatch,
     assert store.artifacts[artifact_id]["status"] == "accepted"
 
 
-def test_generic_mcp_artifact_review_preserves_applied_project_update_state(
-    monkeypatch, legacy_tools_enabled
-) -> None:
+def test_generic_mcp_artifact_review_preserves_applied_project_update_state(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
     artifact = mcp_tools_module.VNextProjectService(store).generate_project_update_candidate(
         mcp_tools_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
@@ -2281,7 +2518,413 @@ def test_generic_mcp_artifact_review_preserves_applied_project_update_state(
     assert store.artifacts[artifact_id]["status"] == "accepted"
     assert store.projects["project-1"]["current_state"] == expected_state
     assert store.get_memory(candidate_memory_id)["status"] == "active"
+    accepted_event = next(
+        event for event in store.events if event.get("event_type") == "project.update_candidate_accepted"
+    )
+    assert accepted_event["actor_type"] == "agent"
+    assert accepted_event["actor_id"] == "admin_agent-project-1"
     assert not any(event.get("event_type") == "project.update_candidate_rejected" for event in store.events)
+
+
+def _apply_supported_mcp_memory_lifecycle(
+    store: FakeVNextMCPStore,
+    *,
+    artifact: dict[str, object],
+    operation: str,
+) -> None:
+    metadata = artifact["metadata_json"]
+    assert isinstance(metadata, dict)
+    memory_id = str(metadata["candidate_memory_id"])
+    service = mcp_tools_module.VNextMemoryCommitService(store)
+    if operation == "correct":
+        service.correct(
+            identity=None,
+            memory_id=memory_id,
+            canonical_text="Later corrected MCP project-update memory.",
+            reason="Exercise a supported post-review correction.",
+        )
+    elif operation == "undo":
+        service.undo(
+            identity=None,
+            memory_id=memory_id,
+            reason="Exercise a supported post-review undo.",
+        )
+    else:
+        service.forget(
+            identity=None,
+            memory_id=memory_id,
+            reason="Exercise a supported post-review forget.",
+        )
+
+
+def _accept_later_mcp_project_update(store: FakeVNextMCPStore, *, first_artifact_id: str) -> None:
+    service = mcp_tools_module.VNextProjectService(store)
+    later = service.generate_project_update_candidate(
+        mcp_tools_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    assert later["id"] != first_artifact_id
+    service.review_project_update(
+        artifact_id=str(later["id"]),
+        action="edit",
+        edited_current_state="Later accepted MCP project state B.",
+    )
+
+
+def _append_conflicting_mcp_project_update_decision(
+    store: FakeVNextMCPStore,
+    *,
+    artifact: dict[str, object],
+    conflict: str,
+) -> None:
+    metadata = artifact["metadata_json"]
+    assert isinstance(metadata, dict)
+    artifact_id = str(artifact["id"])
+    candidate_memory_id = str(metadata["candidate_memory_id"])
+    project_id = str(metadata["project_id"])
+    review_event = next(
+        event for event in store.events if event.get("event_type") == f"project.update_candidate_{artifact['status']}"
+    )
+    event_type: str
+    target_type: str
+    target_id: str
+    payload: dict[str, object]
+    if conflict == "accepted_plus_rejected":
+        event_type = "project.update_candidate_rejected"
+        target_type = "artifact"
+        target_id = artifact_id
+        payload = {"project_id": project_id, "source_ids": list(metadata["source_ids"])}
+    elif conflict == "candidate_linked_accepted_wrong_action":
+        event_type = "project.update_candidate_accepted"
+        target_type = "project"
+        target_id = project_id
+        payload = {"candidate_memory_id": candidate_memory_id, "action": "reject"}
+    elif conflict == "rejected_plus_conflicting_rejection":
+        event_type = "project.update_candidate_rejected"
+        target_type = "artifact"
+        target_id = artifact_id
+        payload = {"project_id": project_id, "source_ids": ["conflicting-source"]}
+    else:  # pragma: no cover - exhaustive parameter list
+        raise AssertionError(conflict)
+    store.append_event(
+        build_event_log_record(
+            event_type=event_type,
+            actor_type=str(review_event["actor_type"]),
+            actor_id=str(review_event["actor_id"]) if review_event.get("actor_id") is not None else None,
+            target_type=target_type,
+            target_id=target_id,
+            trace_id=str(review_event["trace_id"]) if review_event.get("trace_id") is not None else None,
+            run_id=str(review_event["run_id"]) if review_event.get("run_id") is not None else None,
+            payload=payload,
+        )
+    )
+
+
+def _redact_and_clone_mcp_project_update_terminal(
+    store: FakeVNextMCPStore,
+    *,
+    terminal: dict[str, object],
+) -> str:
+    metadata = terminal["metadata_json"]
+    assert isinstance(metadata, dict)
+    candidate_memory_id = str(metadata["candidate_memory_id"])
+    for revision in store.revisions:
+        if (
+            str(revision.get("memory_id") or "") == candidate_memory_id
+            and revision.get("action") == "project_update_review"
+        ):
+            revision.update(
+                {
+                    "metadata_json": {"redacted": True},
+                    "text_before": "[REDACTED]",
+                    "text_after": "[REDACTED]",
+                    "reason": "[REDACTED]",
+                }
+            )
+    for event in store.events:
+        payload = event.get("payload_json")
+        if not isinstance(payload, dict):
+            continue
+        if (
+            str(payload.get("candidate_memory_id") or "") != candidate_memory_id
+            and str(payload.get("memory_id") or "") != candidate_memory_id
+            and not (event.get("target_type") == "memory" and str(event.get("target_id") or "") == candidate_memory_id)
+        ):
+            continue
+        event["payload_json"] = {
+            "redacted": True,
+            "memory_id": candidate_memory_id,
+            "event_type": event["event_type"],
+        }
+        event["integrity_hash"] = None
+    clone_id = "artifact-terminal-clone"
+    clone = deepcopy(terminal)
+    clone["id"] = clone_id
+    store.artifacts[clone_id] = clone
+    return clone_id
+
+
+@pytest.mark.parametrize("tool_name", ["alice_vnext_artifact_review", "alice_project_update_review"])
+@pytest.mark.parametrize(
+    ("forced_status", "retry_action"),
+    [("accepted", "accept"), ("rejected", "reject")],
+)
+def test_mcp_project_update_review_rejects_forced_terminal_status_without_mutation(
+    monkeypatch,
+    legacy_tools_enabled,
+    tool_name: str,
+    forced_status: str,
+    retry_action: str,
+) -> None:
+    store = FakeVNextMCPStore()
+    artifact = mcp_tools_module.VNextProjectService(store).generate_project_update_candidate(
+        mcp_tools_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact["status"] = forced_status
+    artifact_id = str(artifact["id"])
+    _patch_vnext_store(monkeypatch, store)
+    state_before = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    with pytest.raises(MCPToolError) as excinfo:
+        call_mcp_tool(
+            _mcp_context(),
+            name=tool_name,
+            arguments={"artifact_id": artifact_id, "action": retry_action},
+        )
+
+    assert str(excinfo.value) == PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before
+
+
+@pytest.mark.parametrize("tool_name", ["alice_vnext_artifact_review", "alice_project_update_review"])
+def test_mcp_project_update_review_rejects_terminal_clone_after_true_redaction_without_mutation(
+    monkeypatch,
+    legacy_tools_enabled,
+    tool_name: str,
+) -> None:
+    store = FakeVNextMCPStore()
+    artifact = mcp_tools_module.VNextProjectService(store).generate_project_update_candidate(
+        mcp_tools_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact_id = str(artifact["id"])
+    _patch_vnext_store(monkeypatch, store)
+    context = _mcp_context()
+    call_mcp_tool(
+        context,
+        name=tool_name,
+        arguments={"artifact_id": artifact_id, "action": "accept"},
+    )
+    clone_id = _redact_and_clone_mcp_project_update_terminal(store, terminal=artifact)
+    state_before_retry = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    with pytest.raises(MCPToolError) as excinfo:
+        call_mcp_tool(
+            context,
+            name=tool_name,
+            arguments={"artifact_id": clone_id, "action": "accept"},
+        )
+
+    assert str(excinfo.value) == PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
+
+
+@pytest.mark.parametrize("tool_name", ["alice_vnext_artifact_review", "alice_project_update_review"])
+@pytest.mark.parametrize("action", ["accept", "reject"])
+def test_mcp_project_update_review_keeps_consistent_terminal_outcomes_idempotent(
+    monkeypatch,
+    legacy_tools_enabled,
+    tool_name: str,
+    action: str,
+) -> None:
+    store = FakeVNextMCPStore()
+    artifact = mcp_tools_module.VNextProjectService(store).generate_project_update_candidate(
+        mcp_tools_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact_id = str(artifact["id"])
+    _patch_vnext_store(monkeypatch, store)
+    context = _mcp_context()
+    arguments = {"artifact_id": artifact_id, "action": action}
+    first = call_mcp_tool(context, name=tool_name, arguments=arguments)
+    state_before_retry = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    second = call_mcp_tool(context, name=tool_name, arguments=arguments)
+
+    assert first == second
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
+
+
+@pytest.mark.parametrize("tool_name", ["alice_vnext_artifact_review", "alice_project_update_review"])
+@pytest.mark.parametrize(
+    ("action", "conflict"),
+    [
+        ("accept", "accepted_plus_rejected"),
+        ("accept", "candidate_linked_accepted_wrong_action"),
+        ("reject", "rejected_plus_conflicting_rejection"),
+    ],
+)
+def test_mcp_project_update_terminal_replay_rejects_every_coupled_competing_decision(
+    monkeypatch,
+    legacy_tools_enabled,
+    tool_name: str,
+    action: str,
+    conflict: str,
+) -> None:
+    store = FakeVNextMCPStore()
+    artifact = mcp_tools_module.VNextProjectService(store).generate_project_update_candidate(
+        mcp_tools_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact_id = str(artifact["id"])
+    _patch_vnext_store(monkeypatch, store)
+    context = _mcp_context()
+    arguments = {"artifact_id": artifact_id, "action": action}
+    call_mcp_tool(context, name=tool_name, arguments=arguments)
+    _append_conflicting_mcp_project_update_decision(store, artifact=artifact, conflict=conflict)
+    state_before_retry = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    with pytest.raises(MCPToolError) as excinfo:
+        call_mcp_tool(context, name=tool_name, arguments=arguments)
+
+    assert str(excinfo.value) == PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
+
+
+@pytest.mark.parametrize("tool_name", ["alice_vnext_artifact_review", "alice_project_update_review"])
+@pytest.mark.parametrize("operation", ["correct", "undo", "forget"])
+def test_mcp_accepted_project_update_replay_survives_supported_memory_lifecycle(
+    monkeypatch,
+    legacy_tools_enabled,
+    tool_name: str,
+    operation: str,
+) -> None:
+    store = FakeVNextMCPStore()
+    artifact = mcp_tools_module.VNextProjectService(store).generate_project_update_candidate(
+        mcp_tools_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact_id = str(artifact["id"])
+    _patch_vnext_store(monkeypatch, store)
+    context = _mcp_context()
+    arguments = {"artifact_id": artifact_id, "action": "accept"}
+    first = call_mcp_tool(context, name=tool_name, arguments=arguments)
+    _apply_supported_mcp_memory_lifecycle(store, artifact=artifact, operation=operation)
+    state_before_retry = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    second = call_mcp_tool(context, name=tool_name, arguments=arguments)
+
+    assert first == second
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
+
+
+@pytest.mark.parametrize("tool_name", ["alice_vnext_artifact_review", "alice_project_update_review"])
+def test_mcp_accepted_project_update_replay_preserves_a_genuine_later_project_update(
+    monkeypatch,
+    legacy_tools_enabled,
+    tool_name: str,
+) -> None:
+    store = FakeVNextMCPStore()
+    artifact = mcp_tools_module.VNextProjectService(store).generate_project_update_candidate(
+        mcp_tools_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact_id = str(artifact["id"])
+    _patch_vnext_store(monkeypatch, store)
+    context = _mcp_context()
+    arguments = {"artifact_id": artifact_id, "action": "accept"}
+    first = call_mcp_tool(context, name=tool_name, arguments=arguments)
+    _accept_later_mcp_project_update(store, first_artifact_id=artifact_id)
+    state_before_retry = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    second = call_mcp_tool(context, name=tool_name, arguments=arguments)
+
+    assert first == second
+    assert store.projects["project-1"]["current_state"] == "Later accepted MCP project state B."
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
+
+
+def test_dedicated_mcp_project_review_schema_attributes_payload_agent(monkeypatch, legacy_tools_enabled) -> None:
+    store = FakeVNextMCPStore()
+    artifact = mcp_tools_module.VNextProjectService(store).generate_project_update_candidate(
+        mcp_tools_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact_id = str(artifact["id"])
+    _patch_vnext_store(monkeypatch, store)
+    monkeypatch.delenv(mcp_tools_module.AGENT_API_KEY_ENV, raising=False)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    payload = call_mcp_tool(
+        context,
+        name="alice_project_update_review",
+        arguments={
+            "artifact_id": artifact_id,
+            "action": "accept",
+            "agent_id": "dedicated-reviewer",
+            "agent_type": "coding_agent",
+            "permission_profile": "admin_agent",
+            "project_scope": ["project-1"],
+            "agent_run_id": "review-run-1",
+            "trace_id": "review-trace-1",
+        },
+    )
+
+    assert payload["status"] == "accepted"
+    persisted_identity = store.agent_identities["dedicated-reviewer"]
+    assert persisted_identity["agent_type"] == "coding_agent"
+    assert persisted_identity["permission_profile"] == "admin_agent"
+    assert persisted_identity["metadata_json"] == {
+        "last_agent_run_id": "review-run-1",
+        "last_task_id": None,
+    }
+    accepted_event = next(
+        event for event in store.events if event.get("event_type") == "project.update_candidate_accepted"
+    )
+    assert accepted_event["actor_type"] == "agent"
+    assert accepted_event["actor_id"] == "dedicated-reviewer"
+    assert accepted_event["run_id"] == "review-run-1"
+    assert accepted_event["trace_id"] == "review-trace-1"
+
+
+def test_generic_memory_rejection_cannot_be_resurrected_by_project_artifact_review(
+    monkeypatch, legacy_tools_enabled
+) -> None:
+    store = FakeVNextMCPStore()
+    artifact = mcp_tools_module.VNextProjectService(store).generate_project_update_candidate(
+        mcp_tools_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact_id = str(artifact["id"])
+    artifact_metadata = artifact["metadata_json"]
+    assert isinstance(artifact_metadata, dict)
+    old_candidate_id = str(artifact_metadata["candidate_memory_id"])
+    candidate = store.get_memory(old_candidate_id)
+    assert candidate is not None
+    candidate_id = str(uuid4())
+    candidate["id"] = candidate_id
+    artifact_metadata["candidate_memory_id"] = candidate_id
+    original_project_state = str(store.projects["project-1"]["current_state"])
+    _patch_vnext_store(monkeypatch, store)
+    context = _mcp_context()
+
+    rejected = call_mcp_tool(
+        context,
+        name="alice_memory_correct",
+        arguments={
+            "action": "reject",
+            "review_item_id": candidate_id,
+            "reason": "Reject the candidate through the generic memory lifecycle.",
+        },
+    )
+    with pytest.raises(MCPToolError, match="not pending review"):
+        call_mcp_tool(
+            context,
+            name="alice_vnext_artifact_review",
+            arguments={"artifact_id": artifact_id, "action": "accept"},
+        )
+
+    assert rejected["memory"]["status"] == "rejected"
+    retired_candidate = store.get_memory(candidate_id)
+    assert retired_candidate is not None
+    assert retired_candidate["status"] == "rejected"
+    assert store.artifacts[artifact_id]["status"] == "needs_review"
+    assert store.projects["project-1"]["current_state"] == original_project_state
 
 
 class FakeEmbeddingProvider:
@@ -3038,23 +3681,53 @@ def test_alice_project_review_defers_embedding_until_primary_transaction_closes(
             assert defer_embeddings is True
             self.deferred_embedding_inputs = (deferred_input,)
 
-        def review_project_update(self, **_kwargs):
+        def review_project_update(self, **kwargs):
             assert transaction_depth == 1
+            assert kwargs["actor_type"] == "agent"
+            assert kwargs["actor_id"] == "reviewer-agent"
+            assert kwargs["trace_id"] == "trace-review"
+            assert kwargs["run_id"] == "run-review"
             calls.append("review")
             return {"id": "artifact-1", "status": "accepted"}
 
-    def fake_persist(_context, deferred_inputs, **_kwargs) -> None:
+    def fake_authorize(_store, **_kwargs):
+        decision = mcp_tools_module.evaluate_agent_policy(
+            identity=None,
+            action="artifact.review",
+            project_scope=("project-1",),
+        )
+        return {"id": "artifact-1"}, "agent", "reviewer-agent", decision
+
+    def fake_persist(_context, deferred_inputs, **kwargs) -> None:
         assert transaction_depth == 0
         assert deferred_inputs == (deferred_input,)
+        assert kwargs["actor_type"] == "agent"
+        assert kwargs["actor_id"] == "reviewer-agent"
+        assert kwargs["trace_id"] == "trace-review"
         calls.append("embedding")
 
     monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(mcp_tools_module, "_authorize_vnext_artifact_target", fake_authorize)
     monkeypatch.setattr(mcp_tools_module, "VNextProjectService", FakeProjectService)
     monkeypatch.setattr(mcp_tools_module, "_persist_vnext_deferred_embedding_inputs", fake_persist)
 
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        agent_identity=mcp_tools_module.AgentIdentity(
+            agent_id="reviewer-agent",
+            agent_run_id="run-review",
+            permission_profile="admin_agent",
+            project_scope=("project-1",),
+            project_scope_locked=True,
+            auth="agent_api_key",
+        ),
+        agent_identity_resolved=True,
+    )
+
     payload = mcp_tools_module._handle_alice_project_update_review(
-        _mcp_context(),
-        {"artifact_id": "artifact-1", "action": "accept"},
+        context,
+        {"artifact_id": "artifact-1", "action": "accept", "trace_id": "trace-review"},
     )
 
     assert payload["status"] == "accepted"
@@ -3781,6 +4454,776 @@ def _sqlite_mcp_store() -> SQLiteVNextStore:
     return SQLiteVNextStore(conn, user_id)
 
 
+def _create_scoped_open_loop(
+    store: SQLiteVNextStore,
+    *,
+    title: str,
+    project: str,
+    opened_at: str,
+) -> dict[str, object]:
+    return store.create_open_loop(
+        {
+            "title": title,
+            "domain": "project",
+            "sensitivity": "internal",
+            "opened_at": opened_at,
+            "metadata_json": {"project_scope": [project]},
+        }
+    )
+
+
+def _create_scoped_resume_memory(
+    store: SQLiteVNextStore,
+    *,
+    title: str,
+    project: str,
+    memory_type: str = "decision",
+    status: str = "active",
+    created_at: str,
+) -> dict[str, object]:
+    row = store.create_memory(
+        {
+            "memory_key": f"resume.{uuid4()}",
+            "value": {"text": title},
+            "memory_type": memory_type,
+            "status": status,
+            "title": title,
+            "canonical_text": title,
+            "summary": title,
+            "domain": "project",
+            "sensitivity": "internal",
+            "metadata_json": {"project_scope": [project]},
+        }
+    )
+    store.conn.execute(
+        "UPDATE memories SET created_at = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+        (created_at, created_at, row["id"], store.user_id),
+    )
+    refreshed = store.get_memory(str(row["id"]))
+    assert refreshed is not None
+    return refreshed
+
+
+def test_alice_resume_applies_explicit_project_before_open_loop_and_event_limits(
+    monkeypatch,
+    core_surface,
+) -> None:
+    store = _sqlite_mcp_store()
+    target = _create_scoped_open_loop(
+        store,
+        title="Project A older target",
+        project="project-a",
+        opened_at="2026-07-01T00:00:00Z",
+    )
+    for index in range(60):
+        _create_scoped_open_loop(
+            store,
+            title=f"Project B newer noise {index}",
+            project="project-b",
+            opened_at=f"2026-07-14T12:{index:02d}:00Z",
+        )
+    _patch_vnext_store(monkeypatch, store)
+
+    payload = call_mcp_tool(
+        _mcp_context(),
+        name="alice_resume",
+        arguments={
+            "project": "project-a",
+            "max_open_loops": 1,
+            "max_recent_changes": 1,
+        },
+    )
+
+    assert [row["id"] for row in payload["brief"]["open_loops"]] == [target["id"]]
+    assert payload["brief"]["recent_changes"][0]["target_id"] == target["id"]
+
+
+def test_alice_resume_applies_status_scope_and_created_window_before_limits(
+    monkeypatch,
+    core_surface,
+) -> None:
+    store = _sqlite_mcp_store()
+    decision = _create_scoped_resume_memory(
+        store,
+        title="Release decision target",
+        project="project-a",
+        created_at="2030-07-10T12:00:00Z",
+    )
+    loop = _create_scoped_open_loop(
+        store,
+        title="Release loop target",
+        project="project-a",
+        opened_at="2030-07-10T12:00:00Z",
+    )
+    for index in range(60):
+        _create_scoped_resume_memory(
+            store,
+            title=f"Resolved newer decision {index}",
+            project="project-a",
+            status="rejected",
+            created_at=f"2030-07-11T12:{index:02d}:00Z",
+        )
+        resolved_loop = _create_scoped_open_loop(
+            store,
+            title=f"Resolved newer loop {index}",
+            project="project-a",
+            opened_at=f"2030-07-11T12:{index:02d}:00Z",
+        )
+        store.update_open_loop_status(loop_id=str(resolved_loop["id"]), status="resolved")
+        _create_scoped_resume_memory(
+            store,
+            title=f"Out-window active decision {index}",
+            project="project-a",
+            created_at=f"2030-07-13T12:{index:02d}:00Z",
+        )
+        _create_scoped_open_loop(
+            store,
+            title=f"Out-window active loop {index}",
+            project="project-a",
+            opened_at=f"2030-07-13T12:{index:02d}:00Z",
+        )
+    _patch_vnext_store(monkeypatch, store)
+
+    payload = call_mcp_tool(
+        _mcp_context(),
+        name="alice_resume",
+        arguments={
+            "project": "project-a",
+            "since": "2030-07-10T00:00:00Z",
+            "until": "2030-07-12T00:00:00Z",
+            "query": "release",
+            "max_open_loops": 1,
+            "max_recent_changes": 0,
+        },
+    )
+
+    assert payload["brief"]["last_decision"]["id"] == decision["id"]
+    assert [row["id"] for row in payload["brief"]["open_loops"]] == [loop["id"]]
+
+
+def test_alice_resume_scoped_event_joins_keep_old_targets_with_new_events(
+    monkeypatch,
+    core_surface,
+) -> None:
+    store = _sqlite_mcp_store()
+    old_memory = _create_scoped_resume_memory(
+        store,
+        title="Old memory with new event",
+        project="project-a",
+        created_at="2029-01-01T00:00:00Z",
+    )
+    old_loop = _create_scoped_open_loop(
+        store,
+        title="Old loop with new event",
+        project="project-a",
+        opened_at="2029-01-01T00:00:00Z",
+    )
+    store.append_event(
+        {
+            "id": "resume-target-memory-event",
+            "event_type": "memory.updated",
+            "actor_type": "system",
+            "target_type": "memory",
+            "target_id": old_memory["id"],
+            "occurred_at": "2030-07-10T12:01:00Z",
+            "payload_json": {},
+        }
+    )
+    store.append_event(
+        {
+            "id": "resume-target-loop-event",
+            "event_type": "open_loop.updated",
+            "actor_type": "system",
+            "target_type": "open_loop",
+            "target_id": old_loop["id"],
+            "occurred_at": "2030-07-10T12:02:00Z",
+            "payload_json": {},
+        }
+    )
+    foreign_memory = _create_scoped_resume_memory(
+        store,
+        title="Foreign event target",
+        project="project-b",
+        created_at="2029-01-01T00:00:00Z",
+    )
+    foreign_loop = _create_scoped_open_loop(
+        store,
+        title="Foreign loop event target",
+        project="project-b",
+        opened_at="2029-01-01T00:00:00Z",
+    )
+    for index in range(60):
+        for target_type, target_id in (
+            ("memory", foreign_memory["id"]),
+            ("open_loop", foreign_loop["id"]),
+        ):
+            store.append_event(
+                {
+                    "id": f"foreign-{target_type}-{index}",
+                    "event_type": f"{target_type}.updated",
+                    "actor_type": "system",
+                    "target_type": target_type,
+                    "target_id": target_id,
+                    "occurred_at": f"2030-07-10T13:{index:02d}:00Z",
+                    "payload_json": {},
+                }
+            )
+    _patch_vnext_store(monkeypatch, store)
+
+    payload = call_mcp_tool(
+        _mcp_context(),
+        name="alice_resume",
+        arguments={
+            "project": "project-a",
+            "since": "2030-07-10T00:00:00Z",
+            "until": "2030-07-11T00:00:00Z",
+            "max_open_loops": 1,
+            "max_recent_changes": 2,
+        },
+    )
+
+    assert payload["brief"]["open_loops"] == []
+    assert {row["target_id"] for row in payload["brief"]["recent_changes"]} == {
+        old_memory["id"],
+        old_loop["id"],
+    }
+
+
+def test_fake_open_loop_queries_use_ascii_literal_leaf_semantics() -> None:
+    store = FakeVNextMCPStore()
+    store.open_loops.append(
+        {
+            "id": "leaf-query-loop",
+            "status": "open",
+            "title": "Unrelated loop",
+            "description": None,
+            "metadata_json": {},
+        }
+    )
+    row_cases = (
+        {"id": "row-title", "title": "Release title", "description": None, "metadata_json": {}},
+        {
+            "id": "row-description",
+            "title": "Unrelated loop",
+            "description": "Release description",
+            "metadata_json": {},
+        },
+        {
+            "id": "row-next-action",
+            "title": "Unrelated loop",
+            "description": None,
+            "metadata_json": {"next_action": "Release next action"},
+        },
+        {
+            "id": "row-agentic-next-action",
+            "title": "Unrelated loop",
+            "description": None,
+            "metadata_json": {"agentic_memory": {"next_action": "Release agentic next action"}},
+        },
+        {
+            "id": "row-root-integer-next-action",
+            "title": "Unrelated loop",
+            "description": None,
+            "metadata_json": {"next_action": 8675309},
+        },
+        {
+            "id": "row-agentic-object-next-action",
+            "title": "Unrelated loop",
+            "description": None,
+            "metadata_json": {"agentic_memory": {"next_action": {"text": "object row sentinel"}}},
+        },
+        {
+            "id": "row-agentic-array-next-action",
+            "title": "Unrelated loop",
+            "description": None,
+            "metadata_json": {"agentic_memory": {"next_action": ["array row sentinel"]}},
+        },
+        {"id": "row-arende", "title": "Ärende row", "description": None, "metadata_json": {}},
+        {"id": "row-strasse", "title": "Straße row", "description": None, "metadata_json": {}},
+        {"id": "row-percent", "title": "100% complete", "description": None, "metadata_json": {}},
+        {
+            "id": "row-underscore",
+            "title": "Unrelated loop",
+            "description": "under_score marker",
+            "metadata_json": {},
+        },
+        {
+            "id": "row-backslash",
+            "title": "Unrelated loop",
+            "description": None,
+            "metadata_json": {"next_action": r"path\segment"},
+        },
+    )
+    store.open_loops.extend({**row, "status": "open"} for row in row_cases)
+
+    def loop_ids(query: str) -> set[object]:
+        return {row["id"] for row in store.list_open_loops(query=query, limit=50)}
+
+    assert loop_ids("release") == {
+        "row-title",
+        "row-description",
+        "row-next-action",
+        "row-agentic-next-action",
+    }
+    assert loop_ids("ärende") == set()
+    assert loop_ids("Ärende") == {"row-arende"}
+    assert loop_ids("STRASSE") == set()
+    assert loop_ids("Straße") == {"row-strasse"}
+    assert loop_ids("%") == {"row-percent"}
+    assert loop_ids("_") == {"row-underscore"}
+    assert loop_ids("\\") == {"row-backslash"}
+    assert loop_ids(r"missing%_\path") == set()
+    assert loop_ids("8675309") == set()
+    assert loop_ids("object row sentinel") == set()
+    assert loop_ids("array row sentinel") == set()
+
+    payloads = {
+        "split-leaves": {"items": ["alpha", "beta"]},
+        "nested-positive": {"nested": {"value": "alpha beta in one nested leaf"}},
+        "array-positive": {"items": ["alpha beta in one array leaf"]},
+        "key-and-non-string-negative": {
+            "alpha beta": 123,
+            "flag": True,
+            "nothing": None,
+        },
+        "release-nested": {"nested": {"value": "Release nested leaf"}},
+        "release-array": {"items": ["Release array leaf"]},
+        "arende-nested": {"nested": {"value": "Ärende nested leaf"}},
+        "arende-array": {"items": ["Ärende array leaf"]},
+        "strasse-nested": {"nested": {"value": "Straße nested leaf"}},
+        "strasse-array": {"items": ["Straße array leaf"]},
+        "percent-nested": {"nested": {"value": "100% nested leaf"}},
+        "percent-array": {"items": ["100% array leaf"]},
+        "underscore-nested": {"nested": {"value": "under_score nested leaf"}},
+        "underscore-array": {"items": ["under_score array leaf"]},
+        "backslash-nested": {"nested": {"value": r"path\nested"}},
+        "backslash-array": {"items": [r"path\array"]},
+        "next-action-object-payload": {"next_action": {"text": "payload object next action sentinel"}},
+        "next-action-array-payload": {"agentic_memory": {"next_action": ["payload array next action sentinel"]}},
+    }
+    for index, (event_id, payload_json) in enumerate(payloads.items()):
+        store.append_event(
+            {
+                "id": event_id,
+                "target_type": "open_loop",
+                "target_id": "leaf-query-loop",
+                "occurred_at": f"2030-07-10T12:{index:02d}:00Z",
+                "payload_json": payload_json,
+            }
+        )
+    row_event_targets = {
+        "row-root-string-event": "row-next-action",
+        "row-nested-string-event": "row-agentic-next-action",
+        "row-root-integer-event": "row-root-integer-next-action",
+        "row-nested-object-event": "row-agentic-object-next-action",
+        "row-nested-array-event": "row-agentic-array-next-action",
+    }
+    for index, (event_id, target_id) in enumerate(row_event_targets.items()):
+        store.append_event(
+            {
+                "id": event_id,
+                "target_type": "open_loop",
+                "target_id": target_id,
+                "occurred_at": f"2030-07-10T13:{index:02d}:00Z",
+                "payload_json": {"note": "unrelated payload"},
+            }
+        )
+
+    def event_ids(query: str) -> set[object]:
+        return {row["id"] for row in store.list_open_loop_events(statuses=("open",), query=query, limit=50)}
+
+    assert event_ids("alpha beta") == {"nested-positive", "array-positive"}
+    assert event_ids("release") == {
+        "release-nested",
+        "release-array",
+        "row-root-string-event",
+        "row-nested-string-event",
+    }
+    assert event_ids("payload object next action sentinel") == {"next-action-object-payload"}
+    assert event_ids("payload array next action sentinel") == {"next-action-array-payload"}
+    assert event_ids("ärende") == set()
+    assert event_ids("Ärende") == {"arende-nested", "arende-array"}
+    assert event_ids("STRASSE") == set()
+    assert event_ids("Straße") == {"strasse-nested", "strasse-array"}
+    assert event_ids("%") == {"percent-nested", "percent-array"}
+    assert event_ids("_") == {"underscore-nested", "underscore-array"}
+    assert event_ids("\\") == {"backslash-nested", "backslash-array"}
+    assert event_ids(r"missing%_\path") == set()
+    for non_string_query in ("123", "true"):
+        assert event_ids(non_string_query) == set()
+    for non_string_row_query in ("8675309", "object row sentinel", "array row sentinel"):
+        assert event_ids(non_string_row_query) == set()
+    assert {row["id"] for row in store.list_open_loop_events(statuses=("open",), query="   ", limit=50)} == {
+        *payloads,
+        *row_event_targets,
+    }
+
+
+def test_fake_open_loop_query_order_uses_created_at_before_id_and_then_limits() -> None:
+    store = FakeVNextMCPStore()
+    shared_opened_at = "2030-07-10T12:00:00Z"
+    store.open_loops.extend(
+        (
+            {
+                "id": "z-old-created",
+                "status": "open",
+                "title": "Order marker",
+                "opened_at": shared_opened_at,
+                "created_at": "2030-07-10T10:00:00Z",
+                "metadata_json": {},
+            },
+            {
+                "id": "a-new-created",
+                "status": "open",
+                "title": "Order marker",
+                "opened_at": shared_opened_at,
+                "created_at": "2030-07-10T11:00:00Z",
+                "metadata_json": {},
+            },
+            {
+                "id": "b-new-created",
+                "status": "open",
+                "title": "Order marker",
+                "opened_at": shared_opened_at,
+                "created_at": "2030-07-10T11:00:00Z",
+                "metadata_json": {},
+            },
+        )
+    )
+
+    assert [row["id"] for row in store.list_open_loops(query="order marker", limit=3)] == [
+        "b-new-created",
+        "a-new-created",
+        "z-old-created",
+    ]
+    assert [row["id"] for row in store.list_open_loops(query="order marker", limit=1)] == ["b-new-created"]
+
+
+def test_sqlite_open_loop_queries_use_ascii_literal_leaf_semantics() -> None:
+    store = _sqlite_mcp_store()
+    traced_sql: list[str] = []
+    store.conn.set_trace_callback(traced_sql.append)
+    project = "project-a"
+    sequence = 0
+
+    def create_loop(
+        title: str,
+        *,
+        description: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        nonlocal sequence
+        sequence += 1
+        return store.create_open_loop(
+            {
+                "title": title,
+                "description": description,
+                "domain": "project",
+                "sensitivity": "internal",
+                "opened_at": f"2030-07-10T10:{sequence:02d}:00Z",
+                "metadata_json": {"project_scope": [project], **(metadata or {})},
+            }
+        )
+
+    rows = {
+        "title": create_loop("Release title"),
+        "description": create_loop("Unrelated loop", description="Release description"),
+        "next_action": create_loop("Unrelated loop", metadata={"next_action": "Release next action"}),
+        "agentic_next_action": create_loop(
+            "Unrelated loop",
+            metadata={"agentic_memory": {"next_action": "Release agentic next action"}},
+        ),
+        "root_integer_next_action": create_loop(
+            "Unrelated loop",
+            metadata={"next_action": 8675309},
+        ),
+        "agentic_object_next_action": create_loop(
+            "Unrelated loop",
+            metadata={"agentic_memory": {"next_action": {"text": "object row sentinel"}}},
+        ),
+        "agentic_array_next_action": create_loop(
+            "Unrelated loop",
+            metadata={"agentic_memory": {"next_action": ["array row sentinel"]}},
+        ),
+        "arende": create_loop("Ärende row"),
+        "strasse": create_loop("Straße row"),
+        "percent": create_loop("100% complete"),
+        "underscore": create_loop("Unrelated loop", description="under_score marker"),
+        "backslash": create_loop("Unrelated loop", metadata={"next_action": r"path\segment"}),
+    }
+    event_loop = create_loop("Payload-only loop")
+    event_payloads = {
+        "split-leaves": {"items": ["alpha", "beta"]},
+        "nested-positive": {"nested": {"value": "alpha beta in one nested leaf"}},
+        "array-positive": {"items": ["alpha beta in one array leaf"]},
+        "key-and-non-string-negative": {
+            "alpha beta": 123,
+            "flag": True,
+            "nothing": None,
+        },
+        "release-nested": {"nested": {"value": "Release nested leaf"}},
+        "release-array": {"items": ["Release array leaf"]},
+        "arende-nested": {"nested": {"value": "Ärende nested leaf"}},
+        "arende-array": {"items": ["Ärende array leaf"]},
+        "strasse-nested": {"nested": {"value": "Straße nested leaf"}},
+        "strasse-array": {"items": ["Straße array leaf"]},
+        "percent-nested": {"nested": {"value": "100% nested leaf"}},
+        "percent-array": {"items": ["100% array leaf"]},
+        "underscore-nested": {"nested": {"value": "under_score nested leaf"}},
+        "underscore-array": {"items": ["under_score array leaf"]},
+        "backslash-nested": {"nested": {"value": r"path\nested"}},
+        "backslash-array": {"items": [r"path\array"]},
+        "next-action-object-payload": {"next_action": {"text": "payload object next action sentinel"}},
+        "next-action-array-payload": {"agentic_memory": {"next_action": ["payload array next action sentinel"]}},
+    }
+    for index, (event_id, payload_json) in enumerate(event_payloads.items()):
+        store.append_event(
+            {
+                "id": f"sqlite-{event_id}",
+                "event_type": "open_loop.updated",
+                "actor_type": "system",
+                "target_type": "open_loop",
+                "target_id": event_loop["id"],
+                "occurred_at": f"2030-07-10T12:{index:02d}:00Z",
+                "payload_json": payload_json,
+            }
+        )
+    row_event_targets = {
+        "row-root-string-event": rows["next_action"]["id"],
+        "row-nested-string-event": rows["agentic_next_action"]["id"],
+        "row-root-integer-event": rows["root_integer_next_action"]["id"],
+        "row-nested-object-event": rows["agentic_object_next_action"]["id"],
+        "row-nested-array-event": rows["agentic_array_next_action"]["id"],
+    }
+    for index, (event_key, target_id) in enumerate(row_event_targets.items()):
+        store.append_event(
+            {
+                "id": f"sqlite-{event_key}",
+                "event_type": "open_loop.updated",
+                "actor_type": "system",
+                "target_type": "open_loop",
+                "target_id": target_id,
+                "occurred_at": f"2030-07-10T13:{index:02d}:00Z",
+                "payload_json": {"note": "unrelated payload"},
+            }
+        )
+
+    row_expectations = {
+        "release": {rows[key]["id"] for key in ("title", "description", "next_action", "agentic_next_action")},
+        "ärende": set(),
+        "Ärende": {rows["arende"]["id"]},
+        "STRASSE": set(),
+        "Straße": {rows["strasse"]["id"]},
+        "%": {rows["percent"]["id"]},
+        "_": {rows["underscore"]["id"]},
+        "\\": {rows["backslash"]["id"]},
+        r"missing%_\path": set(),
+        "8675309": set(),
+        "object row sentinel": set(),
+        "array row sentinel": set(),
+    }
+    event_expectations = {
+        "alpha beta": {"sqlite-nested-positive", "sqlite-array-positive"},
+        "release": {
+            "sqlite-release-nested",
+            "sqlite-release-array",
+            "sqlite-row-root-string-event",
+            "sqlite-row-nested-string-event",
+        },
+        "payload object next action sentinel": {"sqlite-next-action-object-payload"},
+        "payload array next action sentinel": {"sqlite-next-action-array-payload"},
+        "ärende": set(),
+        "Ärende": {"sqlite-arende-nested", "sqlite-arende-array"},
+        "STRASSE": set(),
+        "Straße": {"sqlite-strasse-nested", "sqlite-strasse-array"},
+        "%": {"sqlite-percent-nested", "sqlite-percent-array"},
+        "_": {"sqlite-underscore-nested", "sqlite-underscore-array"},
+        "\\": {"sqlite-backslash-nested", "sqlite-backslash-array"},
+        r"missing%_\path": set(),
+        "123": set(),
+        "true": set(),
+        "8675309": set(),
+        "object row sentinel": set(),
+        "array row sentinel": set(),
+    }
+    for scope_projects in (None, (project,)):
+        for query, expected_ids in row_expectations.items():
+            actual = store.list_open_loops(query=query, scope_projects=scope_projects, limit=50)
+            assert {row["id"] for row in actual} == expected_ids
+        for query, expected_ids in event_expectations.items():
+            actual = store.list_open_loop_events(
+                statuses=("open",),
+                scope_projects=scope_projects,
+                query=query,
+                occurred_at_start=datetime(2030, 7, 10, 12, tzinfo=UTC),
+                limit=50,
+            )
+            assert {row["id"] for row in actual} == expected_ids
+
+        assert len(store.list_open_loops(query="   ", scope_projects=scope_projects, limit=50)) == len(rows) + 1
+        assert len(
+            store.list_open_loop_events(
+                statuses=("open",),
+                scope_projects=scope_projects,
+                query="   ",
+                occurred_at_start=datetime(2030, 7, 10, 12, tzinfo=UTC),
+                limit=50,
+            )
+        ) == len(event_payloads) + len(row_event_targets)
+
+    loop_query_sql = next(
+        statement
+        for statement in traced_sql
+        if "FROM open_loops" in statement and "json_type(metadata_json, '$.next_action')" in statement
+    )
+    loop_event_query_sql = next(
+        statement
+        for statement in traced_sql
+        if "JOIN open_loops AS loop" in statement and "json_type(loop.metadata_json, '$.next_action')" in statement
+    )
+    for statement, prefix in (
+        (loop_query_sql, "metadata_json"),
+        (loop_event_query_sql, "loop.metadata_json"),
+    ):
+        for path in ("$.next_action", "$.agentic_memory.next_action"):
+            guard = f"json_type({prefix}, '{path}') = 'text'"
+            match = f"lower(COALESCE(json_extract({prefix}, '{path}'), ''))"
+            assert statement.index(guard) < statement.index(match)
+        assert f"CAST(json_extract({prefix}" not in statement
+    store.conn.set_trace_callback(None)
+
+
+def test_alice_resume_filters_open_loops_and_loop_events_by_query_before_limits(
+    monkeypatch,
+    core_surface,
+) -> None:
+    store = _sqlite_mcp_store()
+    target = _create_scoped_open_loop(
+        store,
+        title="Release matching loop",
+        project="project-a",
+        opened_at="2030-07-10T12:00:00Z",
+    )
+    store.append_event(
+        {
+            "id": "resume-query-target-event",
+            "event_type": "open_loop.updated",
+            "actor_type": "system",
+            "target_type": "open_loop",
+            "target_id": target["id"],
+            "occurred_at": "2030-07-10T12:01:00Z",
+            "payload_json": {"nested": {"value": "Release lives in a nested payload."}},
+        }
+    )
+    event_only = _create_scoped_open_loop(
+        store,
+        title="Payload-only older loop",
+        project="project-a",
+        opened_at="2030-07-10T11:00:00Z",
+    )
+    store.append_event(
+        {
+            "id": "resume-query-payload-only-event",
+            "event_type": "open_loop.updated",
+            "actor_type": "system",
+            "target_type": "open_loop",
+            "target_id": event_only["id"],
+            "occurred_at": "2030-07-10T12:02:00Z",
+            "payload_json": {"items": ["Array Release match"]},
+        }
+    )
+    noise_ids: set[object] = set()
+    for index in range(62):
+        minute = index % 60
+        noise = _create_scoped_open_loop(
+            store,
+            title=f"Unrelated newer loop {index}",
+            project="project-a",
+            opened_at=f"2030-07-10T{13 + index // 60:02d}:{minute:02d}:00Z",
+        )
+        noise_ids.add(noise["id"])
+        store.append_event(
+            {
+                "id": f"resume-query-noise-event-{index}",
+                "event_type": "open_loop.updated",
+                "actor_type": "system",
+                "target_type": "open_loop",
+                "target_id": noise["id"],
+                "occurred_at": f"2030-07-10T{14 + index // 60:02d}:{minute:02d}:00Z",
+                "payload_json": {"release": "completely unrelated value"},
+            }
+        )
+    _patch_vnext_store(monkeypatch, store)
+    bounded_arguments = {
+        "query": "release",
+        "since": "2030-07-10T00:00:00Z",
+        "until": "2030-07-11T00:00:00Z",
+        "max_open_loops": 1,
+        "max_recent_changes": 2,
+    }
+
+    scoped = call_mcp_tool(
+        _mcp_context(),
+        name="alice_resume",
+        arguments={**bounded_arguments, "project": "project-a"},
+    )
+    unscoped = call_mcp_tool(
+        _mcp_context(),
+        name="alice_resume",
+        arguments=bounded_arguments,
+    )
+    for payload in (scoped, unscoped):
+        assert [row["id"] for row in payload["brief"]["open_loops"]] == [target["id"]]
+        assert payload["brief"]["next_action"]["id"] == target["id"]
+        assert {row["target_id"] for row in payload["brief"]["recent_changes"]} == {
+            target["id"],
+            event_only["id"],
+        }
+        assert not noise_ids.intersection(row["id"] for row in payload["brief"]["open_loops"])
+        assert not noise_ids.intersection(row["target_id"] for row in payload["brief"]["recent_changes"])
+
+    queryless = call_mcp_tool(
+        _mcp_context(),
+        name="alice_resume",
+        arguments={
+            "project": "project-a",
+            "since": "2030-07-10T00:00:00Z",
+            "until": "2030-07-11T00:00:00Z",
+            "max_open_loops": 1,
+            "max_recent_changes": 1,
+        },
+    )
+    assert queryless["brief"]["open_loops"][0]["id"] in noise_ids
+    assert queryless["brief"]["recent_changes"][0]["target_id"] in noise_ids
+
+
+def test_alice_open_loops_applies_key_scope_before_limit(monkeypatch, core_surface) -> None:
+    store = _sqlite_mcp_store()
+    target = _create_scoped_open_loop(
+        store,
+        title="Project A target after the old overfetch boundary",
+        project="project-a",
+        opened_at="2026-07-01T00:00:00Z",
+    )
+    for index in range(120):
+        _create_scoped_open_loop(
+            store,
+            title=f"Project B starvation row {index}",
+            project="project-b",
+            opened_at=f"2026-07-14T{index // 60:02d}:{index % 60:02d}:00Z",
+        )
+    _patch_vnext_store(monkeypatch, store)
+
+    payload = call_mcp_tool(
+        _resolved_scoped_agent_context(profile="project_scoped_agent", project="project-a"),
+        name="alice_open_loops",
+        arguments={"limit": 1},
+    )
+
+    assert payload["count"] == 1
+    assert payload["items"][0]["id"] == target["id"]
+
+
 def test_alice_capture_threads_project_scoped_agent_scope_into_recall(
     monkeypatch, core_surface, no_embedding_provider
 ) -> None:
@@ -3790,7 +5233,7 @@ def test_alice_capture_threads_project_scoped_agent_scope_into_recall(
     # A real SQLite store exercises the recall filter end to end.
     store = _sqlite_mcp_store()
     _patch_vnext_store(monkeypatch, store)
-    context = _resolved_scoped_agent_context(profile="project_scoped_agent", project="project-helios")
+    context = _resolved_scoped_agent_context(profile="project_scoped_agent", project="Project-Helios")
 
     payload = call_mcp_tool(
         context,
@@ -3806,7 +5249,7 @@ def test_alice_capture_threads_project_scoped_agent_scope_into_recall(
 
     candidates = store.list_memories(status="candidate")
     assert candidates, "capture must promote at least one candidate memory"
-    assert memory_project_scope(candidates[0]) == ("project-helios",)
+    assert memory_project_scope(candidates[0]) == ("Project-Helios",)
     for memory in candidates:
         store.update_memory(memory_id=str(memory["id"]), patch={"status": "active"}, actor_type="system")
 
@@ -3889,6 +5332,442 @@ def test_alice_explain_routes_memory_id_to_memory_audit(monkeypatch, core_surfac
             name="alice_explain",
             arguments={"memory_id": memory_id, "entity_id": str(uuid4())},
         )
+
+
+def _append_scoped_explain_memory(
+    store: FakeVNextMCPStore,
+    *,
+    memory_id: str,
+    project: str,
+    superseded_by: str | None = None,
+    supersedes: str | None = None,
+) -> dict[str, object]:
+    memory = {
+        "id": memory_id,
+        "memory_key": f"explain.{memory_id}",
+        "value": {"text": f"Memory for {project}"},
+        "status": "active",
+        "memory_type": "semantic",
+        "title": f"{project} memory",
+        "canonical_text": f"Scoped memory for {project}.",
+        "domain": "project",
+        "sensitivity": "internal",
+        "metadata_json": {"project_scope": [project]},
+        "superseded_by": superseded_by,
+        "supersedes": supersedes,
+    }
+    store.memories.append(memory)
+    return memory
+
+
+def test_alice_explain_key_scope_authorizes_root_chain_and_provenance(monkeypatch, core_surface) -> None:
+    store = FakeVNextMCPStore()
+    root_id = "memory-project-a-root"
+    successor_id = "memory-project-a-successor"
+    _append_scoped_explain_memory(
+        store,
+        memory_id=root_id,
+        project="project-a",
+        superseded_by=successor_id,
+    )
+    _append_scoped_explain_memory(
+        store,
+        memory_id=successor_id,
+        project="project-a",
+        supersedes=root_id,
+    )
+    source = store.create_source(
+        {
+            "domain": "project",
+            "sensitivity": "internal",
+            "metadata_json": {"project_scope": ["project-a"]},
+        }
+    )
+    chunk = store.create_source_chunk({"source_id": source["id"], "chunk_index": 0})
+    store.create_provenance_link(
+        {
+            "target_type": "memory",
+            "target_id": root_id,
+            "source_id": source["id"],
+            "source_chunk_id": chunk["id"],
+        }
+    )
+    _patch_vnext_store(monkeypatch, store)
+
+    payload = call_mcp_tool(
+        _resolved_scoped_agent_context(profile="project_scoped_agent", project="project-a"),
+        name="alice_explain",
+        arguments={"memory_id": root_id},
+    )
+
+    assert [node["id"] for node in payload["supersession_chain"]] == [root_id, successor_id]
+    assert payload["provenance_links"][0]["source_id"] == source["id"]
+
+
+@pytest.mark.parametrize(
+    ("direction", "mixed"),
+    [
+        ("supersedes", False),
+        ("superseded_by", False),
+        ("supersedes", True),
+        ("superseded_by", True),
+    ],
+)
+def test_alice_explain_key_scope_hides_unresolved_chain_pointer_without_partial_payload(
+    monkeypatch,
+    core_surface,
+    direction: str,
+    mixed: bool,
+) -> None:
+    store = FakeVNextMCPStore()
+    root_id = "memory-project-a-root"
+    root = _append_scoped_explain_memory(
+        store,
+        memory_id=root_id,
+        project="project-a",
+    )
+    if mixed:
+        reachable_id = "memory-project-a-reachable"
+        root[direction] = reachable_id
+        reachable = _append_scoped_explain_memory(
+            store,
+            memory_id=reachable_id,
+            project="project-a",
+        )
+        reachable[direction] = "memory-secret-missing"
+    else:
+        root[direction] = "memory-secret-missing"
+    envelope_reads: list[str] = []
+    original_list_revisions = store.list_revisions
+    original_list_events = store.list_events
+    original_list_provenance_links = store.list_provenance_links
+
+    def record_revisions(memory_id: str):
+        envelope_reads.append("revisions")
+        return original_list_revisions(memory_id)
+
+    def record_events(**kwargs):
+        envelope_reads.append("events")
+        return original_list_events(**kwargs)
+
+    def record_provenance(**kwargs):
+        envelope_reads.append("provenance")
+        return original_list_provenance_links(**kwargs)
+
+    monkeypatch.setattr(store, "list_revisions", record_revisions)
+    monkeypatch.setattr(store, "list_events", record_events)
+    monkeypatch.setattr(store, "list_provenance_links", record_provenance)
+    _patch_vnext_store(monkeypatch, store)
+
+    with pytest.raises(MCPToolError) as excinfo:
+        call_mcp_tool(
+            _resolved_scoped_agent_context(
+                profile="project_scoped_agent",
+                project="project-a",
+            ),
+            name="alice_explain",
+            arguments={"memory_id": root_id},
+        )
+
+    assert str(excinfo.value) == mcp_tools_module._EXPLAIN_UNAVAILABLE_MESSAGE
+    assert "memory-secret-missing" not in str(excinfo.value)
+    assert envelope_reads == []
+
+
+def test_alice_explain_keyless_preserves_unresolved_chain_validation(monkeypatch, core_surface) -> None:
+    store = FakeVNextMCPStore()
+    root = _append_scoped_explain_memory(
+        store,
+        memory_id="memory-root",
+        project="project-a",
+    )
+    root["superseded_by"] = "memory-missing"
+    _patch_vnext_store(monkeypatch, store)
+
+    with pytest.raises(
+        MCPToolError,
+        match="supersession chain contains an unresolved pointer",
+    ):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_explain",
+            arguments={"memory_id": root["id"]},
+        )
+
+
+@pytest.mark.parametrize(
+    "foreign_part",
+    ["root", "successor", "source", "missing_source", "chunk_only", "wrong_parent_chunk"],
+)
+def test_alice_explain_key_scope_fails_closed_for_any_unauthorized_memory_expansion(
+    monkeypatch,
+    core_surface,
+    foreign_part: str,
+) -> None:
+    store = FakeVNextMCPStore()
+    root_id = "memory-project-a-root"
+    successor_id = "memory-successor"
+    _append_scoped_explain_memory(
+        store,
+        memory_id=root_id,
+        project="project-b" if foreign_part == "root" else "project-a",
+        superseded_by=successor_id if foreign_part == "successor" else None,
+    )
+    if foreign_part == "successor":
+        _append_scoped_explain_memory(
+            store,
+            memory_id=successor_id,
+            project="project-b",
+            supersedes=root_id,
+        )
+    if foreign_part == "source":
+        source = store.create_source(
+            {
+                "domain": "project",
+                "sensitivity": "internal",
+                "metadata_json": {"project_scope": ["project-b"]},
+            }
+        )
+        store.create_provenance_link({"target_type": "memory", "target_id": root_id, "source_id": source["id"]})
+    elif foreign_part == "missing_source":
+        store.create_provenance_link({"target_type": "memory", "target_id": root_id, "source_id": "source-missing"})
+    elif foreign_part == "chunk_only":
+        store.create_provenance_link({"target_type": "memory", "target_id": root_id, "source_chunk_id": "chunk-orphan"})
+    elif foreign_part == "wrong_parent_chunk":
+        source = store.create_source(
+            {
+                "domain": "project",
+                "sensitivity": "internal",
+                "metadata_json": {"project_scope": ["project-a"]},
+            }
+        )
+        other_source = store.create_source(
+            {
+                "domain": "project",
+                "sensitivity": "internal",
+                "metadata_json": {"project_scope": ["project-b"]},
+            }
+        )
+        chunk = store.create_source_chunk({"source_id": other_source["id"], "chunk_index": 0})
+        store.create_provenance_link(
+            {
+                "target_type": "memory",
+                "target_id": root_id,
+                "source_id": source["id"],
+                "source_chunk_id": chunk["id"],
+            }
+        )
+    _patch_vnext_store(monkeypatch, store)
+
+    with pytest.raises(MCPToolError) as excinfo:
+        call_mcp_tool(
+            _resolved_scoped_agent_context(profile="project_scoped_agent", project="project-a"),
+            name="alice_explain",
+            arguments={"memory_id": root_id},
+        )
+
+    assert str(excinfo.value) == mcp_tools_module._EXPLAIN_UNAVAILABLE_MESSAGE
+    assert "project-b" not in str(excinfo.value)
+    assert successor_id not in str(excinfo.value)
+
+
+def test_alice_explain_filters_linked_entity_with_mixed_project_backing(monkeypatch, core_surface) -> None:
+    store = FakeVNextMCPStore()
+    root_id = "memory-project-a"
+    foreign_id = "memory-project-b"
+    _append_scoped_explain_memory(store, memory_id=root_id, project="project-a")
+    _append_scoped_explain_memory(store, memory_id=foreign_id, project="project-b")
+    store.entities["entity-mixed"] = {
+        "id": "entity-mixed",
+        "name": "Mixed Entity",
+        "entity_type": "organization",
+        "mention_count": 2,
+    }
+    for memory_id in (root_id, foreign_id):
+        store.create_edge(
+            {
+                "from_type": "memory",
+                "from_id": memory_id,
+                "to_type": "entity",
+                "to_id": "entity-mixed",
+                "edge_type": "mentions",
+            }
+        )
+    _patch_vnext_store(monkeypatch, store)
+
+    payload = call_mcp_tool(
+        _resolved_scoped_agent_context(profile="project_scoped_agent", project="project-a"),
+        name="alice_explain",
+        arguments={"memory_id": root_id},
+    )
+
+    assert payload["supersession_chain"][0]["entities"] == []
+
+
+class _LegacyExplainStore:
+    def __init__(self) -> None:
+        self.continuity_object: dict[str, object] | None = None
+        self.entity: dict[str, object] | None = None
+        self.entity_edges: list[dict[str, object]] = []
+
+    def get_continuity_object_optional(self, _continuity_object_id):
+        return self.continuity_object
+
+    def get_entity_optional(self, _entity_id):
+        return self.entity
+
+    def list_entity_edges_for_entity(self, _entity_id):
+        return self.entity_edges
+
+
+def _patch_legacy_explain_store(monkeypatch, store: _LegacyExplainStore) -> None:
+    @contextmanager
+    def fake_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_store_context", fake_store_context)
+
+
+def test_alice_explain_continuity_authorizes_canonical_body_scope_before_expansion(
+    monkeypatch,
+    core_surface,
+) -> None:
+    legacy = _LegacyExplainStore()
+    continuity_id = uuid4()
+    legacy.continuity_object = {
+        "id": continuity_id,
+        "body": {"project_scope": ["project-a"]},
+        "provenance": {"project": "stale-alias-must-not-win"},
+    }
+    policy_store = FakeVNextMCPStore()
+    _patch_legacy_explain_store(monkeypatch, legacy)
+    _patch_vnext_store(monkeypatch, policy_store)
+    calls: list[str] = []
+
+    def fake_build_continuity_explain(*_args, **_kwargs):
+        calls.append("expanded")
+        return {"explain": {"continuity_object": {"id": str(continuity_id)}}}
+
+    monkeypatch.setattr(mcp_tools_module, "build_continuity_explain", fake_build_continuity_explain)
+
+    payload = call_mcp_tool(
+        _resolved_scoped_agent_context(profile="project_scoped_agent", project="project-a"),
+        name="alice_explain",
+        arguments={"continuity_object_id": str(continuity_id)},
+    )
+
+    assert payload["explain"]["continuity_object"]["id"] == str(continuity_id)
+    assert calls == ["expanded"]
+
+
+@pytest.mark.parametrize("scope", [["project-b"], [], None])
+def test_alice_explain_continuity_fails_closed_before_expanding_foreign_or_unresolved_scope(
+    monkeypatch,
+    core_surface,
+    scope,
+) -> None:
+    legacy = _LegacyExplainStore()
+    continuity_id = uuid4()
+    legacy.continuity_object = {
+        "id": continuity_id,
+        "body": {"project_scope": scope},
+        "provenance": {},
+    }
+    policy_store = FakeVNextMCPStore()
+    _patch_legacy_explain_store(monkeypatch, legacy)
+    _patch_vnext_store(monkeypatch, policy_store)
+
+    def must_not_expand(*_args, **_kwargs):
+        raise AssertionError("continuity expansion must not run before authorization")
+
+    monkeypatch.setattr(mcp_tools_module, "build_continuity_explain", must_not_expand)
+
+    with pytest.raises(MCPToolError) as excinfo:
+        call_mcp_tool(
+            _resolved_scoped_agent_context(profile="project_scoped_agent", project="project-a"),
+            name="alice_explain",
+            arguments={"continuity_object_id": str(continuity_id)},
+        )
+
+    assert str(excinfo.value) == mcp_tools_module._EXPLAIN_UNAVAILABLE_MESSAGE
+
+
+def test_alice_explain_entity_authorizes_every_fact_and_incident_edge_memory(
+    monkeypatch,
+    core_surface,
+) -> None:
+    legacy = _LegacyExplainStore()
+    entity_id = uuid4()
+    fact_id = str(uuid4())
+    edge_id = str(uuid4())
+    legacy.entity = {"id": entity_id, "source_memory_ids": [fact_id]}
+    legacy.entity_edges = [{"source_memory_ids": [edge_id]}]
+    policy_store = FakeVNextMCPStore()
+    _append_scoped_explain_memory(policy_store, memory_id=fact_id, project="project-a")
+    _append_scoped_explain_memory(policy_store, memory_id=edge_id, project="project-a")
+    # Exercise the legacy value fallback rather than root vNext metadata.
+    for memory in policy_store.memories:
+        memory.pop("metadata_json", None)
+        memory["value"] = {"project_scope": ["project-a"]}
+    _patch_legacy_explain_store(monkeypatch, legacy)
+    _patch_vnext_store(monkeypatch, policy_store)
+
+    monkeypatch.setattr(
+        mcp_tools_module,
+        "get_temporal_explain",
+        lambda *_args, **_kwargs: {"explain": {"entity": {"id": str(entity_id)}}},
+    )
+
+    payload = call_mcp_tool(
+        _resolved_scoped_agent_context(profile="project_scoped_agent", project="project-a"),
+        name="alice_explain",
+        arguments={"entity_id": str(entity_id)},
+    )
+
+    assert payload["explain"]["entity"]["id"] == str(entity_id)
+
+
+@pytest.mark.parametrize("failure", ["foreign_fact", "foreign_edge", "missing_backing"])
+def test_alice_explain_entity_fails_closed_without_partial_expansion(
+    monkeypatch,
+    core_surface,
+    failure: str,
+) -> None:
+    legacy = _LegacyExplainStore()
+    entity_id = uuid4()
+    fact_id = str(uuid4())
+    edge_id = str(uuid4())
+    legacy.entity = {"id": entity_id, "source_memory_ids": [fact_id]}
+    legacy.entity_edges = [{"source_memory_ids": [edge_id]}]
+    policy_store = FakeVNextMCPStore()
+    if failure != "missing_backing":
+        _append_scoped_explain_memory(
+            policy_store,
+            memory_id=fact_id,
+            project="project-b" if failure == "foreign_fact" else "project-a",
+        )
+    _append_scoped_explain_memory(
+        policy_store,
+        memory_id=edge_id,
+        project="project-b" if failure == "foreign_edge" else "project-a",
+    )
+    _patch_legacy_explain_store(monkeypatch, legacy)
+    _patch_vnext_store(monkeypatch, policy_store)
+
+    def must_not_expand(*_args, **_kwargs):
+        raise AssertionError("entity expansion must not run before full authorization")
+
+    monkeypatch.setattr(mcp_tools_module, "get_temporal_explain", must_not_expand)
+
+    with pytest.raises(MCPToolError) as excinfo:
+        call_mcp_tool(
+            _resolved_scoped_agent_context(profile="project_scoped_agent", project="project-a"),
+            name="alice_explain",
+            arguments={"entity_id": str(entity_id)},
+        )
+
+    assert str(excinfo.value) == mcp_tools_module._EXPLAIN_UNAVAILABLE_MESSAGE
+    assert str(entity_id) not in str(excinfo.value)
 
 
 def test_alice_resume_reports_legacy_debug_flag_as_ignored(monkeypatch, core_surface) -> None:

@@ -109,8 +109,22 @@ For the full Postgres stack from a checkout:
   to let the `context_depth` tier decide; an explicit true/false always
   wins.
 - `alice_resume` — a pick-work-back-up brief: last decision, suggested next
-  action, open loops, recent changes; scopable to a project, person, or
-  thread.
+  action, open loops, and recent changes. The policy-resolved project scope is
+  applied before limits. An optional `query` searches decision/next-action
+  memory, open-loop title/description/next-action metadata, and recursive
+  string leaf values in relevant loop-event payloads before limits in both
+  stores. Within open-loop row search, title and description participate as
+  strings; root or nested `next_action` metadata participates only when its
+  JSON value is a string. Loop-event payload keys, non-string values, and JSON
+  serialization structure do not match, and each event string leaf is
+  evaluated independently rather than concatenated with neighboring leaves.
+  For those open-loop row fields and loop-event string leaves only, matching
+  is an ASCII case-insensitive literal substring operation: non-ASCII code
+  points are exact and receive no Unicode normalization, while `%`, `_`, and
+  `\\` are literal characters rather than SQL wildcards. Decision/next-action
+  memory search retains its memory-store matching contract. Legacy person/
+  thread inputs are accepted for compatibility and reported in
+  `filters_ignored`; they do not narrow the brief.
 - `alice_recent_decisions` — recent decisions, newest first.
 - `alice_open_loops` — list open loops, or close/snooze/edit/reopen one.
 - `alice_explain` — where a memory came from and why it can be trusted:

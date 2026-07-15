@@ -129,6 +129,27 @@ def _bootstrap_workspace_session(email: str) -> tuple[str, str]:
     return session_token, workspace_id
 
 
+def _create_and_bootstrap_workspace(session_token: str, workspace_name: str) -> str:
+    create_status, create_payload = invoke_request(
+        "POST",
+        "/v1/workspaces",
+        payload={"name": workspace_name},
+        headers=auth_header(session_token),
+    )
+    assert create_status == 201
+    workspace_id = create_payload["workspace"]["id"]
+
+    bootstrap_status, bootstrap_payload = invoke_request(
+        "POST",
+        "/v1/workspaces/bootstrap",
+        payload={"workspace_id": workspace_id},
+        headers=auth_header(session_token),
+    )
+    assert bootstrap_status == 200
+    assert bootstrap_payload["workspace"]["bootstrap_status"] == "ready"
+    return workspace_id
+
+
 def _link_telegram_chat(
     *,
     session_token: str,
@@ -136,6 +157,7 @@ def _link_telegram_chat(
     chat_id: int,
     user_id: int,
     username: str,
+    update_id: int = 944001,
 ) -> None:
     start_status, start_payload = invoke_request(
         "POST",
@@ -151,9 +173,9 @@ def _link_telegram_chat(
         "POST",
         "/v1/channels/telegram/webhook",
         payload={
-            "update_id": 944001,
+            "update_id": update_id,
             "message": {
-                "message_id": 744001,
+                "message_id": update_id + 1,
                 "date": 1710000000,
                 "chat": {"id": chat_id, "type": "private"},
                 "from": {"id": user_id, "username": username},
@@ -502,6 +524,133 @@ def test_phase10_quiet_hours_disabled_notifications_and_stale_prompt_delivery(
     )
     assert scheduler_status == 200
     assert scheduler_payload["summary"]["total_count"] >= 1
+
+
+def test_hosted_settings_explicit_workspace_is_order_independent_and_does_not_change_session(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    session_token, workspace_id_a = _bootstrap_workspace_session("p10s4-same-account@example.com")
+    workspace_id_b = _create_and_bootstrap_workspace(session_token, "P10-S4 Secondary Workspace")
+
+    _link_telegram_chat(
+        session_token=session_token,
+        workspace_id=workspace_id_a,
+        chat_id=988020,
+        user_id=688020,
+        username="p10s4samea",
+        update_id=944020,
+    )
+    _link_telegram_chat(
+        session_token=session_token,
+        workspace_id=workspace_id_b,
+        chat_id=988021,
+        user_id=688021,
+        username="p10s4sameb",
+        update_id=944030,
+    )
+    user_account_id = _resolve_user_account_id(
+        admin_db_url=migrated_database_urls["admin"],
+        session_token=session_token,
+    )
+    _seed_open_loop_objects(admin_db_url=migrated_database_urls["admin"], user_id=user_account_id)
+
+    token_hash = hashlib.sha256(session_token.encode("utf-8")).hexdigest()
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE auth_sessions SET workspace_id = %s WHERE session_token_hash = %s",
+                (UUID(workspace_id_a), token_hash),
+            )
+
+    before_status, before_payload = invoke_request(
+        "GET",
+        "/v1/channels/telegram/notification-preferences",
+        query_params={"workspace_id": workspace_id_a},
+        headers=auth_header(session_token),
+    )
+    assert before_status == 200
+
+    patch_status, patch_payload = invoke_request(
+        "PATCH",
+        "/v1/channels/telegram/notification-preferences",
+        query_params={"workspace_id": workspace_id_b},
+        payload={
+            "notifications_enabled": True,
+            "daily_brief_enabled": True,
+            "open_loop_prompts_enabled": True,
+            "waiting_for_prompts_enabled": True,
+            "stale_prompts_enabled": True,
+            "timezone": "UTC",
+            "daily_brief_window_start": "00:00",
+            "quiet_hours_enabled": False,
+        },
+        headers=auth_header(session_token),
+    )
+    assert patch_status == 200
+    assert patch_payload["workspace_id"] == workspace_id_b
+
+    after_status, after_payload = invoke_request(
+        "GET",
+        "/v1/channels/telegram/notification-preferences",
+        query_params={"workspace_id": workspace_id_a},
+        headers=auth_header(session_token),
+    )
+    assert after_status == 200
+    stable_preference_fields = (
+        "id",
+        "workspace_id",
+        "channel_identity_id",
+        "notifications_enabled",
+        "daily_brief_enabled",
+        "daily_brief_window_start",
+        "open_loop_prompts_enabled",
+        "waiting_for_prompts_enabled",
+        "stale_prompts_enabled",
+        "timezone",
+        "created_at",
+    )
+    before_preferences = before_payload["notification_preferences"]
+    after_preferences = after_payload["notification_preferences"]
+    assert {field: after_preferences[field] for field in stable_preference_fields} == {
+        field: before_preferences[field] for field in stable_preference_fields
+    }
+    assert after_preferences["quiet_hours"]["enabled"] == before_preferences["quiet_hours"]["enabled"]
+    assert after_preferences["quiet_hours"]["start"] == before_preferences["quiet_hours"]["start"]
+    assert after_preferences["quiet_hours"]["end"] == before_preferences["quiet_hours"]["end"]
+
+    delivery_status, delivery_payload = invoke_request(
+        "POST",
+        "/v1/channels/telegram/daily-brief/deliver",
+        query_params={"workspace_id": workspace_id_b},
+        payload={"force": True, "idempotency_key": "same-account-workspace-b-delivery"},
+        headers=auth_header(session_token),
+    )
+    assert delivery_status == 201
+    assert delivery_payload["workspace_id"] == workspace_id_b
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT workspace_id FROM auth_sessions WHERE session_token_hash = %s",
+                (token_hash,),
+            )
+            session_row = cur.fetchone()
+            cur.execute(
+                "SELECT workspace_id FROM daily_brief_jobs WHERE id = %s",
+                (UUID(delivery_payload["job"]["id"]),),
+            )
+            job_row = cur.fetchone()
+            cur.execute(
+                "SELECT workspace_id FROM channel_delivery_receipts WHERE id = %s",
+                (UUID(delivery_payload["delivery_receipt"]["id"]),),
+            )
+            receipt_row = cur.fetchone()
+
+    assert session_row == (UUID(workspace_id_a),)
+    assert job_row == (UUID(workspace_id_b),)
+    assert receipt_row == (UUID(workspace_id_b),)
 
 
 def test_phase10_custom_idempotency_key_is_scoped_per_workspace(

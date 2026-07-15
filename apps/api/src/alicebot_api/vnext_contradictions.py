@@ -13,6 +13,7 @@ from alicebot_api.vnext_model_intelligence import (
     build_model_backed_artifact,
     resolve_model_route,
 )
+from alicebot_api.vnext_project_scope import project_scopes_overlap, source_project_scope
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_workflow_idempotency import logical_workflow_digest
 
@@ -212,11 +213,11 @@ def _supports_parameter(method: object, name: str) -> bool:
         return False
 
 
-def _matches_projects(row: JsonObject, projects: tuple[str, ...]) -> bool:
-    requested = {project.strip().casefold() for project in projects if project.strip()}
-    if not requested:
+def _matches_projects(row: JsonObject, projects: tuple[str, ...], *, source_row: bool) -> bool:
+    if not projects:
         return True
-    return bool(requested & {project.strip().casefold() for project in resource_project_scope(row) if project.strip()})
+    row_scope = source_project_scope(row) if source_row else resource_project_scope(row)
+    return project_scopes_overlap(row_scope, projects)
 
 
 def _project_scoped_search(
@@ -226,16 +227,17 @@ def _project_scoped_search(
     projects: tuple[str, ...],
     project_parameter: str,
     limit: int,
+    source_rows: bool = False,
 ) -> list[JsonObject]:
     if not projects:
         return list(method(limit=limit, **kwargs))
     if _supports_parameter(method, project_parameter):
         rows = method(limit=limit, **kwargs, **{project_parameter: projects})
-        return [row for row in rows if _matches_projects(row, projects)]
+        return [row for row in rows if _matches_projects(row, projects, source_row=source_rows)]
     rows = list(method(limit=MAX_LEGACY_PROJECT_SCOPE_ROWS + 1, **kwargs))
     if len(rows) > MAX_LEGACY_PROJECT_SCOPE_ROWS:
         raise VNextContradictionValidationError("legacy contradiction store could not prove complete project scope")
-    return [row for row in rows if _matches_projects(row, projects)][:limit]
+    return [row for row in rows if _matches_projects(row, projects, source_row=source_rows)][:limit]
 
 
 def _project_scoped_beliefs(
@@ -292,7 +294,7 @@ def _project_scoped_beliefs(
         belief
         for belief in rows
         if (backing := backing_by_id.get(str(belief.get("memory_id") or ""))) is not None
-        and _matches_projects(backing, projects)
+        and _matches_projects(backing, projects, source_row=False)
     ][:limit]
 
 
@@ -440,6 +442,7 @@ class VNextContradictionService:
             projects=request.projects,
             project_parameter="scope_projects",
             limit=input_limit,
+            source_rows=True,
         )
         memories = [
             memory

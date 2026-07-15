@@ -128,9 +128,7 @@ def test_memory_commit_can_defer_embedding_provider_work_until_after_commit(
     service = VNextMemoryCommitService(store, defer_embeddings=True)
     monkeypatch.setattr(
         "alicebot_api.vnext_memory_commit.attach_memory_embedding",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("provider-backed embedding must be deferred")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("provider-backed embedding must be deferred")),
     )
 
     result = service.commit(
@@ -161,9 +159,7 @@ def test_memory_correction_defers_reembedding_of_updated_text() -> None:
 
     assert corrected["status"] == "committed"
     assert len(service.deferred_embedding_inputs) == 1
-    assert service.deferred_embedding_inputs[0].canonical_text == (
-        "Sam prefers tea before noon."
-    )
+    assert service.deferred_embedding_inputs[0].canonical_text == ("Sam prefers tea before noon.")
 
 
 def test_read_only_agent_is_rejected() -> None:
@@ -386,9 +382,9 @@ def test_concurrent_idempotent_winner_replays_without_duplicate_side_effects() -
     assert replay["idempotent_replay"] is True
     assert replay["memory"]["id"] == first["memory"]["id"]
     assert len(store.list_revisions(str(first["memory"]["id"]))) == revisions_before
-    assert store.conn.execute(
-        "SELECT COUNT(*) FROM memories WHERE commit_digest = 'concurrent-retry'"
-    ).fetchone()[0] == 1
+    assert (
+        store.conn.execute("SELECT COUNT(*) FROM memories WHERE commit_digest = 'concurrent-retry'").fetchone()[0] == 1
+    )
 
 
 def test_confirm_uses_confirmation_id_lookup_and_persisted_column() -> None:
@@ -513,18 +509,12 @@ def test_expired_confirmation_records_rejection_revision_and_event() -> None:
     assert row["status"] == "rejected"
     assert row["metadata_json"]["agentic_memory"]["confirmation"]["status"] == "expired"
     expired_revisions = [
-        revision
-        for revision in store.revisions
-        if revision.get("action") == "agentic_memory_confirmation_expired"
+        revision for revision in store.revisions if revision.get("action") == "agentic_memory_confirmation_expired"
     ]
     assert len(expired_revisions) == 1
     assert expired_revisions[0]["revision_type"] == "rejected"
     assert expired_revisions[0]["metadata_json"]["confirmation_id"] == confirmation_id
-    expired_events = [
-        event
-        for event in store.events
-        if event.get("event_type") == "agent.memory_confirmation_expired"
-    ]
+    expired_events = [event for event in store.events if event.get("event_type") == "agent.memory_confirmation_expired"]
     assert len(expired_events) == 1
     assert expired_events[0]["payload_json"]["confirmation_id"] == confirmation_id
 
@@ -665,11 +655,7 @@ def test_confirmation_and_review_candidates_also_carry_scope_columns() -> None:
 def test_inline_confirmation_queue_contains_only_pending_actionable_rows() -> None:
     class ConfirmationQueueStore(TargetedLookupStore):
         def list_memories(self, *, status: str | None = None) -> list[dict[str, object]]:
-            return [
-                row
-                for row in self.memories.values()
-                if status is None or row.get("status") == status
-            ]
+            return [row for row in self.memories.values() if status is None or row.get("status") == status]
 
     store = ConfirmationQueueStore()
     service = VNextMemoryCommitService(store)
@@ -769,9 +755,7 @@ def test_person_memory_creates_person_entity_and_about_edge() -> None:
     assert person is not None
     assert person["entity_type"] == "person"
     about_edges = [
-        edge
-        for edge in store.list_edges(from_id=memory_id)
-        if str(edge["edge_type"]) == PERSON_ABOUT_EDGE_TYPE
+        edge for edge in store.list_edges(from_id=memory_id) if str(edge["edge_type"]) == PERSON_ABOUT_EDGE_TYPE
     ]
     assert len(about_edges) == 1
     assert str(about_edges[0]["to_id"]) == str(person["id"])
@@ -876,9 +860,7 @@ def test_rejected_inline_confirmation_never_links_entities() -> None:
             canonical_text="We met Ondrej Pavel, who leads the Prague office.",
         ),
     )
-    rejected = service.confirm(
-        identity=identity, confirmation_id=pending["confirmation_id"], action="reject"
-    )
+    rejected = service.confirm(identity=identity, confirmation_id=pending["confirmation_id"], action="reject")
 
     assert rejected["status"] == "rejected"
     assert store.list_entities() == []
@@ -929,9 +911,7 @@ def test_correction_replaces_fact_keys_and_expires_obsolete_entity_edges() -> No
     memory_id = str(committed["memory"]["id"])
     old_person = store.get_entity_by_normalized_name("person", "sami rusani")
     assert old_person is not None
-    original_fact_keys = store.conn.execute(
-        "SELECT fact_keys FROM memories WHERE id = ?", (memory_id,)
-    ).fetchone()[0]
+    original_fact_keys = store.conn.execute("SELECT fact_keys FROM memories WHERE id = ?", (memory_id,)).fetchone()[0]
     assert "charity event fundraiser fundraising" in str(original_fact_keys)
 
     service.correct(
@@ -941,9 +921,7 @@ def test_correction_replaces_fact_keys_and_expires_obsolete_entity_edges() -> No
         reason="The original note was attached to the wrong event.",
     )
 
-    corrected_fact_keys = store.conn.execute(
-        "SELECT fact_keys FROM memories WHERE id = ?", (memory_id,)
-    ).fetchone()[0]
+    corrected_fact_keys = store.conn.execute("SELECT fact_keys FROM memories WHERE id = ?", (memory_id,)).fetchone()[0]
     assert "charity" not in str(corrected_fact_keys)
     assert store.search_memories(query="charity event fundraiser fundraising", limit=10) == []
     new_person = store.get_entity_by_normalized_name("person", "zara quill")
@@ -1006,11 +984,7 @@ def test_entity_linking_failure_never_fails_the_commit() -> None:
     )
 
     assert committed["status"] == "committed"
-    failures = [
-        event
-        for event in store.list_events()
-        if event.get("event_type") == "entity.extraction_failed"
-    ]
+    failures = [event for event in store.list_events() if event.get("event_type") == "entity.extraction_failed"]
     assert len(failures) == 1
     assert failures[0]["payload_json"]["stage"] == "commit"
     assert failures[0]["payload_json"]["error_type"] == "RuntimeError"
@@ -1031,9 +1005,7 @@ def test_stores_without_the_entity_surface_commit_without_linking() -> None:
     )
 
     assert committed["status"] == "committed"
-    assert not [
-        event for event in store.events if event.get("event_type") == "entity.extraction_failed"
-    ]
+    assert not [event for event in store.events if event.get("event_type") == "entity.extraction_failed"]
 
 
 # -- temporal slice: supersession pointers and the audit chain -----------------
@@ -1129,6 +1101,86 @@ def test_audit_supersession_chain_walks_both_directions_oldest_first() -> None:
     # The same chain is visible from either end.
     assert [entry["id"] for entry in service.audit(memory_id=a_id)["supersession_chain"]] == [a_id, b_id, c_id]
     assert [entry["id"] for entry in service.audit(memory_id=c_id)["supersession_chain"]] == [a_id, b_id, c_id]
+
+
+def test_audit_authorizes_every_supersession_node_before_assembling_the_envelope() -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+    a_id = _commit_active(service, identity, title="v1", text="Version one.")
+    b_id = _commit_active(service, identity, title="v2", text="Version two.")
+    c_id = _commit_active(service, identity, title="v3", text="Version three.")
+    service.undo(identity=identity, memory_id=a_id, superseded_by_memory_id=b_id)
+    service.undo(identity=identity, memory_id=b_id, superseded_by_memory_id=c_id)
+    authorized: list[str] = []
+
+    def authorize(memory) -> None:
+        memory_id = str(memory["id"])
+        authorized.append(memory_id)
+        if memory_id == c_id:
+            raise RuntimeError("successor is outside the caller's scope")
+
+    with pytest.raises(RuntimeError, match="outside the caller's scope"):
+        service.audit(memory_id=b_id, authorize_memory=authorize)
+
+    assert authorized == [b_id, a_id, c_id]
+
+
+@pytest.mark.parametrize(
+    ("direction", "mixed"),
+    [
+        ("supersedes", False),
+        ("superseded_by", False),
+        ("supersedes", True),
+        ("superseded_by", True),
+    ],
+)
+def test_audit_fails_closed_for_unresolved_supersession_pointer_without_partial_envelope(
+    direction: str,
+    mixed: bool,
+) -> None:
+    class AuditReadRecordingStore(TargetedLookupStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.envelope_reads: list[str] = []
+
+        def list_revisions(self, memory_id: str) -> list[dict[str, object]]:
+            self.envelope_reads.append("revisions")
+            return super().list_revisions(memory_id)
+
+        def list_events(self, **kwargs) -> list[dict[str, object]]:
+            self.envelope_reads.append("events")
+            return super().list_events(**kwargs)
+
+        def list_provenance_links(self, **kwargs) -> list[dict[str, object]]:
+            self.envelope_reads.append("provenance")
+            return super().list_provenance_links(**kwargs)
+
+    store = AuditReadRecordingStore()
+    root = store.create_memory({"memory_key": "audit.root", "value": {}, "status": "active", "title": "Root"})
+    root_id = str(root["id"])
+    if mixed:
+        reachable = store.create_memory(
+            {
+                "memory_key": "audit.reachable",
+                "value": {},
+                "status": "superseded",
+                "title": "Reachable",
+            }
+        )
+        reachable_id = str(reachable["id"])
+        root[direction] = reachable_id
+        reachable[direction] = "memory-missing"
+    else:
+        root[direction] = "memory-missing"
+
+    with pytest.raises(
+        VNextMemoryCommitValidationError,
+        match="supersession chain contains an unresolved pointer",
+    ):
+        VNextMemoryCommitService(store).audit(memory_id=root_id)
+
+    assert store.envelope_reads == []
 
 
 def test_audit_supersession_chain_reads_metadata_only_pointers_from_legacy_rows() -> None:
@@ -1253,9 +1305,7 @@ def _seed_consolidation_candidate(
 def test_accept_merge_candidate_executes_the_proposed_supersessions() -> None:
     store = TargetedLookupStore()
     service = VNextMemoryCommitService(store)
-    members = [
-        _seed_row(store, title=f"Latte {index}", text=f"Latte fact {index}.") for index in range(3)
-    ]
+    members = [_seed_row(store, title=f"Latte {index}", text=f"Latte fact {index}.") for index in range(3)]
     candidate_id = _seed_consolidation_candidate(
         store,
         member_ids=members,
@@ -1651,9 +1701,7 @@ def test_expire_hides_the_memory_from_live_sqlite_retrieval_and_unexpire_restore
     assert expired["status"] == "expired"
     assert row["status"] == "active"
     assert row["valid_to"] is not None
-    assert not any(
-        str(hit["id"]) == memory_id for hit in store.search_memories(query="quarterly planning cadence")
-    )
+    assert not any(str(hit["id"]) == memory_id for hit in store.search_memories(query="quarterly planning cadence"))
     assert any(
         str(hit["id"]) == memory_id
         for hit in store.search_memories(query="quarterly planning cadence", include_expired=True)
@@ -1688,9 +1736,7 @@ def test_expire_hides_the_memory_from_live_sqlite_retrieval_and_unexpire_restore
 
     # A re-expire over the sentinel takes effect again.
     service.expire(memory_id, reason="Cancelled for good.")
-    assert not any(
-        str(hit["id"]) == memory_id for hit in store.search_memories(query="quarterly planning cadence")
-    )
+    assert not any(str(hit["id"]) == memory_id for hit in store.search_memories(query="quarterly planning cadence"))
 
 
 def test_expire_accepts_an_explicit_valid_to_and_stores_clear_null() -> None:
@@ -1847,9 +1893,7 @@ def test_confirm_refuses_a_superseded_row_and_never_yields_two_active_memories()
     pending_id = str(pending["memory"]["id"])
     confirmation_id = pending["confirmation_id"]
 
-    replacement_id = _commit_active(
-        service, identity, title="Replacement", text="The confirmed replacement fact."
-    )
+    replacement_id = _commit_active(service, identity, title="Replacement", text="The confirmed replacement fact.")
     # Review supersede retires the pending row, leaving the nested flag pending.
     store.update_memory(
         memory_id=pending_id,
@@ -1878,9 +1922,7 @@ def test_correct_promoting_a_review_candidate_confirms_it_and_clears_review() ->
 
     review = service.commit(
         identity=identity,
-        request=_request(
-            domain="professional", sensitivity="internal", source_type="browser_clip"
-        ),
+        request=_request(domain="professional", sensitivity="internal", source_type="browser_clip"),
     )
     assert review["status"] == "review_required"
     memory_id = str(review["memory"]["id"])
@@ -2046,15 +2088,12 @@ def test_unexpire_restores_a_stale_expired_row_to_active_and_retrievable() -> No
     store = _live_sqlite_store()
     service = VNextMemoryCommitService(store)
     identity = _identity("trusted_local_agent")
-    memory_id = _commit_active(
-        service, identity, title="Cadence", text="Weekly planning cadence on Mondays."
-    )
+    memory_id = _commit_active(service, identity, title="Cadence", text="Weekly planning cadence on Mondays.")
     service.expire(memory_id, reason="Paused after the reorg.")
     # The staleness sweep marks the expired row stale; it is now unretrievable.
     store.update_memory(memory_id=memory_id, patch={"status": "stale"}, actor_type="scheduler")
     assert not any(
-        str(hit["id"]) == memory_id
-        for hit in store.search_memories(query="weekly planning cadence mondays")
+        str(hit["id"]) == memory_id for hit in store.search_memories(query="weekly planning cadence mondays")
     )
 
     restored = service.unexpire(memory_id, reason="Cadence reinstated.")
@@ -2062,7 +2101,4 @@ def test_unexpire_restores_a_stale_expired_row_to_active_and_retrievable() -> No
     assert restored["status"] == "active"
     row = store.get_memory(memory_id)
     assert row["status"] == "active"
-    assert any(
-        str(hit["id"]) == memory_id
-        for hit in store.search_memories(query="weekly planning cadence mondays")
-    )
+    assert any(str(hit["id"]) == memory_id for hit in store.search_memories(query="weekly planning cadence mondays"))

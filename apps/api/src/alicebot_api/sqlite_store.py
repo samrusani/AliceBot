@@ -34,6 +34,11 @@ import numpy as np
 
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.store import ContinuityStoreInvariantError
+from alicebot_api.vnext_capture import (
+    capture_content_hash_for_source,
+    capture_dedupe_key_for_source,
+    source_capture_raw_text,
+)
 from alicebot_api.vnext_embeddings import (
     EMBEDDING_SIGNATURE_METADATA_KEY,
     EMBEDDING_VECTOR_DIMENSIONS,
@@ -48,6 +53,11 @@ from alicebot_api.vnext_project_scope import (
     canonical_memory_metadata,
     expose_memory_project_scope,
     normalize_project_scope,
+    project_scope_identity,
+    resolve_project_scope,
+    resolve_source_metadata_project_scope,
+    source_capture_identity_matches,
+    source_project_scope,
 )
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_store import (
@@ -354,6 +364,93 @@ def _ensure_embedding_content_sha256_sqlite(conn: sqlite3.Connection) -> None:
     )
 
 
+def _project_scope_value_sqlite(value: object) -> str | None:
+    identity = project_scope_identity(value)
+    return identity[0] if len(identity) == 1 else None
+
+
+def _project_scope_identity_json_sqlite(
+    metadata_json: object,
+    direct_project_id: object,
+) -> str:
+    if isinstance(metadata_json, Mapping):
+        metadata = dict(metadata_json)
+    elif isinstance(metadata_json, str):
+        try:
+            decoded = json.loads(metadata_json)
+        except (TypeError, ValueError):
+            decoded = {}
+        metadata = decoded if isinstance(decoded, dict) else {}
+    else:
+        metadata = {}
+    identity = resolve_project_scope(
+        {
+            "metadata_json": metadata,
+            "project_id": direct_project_id,
+        }
+    ).identity
+    return json.dumps(identity, ensure_ascii=False, separators=(",", ":"))
+
+
+def _source_project_scope_identity_json_sqlite(metadata_json: object) -> str:
+    """Resolve the complete persisted-source scope envelope for SQLite."""
+
+    if isinstance(metadata_json, Mapping):
+        metadata = dict(metadata_json)
+    elif isinstance(metadata_json, str):
+        try:
+            decoded = json.loads(metadata_json)
+        except (TypeError, ValueError):
+            decoded = {}
+        metadata = decoded if isinstance(decoded, dict) else {}
+    else:
+        metadata = {}
+    identity = resolve_source_metadata_project_scope(metadata).identity
+    return json.dumps(identity, ensure_ascii=False, separators=(",", ":"))
+
+
+def _ensure_project_scope_identity_sqlite(conn: sqlite3.Connection) -> None:
+    """Install the deterministic project identity functions per connection."""
+
+    cursor = conn.execute(
+        """
+        SELECT count(*)
+        FROM pragma_function_list
+        WHERE name IN (
+          'alice_project_scope_value',
+          'alice_project_scope_identity',
+          'alice_source_project_scope_identity'
+        )
+        """
+    )
+    try:
+        row = cursor.fetchone()
+        if row is not None:
+            count = next(iter(row.values())) if isinstance(row, Mapping) else row[0]
+            if int(count) == 3:
+                return
+    finally:
+        cursor.close()
+    conn.create_function(
+        "alice_project_scope_value",
+        1,
+        _project_scope_value_sqlite,
+        deterministic=True,
+    )
+    conn.create_function(
+        "alice_project_scope_identity",
+        2,
+        _project_scope_identity_json_sqlite,
+        deterministic=True,
+    )
+    conn.create_function(
+        "alice_source_project_scope_identity",
+        1,
+        _source_project_scope_identity_json_sqlite,
+        deterministic=True,
+    )
+
+
 def _iso_or_none(value: object | None) -> str | None:
     """Normalize timestamps to ISO-8601 UTC TEXT with a trailing ``Z``."""
     if value is None:
@@ -369,6 +466,18 @@ def _iso_or_none(value: object | None) -> str | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _escape_like_literal(value: str) -> str:
+    """Escape one literal substring for SQL LIKE with backslash ESCAPE."""
+
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _sqlite_ascii_literal_contains_sql(value_expression: str) -> str:
+    """Build SQLite's ASCII-folded, literal substring predicate."""
+
+    return f"lower({value_expression}) LIKE '%' || lower(?) || '%' ESCAPE '\\'"
 
 
 def _iso_or_now(value: object | None) -> str:
@@ -527,6 +636,7 @@ class SQLiteVNextStore:
         self.conn = conn
         self.user_id = str(user_id)
         _ensure_embedding_content_sha256_sqlite(self.conn)
+        _ensure_project_scope_identity_sqlite(self.conn)
 
     # -- fetch helpers (mirror PostgresVNextStore conventions) ------------
 
@@ -633,28 +743,17 @@ class SQLiteVNextStore:
         *,
         prefix: str = "",
     ) -> tuple[str, list[object]]:
-        if not projects:
+        values: list[object] = list(project_scope_identity(projects))
+        if not values:
             return "", []
-        values = list(projects)
-        placeholders = self._placeholders(values)
+        placeholders = self._placeholders(cast(list[str], values))
         clause = (
-            " AND (CASE"
-            f" WHEN json_type({prefix}metadata_json, '$.project_scope') = 'array'"
-            f" AND json_array_length({prefix}metadata_json, '$.project_scope') > 0"
-            f" THEN EXISTS (SELECT 1 FROM json_each({prefix}metadata_json, '$.project_scope')"
-            f" AS scoped_project WHERE CAST(scoped_project.value AS TEXT) IN ({placeholders}))"
-            f" WHEN json_type({prefix}metadata_json, '$.agentic_memory.project_scope') = 'array'"
-            f" AND json_array_length({prefix}metadata_json, '$.agentic_memory.project_scope') > 0"
-            f" THEN EXISTS (SELECT 1 FROM json_each("
-            f"{prefix}metadata_json, '$.agentic_memory.project_scope')"
-            f" AS legacy_scoped_project WHERE CAST(legacy_scoped_project.value AS TEXT)"
-            f" IN ({placeholders}))"
-            f" WHEN {prefix}project_id IS NOT NULL"
-            f" THEN {prefix}project_id IN ({placeholders})"
-            f" ELSE json_extract({prefix}metadata_json, '$.project_id') IN ({placeholders})"
-            " END)"
+            " AND EXISTS (SELECT 1 FROM json_each("
+            f"alice_project_scope_identity({prefix}metadata_json, {prefix}project_id)"
+            ") AS scoped_project "
+            f"WHERE CAST(scoped_project.value AS TEXT) IN ({placeholders}))"
         )
-        return clause, [*values, *values, *values, *values]
+        return clause, values
 
     def _created_by_clause(
         self,
@@ -744,6 +843,7 @@ class SQLiteVNextStore:
         scope_people: tuple[str, ...] = (),
         direct_project_expression: str | None = None,
         direct_person_expression: str | None = None,
+        persisted_source_envelope: bool = False,
         event_time_expression: str,
         scope_window_start: datetime | None = None,
         scope_window_end: datetime | None = None,
@@ -764,27 +864,20 @@ class SQLiteVNextStore:
                 + f"IN ({self._placeholders(list(values))}))"
             )
 
-        if scope_projects:
-            alternatives = [
-                _metadata_values(
-                    (
-                        "project_id",
-                        "project",
-                        "projects",
-                        "project_scope",
-                        "agentic_memory.project_scope",
-                    ),
-                    scope_projects,
-                )
-            ]
-            if direct_project_expression is not None:
-                alternatives.insert(
-                    0,
-                    f"LOWER(TRIM(CAST({direct_project_expression} AS TEXT))) "
-                    f"IN ({self._placeholders(list(scope_projects))})",
-                )
-                params[:0] = list(scope_projects)
-            clauses.append(" AND (" + " OR ".join(alternatives) + ")")
+        project_identity = project_scope_identity(scope_projects)
+        if project_identity:
+            if persisted_source_envelope:
+                project_scope_expression = f"alice_source_project_scope_identity({metadata_expression})"
+            else:
+                direct_project = direct_project_expression or "NULL"
+                project_scope_expression = f"alice_project_scope_identity({metadata_expression}, {direct_project})"
+            clauses.append(
+                " AND EXISTS (SELECT 1 FROM json_each("
+                f"{project_scope_expression}"
+                ") AS scoped_project WHERE CAST(scoped_project.value AS TEXT) "
+                f"IN ({self._placeholders(list(project_identity))}))"
+            )
+            params.extend(project_identity)
         if scope_people:
             alternatives = [
                 _metadata_values(
@@ -883,8 +976,12 @@ class SQLiteVNextStore:
         *,
         target_type: str | None = None,
         target_id: str | None = None,
+        occurred_at_start: datetime | None = None,
+        occurred_at_end: datetime | None = None,
         limit: int | None = None,
     ) -> list[VNextRow]:
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be positive")
         clauses = ["user_id = ?"]
         params: list[object] = [self.user_id]
         if target_type is not None:
@@ -893,6 +990,12 @@ class SQLiteVNextStore:
         if target_id is not None:
             clauses.append("target_id = ?")
             params.append(target_id)
+        if occurred_at_start is not None:
+            clauses.append("julianday(occurred_at) >= julianday(?)")
+            params.append(_iso_or_none(occurred_at_start))
+        if occurred_at_end is not None:
+            clauses.append("julianday(occurred_at) <= julianday(?)")
+            params.append(_iso_or_none(occurred_at_end))
         limit_sql = ""
         if limit is not None:
             limit_sql = " LIMIT ?"
@@ -948,6 +1051,66 @@ class SQLiteVNextStore:
                 WHERE user_id = ?
                   AND ({" OR ".join(alternatives)})
                 ORDER BY occurred_at DESC, id DESC
+                LIMIT ?
+                """,
+            tuple(params),
+        )
+
+    def list_resume_memory_events(
+        self,
+        *,
+        statuses: Sequence[str],
+        projects: Sequence[str] | None = None,
+        query: str | None = None,
+        occurred_at_start: datetime | None = None,
+        occurred_at_end: datetime | None = None,
+        limit: int = 20,
+    ) -> list[VNextRow]:
+        """Return events joined to resume-admitted memories before LIMIT."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        normalized_statuses = list(dict.fromkeys(str(value) for value in statuses if str(value)))
+        if not normalized_statuses:
+            return []
+        project_sql, project_params = self._project_clause(
+            tuple(normalize_project_scope(projects or ())),
+            prefix="memory.",
+        )
+        clauses = [
+            "event.user_id = ?",
+            "event.target_type = 'memory'",
+            "memory.deleted_at IS NULL",
+            f"memory.status IN ({self._placeholders(normalized_statuses)})",
+        ]
+        params: list[object] = [self.user_id, *normalized_statuses, *project_params]
+        scoped_where_sql = " AND ".join(clauses) + project_sql
+        filters: list[str] = []
+        normalized_query = str(query).strip() if query is not None else ""
+        if normalized_query:
+            filters.append(
+                "(instr(lower(COALESCE(memory.title, '')), lower(?)) > 0"
+                " OR instr(lower(COALESCE(memory.canonical_text, '')), lower(?)) > 0"
+                " OR instr(lower(COALESCE(memory.summary, '')), lower(?)) > 0)"
+            )
+            params.extend((normalized_query, normalized_query, normalized_query))
+        if occurred_at_start is not None:
+            filters.append("julianday(event.occurred_at) >= julianday(?)")
+            params.append(_iso_or_none(occurred_at_start))
+        if occurred_at_end is not None:
+            filters.append("julianday(event.occurred_at) <= julianday(?)")
+            params.append(_iso_or_none(occurred_at_end))
+        filter_sql = "".join(f" AND {predicate}" for predicate in filters)
+        params.append(limit)
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(f"event.{column}" for column in EVENT_LOG_COLUMNS)}
+                FROM event_log AS event
+                JOIN memories AS memory
+                  ON memory.user_id = event.user_id
+                 AND memory.id = event.target_id
+                WHERE {scoped_where_sql}{filter_sql}
+                ORDER BY event.occurred_at DESC, event.id DESC
                 LIMIT ?
                 """,
             tuple(params),
@@ -1164,6 +1327,14 @@ class SQLiteVNextStore:
                 (self.user_id, dedupe_key),
             )
         )
+        if not created and not source_capture_identity_matches(
+            row,
+            content_hashes=(str(source["content_hash"]),),
+            project_scope=source_project_scope(source),
+            domain=source.get("domain", "unknown"),
+            sensitivity=source.get("sensitivity", "unknown"),
+        ):
+            raise ContinuityStoreInvariantError("atomic source dedupe winner does not match capture identity")
         if created:
             self._append_mutation_event(
                 event_type="source.created",
@@ -1242,6 +1413,113 @@ class SQLiteVNextStore:
                 """,
             (dedupe_key, self.user_id),
         )
+
+    def update_source(
+        self,
+        *,
+        source_id: str,
+        patch: JsonObject,
+        actor_type: str = "system",
+    ) -> VNextRow:
+        """Update a source and keep its live capture identity atomic."""
+
+        if not self.conn.in_transaction:
+            self.conn.execute("BEGIN IMMEDIATE")
+        current = self.get_source(source_id)
+        if current is None:
+            raise ContinuityStoreInvariantError("update_source did not return a row from the database")
+        prospective = dict(current)
+        for field in (
+            "title",
+            "author",
+            "uri",
+            "raw_path",
+            "domain",
+            "sensitivity",
+            "metadata_json",
+        ):
+            if field in patch and patch[field] is not None:
+                prospective[field] = patch[field]
+
+        current_scope = project_scope_identity(source_project_scope(current))
+        prospective_scope = project_scope_identity(source_project_scope(prospective))
+        scope_changed = current_scope != prospective_scope
+        identity_changed = not source_capture_identity_matches(
+            current,
+            content_hashes=(),
+            project_scope=prospective_scope,
+            domain=prospective.get("domain", "unknown"),
+            sensitivity=prospective.get("sensitivity", "unknown"),
+        )
+        raw_text_changed = source_capture_raw_text(current) != source_capture_raw_text(prospective)
+        dedupe_input_changed = identity_changed or raw_text_changed
+        dedupe_key = capture_dedupe_key_for_source(prospective) if dedupe_input_changed else current.get("dedupe_key")
+        content_input_changed = scope_changed or raw_text_changed
+        content_hash = (
+            capture_content_hash_for_source(prospective) or str(current["content_hash"])
+            if content_input_changed
+            else str(current["content_hash"])
+        )
+        if dedupe_key is not None and dedupe_key != current.get("dedupe_key"):
+            owner = self._fetch_optional_one(
+                """
+                    SELECT id
+                    FROM sources
+                    WHERE user_id = ?
+                      AND dedupe_key = ?
+                      AND id <> ?
+                      AND deleted_at IS NULL
+                    LIMIT 1
+                    """,
+                (self.user_id, dedupe_key, str(source_id)),
+            )
+            if owner is not None:
+                raise ContinuityStoreInvariantError("source capture identity already belongs to another live source")
+        try:
+            row = self._fetch_one(
+                "update_source",
+                f"""
+                    UPDATE sources
+                    SET title = COALESCE(?, title),
+                        author = COALESCE(?, author),
+                        uri = COALESCE(?, uri),
+                        raw_path = COALESCE(?, raw_path),
+                        domain = COALESCE(?, domain),
+                        sensitivity = COALESCE(?, sensitivity),
+                        metadata_json = COALESCE(?, metadata_json),
+                        content_hash = ?,
+                        dedupe_key = ?
+                    WHERE id = ?
+                      AND user_id = ?
+                      AND deleted_at IS NULL
+                    RETURNING {", ".join(SOURCE_COLUMNS)}
+                    """,
+                (
+                    patch.get("title"),
+                    patch.get("author"),
+                    patch.get("uri"),
+                    patch.get("raw_path"),
+                    patch.get("domain"),
+                    patch.get("sensitivity"),
+                    _json_object_text(patch["metadata_json"]) if "metadata_json" in patch else None,
+                    content_hash,
+                    dedupe_key,
+                    str(source_id),
+                    self.user_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ContinuityStoreInvariantError(
+                "source capture identity already belongs to another live source"
+            ) from exc
+        self._append_mutation_event(
+            event_type="source.updated",
+            actor_type=actor_type,
+            target_type="source",
+            target_id=row["id"],
+            payload={"operation": "update", "changes": patch},
+        )
+        return row
 
     def create_source_chunk(self, chunk: JsonObject, *, actor_type: str = "system") -> VNextRow:
         chunk_id = _new_id(chunk.get("id"))
@@ -1323,6 +1601,7 @@ class SQLiteVNextStore:
         sensitivity_sql, sensitivity_params = self._sensitivity_clause(sensitivity_allowed, prefix="s.")
         scope_sql, scope_params = self._metadata_scope_clause(
             metadata_expression="s.metadata_json",
+            persisted_source_envelope=True,
             scope_projects=scope_projects,
             scope_people=scope_people,
             event_time_expression=(
@@ -1380,6 +1659,7 @@ class SQLiteVNextStore:
         sensitivity_sql, sensitivity_params = self._sensitivity_clause(sensitivity_allowed)
         scope_sql, scope_params = self._metadata_scope_clause(
             metadata_expression="metadata_json",
+            persisted_source_envelope=True,
             scope_projects=scope_projects,
             scope_people=scope_people,
             event_time_expression=(
@@ -1739,9 +2019,15 @@ class SQLiteVNextStore:
         self,
         *,
         status: str | None = None,
+        statuses: Sequence[str] | None = None,
+        memory_types: Sequence[str] | None = None,
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         projects: Sequence[str] | None = None,
+        created_at_start: datetime | None = None,
+        created_at_end: datetime | None = None,
+        query: str | None = None,
+        order_by_created_at: bool = False,
         limit: int | None = None,
     ) -> list[VNextRow]:
         if limit is not None and limit < 1:
@@ -1751,6 +2037,20 @@ class SQLiteVNextStore:
         if status is not None:
             status_sql = " AND status = ?"
             params.append(status)
+        statuses_sql = ""
+        if statuses is not None:
+            normalized_statuses = list(dict.fromkeys(str(value) for value in statuses if str(value)))
+            if not normalized_statuses:
+                return []
+            statuses_sql = f" AND status IN ({self._placeholders(normalized_statuses)})"
+            params.extend(normalized_statuses)
+        memory_types_sql = ""
+        if memory_types is not None:
+            normalized_memory_types = list(dict.fromkeys(str(value) for value in memory_types if str(value)))
+            if not normalized_memory_types:
+                return []
+            memory_types_sql = f" AND memory_type IN ({self._placeholders(normalized_memory_types)})"
+            params.extend(normalized_memory_types)
         domains_sql = ""
         if domains:
             domain_placeholders = ", ".join("?" for _domain in domains)
@@ -1765,6 +2065,28 @@ class SQLiteVNextStore:
             params.extend(sensitivity_allowed)
         project_sql, project_params = self._project_clause(tuple(normalize_project_scope(projects or ())))
         params.extend(project_params)
+        created_at_sql = ""
+        if created_at_start is not None:
+            created_at_sql += " AND julianday(created_at) >= julianday(?)"
+            params.append(_iso_or_none(created_at_start))
+        if created_at_end is not None:
+            created_at_sql += " AND julianday(created_at) <= julianday(?)"
+            params.append(_iso_or_none(created_at_end))
+        query_sql = ""
+        if query is not None:
+            normalized_query = str(query).strip()
+            if normalized_query:
+                query_sql = (
+                    " AND (instr(lower(COALESCE(title, '')), lower(?)) > 0"
+                    " OR instr(lower(COALESCE(canonical_text, '')), lower(?)) > 0"
+                    " OR instr(lower(COALESCE(summary, '')), lower(?)) > 0)"
+                )
+                params.extend((normalized_query, normalized_query, normalized_query))
+        order_sql = (
+            "ORDER BY created_at DESC, id DESC"
+            if order_by_created_at
+            else "ORDER BY updated_at DESC, created_at DESC, id DESC"
+        )
         limit_sql = ""
         if limit is not None:
             limit_sql = " LIMIT ?"
@@ -1773,12 +2095,14 @@ class SQLiteVNextStore:
             f"""
                 SELECT {", ".join(MEMORY_COLUMNS)}
                 FROM memories
-                WHERE user_id = ?{status_sql}
+                WHERE user_id = ?{status_sql}{statuses_sql}{memory_types_sql}
                   AND deleted_at IS NULL
                   {domains_sql}
                   {sensitivity_sql}
                   {project_sql}
-                ORDER BY updated_at DESC, created_at DESC, id DESC
+                  {created_at_sql}
+                  {query_sql}
+                {order_sql}
                 {limit_sql}
                 """,
             tuple(params),
@@ -1910,7 +2234,7 @@ class SQLiteVNextStore:
         normalized_text = str(canonical_text).strip()
         if not normalized_text:
             return None
-        normalized_scope = list(normalize_project_scope(project_scope))
+        normalized_scope = project_scope_identity(project_scope)
         return self._fetch_optional_one(
             f"""
                 SELECT {", ".join(MEMORY_COLUMNS)}
@@ -1921,18 +2245,7 @@ class SQLiteVNextStore:
                   AND lower(canonical_text) = lower(?)
                   AND domain = ?
                   AND sensitivity = ?
-                  AND CASE
-                    WHEN json_type(metadata_json, '$.project_scope') = 'array'
-                         AND json_array_length(metadata_json, '$.project_scope') > 0
-                      THEN json_extract(metadata_json, '$.project_scope')
-                    WHEN json_type(metadata_json, '$.agentic_memory.project_scope') = 'array'
-                         AND json_array_length(metadata_json, '$.agentic_memory.project_scope') > 0
-                      THEN json_extract(metadata_json, '$.agentic_memory.project_scope')
-                    WHEN project_id IS NOT NULL THEN json_array(project_id)
-                    WHEN json_extract(metadata_json, '$.project_id') IS NOT NULL
-                      THEN json_array(json_extract(metadata_json, '$.project_id'))
-                    ELSE json('[]')
-                  END = json(?)
+                  AND alice_project_scope_identity(metadata_json, project_id) = ?
                 ORDER BY updated_at DESC, created_at DESC, id DESC
                 LIMIT 1
                 """,
@@ -1941,7 +2254,7 @@ class SQLiteVNextStore:
                 normalized_text,
                 str(domain),
                 str(sensitivity),
-                json.dumps(normalized_scope, separators=(",", ":")),
+                json.dumps(normalized_scope, ensure_ascii=False, separators=(",", ":")),
             ),
         )
 
@@ -3888,7 +4201,7 @@ class SQLiteVNextStore:
                     json_extract(metadata_json, '$.idempotency_digest'),
                     json_extract(metadata_json, '$.automation_digest')
                   ) = ?
-                  AND (? IS NULL OR project_id = ?)
+                  AND (? IS NULL OR alice_project_scope_value(project_id) = ?)
                   AND (? IS NULL OR person_id = ?)
                 ORDER BY created_at DESC, id DESC
                 LIMIT 1
@@ -3897,7 +4210,7 @@ class SQLiteVNextStore:
                 self.user_id,
                 normalized_digest,
                 project_id,
-                project_id,
+                _project_scope_value_sqlite(project_id),
                 person_id,
                 person_id,
             ),
@@ -3934,6 +4247,8 @@ class SQLiteVNextStore:
         self,
         *,
         status: str | None = "open",
+        statuses: Sequence[str] | None = None,
+        query: str | None = None,
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         project_id: str | None = None,
@@ -3961,23 +4276,131 @@ class SQLiteVNextStore:
         if status is not None:
             clauses.append("status = ?")
             params.append(status)
+        if statuses is not None:
+            normalized_statuses = list(dict.fromkeys(str(value) for value in statuses if str(value)))
+            if not normalized_statuses:
+                return []
+            clauses.append(f"status IN ({self._placeholders(normalized_statuses)})")
+            params.extend(normalized_statuses)
         params.extend(domain_params)
         params.extend(sensitivity_params)
         params.extend(scope_params)
         extra_sql = ""
         if project_id is not None:
-            extra_sql += " AND project_id = ?"
-            params.append(str(project_id))
+            extra_sql += " AND alice_project_scope_value(project_id) = ?"
+            params.append(_project_scope_value_sqlite(project_id))
         if person_id is not None:
             extra_sql += " AND person_id = ?"
             params.append(str(person_id))
+        query_sql = ""
+        normalized_query = str(query).strip() if query is not None else ""
+        if normalized_query:
+            root_next_action = _sqlite_ascii_literal_contains_sql(
+                "COALESCE(json_extract(metadata_json, '$.next_action'), '')"
+            )
+            nested_next_action = _sqlite_ascii_literal_contains_sql(
+                "COALESCE(json_extract(metadata_json, '$.agentic_memory.next_action'), '')"
+            )
+            query_sql = (
+                " AND ("
+                + _sqlite_ascii_literal_contains_sql("COALESCE(title, '')")
+                + " OR "
+                + _sqlite_ascii_literal_contains_sql("COALESCE(description, '')")
+                + " OR (json_type(metadata_json, '$.next_action') = 'text' AND "
+                + root_next_action
+                + ") OR (json_type(metadata_json, '$.agentic_memory.next_action') = 'text' AND "
+                + nested_next_action
+                + ")"
+                + ")"
+            )
+            params.extend((_escape_like_literal(normalized_query),) * 4)
         params.append(limit)
         return self._fetch_all(
             f"""
                 SELECT {", ".join(OPEN_LOOP_COLUMNS)}
                 FROM open_loops
-                WHERE {" AND ".join(clauses)}{domain_sql}{sensitivity_sql}{scope_sql}{extra_sql}
+                WHERE {" AND ".join(clauses)}{domain_sql}{sensitivity_sql}{scope_sql}{extra_sql}{query_sql}
                 ORDER BY opened_at DESC, created_at DESC, id DESC
+                LIMIT ?
+                """,
+            tuple(params),
+        )
+
+    def list_open_loop_events(
+        self,
+        *,
+        statuses: Sequence[str],
+        scope_projects: Sequence[str] | None = None,
+        query: str | None = None,
+        occurred_at_start: datetime | None = None,
+        occurred_at_end: datetime | None = None,
+        limit: int = 20,
+    ) -> list[VNextRow]:
+        """Return scoped events for active loops without bounding loop age."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        normalized_statuses = list(dict.fromkeys(str(value) for value in statuses if str(value)))
+        if not normalized_statuses:
+            return []
+        project_sql, project_params = self._metadata_scope_clause(
+            metadata_expression="loop.metadata_json",
+            scope_projects=tuple(normalize_project_scope(scope_projects or ())),
+            direct_project_expression="loop.project_id",
+            event_time_expression="julianday(event.occurred_at)",
+        )
+        clauses = [
+            "event.user_id = ?",
+            "event.target_type = 'open_loop'",
+            f"loop.status IN ({self._placeholders(normalized_statuses)})",
+        ]
+        params: list[object] = [self.user_id, *normalized_statuses, *project_params]
+        scoped_where_sql = " AND ".join(clauses) + project_sql
+        query_sql = ""
+        normalized_query = str(query).strip() if query is not None else ""
+        if normalized_query:
+            root_next_action = _sqlite_ascii_literal_contains_sql(
+                "COALESCE(json_extract(loop.metadata_json, '$.next_action'), '')"
+            )
+            nested_next_action = _sqlite_ascii_literal_contains_sql(
+                "COALESCE(json_extract(loop.metadata_json, '$.agentic_memory.next_action'), '')"
+            )
+            row_predicates = (
+                _sqlite_ascii_literal_contains_sql("COALESCE(loop.title, '')")
+                + " OR "
+                + _sqlite_ascii_literal_contains_sql("COALESCE(loop.description, '')")
+                + " OR (json_type(loop.metadata_json, '$.next_action') = 'text' AND "
+                + root_next_action
+                + ") OR (json_type(loop.metadata_json, '$.agentic_memory.next_action') = 'text' AND "
+                + nested_next_action
+                + ")"
+            )
+            payload_predicate = _sqlite_ascii_literal_contains_sql("CAST(payload_leaf.value AS TEXT)")
+            query_sql = (
+                f" AND ({row_predicates} OR EXISTS ("
+                "SELECT 1 FROM json_tree(event.payload_json) AS payload_leaf "
+                "WHERE payload_leaf.type = 'text' "
+                f"AND {payload_predicate}"
+                "))"
+            )
+            params.extend((_escape_like_literal(normalized_query),) * 5)
+        window_sql = ""
+        if occurred_at_start is not None:
+            window_sql += " AND julianday(event.occurred_at) >= julianday(?)"
+            params.append(_iso_or_none(occurred_at_start))
+        if occurred_at_end is not None:
+            window_sql += " AND julianday(event.occurred_at) <= julianday(?)"
+            params.append(_iso_or_none(occurred_at_end))
+        params.append(limit)
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(f"event.{column}" for column in EVENT_LOG_COLUMNS)}
+                FROM event_log AS event
+                JOIN open_loops AS loop
+                  ON loop.user_id = event.user_id
+                 AND loop.id = event.target_id
+                WHERE {scoped_where_sql}{query_sql}{window_sql}
+                ORDER BY event.occurred_at DESC, event.id DESC
                 LIMIT ?
                 """,
             tuple(params),

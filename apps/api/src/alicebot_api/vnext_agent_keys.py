@@ -11,6 +11,11 @@ from alicebot_api.vnext_agent_control import (
     AgentIdentity,
 )
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_project_scope import (
+    normalize_project_identifier,
+    normalize_project_scope,
+    project_scope_identity,
+)
 from alicebot_api.vnext_repositories import JsonObject
 
 
@@ -121,9 +126,10 @@ def create_agent_key(
             f"permission_profile must be one of {', '.join(PERMISSION_PROFILES)}"
         )
     normalized_label = " ".join(str(label).split()).strip() if label is not None else None
-    normalized_project_scope = (
-        " ".join(str(project_scope).split()).strip() if project_scope is not None else None
-    )
+    normalized_project_values = normalize_project_scope(project_scope) if project_scope is not None else ()
+    if project_scope is not None and not normalized_project_values:
+        raise AgentKeyValidationError("project_scope must not be blank")
+    normalized_project_scope = next(iter(normalized_project_values), None)
     raw_key = mint_agent_key()
     record = store.create_agent_api_key(
         {
@@ -242,7 +248,23 @@ def resolve_agent_identity(
             {"agent_id": key_agent_id, "permission_profile": key_profile}
         ) or AgentIdentity(agent_id=key_agent_id, permission_profile=key_profile)
 
-    key_project_scope = _claimed_text(record.get("project_scope"))
+    raw_key_project_scope = record.get("project_scope")
+    key_project_scope = (
+        normalize_project_identifier(raw_key_project_scope)
+        if isinstance(raw_key_project_scope, str)
+        else None
+    )
+    if raw_key_project_scope is not None and not key_project_scope:
+        _append_key_rejection_event(
+            store,
+            record=record,
+            reason="invalid_project_scope_binding",
+            claimed={},
+        )
+        raise AgentKeyAuthenticationError(
+            "agent API key has an invalid blank project scope binding",
+            status_code=403,
+        )
     # Read the scope claim from the payload source directly (like the
     # profile claim): key-only calls without an agent_id still must not be
     # able to widen the binding.
@@ -251,7 +273,12 @@ def resolve_agent_identity(
     project_scope_locked = False
     if key_project_scope is not None:
         bound_scope = (key_project_scope,)
-        widened = tuple(value for value in claimed_scope if value not in bound_scope)
+        bound_identity = set(project_scope_identity(bound_scope))
+        widened = tuple(
+            value
+            for value in claimed_scope
+            if not set(project_scope_identity((value,))).issubset(bound_identity)
+        )
         if widened:
             _append_key_rejection_event(
                 store,
@@ -330,14 +357,28 @@ def _claimed_text(value: object) -> str | None:
 
 def _claimed_project_scope(source: Mapping[str, object]) -> tuple[str, ...]:
     value = source.get("project_scope")
-    if not isinstance(value, (list, tuple)):
+    if value is None:
         return ()
+    if not isinstance(value, (list, tuple)):
+        raise AgentKeyAuthenticationError(
+            "project_scope claim must be a list of non-blank strings",
+            status_code=403,
+        )
     values: list[str] = []
     for item in value:
-        normalized = _claimed_text(item)
-        if normalized is not None:
-            values.append(normalized)
-    return tuple(values)
+        if not isinstance(item, str):
+            raise AgentKeyAuthenticationError(
+                "project_scope claim must be a list of non-blank strings",
+                status_code=403,
+            )
+        normalized = normalize_project_identifier(item)
+        if not normalized:
+            raise AgentKeyAuthenticationError(
+                "project_scope claim must be a list of non-blank strings",
+                status_code=403,
+            )
+        values.append(normalized)
+    return normalize_project_scope(values)
 
 
 def _append_key_rejection_event(

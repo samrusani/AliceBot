@@ -5,9 +5,9 @@ export default function OnboardingPage() {
   return (
     <div className="page-stack">
       <PageHeader
-        eyebrow="Phase 10 Sprint 1"
-        title="Hosted Onboarding"
-        description="Bootstrap hosted identity, workspace setup, and deterministic device trust without expanding into Telegram flows."
+        eyebrow="Hosted Setup Preview"
+        title="Hosted Onboarding Guide"
+        description="Read the hosted identity and workspace setup sequence. This instruction-only page does not execute onboarding operations."
       />
       <HostedOnboardingPanel />
     </div>

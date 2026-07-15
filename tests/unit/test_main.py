@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from importlib import import_module
+import json
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -11,6 +13,7 @@ from fastapi import Request
 from fastapi.responses import Response
 from pydantic import ValidationError
 import alicebot_api.main as main_module
+import alicebot_api.openapi_operation_contracts as openapi_contracts
 from alicebot_api.config import Settings
 from alicebot_api.artifacts import TaskArtifactNotFoundError
 from alicebot_api.compiler import CompiledTraceRun
@@ -37,7 +40,22 @@ from alicebot_api.semantic_retrieval import (
     SemanticMemoryRetrievalValidationError,
 )
 from alicebot_api.store import ContinuityStoreInvariantError
-from alicebot_api.vnext_store import ARTIFACT_COLUMNS
+from alicebot_api.vnext_connections import VNextConnectionService
+from alicebot_api.vnext_connectors import ConnectorSyncResult
+from alicebot_api.vnext_contradictions import VNextContradictionService
+from alicebot_api.vnext_projects import VNextProjectService
+from alicebot_api.vnext_queue import QueueProcessResult
+from alicebot_api.vnext_scheduler_runtime import daemon_status
+from alicebot_api.vnext_store import (
+    ARTIFACT_COLUMNS,
+    BELIEF_COLUMNS,
+    EVENT_LOG_COLUMNS,
+    GRAPH_EDGE_COLUMNS,
+    OPEN_LOOP_COLUMNS,
+    QUALITY_RATING_COLUMNS,
+    SOURCE_COLUMNS,
+    TASK_COLUMNS,
+)
 
 
 def _openapi_schema_accepts(value: object, schema: dict[str, object]) -> bool:
@@ -86,6 +104,20 @@ def _openapi_schema_accepts(value: object, schema: dict[str, object]) -> bool:
                 if isinstance(field_schema, dict) and not _openapi_schema_accepts(field_value, field_schema):
                     return False
     return True
+
+
+def _openapi_object_properties(schema: dict[str, object]) -> dict[str, object]:
+    properties = schema.get("properties")
+    assert isinstance(properties, dict)
+    assert all(isinstance(field, str) for field in properties)
+    return properties
+
+
+def _openapi_required_fields(schema: dict[str, object]) -> set[str]:
+    required = schema.get("required")
+    assert isinstance(required, list)
+    assert all(isinstance(field, str) for field in required)
+    return set(required)
 
 
 class _FakeResponseGenerationJobStore:
@@ -337,7 +369,9 @@ def test_openapi_has_concrete_success_contracts_and_accurate_statuses() -> None:
     registry_component_names: list[str] = []
     for operation_key, (component_name, registered_schema) in operation_registry.items():
         registry_component_names.append(component_name)
-        assert all(registered_schema["properties"].values())
+        registered_properties = _openapi_object_properties(registered_schema)
+        assert registered_properties
+        assert all(isinstance(property_schema, dict) for property_schema in registered_properties.values())
         assert components[component_name] == registered_schema
         operation = operations_by_key[operation_key]
         operation_success_refs = {
@@ -358,12 +392,17 @@ def test_openapi_has_concrete_success_contracts_and_accurate_statuses() -> None:
         verified_schema = components[component_name]
         assert verified_schema.get("required")
         assert verified_schema.get("additionalProperties") is False
+        assert set(verified_schema["required"]) <= set(verified_schema["properties"])
+    assert open_response_operations == set(polymorphic_operations)
     for operation_key in open_response_operations:
         component_name = operation_registry[operation_key][0]
         open_schema = components[component_name]
         assert open_schema.get("additionalProperties") is True
-        if "required" in open_schema:
-            assert set(open_schema["required"]) <= set(open_schema["properties"])
+        variants = open_schema.get("oneOf")
+        assert isinstance(variants, list) and variants
+        for variant in variants:
+            assert variant["additionalProperties"] is False
+            assert set(variant["required"]) == set(variant["properties"])
 
     def operation_properties(operation_key: tuple[str, str]) -> set[str]:
         component_name = operation_registry[operation_key][0]
@@ -502,33 +541,372 @@ def test_openapi_direct_service_envelopes_do_not_publish_fabricated_wrappers() -
         ("POST", "/v0/vnext/artifacts/generate/contradictions"): artifact_fields,
         ("POST", "/v0/vnext/projects/update-candidates"): artifact_fields,
         ("POST", "/v0/vnext/projects/update-candidates/{artifact_id}/review"): artifact_fields,
+        ("GET", "/v0/vnext/graph/neighborhood/{target_id}"): {
+            "target_id",
+            "from_edges",
+            "to_edges",
+            "edge_count",
+        },
+        ("GET", "/v0/vnext/projects/{project_id}/dashboard"): {
+            "project",
+            "state",
+            "memories",
+            "open_loops",
+            "artifacts",
+            "counts",
+        },
+        ("POST", "/v0/vnext/queue/process-next"): {
+            "status",
+            "task_id",
+            "artifact_id",
+            "error_message",
+        },
+        ("POST", "/v0/vnext/connectors/telegram/sync"): {
+            "status",
+            "connector_name",
+            "item_count",
+            "imported_count",
+            "duplicate_count",
+            "skipped_count",
+            "failed_count",
+            "previous_cursor",
+            "sync_cursor",
+            "source_ids",
+            "failed_external_ids",
+            "errors",
+        },
+        ("POST", "/v0/vnext/beliefs/{belief_id}/review"): {
+            column.strip() for column in BELIEF_COLUMNS.split(",") if column.strip()
+        },
     }
     fabricated_fields = {
         "capture_explicit_signal",
         "connection",
         "contradiction",
+        "dashboard",
         "daily_brief",
         "extract_explicit_commitment",
         "extract_explicit_preference",
+        "neighborhood",
+        "result",
+        "sync",
         "update_candidate",
         "weekly_synthesi",
     }
 
     for operation_key, expected in expected_fields.items():
-        properties = set(main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[operation_key][1]["properties"])
+        response_schema = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[operation_key][1]
+        properties = set(_openapi_object_properties(response_schema))
         assert properties == expected
         assert properties.isdisjoint(fabricated_fields)
 
-    artifact_properties = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[
+    artifact_schema = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[
         ("POST", "/v0/vnext/artifacts/generate/daily-brief")
-    ][1]["properties"]
+    ][1]
+    artifact_properties = _openapi_object_properties(artifact_schema)
     assert artifact_properties["id"] == {"type": "string", "format": "uuid"}
     assert artifact_properties["user_id"] == {"type": "string", "format": "uuid"}
     assert artifact_properties["created_at"] == {"type": "string", "format": "date-time"}
     for field in ("reviewed_at", "promoted_at"):
-        assert artifact_properties[field] == {
-            "anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]
-        }
+        assert artifact_properties[field] == {"anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]}
+
+
+def test_openapi_helper_backed_contracts_track_authoritative_response_types() -> None:
+    authoritative_bindings = {
+        **{
+            operation_key: ("alicebot_api.contracts", type_name)
+            for operation_key, type_name in openapi_contracts._OPENAPI_CONTRACT_RESPONSE_TYPES.items()
+        },
+        **openapi_contracts._OPENAPI_OTHER_AUTHORITATIVE_RESPONSE_TYPES,
+    }
+
+    assert len(authoritative_bindings) == 106
+    for operation_key, (module_name, type_name) in authoritative_bindings.items():
+        response_type = getattr(import_module(module_name), type_name)
+        response_schema = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[operation_key][1]
+        expected_fields = set(response_type.__annotations__)
+        expected_required = set(response_type.__required_keys__)
+
+        assert set(_openapi_object_properties(response_schema)) == expected_fields, operation_key
+        assert _openapi_required_fields(response_schema) == expected_required, operation_key
+        assert response_schema["additionalProperties"] is False, operation_key
+        assert operation_key in main_module.OPENAPI_SOURCE_VERIFIED_OPERATIONS
+        assert "#/$defs/" not in json.dumps(response_schema)
+
+
+def test_openapi_store_row_contracts_track_authoritative_column_sets() -> None:
+    def column_fields(columns: str) -> set[str]:
+        return {column.strip() for column in columns.split(",") if column.strip()}
+
+    row_contracts = {
+        ("GET", "/v0/vnext/sources/{source_id}"): SOURCE_COLUMNS,
+        ("DELETE", "/v0/vnext/sources/{source_id}"): SOURCE_COLUMNS,
+        ("POST", "/v0/vnext/queue/tasks"): TASK_COLUMNS,
+        ("POST", "/v0/vnext/graph/edges/{edge_id}/review"): GRAPH_EDGE_COLUMNS,
+        ("POST", "/v0/vnext/beliefs/{belief_id}/review"): BELIEF_COLUMNS,
+        ("POST", "/v0/vnext/open-loops/{loop_id}/review"): OPEN_LOOP_COLUMNS,
+        ("POST", "/v0/vnext/artifacts/{artifact_id}/quality-ratings"): QUALITY_RATING_COLUMNS,
+        ("POST", "/v0/vnext/artifacts/{artifact_id}/insight-feedback"): EVENT_LOG_COLUMNS,
+    }
+    for operation_key in openapi_contracts._OPENAPI_ARTIFACT_ROW_OPERATIONS:
+        row_contracts[operation_key] = ARTIFACT_COLUMNS
+
+    for operation_key, columns in row_contracts.items():
+        response_schema = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[operation_key][1]
+        expected_fields = column_fields(columns)
+        assert set(_openapi_object_properties(response_schema)) == expected_fields, operation_key
+        assert _openapi_required_fields(response_schema) == expected_fields, operation_key
+        assert response_schema["additionalProperties"] is False, operation_key
+
+
+def test_openapi_audit_samples_accept_actual_service_payloads_and_reject_phantom_keys() -> None:
+    class GraphStore:
+        def list_edges(
+            self,
+            *,
+            from_id: str | None = None,
+            to_id: str | None = None,
+        ) -> list[dict[str, object]]:
+            if from_id is not None:
+                return [{"id": "edge-from", "from_id": from_id}]
+            return [{"id": "edge-to", "to_id": to_id}]
+
+    class ProjectStore:
+        def get_project(self, project_id: str) -> dict[str, object]:
+            return {
+                "id": project_id,
+                "name": "Alice release",
+                "domain": "work",
+                "current_state": "shipping",
+            }
+
+        def search_memories(self, **_kwargs: object) -> list[dict[str, object]]:
+            return [{"id": "memory-1", "status": "active", "project_scope": ["project-1"]}]
+
+        def list_open_loops(self, **_kwargs: object) -> list[dict[str, object]]:
+            return [{"id": "loop-1", "project_scope": ["project-1"]}]
+
+        def list_artifacts(self, **_kwargs: object) -> list[dict[str, object]]:
+            return [{"id": "artifact-1", "project_scope": ["project-1"]}]
+
+    class BeliefStore:
+        def __init__(self) -> None:
+            self.belief: dict[str, object] = {
+                "id": "belief-1",
+                "user_id": "user-1",
+                "memory_id": "memory-1",
+                "claim": "The release is ready",
+                "status": "candidate",
+                "confidence": 0.8,
+                "first_seen_at": "2026-07-14T00:00:00Z",
+                "last_reinforced_at": None,
+                "last_challenged_at": None,
+                "superseded_by": None,
+                "metadata_json": {},
+            }
+            self.events: list[dict[str, object]] = [
+                {"payload_json": {"status": "candidate"}},
+            ]
+
+        def update_belief_status(
+            self,
+            *,
+            belief_id: str,
+            status: str,
+            confidence: float | None = None,
+            superseded_by: str | None = None,
+        ) -> dict[str, object]:
+            assert belief_id == self.belief["id"]
+            self.belief = {
+                **self.belief,
+                "status": status,
+                "confidence": confidence if confidence is not None else self.belief["confidence"],
+                "superseded_by": superseded_by,
+            }
+            return self.belief
+
+        def append_event(self, event: dict[str, object]) -> dict[str, object]:
+            self.events.append(event)
+            return event
+
+        def get_belief(self, belief_id: str) -> dict[str, object] | None:
+            return self.belief if belief_id == self.belief["id"] else None
+
+        def list_events(self, **_kwargs: object) -> list[dict[str, object]]:
+            return list(self.events)
+
+    queue_payload = QueueProcessResult(status="idle").to_record()
+    connector_payload = ConnectorSyncResult(
+        status="ok",
+        connector_name="telegram",
+        item_count=1,
+        imported_count=1,
+        duplicate_count=0,
+        skipped_count=0,
+        failed_count=0,
+        previous_cursor=None,
+        sync_cursor="cursor-1",
+        source_ids=("source-1",),
+    ).to_record()
+    neighborhood_payload = VNextConnectionService(GraphStore()).graph_neighborhood(target_id="project-1")  # type: ignore[arg-type]
+    dashboard_payload = VNextProjectService(ProjectStore()).project_dashboard(project_id="project-1")  # type: ignore[arg-type]
+    belief_service = VNextContradictionService(BeliefStore())  # type: ignore[arg-type]
+    belief_review_payload = belief_service.review_belief(
+        belief_id="belief-1",
+        action="reinforce",
+        confidence=0.9,
+    )
+
+    payloads_by_operation = {
+        ("POST", "/v0/vnext/queue/process-next"): queue_payload,
+        ("POST", "/v0/vnext/connectors/telegram/sync"): connector_payload,
+        ("GET", "/v0/vnext/graph/neighborhood/{target_id}"): neighborhood_payload,
+        ("GET", "/v0/vnext/projects/{project_id}/dashboard"): dashboard_payload,
+        ("POST", "/v0/vnext/beliefs/{belief_id}/review"): belief_review_payload,
+    }
+    for operation_key, payload in payloads_by_operation.items():
+        response_schema = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[operation_key][1]
+        assert set(payload) == set(_openapi_object_properties(response_schema)), operation_key
+        assert _openapi_schema_accepts(payload, response_schema), operation_key
+        assert not _openapi_schema_accepts({**payload, "phantom_wrapper": {}}, response_schema), operation_key
+
+
+def test_scheduler_status_endpoint_payload_matches_its_generated_openapi_contract(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class SchedulerStatusStore:
+        def __init__(self) -> None:
+            self.workflows: dict[str, dict[str, object]] = {
+                "daily_brief": {
+                    "id": "workflow-daily-brief",
+                    "workflow_type": "daily_brief",
+                    "enabled": True,
+                    "paused": False,
+                    "schedule_json": {"kind": "daily", "time_of_day": "08:00"},
+                    "timezone": "UTC",
+                    "next_run_at": "2026-07-15T08:00:00+00:00",
+                    "metadata_json": {},
+                },
+                "weekly_synthesis": {
+                    "id": "workflow-weekly-synthesis",
+                    "workflow_type": "weekly_synthesis",
+                    "enabled": True,
+                    "paused": True,
+                    "schedule_json": {"kind": "weekly", "weekday": "monday", "time_of_day": "09:00"},
+                    "timezone": "UTC",
+                    "next_run_at": "2026-07-20T09:00:00+00:00",
+                    "metadata_json": {},
+                },
+            }
+
+        def list_scheduler_workflows(self) -> list[dict[str, object]]:
+            return list(self.workflows.values())
+
+        def upsert_scheduler_workflow(
+            self,
+            workflow: dict[str, object],
+            *,
+            actor_type: str = "system",
+        ) -> dict[str, object]:
+            del actor_type
+            workflow_type = str(workflow["workflow_type"])
+            row = {"id": f"workflow-{workflow_type}", **workflow}
+            self.workflows[workflow_type] = row
+            return row
+
+        def list_scheduler_runs(
+            self,
+            *,
+            workflow_type: str | None = None,
+            limit: int = 20,
+        ) -> list[dict[str, object]]:
+            runs = [
+                {"id": "run-started", "workflow_type": "daily_brief", "status": "started"},
+                {"id": "run-failed", "workflow_type": "weekly_synthesis", "status": "failed"},
+                {"id": "run-succeeded", "workflow_type": "daily_brief", "status": "succeeded"},
+            ]
+            if workflow_type is not None:
+                runs = [run for run in runs if run["workflow_type"] == workflow_type]
+            return runs[:limit]
+
+        def list_events(self, *, limit: int = 100, **_kwargs: object) -> list[dict[str, object]]:
+            return [
+                {
+                    "id": "event-due-scan",
+                    "event_type": "scheduler.due_scan",
+                    "payload_json": {"due_count": 1},
+                }
+            ][:limit]
+
+    status_file = tmp_path / "scheduler-status.json"
+    status_file.write_text(
+        json.dumps(
+            {
+                "pid": 999_999_999,
+                "running": True,
+                "started_at": "2026-07-14T08:00:00+00:00",
+                "last_heartbeat_at": "2026-07-14T08:01:00+00:00",
+                "interval_seconds": 60.0,
+                "limit": 10,
+                "mode": "foreground",
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = SchedulerStatusStore()
+    requested_user_id = uuid4()
+
+    @contextmanager
+    def fake_user_connection(database_url: str, user_id):
+        assert database_url == "postgresql://scheduler-status"
+        assert user_id == requested_user_id
+        yield object()
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url="postgresql://scheduler-status"),
+    )
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(main_module, "PostgresVNextStore", lambda _conn: store)
+    monkeypatch.setattr(
+        main_module,
+        "daemon_status",
+        lambda: daemon_status(
+            pid_file=tmp_path / "scheduler.pid",
+            status_file=status_file,
+        ),
+    )
+
+    response = main_module.get_vnext_scheduler_status(requested_user_id)
+    assert response.status_code == 200
+    payload = json.loads(response.body)
+    operation_key = ("GET", "/v0/vnext/scheduler/status")
+    component_name = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[operation_key][0]
+    generated_schema = main_module.app.openapi()["components"]["schemas"][component_name]
+    expected_fields = {
+        "mode",
+        "disabled_by_default",
+        "workflows",
+        "recent_runs",
+        "enabled_count",
+        "paused_count",
+        "last_failure",
+        "recent_failures",
+        "last_due_scan",
+        "next_due_workflow",
+        "currently_running_workflow",
+        "last_success_by_workflow",
+        "daemon",
+    }
+
+    assert set(payload) == expected_fields
+    assert set(_openapi_object_properties(generated_schema)) == expected_fields
+    assert _openapi_required_fields(generated_schema) == expected_fields
+    assert generated_schema["additionalProperties"] is False
+    assert _openapi_schema_accepts(payload, generated_schema)
+    assert not _openapi_schema_accepts({**payload, "phantom_wrapper": {}}, generated_schema)
 
 
 def test_openapi_typed_contracts_validate_representative_runtime_envelopes() -> None:
@@ -2660,9 +3038,9 @@ def test_extract_explicit_preferences_returns_payload(monkeypatch) -> None:
     assert response.status_code == 200
     payload = json.loads(response.body)
     assert set(payload) == set(
-        main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[
-            ("POST", "/v0/memories/extract-explicit-preferences")
-        ][1]["properties"]
+        main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[("POST", "/v0/memories/extract-explicit-preferences")][1][
+            "properties"
+        ]
     )
     assert payload == {
         "candidates": [
@@ -2896,9 +3274,9 @@ def test_extract_explicit_commitments_returns_payload(monkeypatch) -> None:
     assert response.status_code == 200
     payload = json.loads(response.body)
     assert set(payload) == set(
-        main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[
-            ("POST", "/v0/open-loops/extract-explicit-commitments")
-        ][1]["properties"]
+        main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[("POST", "/v0/open-loops/extract-explicit-commitments")][1][
+            "properties"
+        ]
     )
     assert payload["summary"] == {
         "source_event_id": str(source_event_id),
@@ -3038,9 +3416,9 @@ def test_capture_explicit_signals_returns_payload(monkeypatch) -> None:
     assert response.status_code == 200
     payload = json.loads(response.body)
     assert set(payload) == set(
-        main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[
-            ("POST", "/v0/memories/capture-explicit-signals")
-        ][1]["properties"]
+        main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[("POST", "/v0/memories/capture-explicit-signals")][1][
+            "properties"
+        ]
     )
     assert payload["summary"] == {
         "source_event_id": str(source_event_id),
@@ -5331,11 +5709,18 @@ def test_vnext_consolidation_defers_embedding_until_primary_transaction_closes(m
     assert calls == ["accept", "embedding"]
 
 
-def test_vnext_project_review_defers_embedding_until_primary_transaction_closes(monkeypatch) -> None:
+def test_vnext_project_review_defers_embedding_and_preserves_human_attribution(monkeypatch) -> None:
     user_id = uuid4()
     transaction_depth = 0
     calls: list[str] = []
+    review_kwargs: dict[str, object] = {}
     deferred_input = object()
+    decision = main_module.PolicyDecision(
+        decision="allowed",
+        action="artifact.review",
+        permission_profile="admin_agent",
+        trace_id="policy-trace-1",
+    )
 
     @contextmanager
     def fake_user_connection(_database_url: str, _user_id):
@@ -5352,26 +5737,44 @@ def test_vnext_project_review_defers_embedding_until_primary_transaction_closes(
             assert defer_embeddings is True
             self.deferred_embedding_inputs = (deferred_input,)
 
-        def review_project_update(self, **_kwargs):
+        def review_project_update(self, **kwargs):
             assert transaction_depth == 1
+            review_kwargs.update(kwargs)
             calls.append("review")
             return {"id": "artifact-1", "status": "accepted"}
 
     def fake_persist(**kwargs) -> None:
         assert transaction_depth == 0
         assert kwargs["result"].deferred_embedding_inputs == (deferred_input,)
+        assert kwargs["actor_type"] == "user"
+        assert kwargs["actor_id"] == str(user_id)
+        assert kwargs["trace_id"] == "request-trace-1"
         calls.append("embedding")
 
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://db"))
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
     monkeypatch.setattr(main_module, "PostgresVNextStore", lambda _conn: object())
+    monkeypatch.setattr(main_module, "_vnext_authenticated_agent_identity", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main_module,
+        "_vnext_authorized_artifact",
+        lambda **_kwargs: ({"id": "artifact-1", "status": "needs_review"}, decision),
+    )
     monkeypatch.setattr(main_module, "VNextProjectService", FakeProjectService)
     monkeypatch.setattr(main_module, "_persist_vnext_deferred_embeddings", fake_persist)
 
     response = main_module.review_vnext_project_update_candidate(
         "artifact-1",
-        main_module.VNextProjectUpdateReviewRequest(user_id=user_id, action="accept"),
+        main_module.VNextProjectUpdateReviewRequest(
+            user_id=user_id,
+            action="accept",
+            trace_id="request-trace-1",
+        ),
     )
 
     assert response.status_code == 200
     assert calls == ["review", "embedding"]
+    assert review_kwargs["actor_type"] == "user"
+    assert review_kwargs["actor_id"] == str(user_id)
+    assert review_kwargs["trace_id"] == "request-trace-1"
+    assert review_kwargs["run_id"] is None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
 
@@ -160,3 +161,66 @@ Revert the change and redeploy to restore the previous behavior.
     )
 
     assert not any("continuity APIs" in error for error in errors)
+
+
+def _repair_batch_9_upgrade_overview() -> str:
+    repo_root = Path(__file__).resolve().parents[2]
+    handoff = (
+        repo_root
+        / "docs/handoff/2026-07-14-v0.10.4-remediation/ENGINEER_HANDOFF.md"
+    ).read_text(encoding="utf-8")
+    fence = "```md\n## Upgrade Overview\n"
+    start = handoff.index(fence) + len("```md\n")
+    end = handoff.index("\n```", start)
+    return handoff[start:end] + "\n"
+
+
+def test_repair_batch_9_handoff_upgrade_overview_passes_representative_guard(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    overview = _repair_batch_9_upgrade_overview()
+    sections = guardrails.extract_upgrade_sections(overview)
+
+    assert guardrails.parse_checked_areas(sections["protected areas"]) == {
+        "memory schema",
+        "continuity apis",
+    }
+    representative_files = [
+        "apps/api/alembic/versions/20260714_0090_project_scope_identity.py",
+        "apps/api/src/alicebot_api/main.py",
+    ]
+    touched = guardrails.categorize_files(representative_files)
+    assert set(touched) == {"memory schema", "continuity APIs"}
+    assert guardrails.validate_upgrade_overview(overview, touched) == []
+
+    event_path = tmp_path / "pull-request-event.json"
+    event_path.write_text(
+        json.dumps(
+            {
+                "pull_request": {
+                    "base": {"sha": "63397ab^"},
+                    "head": {"sha": "63397ab"},
+                    "body": overview,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    observed_range: list[tuple[str, str]] = []
+
+    def _representative_changed_files(base_sha: str, head_sha: str) -> list[str]:
+        observed_range.append((base_sha, head_sha))
+        return representative_files
+
+    monkeypatch.setattr(guardrails, "changed_files_between", _representative_changed_files)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["check_protected_paths.py", "--event-path", str(event_path)],
+    )
+
+    assert guardrails.main() == 0
+    assert observed_range == [("63397ab^", "63397ab")]
+    assert "Protected-path upgrade metadata is present." in capsys.readouterr().out

@@ -37,7 +37,7 @@ def test_upgrade_deduplicates_before_enforcing_partial_unique_indexes(monkeypatc
     assert "edge_type IN ('mentions', 'related_to_person')" in joined
 
 
-def test_upgrade_promotes_only_missing_legacy_nested_project_scopes(monkeypatch) -> None:
+def test_upgrade_promotes_legacy_scope_only_when_canonical_key_is_absent(monkeypatch) -> None:
     module = load_migration_module()
     executed: list[str] = []
     monkeypatch.setattr(module.op, "execute", executed.append)
@@ -46,8 +46,12 @@ def test_upgrade_promotes_only_missing_legacy_nested_project_scopes(monkeypatch)
 
     backfill = executed[0]
     assert "metadata_json #> '{agentic_memory,project_scope}'" in backfill
-    assert "metadata_json -> 'project_scope'" in backfill
-    assert "IS DISTINCT FROM 'array'" in backfill
+    assert "NOT (memory.metadata_json ? 'project_scope')" in backfill
+    assert "IS DISTINCT FROM 'array'" not in backfill
+    assert "jsonb_array_length(memory.metadata_json -> 'project_scope')" not in backfill
+    assert "[[:space:]]" not in backfill
+    assert "chr(9) || chr(10) || chr(11) || chr(12) || chr(13)" in backfill
+    assert "btrim(" in backfill
     assert "GROUP BY normalized_element.normalized" in backfill
     assert "jsonb_array_length(legacy_scopes.normalized_scope) = 1" in backfill
     assert "THEN legacy_scopes.normalized_scope #>> '{0}'" in backfill

@@ -5,7 +5,14 @@ from datetime import UTC, datetime
 from typing import Protocol
 from uuid import uuid4
 
+from alicebot_api.vnext_agent_control import resource_project_scope
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_project_scope import (
+    normalize_project_scope,
+    project_scope_identity,
+    project_scopes_overlap,
+    source_project_scope,
+)
 from alicebot_api.vnext_repositories import JsonObject
 
 
@@ -37,6 +44,7 @@ class VNextContextTreeStore(Protocol):
 class ContextTreeRequest:
     query: str = ""
     domains: tuple[str, ...] = ()
+    projects: tuple[str, ...] = ()
     sensitivity_allowed: tuple[str, ...] = DEFAULT_SENSITIVITY_ALLOWED
     limit: int = DEFAULT_CONTEXT_TREE_LIMIT
     include_events: bool = True
@@ -59,6 +67,70 @@ def _domains(request: ContextTreeRequest) -> list[str] | None:
 
 def _sensitivity(request: ContextTreeRequest) -> list[str]:
     return list(request.sensitivity_allowed)
+
+
+def _project_scope(request: ContextTreeRequest) -> tuple[str, ...]:
+    return normalize_project_scope(request.projects)
+
+
+def _row_id(row: JsonObject) -> str:
+    value = row.get("id")
+    if value is None:
+        return ""
+    row_id = str(value)
+    return row_id if row_id.strip() else ""
+
+
+def _project_is_in_scope(row: JsonObject, projects: tuple[str, ...]) -> bool:
+    if not projects:
+        return True
+    row_id = _row_id(row)
+    candidates = project_scope_identity(
+        (
+            row_id,
+            row.get("slug"),
+            row.get("name"),
+        )
+    )
+    return bool(set(project_scope_identity(projects)).intersection(candidates))
+
+
+def _resource_is_in_scope(
+    row: JsonObject,
+    projects: tuple[str, ...],
+    *,
+    source: bool = False,
+) -> bool:
+    if not projects:
+        return True
+    row_scope = source_project_scope(row) if source else resource_project_scope(row)
+    return project_scopes_overlap(row_scope, projects)
+
+
+def _admitted_rows(
+    rows: list[JsonObject],
+    projects: tuple[str, ...],
+    *,
+    project: bool = False,
+    source: bool = False,
+) -> list[JsonObject]:
+    if not projects:
+        return rows
+    admitted: list[JsonObject] = []
+    for row in rows:
+        if not _row_id(row):
+            continue
+        if project:
+            allowed = _project_is_in_scope(row, projects)
+        else:
+            allowed = _resource_is_in_scope(row, projects, source=source)
+        if allowed:
+            admitted.append(row)
+    return admitted
+
+
+def _event_sort_key(event: JsonObject) -> tuple[str, str]:
+    return (str(event.get("occurred_at") or ""), _row_id(event))
 
 
 def _node(
@@ -119,44 +191,119 @@ class VNextContextTreeService:
     def __init__(self, store: VNextContextTreeStore) -> None:
         self.store = store
 
+    def _scoped_events(
+        self,
+        *,
+        projects: list[JsonObject],
+        memories: list[JsonObject],
+        sources: list[JsonObject],
+        open_loops: list[JsonObject],
+        artifacts: list[JsonObject],
+        limit: int,
+    ) -> list[JsonObject]:
+        events: list[JsonObject] = []
+        targets = (
+            ("project", projects),
+            ("memory", memories),
+            ("source", sources),
+            ("open_loop", open_loops),
+            ("artifact", artifacts),
+        )
+        for target_type, rows in targets:
+            for row in rows:
+                target_id = _row_id(row)
+                if not target_id:
+                    continue
+                target_events = self.store.list_events(
+                    target_type=target_type,
+                    target_id=target_id,
+                    limit=limit,
+                )
+                for event in target_events:
+                    if not _row_id(event):
+                        continue
+                    if event.get("target_type") != target_type:
+                        continue
+                    if str(event.get("target_id") or "") != target_id:
+                        continue
+                    events.append(event)
+
+        events.sort(key=_event_sort_key, reverse=True)
+        unique_events: list[JsonObject] = []
+        seen_event_ids: set[str] = set()
+        for event in events:
+            event_id = _row_id(event)
+            if event_id in seen_event_ids:
+                continue
+            seen_event_ids.add(event_id)
+            unique_events.append(event)
+            if len(unique_events) == limit:
+                break
+        return unique_events
+
     def build_tree(self, request: ContextTreeRequest | None = None) -> JsonObject:
         request = request or ContextTreeRequest()
         _validate_request(request)
         trace_id = request.trace_id or str(uuid4())
         domains = _domains(request)
+        project_scope = _project_scope(request)
         sensitivity = _sensitivity(request)
         query = request.query or "project decision preference open loop artifact"
+        scoped_filter = {"scope_projects": project_scope} if project_scope else {}
+        memory_scoped_filter = {"projects": project_scope} if project_scope else {}
 
         projects = self.store.list_projects(
             status="active",
             domains=domains,
             sensitivity_allowed=sensitivity,
             limit=request.limit,
+            **scoped_filter,
         )
         memories = self.store.search_memories(
             query=query,
             domains=domains,
             sensitivity_allowed=sensitivity,
             limit=request.limit,
+            **memory_scoped_filter,
         )
         sources = self.store.search_sources(
             query=query,
             domains=domains,
             sensitivity_allowed=sensitivity,
             limit=request.limit,
+            **scoped_filter,
         )
         open_loops = self.store.list_open_loops(
             status="open",
             domains=domains,
             sensitivity_allowed=sensitivity,
             limit=request.limit,
+            **scoped_filter,
         )
         artifacts = self.store.list_artifacts(
             domains=domains,
             sensitivity_allowed=sensitivity,
             limit=request.limit,
+            **scoped_filter,
         )
-        events = self.store.list_events(limit=request.limit) if request.include_events else []
+        projects = _admitted_rows(projects, project_scope, project=True)
+        memories = _admitted_rows(memories, project_scope)
+        sources = _admitted_rows(sources, project_scope, source=True)
+        open_loops = _admitted_rows(open_loops, project_scope)
+        artifacts = _admitted_rows(artifacts, project_scope)
+        if not request.include_events:
+            events = []
+        elif project_scope:
+            events = self._scoped_events(
+                projects=projects,
+                memories=memories,
+                sources=sources,
+                open_loops=open_loops,
+                artifacts=artifacts,
+                limit=request.limit,
+            )
+        else:
+            events = self.store.list_events(limit=request.limit)
 
         roots = [
             _node(
@@ -182,8 +329,7 @@ class VNextContextTreeService:
                 label="Sources",
                 node_type="group",
                 children=[
-                    _row_node("source", row, label_keys=("title", "source_type"), fallback="Source")
-                    for row in sources
+                    _row_node("source", row, label_keys=("title", "source_type"), fallback="Source") for row in sources
                 ],
             ),
             _node(
@@ -208,10 +354,7 @@ class VNextContextTreeService:
                 node_id="root:events",
                 label="Recent Events",
                 node_type="group",
-                children=[
-                    _row_node("event", row, label_keys=("event_type",), fallback="Event")
-                    for row in events
-                ],
+                children=[_row_node("event", row, label_keys=("event_type",), fallback="Event") for row in events],
             ),
         ]
         summary = {
@@ -240,7 +383,11 @@ class VNextContextTreeService:
             target_type="context_tree",
             target_id=trace_id,
             trace_id=trace_id,
-            payload={"summary": summary, "read_only": True},
+            payload={
+                "summary": summary,
+                "read_only": True,
+                "project_scope": list(project_scope),
+            },
         )
         return payload
 

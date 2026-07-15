@@ -3,10 +3,10 @@
 ## Scope Boundary
 - **Shipped baseline:** `v0.10.3` is the latest published pre-1.0 release. It
   is tagged and immutable, with Trusted Publishing provenance and artifact
-  digests in `docs/release/v0.10.2-checksums.txt`.
-- **Current execution posture:** the fourth-audit remediation shipped in
-  `v0.10.3` after the canonical exact-SHA gates and independent review
-  passed; `main` matches the published release.
+  digests in `docs/release/v0.10.3-checksums.txt`.
+- **Current execution posture:** `v0.10.4` is the remediation
+  candidate on top of the published v0.10.3 boundary. It has no release
+  identity or publication evidence yet.
 
 ## Current System Overview
 Alice is the continuity layer for AI agents: a modular continuity platform with shared continuity semantics across local, hosted, provider-runtime, CLI, MCP, Hermes-integrated, and imported-workflow surfaces.
@@ -168,7 +168,8 @@ Alice is the continuity layer for AI agents: a modular continuity platform with 
 ## Current Architectural Posture
 - `v0.10.3` is the active published release boundary and latest published
   release. Later `main` commits are not part of that immutable artifact set.
-- Post-release remediation remains unreleased; unrelated feature work stays
+- `v0.10.4` is the current release-hardening candidate. At this handoff point
+  its remediation is a release candidate; unrelated feature work stays
   paused until the repaired tree, independent re-review, canonical gates, and
   protected semantic evidence pass against one exact clean source SHA and its
   installed artifacts.

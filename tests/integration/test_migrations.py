@@ -3,10 +3,15 @@ from __future__ import annotations
 from alembic import command
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 import pytest
+from uuid import UUID
 
+from alicebot_api.db import user_connection
 from alicebot_api.migrations import make_alembic_config
 from alicebot_api.provider_configuration import provider_config_fingerprint
+from alicebot_api.vnext_capture import VNextCaptureService, capture_dedupe_key_for_text
+from alicebot_api.vnext_project_scope import resolve_source_metadata_project_scope
 from alicebot_api.vnext_store import PostgresVNextStore
 
 
@@ -409,7 +414,7 @@ def test_released_0084_database_upgrades_through_current_head(database_urls):
     with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT version_num FROM alembic_version")
-            assert cur.fetchone()["version_num"] == "20260713_0089"
+            assert cur.fetchone()["version_num"] == "20260714_0090"
 
     # Repeat the additive post-release migrations through their downgrade
     # boundary. The already repaired data remains correct and the second
@@ -824,6 +829,173 @@ def test_lifecycle_upgrade_promotes_and_reads_legacy_nested_multi_project_scope(
             )
             == []
         )
+
+
+def test_pre_lifecycle_upgrade_preserves_present_canonical_project_scope_to_head(
+    database_urls,
+):
+    """0082 rows must not resurrect stale nested scope while upgrading to head."""
+
+    config = make_alembic_config(database_urls["admin"])
+    user_id = "00000000-0000-0000-0000-000000000124"
+    row_ids = {
+        "empty": "00000000-0000-0000-0000-000000000125",
+        "null": "00000000-0000-0000-0000-000000000126",
+        "malformed": "00000000-0000-0000-0000-000000000127",
+        "nonempty": "00000000-0000-0000-0000-000000000128",
+        "absent": "00000000-0000-0000-0000-000000000129",
+    }
+    stale_project = "stale-project"
+    canonical_project = "canonical-project"
+    legacy_project = "legacy-project"
+    metadata_by_kind = {
+        "empty": {
+            "project_scope": [],
+            "agentic_memory": {"project_scope": [stale_project]},
+        },
+        "null": {
+            "project_scope": None,
+            "agentic_memory": {"project_scope": [stale_project]},
+        },
+        "malformed": {
+            "project_scope": "not-an-array",
+            "agentic_memory": {"project_scope": [stale_project]},
+        },
+        "nonempty": {
+            "project_scope": [canonical_project],
+            "agentic_memory": {"project_scope": [stale_project]},
+        },
+        "absent": {
+            "agentic_memory": {"project_scope": [f" {legacy_project} "]},
+        },
+    }
+
+    command.upgrade(config, "20260707_0082")
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (id, email, display_name) VALUES (%s, %s, %s)",
+                (user_id, "scope-precedence-0083@example.com", "Scope Precedence 0083"),
+            )
+            for kind, memory_id in row_ids.items():
+                cur.execute(
+                    """
+                    INSERT INTO memories (
+                      id, user_id, memory_key, value, status, source_event_ids,
+                      memory_type, canonical_text, domain, sensitivity,
+                      metadata_json
+                    ) VALUES (
+                      %s, %s, %s, '{}'::jsonb, 'active', '[]'::jsonb,
+                      'semantic', 'Scope precedence migration', 'project',
+                      'internal', %s
+                    )
+                    """,
+                    (
+                        memory_id,
+                        user_id,
+                        f"scope.precedence.{kind}",
+                        Jsonb(metadata_by_kind[kind]),
+                    ),
+                )
+
+    command.upgrade(config, "head")
+
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id::text AS id, project_id, metadata_json
+                FROM memories
+                WHERE id = ANY(%s::uuid[])
+                """,
+                (list(row_ids.values()),),
+            )
+            persisted = {row["id"]: row for row in cur.fetchall()}
+
+        for kind in ("empty", "null", "malformed", "nonempty"):
+            row = persisted[row_ids[kind]]
+            assert row["project_id"] is None
+            assert row["metadata_json"] == metadata_by_kind[kind]
+
+        legacy_row = persisted[row_ids["absent"]]
+        assert legacy_row["project_id"] == legacy_project
+        assert legacy_row["metadata_json"] == {
+            **metadata_by_kind["absent"],
+            "project_scope": [legacy_project],
+        }
+
+        store = PostgresVNextStore(conn)
+        assert (
+            store.search_memories(
+                query="scope precedence migration",
+                projects=(stale_project,),
+                limit=20,
+            )
+            == []
+        )
+        assert [
+            str(row["id"])
+            for row in store.search_memories(
+                query="scope precedence migration",
+                projects=(canonical_project,),
+                limit=20,
+            )
+        ] == [row_ids["nonempty"]]
+        assert [
+            str(row["id"])
+            for row in store.search_memories(
+                query="scope precedence migration",
+                projects=(legacy_project,),
+                limit=20,
+            )
+        ] == [row_ids["absent"]]
+
+
+def test_pre_lifecycle_upgrade_preserves_unicode_project_whitespace_exactly_to_head(
+    database_urls,
+):
+    """0083 must not reinterpret Unicode whitespace as the ASCII contract."""
+
+    config = make_alembic_config(database_urls["admin"])
+    user_id = "00000000-0000-0000-0000-000000000130"
+    memory_id = "00000000-0000-0000-0000-000000000131"
+    unicode_scope = "\u2003Alice\u2003"
+    metadata = {"agentic_memory": {"project_scope": [unicode_scope]}}
+
+    command.upgrade(config, "20260707_0082")
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (id, email, display_name) VALUES (%s, %s, %s)",
+                (user_id, "unicode-scope-0083@example.com", "Unicode Scope 0083"),
+            )
+            cur.execute(
+                """
+                INSERT INTO memories (
+                  id, user_id, memory_key, value, status, source_event_ids,
+                  memory_type, canonical_text, domain, sensitivity, metadata_json
+                ) VALUES (
+                  %s, %s, 'scope.unicode.0083', '{}'::jsonb, 'active',
+                  '[]'::jsonb, 'semantic', 'Unicode project whitespace',
+                  'project', 'internal', %s
+                )
+                """,
+                (memory_id, user_id, Jsonb(metadata)),
+            )
+
+    command.upgrade(config, "head")
+
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT project_id, metadata_json FROM memories WHERE id = %s",
+                (memory_id,),
+            )
+            persisted = cur.fetchone()
+    assert persisted == {
+        "project_id": unicode_scope,
+        "metadata_json": {**metadata, "project_scope": [unicode_scope]},
+    }
 
 
 def test_tool_execution_task_step_linkage_migration_backfills_existing_rows(database_urls):
@@ -2143,3 +2315,499 @@ def test_migrations_upgrade_and_downgrade(database_urls):
                 """
             )
             assert [row[0] for row in cur.fetchall()] == ["pgcrypto", "vector"]
+
+
+def test_project_scope_identity_upgrade_repairs_dedupe_without_widening_empty_scope(
+    database_urls,
+):
+    config = make_alembic_config(database_urls["admin"])
+    command.upgrade(config, "20260713_0089")
+    user_id = "00000000-0000-0000-0000-000000000301"
+    source_a = "00000000-0000-0000-0000-000000000302"
+    source_b = "00000000-0000-0000-0000-000000000303"
+    memory_id = "00000000-0000-0000-0000-000000000304"
+    stale_project = "00000000-0000-0000-0000-000000000305"
+    raw_text = "\tFact: migration scope identity is deterministic.\n"
+    empty_metadata = {
+        "project_scope": [],
+        "agentic_memory": {"project_scope": [stale_project]},
+    }
+    unicode_sources = {
+        scope: f"00000000-0000-0000-0003-{index:012d}"
+        for index, scope in enumerate(
+            ("İ", "i", "Straße", "STRASSE", "Σ", "σ", "ς"),
+            start=1,
+        )
+    }
+    numeric_sources = (
+        ("00000000-0000-0000-0004-000000000001", "2026-01-10T00:00:00Z", [1]),
+        ("00000000-0000-0000-0004-000000000002", "2026-01-11T00:00:00Z", [1.0]),
+        ("00000000-0000-0000-0004-000000000003", "2026-01-12T00:00:00Z", [-0.0]),
+        ("00000000-0000-0000-0004-000000000004", "2026-01-13T00:00:00Z", [0]),
+        ("00000000-0000-0000-0004-000000000005", "2026-01-14T00:00:00Z", [True]),
+    )
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (id, email, display_name) VALUES (%s, %s, %s)",
+                (user_id, "scope-0090@example.com", "Scope 0090"),
+            )
+            for source_id, captured_at, scope, old_key in (
+                (
+                    source_a,
+                    "2026-01-01T00:00:00Z",
+                    [" Beta ", "ALICE", "alice"],
+                    "capture-md5:old-a",
+                ),
+                (
+                    source_b,
+                    "2026-01-02T00:00:00Z",
+                    ["alice", "beta"],
+                    "capture-md5:old-b",
+                ),
+            ):
+                cur.execute(
+                    """
+                    INSERT INTO sources (
+                      id, user_id, source_type, content_hash, dedupe_key,
+                      captured_at, domain, sensitivity, metadata_json
+                    ) VALUES (
+                      %s, %s, 'manual_text', %s, %s, %s::timestamptz,
+                      'project', 'private', %s
+                    )
+                    """,
+                    (
+                        source_id,
+                        user_id,
+                        f"sha256:{source_id}",
+                        old_key,
+                        captured_at,
+                        Jsonb({"raw_text": raw_text, "project_scope": scope}),
+                    ),
+                )
+            for index, (scope, source_id) in enumerate(unicode_sources.items(), start=3):
+                cur.execute(
+                    """
+                    INSERT INTO sources (
+                      id, user_id, source_type, content_hash, dedupe_key,
+                      captured_at, domain, sensitivity, metadata_json
+                    ) VALUES (
+                      %s, %s, 'manual_text', %s, %s, %s::timestamptz,
+                      'project', 'private', %s
+                    )
+                    """,
+                    (
+                        source_id,
+                        user_id,
+                        f"sha256:{source_id}",
+                        f"capture-md5:old-unicode-{index}",
+                        f"2026-01-{index:02d}T00:00:00Z",
+                        Jsonb({"raw_text": raw_text, "project_scope": [scope]}),
+                    ),
+                )
+            for index, (source_id, captured_at, scope) in enumerate(numeric_sources, start=1):
+                cur.execute(
+                    """
+                    INSERT INTO sources (
+                      id, user_id, source_type, content_hash, dedupe_key,
+                      captured_at, domain, sensitivity, metadata_json
+                    ) VALUES (
+                      %s, %s, 'manual_text', %s, %s, %s::timestamptz,
+                      'project', 'private', %s
+                    )
+                    """,
+                    (
+                        source_id,
+                        user_id,
+                        f"sha256:{source_id}",
+                        f"capture-md5:old-numeric-{index}",
+                        captured_at,
+                        Jsonb({"raw_text": raw_text, "project_scope": scope}),
+                    ),
+                )
+            cur.execute(
+                """
+                INSERT INTO memories (
+                  id, user_id, memory_key, value, status, source_event_ids,
+                  memory_type, canonical_text, domain, sensitivity, project_id,
+                  metadata_json
+                ) VALUES (
+                  %s, %s, 'scope.0090.empty', '{}'::jsonb, 'active',
+                  '[]'::jsonb, 'semantic', '0090 explicit empty', 'project',
+                  'internal', %s::uuid, %s
+                )
+                """,
+                (memory_id, user_id, stale_project, Jsonb(empty_metadata)),
+            )
+
+    command.upgrade(config, "head")
+
+    expected_key = capture_dedupe_key_for_text(
+        raw_text,
+        ("alice", "beta"),
+        domain="project",
+        sensitivity="private",
+    )
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id::text AS id, dedupe_key
+                FROM sources
+                WHERE id = ANY(%s::uuid[])
+                ORDER BY captured_at, id
+                """,
+                ([source_a, source_b],),
+            )
+            assert cur.fetchall() == [
+                {"id": source_a, "dedupe_key": expected_key},
+                {"id": source_b, "dedupe_key": None},
+            ]
+            cur.execute(
+                """
+                SELECT id::text AS id, metadata_json -> 'project_scope' ->> 0 AS scope,
+                       dedupe_key
+                FROM sources
+                WHERE id = ANY(%s::uuid[])
+                ORDER BY captured_at, id
+                """,
+                (list(unicode_sources.values()),),
+            )
+            repaired_unicode = {row["scope"]: row for row in cur.fetchall()}
+            assert set(repaired_unicode) == set(unicode_sources)
+            for scope, source_id in unicode_sources.items():
+                assert repaired_unicode[scope] == {
+                    "id": source_id,
+                    "scope": scope,
+                    "dedupe_key": capture_dedupe_key_for_text(
+                        raw_text,
+                        (scope,),
+                        domain="project",
+                        sensitivity="private",
+                    ),
+                }
+            assert len({row["dedupe_key"] for row in repaired_unicode.values()}) == 7
+            cur.execute(
+                """
+                SELECT id::text AS id, dedupe_key
+                FROM sources
+                WHERE id = ANY(%s::uuid[])
+                ORDER BY captured_at, id
+                """,
+                ([source_id for source_id, _captured_at, _scope in numeric_sources],),
+            )
+            repaired_numeric = cur.fetchall()
+            assert repaired_numeric == [
+                {
+                    "id": numeric_sources[0][0],
+                    "dedupe_key": capture_dedupe_key_for_text(
+                        raw_text,
+                        ("1",),
+                        domain="project",
+                        sensitivity="private",
+                    ),
+                },
+                {"id": numeric_sources[1][0], "dedupe_key": None},
+                {
+                    "id": numeric_sources[2][0],
+                    "dedupe_key": capture_dedupe_key_for_text(
+                        raw_text,
+                        ("0",),
+                        domain="project",
+                        sensitivity="private",
+                    ),
+                },
+                {"id": numeric_sources[3][0], "dedupe_key": None},
+                {
+                    "id": numeric_sources[4][0],
+                    "dedupe_key": capture_dedupe_key_for_text(
+                        raw_text,
+                        ("True",),
+                        domain="project",
+                        sensitivity="private",
+                    ),
+                },
+            ]
+            cur.execute(
+                "SELECT project_id::text AS project_id, metadata_json FROM memories WHERE id = %s",
+                (memory_id,),
+            )
+            assert cur.fetchone() == {
+                "project_id": stale_project,
+                "metadata_json": empty_metadata,
+            }
+
+
+def test_project_scope_identity_upgrade_resolves_all_legacy_source_forms_and_blocks_recapture(
+    database_urls,
+):
+    config = make_alembic_config(database_urls["admin"])
+    command.upgrade(config, "20260713_0089")
+    user_id = "00000000-0000-0000-0000-000000000331"
+    target_scope = "Legacy Project"
+    cases = {
+        "root_canonical": {"project_scope": [f" {target_scope} "]},
+        "metadata_canonical": {"metadata_json": {"project_scope": [f" {target_scope} "]}},
+        "scope_canonical": {"scope_json": {"project_scope": [f" {target_scope} "]}},
+        "direct_identity_scope": {
+            "project_id": "stale-project",
+            "agent_identity": {"project_scope": [f" {target_scope} "]},
+        },
+        "metadata_agentic_scope": {"metadata_json": {"agentic_memory": {"project_scope": [f" {target_scope} "]}}},
+        "root_project_alias": {"project": f" {target_scope} "},
+        "metadata_project_id_alias": {"metadata_json": {"project_id": f" {target_scope} "}},
+        "scope_agentic_projects_alias": {"scope_json": {"agentic_memory": {"projects": [f" {target_scope} "]}}},
+    }
+    source_ids = {name: f"00000000-0000-0000-0004-{index:012d}" for index, name in enumerate(cases, start=1)}
+    raw_texts = {name: f"Fact: {name} keeps its migrated source scope." for name in cases}
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (id, email, display_name) VALUES (%s, %s, %s)",
+                (user_id, "legacy-source-forms@example.com", "Legacy source forms"),
+            )
+            for index, (name, scope_metadata) in enumerate(cases.items(), start=1):
+                cur.execute(
+                    """
+                    INSERT INTO sources (
+                      id, user_id, source_type, content_hash, dedupe_key,
+                      captured_at, domain, sensitivity, metadata_json
+                    ) VALUES (
+                      %s, %s, 'manual_text', %s, %s, %s::timestamptz,
+                      'project', 'private', %s
+                    )
+                    """,
+                    (
+                        source_ids[name],
+                        user_id,
+                        f"sha256:legacy-source-{index}",
+                        f"capture-md5:pre-0090-{index}",
+                        f"2026-02-{index:02d}T00:00:00Z",
+                        Jsonb({"raw_text": raw_texts[name], **scope_metadata}),
+                    ),
+                )
+
+    command.upgrade(config, "head")
+
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id::text AS id, dedupe_key
+                FROM sources
+                WHERE id = ANY(%s::uuid[])
+                """,
+                (list(source_ids.values()),),
+            )
+            repaired = {row["id"]: row["dedupe_key"] for row in cur.fetchall()}
+    for name, source_id in source_ids.items():
+        scoped_key = capture_dedupe_key_for_text(
+            raw_texts[name],
+            (target_scope,),
+            domain="project",
+            sensitivity="private",
+        )
+        assert repaired[source_id] == scoped_key
+        assert repaired[source_id] != capture_dedupe_key_for_text(
+            raw_texts[name],
+            domain="project",
+            sensitivity="private",
+        )
+
+    with user_connection(database_urls["app"], UUID(user_id)) as conn:
+        service = VNextCaptureService(PostgresVNextStore(conn))
+        for name, source_id in source_ids.items():
+            result = service.capture_text(
+                raw_texts[name],
+                project_scope=(target_scope,),
+                domain="project",
+                sensitivity="private",
+            )
+            assert result.duplicate is True
+            assert result.source_id == source_id
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS count FROM sources WHERE deleted_at IS NULL")
+            assert cur.fetchone()["count"] == len(cases)
+
+
+def test_project_scope_identity_upgrade_keeps_present_empty_nested_source_scope_authoritative(
+    database_urls,
+):
+    config = make_alembic_config(database_urls["admin"])
+    command.upgrade(config, "20260713_0089")
+    user_id = "00000000-0000-0000-0000-000000000351"
+    stale_project = "Legacy Project"
+    cases: dict[str, dict[str, object]] = {
+        "nested_blank": {
+            "project_id": stale_project,
+            "agent_identity": {"project_scope": ["\t\n"]},
+        },
+        "nested_null": {
+            "project_id": stale_project,
+            "agentic_memory": {"project_scope": None},
+        },
+        "nested_malformed": {
+            "project_id": stale_project,
+            "agent_identity": {"project_scope": {"leak": stale_project}},
+        },
+        "nested_fractional": {
+            "project_id": stale_project,
+            "agentic_memory": {"project_scope": 1.5},
+        },
+        "nested_merged_valid": {
+            "project_id": stale_project,
+            "agentic_memory": {"project_scope": " Alpha "},
+            "agent_identity": {"project_scope": [7, 1e1, True]},
+        },
+    }
+    source_ids = {name: f"00000000-0000-0000-0005-{index:012d}" for index, name in enumerate(cases, start=1)}
+    raw_texts = {name: f"Fact: migration {name} preserves nested scope presence." for name in cases}
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (id, email, display_name) VALUES (%s, %s, %s)",
+                (user_id, "nested-presence-0090@example.com", "Nested presence 0090"),
+            )
+            for index, (name, metadata) in enumerate(cases.items(), start=1):
+                cur.execute(
+                    """
+                    INSERT INTO sources (
+                      id, user_id, source_type, content_hash, dedupe_key,
+                      captured_at, domain, sensitivity, metadata_json
+                    ) VALUES (
+                      %s, %s, 'manual_text', %s, %s, %s::timestamptz,
+                      'project', 'private', %s
+                    )
+                    """,
+                    (
+                        source_ids[name],
+                        user_id,
+                        f"sha256:nested-presence-{index}",
+                        f"capture-md5:pre-0090-nested-{index}",
+                        f"2026-03-{index:02d}T00:00:00Z",
+                        Jsonb({"raw_text": raw_texts[name], **metadata}),
+                    ),
+                )
+
+    command.upgrade(config, "20260714_0090")
+
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id::text AS id, dedupe_key
+                FROM sources
+                WHERE id = ANY(%s::uuid[])
+                """,
+                (list(source_ids.values()),),
+            )
+            repaired = {row["id"]: row["dedupe_key"] for row in cur.fetchall()}
+
+    for name, metadata in cases.items():
+        resolution = resolve_source_metadata_project_scope(metadata)
+        assert resolution.present is True
+        if name == "nested_merged_valid":
+            assert resolution.values == ("Alpha", "7", "10", "True")
+        else:
+            assert resolution.values == ()
+        assert repaired[source_ids[name]] == capture_dedupe_key_for_text(
+            raw_texts[name],
+            resolution.values,
+            domain="project",
+            sensitivity="private",
+        )
+        assert repaired[source_ids[name]] != capture_dedupe_key_for_text(
+            raw_texts[name],
+            (stale_project,),
+            domain="project",
+            sensitivity="private",
+        )
+
+
+def test_project_scope_identity_upgrade_matches_python_strip_and_blocks_unicode_whitespace_recapture(
+    database_urls,
+):
+    config = make_alembic_config(database_urls["admin"])
+    command.upgrade(config, "20260713_0089")
+    user_id = "00000000-0000-0000-0000-000000000341"
+    project_scope = ("Legacy Project",)
+    raw_texts = {
+        "nbsp": "\u00a0Fact: NBSP boundary\u00a0",
+        "nel": "\u0085Fact: NEL boundary\u0085",
+        "em_space": "\u2003Fact: EM SPACE boundary\u2003",
+    }
+    source_ids = {name: f"00000000-0000-0000-0005-{index:012d}" for index, name in enumerate(raw_texts, start=1)}
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (id, email, display_name) VALUES (%s, %s, %s)",
+                (user_id, "source-strip-0090@example.com", "Source strip 0090"),
+            )
+            for index, (name, raw_text) in enumerate(raw_texts.items(), start=1):
+                cur.execute(
+                    """
+                    INSERT INTO sources (
+                      id, user_id, source_type, content_hash, dedupe_key,
+                      captured_at, domain, sensitivity, metadata_json
+                    ) VALUES (
+                      %s, %s, 'manual_text', %s, %s, %s::timestamptz,
+                      'project', 'private', %s
+                    )
+                    """,
+                    (
+                        source_ids[name],
+                        user_id,
+                        f"sha256:strip-{name}",
+                        f"capture-md5:pre-strip-{name}",
+                        f"2026-03-{index:02d}T00:00:00Z",
+                        Jsonb(
+                            {
+                                "raw_text": raw_text,
+                                "project_scope": list(project_scope),
+                            }
+                        ),
+                    ),
+                )
+
+    command.upgrade(config, "head")
+
+    expected_keys = {
+        name: capture_dedupe_key_for_text(
+            raw_text,
+            project_scope,
+            domain="project",
+            sensitivity="private",
+        )
+        for name, raw_text in raw_texts.items()
+    }
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id::text AS id, dedupe_key
+                FROM sources
+                WHERE id = ANY(%s::uuid[])
+                """,
+                (list(source_ids.values()),),
+            )
+            repaired = {row["id"]: row["dedupe_key"] for row in cur.fetchall()}
+    assert repaired == {source_ids[name]: expected_keys[name] for name in raw_texts}
+
+    with user_connection(database_urls["app"], UUID(user_id)) as conn:
+        service = VNextCaptureService(PostgresVNextStore(conn))
+        for name, raw_text in raw_texts.items():
+            result = service.capture_text(
+                raw_text,
+                project_scope=project_scope,
+                domain="project",
+                sensitivity="private",
+            )
+            assert result.duplicate is True
+            assert result.source_id == source_ids[name]
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS count FROM sources WHERE deleted_at IS NULL")
+            assert cur.fetchone()["count"] == len(raw_texts)

@@ -1,5 +1,5 @@
 import React from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import TasksPage from "./page";
@@ -54,6 +54,16 @@ vi.mock("../../lib/api", async () => {
     listTasks: listTasksMock,
   };
 });
+
+function deferred<T = never>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
 
 describe("TasksPage", () => {
   beforeEach(() => {
@@ -193,5 +203,45 @@ describe("TasksPage", () => {
     expect(
       screen.getByText("The task-run records could not be read from the configured backend."),
     ).toBeInTheDocument();
+  });
+
+  it("starts independent task child reads in the same request wave", async () => {
+    const selected = taskFixtures.find((task) => task.latest_execution_id);
+    if (!selected) {
+      throw new Error("Expected a task fixture with a latest execution.");
+    }
+
+    getApiConfigMock.mockReturnValue({
+      apiBaseUrl: "https://api.example.com",
+      userId: "user-1",
+      defaultThreadId: "thread-1",
+      defaultToolId: "tool-1",
+    });
+    hasLiveApiConfigMock.mockReturnValue(true);
+    listTasksMock.mockResolvedValue({
+      items: [selected],
+      summary: { total_count: 1, order: ["created_at_asc", "id_asc"] },
+    });
+    getTaskDetailMock.mockResolvedValue({ task: selected });
+
+    const steps = deferred();
+    const execution = deferred();
+    const runs = deferred();
+    getTaskStepsMock.mockReturnValue(steps.promise);
+    getToolExecutionMock.mockReturnValue(execution.promise);
+    listTaskRunsMock.mockReturnValue(runs.promise);
+
+    const pagePromise = TasksPage({ searchParams: Promise.resolve({ task: selected.id }) });
+
+    await waitFor(() => {
+      expect(getTaskStepsMock).toHaveBeenCalledTimes(1);
+      expect(getToolExecutionMock).toHaveBeenCalledTimes(1);
+      expect(listTaskRunsMock).toHaveBeenCalledTimes(1);
+    });
+
+    steps.reject(new Error("steps unavailable"));
+    execution.reject(new Error("execution unavailable"));
+    runs.reject(new Error("runs unavailable"));
+    await pagePromise;
   });
 });

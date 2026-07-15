@@ -1682,6 +1682,66 @@ def test_context_pack_does_not_widen_explicit_empty_memory_scope() -> None:
     assert [row["id"] for row in pack["relevant_memories"]] == ["memory-alicebot"]
 
 
+def test_source_post_admission_uses_complete_persisted_envelope_scope() -> None:
+    marker = "persisted source envelope evidence"
+    stale_project = "stale-project"
+    real_project = "real-project"
+    explicitly_empty = {
+        "id": "source-explicit-empty",
+        "source_type": "chat_session",
+        "title": marker,
+        "content_hash": "sha256:source-explicit-empty",
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {
+            "project_id": stale_project,
+            "metadata_json": {"project_scope": []},
+        },
+    }
+    inner_real = {
+        "id": "source-inner-real",
+        "source_type": "chat_session",
+        "title": marker,
+        "content_hash": "sha256:source-inner-real",
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {
+            "project_id": stale_project,
+            "metadata_json": {"project_scope": [real_project]},
+        },
+    }
+    store = InMemoryVNextRetrievalStore(
+        memories=[],
+        sources=[explicitly_empty, inner_real],
+        source_chunks=[
+            {
+                "id": "chunk-explicit-empty",
+                "source_id": explicitly_empty["id"],
+                "chunk_index": 0,
+                "text": marker,
+            },
+            {
+                "id": "chunk-inner-real",
+                "source_id": inner_real["id"],
+                "chunk_index": 0,
+                "text": marker,
+            },
+        ],
+    )
+
+    stale_pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query=marker, projects=(stale_project,))
+    )
+    real_pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query=marker, projects=(real_project,))
+    )
+
+    assert stale_pack["sources"] == []
+    assert [row["id"] for row in real_pack["sources"]] == ["source-inner-real"]
+    assert real_pack["trace"]["stages"]["sources"]["chunk_fts"] == 1
+    assert real_pack["trace"]["stages"]["sources"]["title_recency"] == 1
+
+
 def test_scoped_pack_rejects_cross_project_source_metadata_and_derivations(monkeypatch) -> None:
     cross_scope_source = {
         "id": "source-hermes",
@@ -1689,7 +1749,11 @@ def test_scoped_pack_rejects_cross_project_source_metadata_and_derivations(monke
         "captured_at": "2025-01-02T00:00:00Z",
         "domain": "project",
         "sensitivity": "private",
-        "metadata_json": {"project_id": "hermes", "session_date": "2025-01-01"},
+        "metadata_json": {
+            "project_id": "alicebot",
+            "session_date": "2025-01-01",
+            "metadata_json": {"project_scope": ["hermes"]},
+        },
     }
     memories = [
         _memory_row(
@@ -1718,7 +1782,22 @@ def test_scoped_pack_rejects_cross_project_source_metadata_and_derivations(monke
             },
         ),
     ]
-    store = InMemoryVNextRetrievalStore(memories=memories, sources=[cross_scope_source])
+    store = InMemoryVNextRetrievalStore(
+        memories=memories,
+        sources=[cross_scope_source],
+        provenance_links=[
+            {
+                "id": "link-hermes",
+                "target_type": "memory",
+                "target_id": "memory-alice-1",
+                "source_id": "source-hermes",
+                "source_chunk_id": "chunk-hermes",
+                "quote": "The release fundraiser raised $1,000.",
+                "evidence_role": "quoted_from",
+                "confidence": 0.9,
+            }
+        ],
+    )
     source_resolver_results: list[object] = []
     original_build_currency_chains = vnext_retrieval_module.vnext_currency.build_currency_chains
 
@@ -1742,6 +1821,7 @@ def test_scoped_pack_rejects_cross_project_source_metadata_and_derivations(monke
 
     assert source_resolver_results == [None]
     assert pack["sources"] == []
+    assert pack["supporting_evidence"] == []
     assert "derived_values" not in pack
     assert all("event_time" not in memory for memory in pack["relevant_memories"])
     first = pack["relevant_memories"][0]

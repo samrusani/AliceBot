@@ -2,7 +2,8 @@
 
 This page is the path-selection guide for external builders adopting Alice on
 top of the latest published `v0.10.3` baseline. Later changes on `main` are
-unreleased post-v0.10.2 remediation until they receive a new version.
+the uncommitted `v0.10.4` remediation candidate until they receive a release
+identity and publication evidence.
 
 ## Default Recommendation
 

@@ -146,6 +146,7 @@ from alicebot_api.vnext_agent_keys import (
     AgentKeyAuthenticationError,
     resolve_agent_identity,
 )
+from alicebot_api.vnext_artifact_review import dispatch_vnext_artifact_review
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService
 from alicebot_api.vnext_capture import VNextCaptureService
 from alicebot_api.vnext_embeddings import (
@@ -172,6 +173,12 @@ from alicebot_api.vnext_memory_commit import (
     VNEXT_SENSITIVITY_LEVELS,
     is_pending_consolidation_candidate,
     memory_commit_request_from_payload,
+)
+from alicebot_api.vnext_project_scope import (
+    project_identifier_identity,
+    project_scopes_overlap,
+    resolve_project_scope,
+    source_project_scope,
 )
 from alicebot_api.vnext_projects import OPEN_LOOP_ACTIONS, ProjectAutomationRequest, VNextProjectService
 from alicebot_api.vnext_queue import QueueTaskRequest, VNextQueueService
@@ -1377,7 +1384,6 @@ def _handle_alice_state_at(context: MCPRuntimeContext, arguments: Mapping[str, o
 
 
 def _handle_alice_resume(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(context, arguments)
     requested_project = _parse_optional_text(arguments, "project")
     decision = _mcp_agent_policy_preflight(
         context,
@@ -1388,9 +1394,7 @@ def _handle_alice_resume(context: MCPRuntimeContext, arguments: Mapping[str, obj
     return _vnext_resume(
         context,
         arguments,
-        effective_project_scope=(
-            decision.effective_project_scope if identity is not None and identity.project_scope else ()
-        ),
+        effective_project_scope=decision.effective_project_scope,
     )
 
 
@@ -1684,14 +1688,16 @@ def _memory_matches_query(row: Mapping[str, object], query: str | None) -> bool:
 def _memory_matches_project(row: Mapping[str, object], project: str | None) -> bool:
     if project is None:
         return True
-    needle = project.casefold()
+    needle = project_identifier_identity(project)
+    if needle == "":
+        return False
     metadata = row.get("metadata_json")
     if isinstance(metadata, Mapping):
         project_id = metadata.get("project_id")
-        if isinstance(project_id, str) and project_id.casefold() == needle:
+        if isinstance(project_id, str) and project_identifier_identity(project_id) == needle:
             return True
     domain = row.get("domain")
-    return isinstance(domain, str) and domain.casefold() == needle
+    return isinstance(domain, str) and project_identifier_identity(domain) == needle
 
 
 def _created_at_sort_key(row: Mapping[str, object]) -> tuple[str, str]:
@@ -1808,7 +1814,6 @@ def _vnext_resume(
         maximum=MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     )
     query = _parse_optional_text(arguments, "query")
-    project = _parse_optional_text(arguments, "project")
     since = _parse_optional_datetime(arguments, "since")
     until = _parse_optional_datetime(arguments, "until")
     filters_ignored = [
@@ -1817,22 +1822,17 @@ def _vnext_resume(
         if arguments.get(key) not in (None, "", False)
     ]
 
-    def _memory_matches(row: Mapping[str, object]) -> bool:
-        return (
-            str(row.get("status")) in _SQLITE_REVIEWABLE_STATUSES
-            and _resource_matches_project_scope(row, effective_project_scope)
-            and _memory_matches_query(row, query)
-            and _memory_matches_project(row, project)
-            and _row_in_window(row, key="created_at", since=since, until=until)
-        )
-
     with _vnext_store_context(context) as store:
-        memories = [row for row in store.list_memories() if _memory_matches(row)]
-
-        decisions = sorted(
-            (row for row in memories if row.get("memory_type") == "decision"),
-            key=_created_at_sort_key,
-            reverse=True,
+        decisions = store.list_memories(
+            status=None,
+            statuses=tuple(_SQLITE_REVIEWABLE_STATUSES),
+            memory_types=("decision",),
+            projects=effective_project_scope or None,
+            created_at_start=since,
+            created_at_end=until,
+            query=query,
+            order_by_created_at=True,
+            limit=1,
         )
         last_decision: JsonObject | None = None
         if decisions:
@@ -1843,22 +1843,31 @@ def _vnext_resume(
                 ),
             }
 
-        loop_candidate_limit = max(max_open_loops, 1) * 5
-        loop_rows = [
-            row
-            for row in store.list_open_loops(status=None, limit=loop_candidate_limit)
-            if str(row.get("status")) in _SQLITE_OPEN_LOOP_ACTIVE_STATUSES
-            and _resource_matches_project_scope(row, effective_project_scope)
-            and _row_in_window(row, key="opened_at", since=since, until=until)
-        ]
+        loop_rows = []
+        if max_open_loops > 0:
+            loop_rows = store.list_open_loops(
+                status=None,
+                statuses=tuple(_SQLITE_OPEN_LOOP_ACTIVE_STATUSES),
+                query=query,
+                limit=max_open_loops,
+                scope_projects=effective_project_scope,
+                scope_window_start=since,
+                scope_window_end=until,
+            )
         open_loops = [_compact_vnext_open_loop(row) for row in loop_rows[:max_open_loops]]
 
         next_action: JsonObject | None = open_loops[0] if open_loops else None
         if next_action is None:
-            todo_memories = sorted(
-                (row for row in memories if row.get("memory_type") in _SQLITE_NEXT_ACTION_MEMORY_TYPES),
-                key=_created_at_sort_key,
-                reverse=True,
+            todo_memories = store.list_memories(
+                status=None,
+                statuses=tuple(_SQLITE_REVIEWABLE_STATUSES),
+                memory_types=tuple(_SQLITE_NEXT_ACTION_MEMORY_TYPES),
+                projects=effective_project_scope or None,
+                created_at_start=since,
+                created_at_end=until,
+                query=query,
+                order_by_created_at=True,
+                limit=1,
             )
             if todo_memories:
                 next_action = {
@@ -1871,15 +1880,51 @@ def _vnext_resume(
 
         recent_changes: list[JsonObject] = []
         if max_recent_changes > 0:
-            allowed_target_ids = {str(row.get("id")) for row in [*memories, *loop_rows] if row.get("id") is not None}
-            event_limit = max_recent_changes if not effective_project_scope else max(max_recent_changes * 5, 50)
-            recent_changes = [
-                _compact_vnext_event(row)
-                for row in store.list_events(limit=event_limit)
-                if not effective_project_scope
-                or str(row.get("target_id") or "") in allowed_target_ids
-                or _resource_matches_project_scope(row, effective_project_scope)
-            ][:max_recent_changes]
+            if not effective_project_scope and query is None:
+                event_rows = store.list_events(
+                    occurred_at_start=since,
+                    occurred_at_end=until,
+                    limit=max_recent_changes,
+                )
+            else:
+                # Event rows do not carry authoritative project scope. Query
+                # admitted memory targets and join loop events to authoritative
+                # loop scope before LIMIT. The loop join deliberately has no
+                # opened-at bound: an older active loop can have a newer event
+                # inside the requested event window.
+                event_rows = []
+                seen_event_ids: set[str] = set()
+                for event in store.list_resume_memory_events(
+                    statuses=tuple(_SQLITE_REVIEWABLE_STATUSES),
+                    projects=effective_project_scope,
+                    query=query,
+                    occurred_at_start=since,
+                    occurred_at_end=until,
+                    limit=max_recent_changes,
+                ):
+                    event_id = str(event.get("id") or "")
+                    if event_id:
+                        seen_event_ids.add(event_id)
+                    event_rows.append(event)
+                for event in store.list_open_loop_events(
+                    statuses=tuple(_SQLITE_OPEN_LOOP_ACTIVE_STATUSES),
+                    scope_projects=effective_project_scope,
+                    query=query,
+                    occurred_at_start=since,
+                    occurred_at_end=until,
+                    limit=max_recent_changes,
+                ):
+                    event_id = str(event.get("id") or "")
+                    if event_id and event_id in seen_event_ids:
+                        continue
+                    if event_id:
+                        seen_event_ids.add(event_id)
+                    event_rows.append(event)
+                event_rows.sort(
+                    key=lambda row: (str(row.get("occurred_at") or ""), str(row.get("id") or "")),
+                    reverse=True,
+                )
+            recent_changes = [_compact_vnext_event(row) for row in event_rows[:max_recent_changes]]
 
     return _json_object(
         {
@@ -1899,8 +1944,7 @@ def _vnext_resume(
 def _resource_matches_project_scope(resource: Mapping[str, object], project_scope: tuple[str, ...]) -> bool:
     if not project_scope:
         return True
-    allowed = {value.casefold() for value in project_scope}
-    return any(value.casefold() in allowed for value in resource_project_scope(resource))
+    return project_scopes_overlap(resource_project_scope(resource), project_scope)
 
 
 def _vnext_memory_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -2902,6 +2946,79 @@ def _handle_alice_trust_signals(
         )
 
 
+def _authorize_continuity_explain_target(
+    context: MCPRuntimeContext,
+    *,
+    identity: AgentIdentity,
+    continuity_object_id: UUID,
+) -> None:
+    with _store_context(context) as store:
+        continuity_object = store.get_continuity_object_optional(continuity_object_id)
+    if not isinstance(continuity_object, Mapping):
+        raise _ExplainAuthorizationError()
+    scope = _continuity_object_project_scope(continuity_object)
+    classified = {
+        **continuity_object,
+        "domain": _continuity_object_classification(continuity_object, "domain"),
+        "sensitivity": _continuity_object_classification(continuity_object, "sensitivity"),
+    }
+    with _vnext_store_context(context) as policy_store:
+        _authorize_explain_resource(
+            policy_store,
+            identity=identity,
+            resource=classified,
+            project_scope=scope,
+            target_type="continuity_object",
+            target_id=str(continuity_object_id),
+        )
+
+
+def _authorize_entity_explain_target(
+    context: MCPRuntimeContext,
+    *,
+    identity: AgentIdentity,
+    entity_id: UUID,
+) -> None:
+    with _store_context(context) as store:
+        entity = store.get_entity_optional(entity_id)
+        edges = store.list_entity_edges_for_entity(entity_id) if entity is not None else []
+    if not isinstance(entity, Mapping):
+        raise _ExplainAuthorizationError()
+
+    memory_ids: list[str] = []
+
+    def add_memory_ids(value: object) -> None:
+        if not isinstance(value, list):
+            raise _ExplainAuthorizationError()
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise _ExplainAuthorizationError()
+            memory_ids.append(item)
+
+    add_memory_ids(entity.get("source_memory_ids"))
+    for edge in edges:
+        if not isinstance(edge, Mapping):
+            raise _ExplainAuthorizationError()
+        add_memory_ids(edge.get("source_memory_ids"))
+    memory_ids = list(dict.fromkeys(memory_ids))
+    if not memory_ids:
+        raise _ExplainAuthorizationError()
+
+    with _vnext_store_context(context) as policy_store:
+        for memory_id in memory_ids:
+            memory = policy_store.get_memory(memory_id)
+            if not isinstance(memory, Mapping):
+                raise _ExplainAuthorizationError()
+            _authorize_explain_resource(
+                policy_store,
+                identity=identity,
+                resource=memory,
+                project_scope=_backing_memory_project_scope(memory),
+                target_type="memory",
+                target_id=memory_id,
+            )
+
+
 def _handle_alice_explain(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     memory_id = _parse_optional_text(arguments, "memory_id")
     continuity_object_id = _parse_optional_uuid(arguments, "continuity_object_id")
@@ -2916,18 +3033,30 @@ def _handle_alice_explain(context: MCPRuntimeContext, arguments: Mapping[str, ob
             "alice_explain with entity_id or continuity_object_id is available on the Postgres "
             "backend; pass memory_id on the SQLite on-ramp"
         )
+    identity = _agent_identity_from_arguments(context, arguments)
     if entity_id is not None:
-        with _store_context(context) as store:
-            return _json_object(
-                get_temporal_explain(
-                    store,
-                    user_id=context.user_id,
-                    request=TemporalExplainQueryInput(
-                        entity_id=entity_id,
-                        at=_parse_optional_datetime(arguments, "at"),
+        if _is_key_bound_explain(identity):
+            assert identity is not None
+            try:
+                _authorize_entity_explain_target(context, identity=identity, entity_id=entity_id)
+            except _ExplainAuthorizationError as exc:
+                _raise_explain_authorization_error(identity, exc)
+        try:
+            with _store_context(context) as store:
+                return _json_object(
+                    get_temporal_explain(
+                        store,
+                        user_id=context.user_id,
+                        request=TemporalExplainQueryInput(
+                            entity_id=entity_id,
+                            at=_parse_optional_datetime(arguments, "at"),
+                        ),
                     ),
-                ),
-            )
+                )
+        except LookupError:
+            if _is_key_bound_explain(identity):
+                raise MCPToolError(_EXPLAIN_UNAVAILABLE_MESSAGE) from None
+            raise
     if continuity_object_id is None:
         raise MCPToolError("alice_explain requires memory_id, continuity_object_id, or entity_id")
 
@@ -2935,15 +3064,30 @@ def _handle_alice_explain(context: MCPRuntimeContext, arguments: Mapping[str, ob
     if include_raw_content and get_settings().app_env not in {"development", "test"}:
         raise MCPToolError("include_raw_content is restricted to development/test environments")
 
-    with _store_context(context) as store:
-        return _json_object(
-            build_continuity_explain(
-                store,
-                user_id=context.user_id,
+    if _is_key_bound_explain(identity):
+        assert identity is not None
+        try:
+            _authorize_continuity_explain_target(
+                context,
+                identity=identity,
                 continuity_object_id=continuity_object_id,
-                include_raw_content=include_raw_content,
             )
-        )
+        except _ExplainAuthorizationError as exc:
+            _raise_explain_authorization_error(identity, exc)
+    try:
+        with _store_context(context) as store:
+            return _json_object(
+                build_continuity_explain(
+                    store,
+                    user_id=context.user_id,
+                    continuity_object_id=continuity_object_id,
+                    include_raw_content=include_raw_content,
+                )
+            )
+    except LookupError:
+        if _is_key_bound_explain(identity):
+            raise MCPToolError(_EXPLAIN_UNAVAILABLE_MESSAGE) from None
+        raise
 
 
 def _handle_alice_artifact_inspect(
@@ -3252,6 +3396,7 @@ def _handle_alice_vnext_context_tree(context: MCPRuntimeContext, arguments: Mapp
                 ContextTreeRequest(
                     query=_parse_optional_text(arguments, "query") or "",
                     domains=decision.effective_domains,
+                    projects=decision.effective_project_scope,
                     sensitivity_allowed=decision.effective_sensitivity_allowed,
                     limit=limit,
                     include_events=_parse_bool(arguments, key="include_events", default=True),
@@ -3500,14 +3645,51 @@ def _handle_alice_project_update_candidate(context: MCPRuntimeContext, arguments
 
 
 def _handle_alice_project_update_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(context, arguments)
+    artifact_id = _parse_required_text(arguments, "artifact_id")
+    blocked_decision: PolicyDecision | None = None
+    payload: VNextJsonObject | None = None
+    deferred_embedding_inputs: tuple[DeferredMemoryEmbedding, ...] = ()
+    actor_type = "system"
+    actor_id: str | None = None
+    trace_id: str | None = None
     with _vnext_store_context(context) as store:
-        service = VNextProjectService(store, defer_embeddings=True)
-        payload = service.review_project_update(
-            artifact_id=_parse_required_text(arguments, "artifact_id"),
-            action=_parse_required_text(arguments, "action"),
-            edited_current_state=_parse_optional_text(arguments, "edited_current_state"),
+        _target, actor_type, actor_id, decision = _authorize_vnext_artifact_target(
+            store,
+            identity=identity,
+            artifact_id=artifact_id,
+            action="artifact.review",
+            for_update=True,
         )
-    _persist_vnext_deferred_embedding_inputs(context, service.deferred_embedding_inputs)
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            if identity is None:
+                actor_type = "user"
+                actor_id = str(context.user_id)
+            trace_id = _parse_optional_text(arguments, "trace_id") or decision.trace_id
+            service = VNextProjectService(store, defer_embeddings=True)
+            payload = service.review_project_update(
+                artifact_id=artifact_id,
+                action=_parse_required_text(arguments, "action"),
+                edited_current_state=_parse_optional_text(arguments, "edited_current_state"),
+                actor_type=actor_type,
+                actor_id=actor_id,
+                trace_id=trace_id,
+                run_id=identity.agent_run_id if identity is not None else None,
+            )
+            deferred_embedding_inputs = service.deferred_embedding_inputs
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext project update review did not complete")
+    _persist_vnext_deferred_embedding_inputs(
+        context,
+        deferred_embedding_inputs,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        trace_id=trace_id,
+    )
     return _json_object(payload)
 
 
@@ -3802,12 +3984,12 @@ def _handle_alice_vnext_open_loops(context: MCPRuntimeContext, arguments: Mappin
     )
     limit = _parse_int(arguments, key="limit", default=20, minimum=1, maximum=100)
     with _vnext_store_context(context) as store:
-        candidate_limit = limit if not decision.effective_project_scope else 100
         loops = store.list_open_loops(
             status=status if status != "all" else None,
             domains=list(decision.effective_domains) or None,
             sensitivity_allowed=list(decision.effective_sensitivity_allowed),
-            limit=candidate_limit,
+            scope_projects=decision.effective_project_scope,
+            limit=limit,
         )
         if decision.effective_project_scope:
             loops = [loop for loop in loops if _resource_matches_project_scope(loop, decision.effective_project_scope)]
@@ -4254,6 +4436,221 @@ def _handle_alice_vnext_recent_memory_commits(
 # Timeline safety bound: supersession chains are already depth-capped by the
 # commit service, but revision lists are not; keep the merged view small.
 _MEMORY_TIMELINE_MAX_ENTRIES = 50
+_EXPLAIN_UNAVAILABLE_MESSAGE = "requested explanation is unavailable"
+
+
+class _ExplainAuthorizationError(RuntimeError):
+    """Internal stop signal for a fully-authorized explain expansion."""
+
+    def __init__(self, decision: PolicyDecision | None = None) -> None:
+        super().__init__(_EXPLAIN_UNAVAILABLE_MESSAGE)
+        self.decision = decision
+
+
+def _is_key_bound_explain(identity: AgentIdentity | None) -> bool:
+    return identity is not None and identity.auth == "agent_api_key"
+
+
+def _raise_explain_authorization_error(
+    identity: AgentIdentity | None,
+    error: _ExplainAuthorizationError,
+) -> None:
+    if _is_key_bound_explain(identity):
+        raise MCPToolError(_EXPLAIN_UNAVAILABLE_MESSAGE)
+    if error.decision is not None:
+        _raise_mcp_policy_blocked(error.decision)
+    raise MCPToolError(_EXPLAIN_UNAVAILABLE_MESSAGE)
+
+
+def _authorize_explain_resource(
+    store: object,
+    *,
+    identity: AgentIdentity | None,
+    resource: Mapping[str, object],
+    project_scope: tuple[str, ...],
+    target_type: str,
+    target_id: str,
+) -> None:
+    """Require an unfiltered policy decision for one expanded resource."""
+
+    _actor_type, _actor_id, decision = _policy_checked(
+        store,  # type: ignore[arg-type]
+        identity=identity,
+        action="memory.audit",
+        domains=(str(resource.get("domain") or "unknown"),),
+        sensitivity_allowed=(str(resource.get("sensitivity") or "unknown"),),
+        project_scope=project_scope,
+        require_explicit_project_scope=True,
+        target_type=target_type,
+        target_id=target_id,
+    )
+    # ``allowed_with_filtering`` is not sufficient for an explain response:
+    # the downstream services expand related rows and do not accept filters.
+    if decision.decision != "allowed":
+        raise _ExplainAuthorizationError(decision)
+
+
+def _backing_memory_project_scope(memory: Mapping[str, object]) -> tuple[str, ...]:
+    """Resolve scope from a full memory row, then its legacy value payload."""
+
+    row_scope = resolve_project_scope(memory)
+    if row_scope.present or row_scope.values:
+        return row_scope.values
+    value = memory.get("value")
+    if isinstance(value, Mapping):
+        return resolve_project_scope(value).values
+    return ()
+
+
+def _continuity_object_project_scope(row: Mapping[str, object]) -> tuple[str, ...]:
+    """Resolve legacy continuity scope with provenance precedence over body."""
+
+    provenance = row.get("provenance")
+    body = row.get("body")
+    envelope: dict[str, object] = {
+        "metadata_json": dict(provenance) if isinstance(provenance, Mapping) else {},
+        "scope_json": dict(body) if isinstance(body, Mapping) else {},
+    }
+    return resolve_project_scope(envelope).values
+
+
+def _continuity_object_classification(row: Mapping[str, object], key: str) -> str:
+    for container_key in ("provenance", "body"):
+        container = row.get(container_key)
+        if isinstance(container, Mapping):
+            value = container.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return "unknown"
+
+
+def _authorize_memory_audit_provenance(
+    store: object,
+    *,
+    identity: AgentIdentity | None,
+    provenance_links: object,
+) -> set[str]:
+    """Authorize every persisted source disclosed by a memory audit."""
+
+    # Keyless local operator calls retain their historical tolerance for old
+    # or incomplete provenance rows. Authenticated callers fail closed.
+    if not _is_key_bound_explain(identity):
+        return set()
+    if not isinstance(provenance_links, list):
+        raise _ExplainAuthorizationError()
+    links = provenance_links
+    authorized_source_ids: set[str] = set()
+    get_source = getattr(store, "get_source", None)
+    if not callable(get_source):
+        raise _ExplainAuthorizationError()
+    for link in links:
+        if not isinstance(link, Mapping):
+            raise _ExplainAuthorizationError()
+        source_id_value = link.get("source_id")
+        # A chunk id cannot be authorized without its persisted parent source.
+        if source_id_value is None or str(source_id_value).strip() == "":
+            raise _ExplainAuthorizationError()
+        source_id = str(source_id_value)
+        source = get_source(source_id)
+        if not isinstance(source, Mapping):
+            raise _ExplainAuthorizationError()
+        source_chunk_id = link.get("source_chunk_id")
+        if source_chunk_id is not None and str(source_chunk_id).strip():
+            list_source_chunks = getattr(store, "list_source_chunks", None)
+            if not callable(list_source_chunks):
+                raise _ExplainAuthorizationError()
+            parent_chunks = list_source_chunks(source_id)
+            if not any(
+                isinstance(chunk, Mapping) and str(chunk.get("id") or "") == str(source_chunk_id)
+                for chunk in parent_chunks
+            ):
+                raise _ExplainAuthorizationError()
+        _authorize_explain_resource(
+            store,
+            identity=identity,
+            resource=source,
+            project_scope=source_project_scope(source),
+            target_type="source",
+            target_id=source_id,
+        )
+        authorized_source_ids.add(source_id)
+    return authorized_source_ids
+
+
+def _entity_backing_is_fully_authorized(
+    store: object,
+    *,
+    identity: AgentIdentity,
+    entity_id: str,
+) -> bool:
+    """Whether every active memory/source edge backing an entity is visible."""
+
+    list_edges = getattr(store, "list_edges", None)
+    if not callable(list_edges):
+        return False
+    edges = [*list_edges(from_id=entity_id), *list_edges(to_id=entity_id)]
+    backing_seen = False
+    try:
+        for edge in edges:
+            if not isinstance(edge, Mapping):
+                return False
+            for type_key, id_key in (("from_type", "from_id"), ("to_type", "to_id")):
+                resource_type = str(edge.get(type_key) or "")
+                resource_id = str(edge.get(id_key) or "")
+                if not resource_id or resource_type == "entity":
+                    continue
+                if resource_type == "memory":
+                    backing_seen = True
+                    memory = store.get_memory(resource_id)  # type: ignore[attr-defined]
+                    if not isinstance(memory, Mapping):
+                        return False
+                    _authorize_explain_resource(
+                        store,
+                        identity=identity,
+                        resource=memory,
+                        project_scope=_backing_memory_project_scope(memory),
+                        target_type="memory",
+                        target_id=resource_id,
+                    )
+                elif resource_type == "source":
+                    backing_seen = True
+                    source = store.get_source(resource_id)  # type: ignore[attr-defined]
+                    if not isinstance(source, Mapping):
+                        return False
+                    _authorize_explain_resource(
+                        store,
+                        identity=identity,
+                        resource=source,
+                        project_scope=source_project_scope(source),
+                        target_type="source",
+                        target_id=resource_id,
+                    )
+        return backing_seen
+    except _ExplainAuthorizationError:
+        return False
+
+
+def _authorized_memory_audit_entity_ids(
+    store: object,
+    *,
+    identity: AgentIdentity | None,
+    chain: object,
+) -> set[str] | None:
+    """Filter optional linked-entity annotations through all their backings."""
+
+    if not _is_key_bound_explain(identity):
+        return None
+    assert identity is not None
+    nodes = chain if isinstance(chain, list) else []
+    candidate_ids: list[str] = []
+    for node in nodes:
+        if isinstance(node, Mapping):
+            candidate_ids.extend(_memory_linked_entity_ids(store, str(node.get("id") or "")))
+    return {
+        entity_id
+        for entity_id in dict.fromkeys(candidate_ids)
+        if _entity_backing_is_fully_authorized(store, identity=identity, entity_id=entity_id)
+    }
 
 
 def _timeline_sort_key(value: object) -> str:
@@ -4265,15 +4662,10 @@ def _timeline_sort_key(value: object) -> str:
     return "9999"
 
 
-def _memory_linked_entities(store: object, memory_id: str) -> list[VNextJsonObject]:
-    """Entities connected to one memory via mentions/about graph edges.
+def _memory_linked_entity_ids(store: object, memory_id: str) -> list[str]:
+    """Return de-duplicated entity ids connected to one memory."""
 
-    Walks both edge directions (memory -> entity and entity -> memory) and
-    resolves each linked entity to a compact record. Callers must check
-    store support (list_edges + get_entity) first.
-    """
     list_edges = getattr(store, "list_edges")
-    get_entity = getattr(store, "get_entity")
     entity_ids: list[str] = []
     edge_sides = (
         (list_edges(from_id=memory_id), "memory", "entity", "to_id"),
@@ -4286,12 +4678,26 @@ def _memory_linked_entities(store: object, memory_id: str) -> list[VNextJsonObje
             if str(edge.get("from_type")) != from_type or str(edge.get("to_type")) != to_type:
                 continue
             entity_ids.append(str(edge.get(entity_key)))
+    return list(dict.fromkeys(entity_ids))
+
+
+def _memory_linked_entities(
+    store: object,
+    memory_id: str,
+    *,
+    allowed_entity_ids: set[str] | None = None,
+) -> list[VNextJsonObject]:
+    """Entities connected to one memory via mentions/about graph edges.
+
+    Walks both edge directions (memory -> entity and entity -> memory) and
+    resolves each linked entity to a compact record. Callers must check
+    store support (list_edges + get_entity) first.
+    """
+    get_entity = getattr(store, "get_entity")
     entities: list[VNextJsonObject] = []
-    seen: set[str] = set()
-    for entity_id in entity_ids:
-        if entity_id in seen:
+    for entity_id in _memory_linked_entity_ids(store, memory_id):
+        if allowed_entity_ids is not None and entity_id not in allowed_entity_ids:
             continue
-        seen.add(entity_id)
         row = get_entity(entity_id)
         if row is None:
             continue
@@ -4362,7 +4768,12 @@ def _memory_evolution_timeline(
     return entries[-_MEMORY_TIMELINE_MAX_ENTRIES:]
 
 
-def _extend_memory_audit(store: object, payload: VNextJsonObject) -> VNextJsonObject:
+def _extend_memory_audit(
+    store: object,
+    payload: VNextJsonObject,
+    *,
+    allowed_entity_ids: set[str] | None = None,
+) -> VNextJsonObject:
     """Add entity links and the evolution timeline to an audit payload.
 
     Chain nodes gain an ``entities`` list (via mentions/about edges) when
@@ -4378,36 +4789,59 @@ def _extend_memory_audit(store: object, payload: VNextJsonObject) -> VNextJsonOb
     supports_entities = callable(getattr(store, "list_edges", None)) and callable(getattr(store, "get_entity", None))
     if supports_entities:
         for node in chain:
-            node["entities"] = _memory_linked_entities(store, str(node.get("id")))
+            node["entities"] = _memory_linked_entities(
+                store,
+                str(node.get("id")),
+                allowed_entity_ids=allowed_entity_ids,
+            )
     payload["timeline"] = _memory_evolution_timeline(chain, revisions)
     return payload
 
 
 def _handle_alice_vnext_memory_audit(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     identity = _agent_identity_from_arguments(context, arguments)
-    blocked_decision: PolicyDecision | None = None
     payload: VNextJsonObject | None = None
+    authorization_error: _ExplainAuthorizationError | None = None
+    validation_error: VNextMemoryCommitValidationError | None = None
     with _vnext_store_context(context) as store:
         memory_id = _parse_required_text(arguments, "memory_id")
-        memory = store.get_memory(memory_id)
-        if memory is None:
-            raise MCPToolError("memory was not found")
-        _actor_type, _actor_id, decision = _policy_checked(
-            store,
-            identity=identity,
-            action="memory.audit",
-            project_scope=resource_project_scope(memory),
-            require_explicit_project_scope=True,
-        )
-        if decision.decision == "blocked":
-            blocked_decision = decision
-        else:
+        try:
+            audit = VNextMemoryCommitService(store).audit(
+                memory_id=memory_id,
+                authorize_memory=lambda memory: _authorize_explain_resource(
+                    store,
+                    identity=identity,
+                    resource=memory,
+                    project_scope=resource_project_scope(memory),
+                    target_type="memory",
+                    target_id=str(memory.get("id") or ""),
+                ),
+            )
+            _authorize_memory_audit_provenance(
+                store,
+                identity=identity,
+                provenance_links=audit.get("provenance_links"),
+            )
+            allowed_entity_ids = _authorized_memory_audit_entity_ids(
+                store,
+                identity=identity,
+                chain=audit.get("supersession_chain"),
+            )
             payload = _extend_memory_audit(
                 store,
-                VNextMemoryCommitService(store).audit(memory_id=memory_id),
+                audit,
+                allowed_entity_ids=allowed_entity_ids,
             )
-    if blocked_decision is not None:
-        _raise_mcp_policy_blocked(blocked_decision)
+        except _ExplainAuthorizationError as exc:
+            authorization_error = exc
+        except VNextMemoryCommitValidationError as exc:
+            validation_error = exc
+    if authorization_error is not None:
+        _raise_explain_authorization_error(identity, authorization_error)
+    if validation_error is not None:
+        if _is_key_bound_explain(identity):
+            raise MCPToolError(_EXPLAIN_UNAVAILABLE_MESSAGE)
+        raise validation_error
     if payload is None:
         raise MCPToolError("vNext memory audit did not complete")
     return _json_object(payload)
@@ -4430,14 +4864,14 @@ def _authorize_vnext_artifact_target(
     artifact_id: str,
     action: str,
     for_update: bool,
-) -> tuple[VNextJsonObject, PolicyDecision]:
+) -> tuple[VNextJsonObject, str, str | None, PolicyDecision]:
     """Authorize one persisted artifact before returning or mutating it."""
 
     artifact = store.get_artifact_for_update(artifact_id) if for_update else store.get_artifact(artifact_id)
     if artifact is None:
         raise MCPToolError(f"artifact {artifact_id} was not found")
 
-    _actor_type, _actor_id, raw_decision = _policy_checked(
+    actor_type, actor_id, raw_decision = _policy_checked(
         store,
         identity=identity,
         action=action,
@@ -4449,7 +4883,7 @@ def _authorize_vnext_artifact_target(
         target_type="artifact",
         target_id=artifact_id,
     )
-    return artifact, raw_decision
+    return artifact, actor_type, actor_id, raw_decision
 
 
 def _handle_alice_vnext_artifact_get(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -4458,7 +4892,7 @@ def _handle_alice_vnext_artifact_get(context: MCPRuntimeContext, arguments: Mapp
     blocked_decision: PolicyDecision | None = None
     artifact: VNextJsonObject | None = None
     with _vnext_store_context(context) as store:
-        target, decision = _authorize_vnext_artifact_target(
+        target, _actor_type, _actor_id, decision = _authorize_vnext_artifact_target(
             store,
             identity=identity,
             artifact_id=artifact_id,
@@ -4481,9 +4915,12 @@ def _handle_alice_vnext_artifact_review(context: MCPRuntimeContext, arguments: M
     artifact_id = _parse_required_text(arguments, "artifact_id")
     blocked_decision: PolicyDecision | None = None
     payload: VNextJsonObject | None = None
-    project_review_service: VNextProjectService | None = None
+    deferred_embedding_inputs: tuple[DeferredMemoryEmbedding, ...] = ()
+    actor_type = "system"
+    actor_id: str | None = None
+    trace_id: str | None = None
     with _vnext_store_context(context) as store:
-        target, decision = _authorize_vnext_artifact_target(
+        _target, actor_type, actor_id, decision = _authorize_vnext_artifact_target(
             store,
             identity=identity,
             artifact_id=artifact_id,
@@ -4492,23 +4929,33 @@ def _handle_alice_vnext_artifact_review(context: MCPRuntimeContext, arguments: M
         )
         if decision.decision == "blocked":
             blocked_decision = decision
-        elif VNextProjectService.is_project_update_candidate(target):
-            project_review_service = VNextProjectService(store, defer_embeddings=True)
-            payload = project_review_service.review_project_update(
-                artifact_id=artifact_id,
-                action=_parse_required_text(arguments, "action"),
-            )
         else:
-            payload = VNextQueueService(store).review_artifact(
+            if identity is None:
+                actor_type = "user"
+                actor_id = str(context.user_id)
+            trace_id = _parse_optional_text(arguments, "trace_id") or decision.trace_id
+            result = dispatch_vnext_artifact_review(
+                store,
                 artifact_id=artifact_id,
                 action=_parse_required_text(arguments, "action"),
+                actor_type=actor_type,
+                actor_id=actor_id,
+                trace_id=trace_id,
+                run_id=identity.agent_run_id if identity is not None else None,
             )
+            payload = result.artifact
+            deferred_embedding_inputs = result.deferred_embedding_inputs
     if blocked_decision is not None:
         _raise_mcp_policy_blocked(blocked_decision)
     if payload is None:
         raise MCPToolError("vNext artifact review did not complete")
-    if project_review_service is not None:
-        _persist_vnext_deferred_embedding_inputs(context, project_review_service.deferred_embedding_inputs)
+    _persist_vnext_deferred_embedding_inputs(
+        context,
+        deferred_embedding_inputs,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        trace_id=trace_id,
+    )
     return _json_object(payload)
 
 
@@ -6166,16 +6613,14 @@ _LEGACY_TOOL_DEFINITIONS: list[dict[str, object]] = [
     {
         "name": "alice_project_update_review",
         "description": "Accept, edit, or reject a vNext project update candidate artifact.",
-        "inputSchema": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["artifact_id", "action"],
-            "properties": {
+        "inputSchema": _vnext_agent_tool_schema(
+            {
                 "artifact_id": {"type": "string"},
                 "action": {"type": "string", "enum": ["accept", "edit", "reject"]},
                 "edited_current_state": {"type": "string"},
             },
-        },
+            required=["artifact_id", "action"],
+        ),
     },
     {
         "name": "alice_project_dashboard",

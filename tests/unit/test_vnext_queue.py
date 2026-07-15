@@ -177,14 +177,48 @@ def test_artifact_review_actions_map_to_expected_statuses() -> None:
     service = VNextQueueService(store)
     store.artifacts["artifact-1"] = {"id": "artifact-1", "title": "Artifact", "content_markdown": "# Artifact"}
 
-    reviewed = service.review_artifact(artifact_id="artifact-1", action="accept")
+    reviewed = service.review_artifact(
+        artifact_id="artifact-1",
+        action="accept",
+        actor_type="agent",
+        actor_id="reviewer-agent",
+        trace_id="trace-review",
+        run_id="run-review",
+    )
 
     assert reviewed["status"] == "accepted"
     assert store.events[-1]["event_type"] == "artifact.reviewed"
+    assert store.events[-1]["actor_type"] == "agent"
+    assert store.events[-1]["actor_id"] == "reviewer-agent"
+    assert store.events[-1]["trace_id"] == "trace-review"
+    assert store.events[-1]["run_id"] == "run-review"
     assert store.events[-1]["payload_json"]["action"] == "accept"
 
     with pytest.raises(VNextQueueValidationError, match="artifact review action"):
         service.review_artifact(artifact_id="artifact-1", action="invalid")
+
+
+@pytest.mark.parametrize("action", ["accept", "reject", "promote"])
+def test_generic_queue_review_cannot_mutate_project_update_artifacts(action: str) -> None:
+    store = InMemoryVNextQueueStore()
+    service = VNextQueueService(store)
+    store.artifacts["artifact-1"] = {
+        "id": "artifact-1",
+        "artifact_type": "project_update",
+        "title": "Coupled project update",
+        "content_markdown": "# Project update",
+        "status": "needs_review",
+        # Artifact type alone owns the coupled lifecycle; a damaged/missing
+        # workflow marker must not turn into a generic-review side door.
+        "metadata_json": {},
+    }
+
+    with pytest.raises(VNextQueueValidationError, match="coupled project-update lifecycle"):
+        service.review_artifact(artifact_id="artifact-1", action=action)
+
+    assert store.artifacts["artifact-1"]["status"] == "needs_review"
+    assert store.memories == {}
+    assert store.events == []
 
 
 def test_artifact_promote_creates_and_returns_a_real_memory_target_idempotently() -> None:

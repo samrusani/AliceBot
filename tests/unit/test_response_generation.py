@@ -370,6 +370,36 @@ def test_invoke_model_normalizes_non_utf8_provider_payload(monkeypatch) -> None:
         )
 
 
+def test_invoke_model_rejects_blank_bearer_key_before_transport(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "alicebot_api.response_generation.urlopen",
+        lambda *_args, **_kwargs: pytest.fail("blank bearer credentials must fail before transport"),
+    )
+    prompt = assemble_prompt(
+        request=PromptAssemblyInput(
+            context_pack=make_context_pack(),
+            system_instruction="System instruction",
+            developer_instruction="Developer instruction",
+        ),
+        compile_trace_id="compile-trace-123",
+    )
+
+    with pytest.raises(ModelInvocationError, match="MODEL_API_KEY is not configured"):
+        invoke_model(
+            settings=Settings(
+                model_provider="openai_responses",
+                model_base_url="https://example.test/v1",
+                model_name="gpt-5-mini",
+                model_api_key="   ",
+            ),
+            request=ModelInvocationRequest(
+                provider="openai_responses",
+                model="gpt-5-mini",
+                prompt=prompt,
+            ),
+        )
+
+
 def test_build_assistant_response_payload_captures_model_and_prompt_metadata() -> None:
     prompt = assemble_prompt(
         request=PromptAssemblyInput(

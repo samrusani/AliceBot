@@ -15,6 +15,7 @@ from alicebot_api.sqlite_store import (
     sqlite_user_connection,
 )
 from alicebot_api.store import ContinuityStoreInvariantError
+from alicebot_api.vnext_capture import capture_dedupe_key_for_text
 from alicebot_api.vnext_embeddings import (
     EMBEDDING_SIGNATURE_METADATA_KEY,
     memory_embedding_content_sha256,
@@ -69,10 +70,7 @@ def test_bootstrap_sqlite_schema_is_idempotent() -> None:
     bootstrap_sqlite_schema(conn)
     bootstrap_sqlite_schema(conn)
     bootstrap_sqlite_schema(conn)
-    tables = {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
-    }
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
     for expected in (
         "users",
         "sources",
@@ -145,6 +143,151 @@ def test_sqlite_user_connection_rejects_empty_user_id(tmp_path: Path) -> None:
         SQLiteVNextStore(sqlite3.connect(":memory:"), " ")
 
 
+def test_update_source_recomputes_dedupe_key_from_prospective_identity() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    raw_text = "Fact: Source review can reclassify captured evidence."
+    original_key = capture_dedupe_key_for_text(
+        raw_text,
+        ("Alpha",),
+        domain="project",
+        sensitivity="private",
+    )
+    source = _create_source(
+        store,
+        dedupe_key=original_key,
+        metadata_json={"raw_text": raw_text, "project_scope": ["Alpha"]},
+    )
+
+    updated = store.update_source(
+        source_id=str(source["id"]),
+        patch={
+            "domain": "professional",
+            "metadata_json": {"raw_text": raw_text, "project_scope": ["Beta"]},
+        },
+    )
+
+    assert updated["dedupe_key"] == capture_dedupe_key_for_text(
+        raw_text,
+        ("Beta",),
+        domain="professional",
+        sensitivity="private",
+    )
+    assert updated["content_hash"] != source["content_hash"]
+    assert updated["dedupe_key"] != original_key
+    assert any(
+        event["event_type"] == "source.updated" and event["target_id"] == source["id"] for event in store.list_events()
+    )
+    conn.close()
+
+
+def test_update_source_releases_key_when_changed_identity_cannot_be_recomputed() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    source = _create_source(
+        store,
+        dedupe_key="capture-md5:legacy-without-raw-text",
+        metadata_json={"project_scope": ["Alpha"]},
+    )
+
+    updated = store.update_source(
+        source_id=str(source["id"]),
+        patch={"metadata_json": {"project_scope": ["Beta"]}},
+    )
+
+    assert updated["dedupe_key"] is None
+    conn.close()
+
+
+def test_update_source_title_only_preserves_legacy_content_and_dedupe_identity() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    raw_text = "Fact: Legacy source hashes remain stable on unrelated review edits."
+    source = _create_source(
+        store,
+        content_hash="sha256:legacy-unscoped-public-identity",
+        dedupe_key=capture_dedupe_key_for_text(
+            raw_text,
+            ("Alpha",),
+            domain="project",
+            sensitivity="private",
+        ),
+        metadata_json={"raw_text": raw_text, "project_scope": ["Alpha"]},
+    )
+
+    updated = store.update_source(
+        source_id=str(source["id"]),
+        patch={"title": "Reviewed title"},
+    )
+
+    assert updated["content_hash"] == source["content_hash"]
+    assert updated["dedupe_key"] == source["dedupe_key"]
+    conn.close()
+
+
+def test_update_source_identity_collision_fails_without_mutating_sqlite_row() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    raw_text = "Fact: A live capture identity has exactly one owner."
+    first = _create_source(
+        store,
+        dedupe_key=capture_dedupe_key_for_text(
+            raw_text,
+            ("Alpha",),
+            domain="project",
+            sensitivity="private",
+        ),
+        metadata_json={"raw_text": raw_text, "project_scope": ["Alpha"]},
+    )
+    _create_source(
+        store,
+        dedupe_key=capture_dedupe_key_for_text(
+            raw_text,
+            ("Beta",),
+            domain="project",
+            sensitivity="private",
+        ),
+        metadata_json={"raw_text": raw_text, "project_scope": ["Beta"]},
+    )
+
+    with pytest.raises(ContinuityStoreInvariantError, match="already belongs"):
+        store.update_source(
+            source_id=str(first["id"]),
+            patch={"metadata_json": {"raw_text": raw_text, "project_scope": ["Beta"]}},
+        )
+
+    persisted = store.get_source(str(first["id"]))
+    assert persisted is not None
+    assert persisted["metadata_json"]["project_scope"] == ["Alpha"]
+    assert persisted["dedupe_key"] == first["dedupe_key"]
+    conn.close()
+
+
+def test_get_or_create_source_rejects_incompatible_sqlite_conflict_winner() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    dedupe_key = "capture-md5:stale-winner"
+    _create_source(
+        store,
+        content_hash="sha256:same",
+        dedupe_key=dedupe_key,
+        metadata_json={"project_scope": ["Beta"]},
+    )
+
+    with pytest.raises(ContinuityStoreInvariantError, match="does not match capture identity"):
+        store.get_or_create_source(
+            {
+                "source_type": "document",
+                "content_hash": "sha256:same",
+                "dedupe_key": dedupe_key,
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"project_scope": ["Alpha"]},
+            }
+        )
+    conn.close()
+
+
 # -- user scoping --------------------------------------------------------------
 
 
@@ -160,9 +303,7 @@ def test_every_read_method_is_scoped_to_the_bound_user() -> None:
     revision = alice.append_revision(
         {"memory_id": memory["id"], "memory_key": memory["memory_key"], "text_after": "after"}
     )
-    alice.create_provenance_link(
-        {"target_type": "memory", "target_id": memory["id"], "source_id": source["id"]}
-    )
+    alice.create_provenance_link({"target_type": "memory", "target_id": memory["id"], "source_id": source["id"]})
     loop = alice.create_open_loop({"title": "Ship the SQLite on-ramp"})
     alice.upsert_agent_identity({"agent_id": "hermes"})
     key = alice.create_agent_api_key(
@@ -252,11 +393,14 @@ def test_open_loop_digest_lookup_applies_project_and_person_scope_before_result(
     )
     assert matched is not None
     assert matched["id"] == expected["id"]
-    assert store.find_open_loop_by_automation_digest(
-        digest="same-digest",
-        project_id="project-a",
-        person_id="person-b",
-    ) is None
+    assert (
+        store.find_open_loop_by_automation_digest(
+            digest="same-digest",
+            project_id="project-a",
+            person_id="person-b",
+        )
+        is None
+    )
     conn.close()
 
 
@@ -304,9 +448,7 @@ def test_project_scoped_memory_and_rollup_queries_filter_before_limit() -> None:
         },
     )
 
-    assert [row["id"] for row in store.list_memories(projects=("project-a",), limit=1)] == [
-        accepted_a["id"]
-    ]
+    assert [row["id"] for row in store.list_memories(projects=("project-a",), limit=1)] == [accepted_a["id"]]
     assert store.count_memories(status="active", projects=("project-a",)) == 2
     stale = store.list_memories_for_staleness_sweep(
         reference_time=datetime(2026, 1, 1, tzinfo=UTC),
@@ -722,7 +864,7 @@ def test_search_memories_fts_is_safe_against_fts5_metacharacters() -> None:
     hostile_queries = [
         'col:*(NEAR "unclosed AND ^',
         "a AND OR NOT (",
-        "\"unbalanced",
+        '"unbalanced',
         "title:deployment*",
         "x ^ y NEAR/3 z",
         "(((((",
@@ -879,9 +1021,7 @@ def test_bulk_retrieval_resolvers_return_complete_graph_and_provenance_rows() ->
     store = _make_store(conn)
     memories = [_create_memory(store, canonical_text=f"Bulk memory {index}") for index in range(3)]
     sources = [_create_source(store, content_hash=f"sha256:bulk-{index}") for index in range(3)]
-    entity = store.create_entity(
-        {"entity_type": "person", "name": "Sam", "normalized_name": "sam"}
-    )
+    entity = store.create_entity({"entity_type": "person", "name": "Sam", "normalized_name": "sam"})
     for memory, source in zip(memories, sources, strict=True):
         store.create_graph_edge(
             {
@@ -906,15 +1046,16 @@ def test_bulk_retrieval_resolvers_return_complete_graph_and_provenance_rows() ->
     assert {row["id"] for row in store.get_sources_by_ids([row["id"] for row in sources])} == {
         row["id"] for row in sources
     }
-    assert len(
-        store.list_memory_entity_edges(entity_ids=[str(entity["id"])])
-    ) == 3
-    assert len(
-        store.list_provenance_links_for_targets(
-            target_type="memory",
-            target_ids=[str(memory["id"]) for memory in memories],
+    assert len(store.list_memory_entity_edges(entity_ids=[str(entity["id"])])) == 3
+    assert (
+        len(
+            store.list_provenance_links_for_targets(
+                target_type="memory",
+                target_ids=[str(memory["id"]) for memory in memories],
+            )
         )
-    ) == 3
+        == 3
+    )
     conn.close()
 
 
@@ -1051,12 +1192,7 @@ def test_search_source_chunks_applies_parent_source_domain_sensitivity_and_delet
         "UPDATE sources SET deleted_at = '2026-07-01T00:00:00Z' WHERE id = ?",
         (visible["id"],),
     )
-    assert (
-        store.search_source_chunks(
-            query="gate keyword", domains=["project"], sensitivity_allowed=["private"]
-        )
-        == []
-    )
+    assert store.search_source_chunks(query="gate keyword", domains=["project"], sensitivity_allowed=["private"]) == []
     conn.close()
 
 
@@ -1251,9 +1387,7 @@ def test_search_memories_filters_by_created_by_agent_and_run_across_all_three_me
     rows = store.search_memories(query="agent scope keyword", created_by_agent_ids=("openclaw",))
     assert {row["id"] for row in rows} == {openclaw_run_1["id"], openclaw_run_2["id"]}
 
-    rows = store.search_memories(
-        query="agent scope keyword", created_by_agent_ids=("openclaw", "hermes")
-    )
+    rows = store.search_memories(query="agent scope keyword", created_by_agent_ids=("openclaw", "hermes"))
     assert {row["id"] for row in rows} == {openclaw_run_1["id"], openclaw_run_2["id"], hermes["id"]}
 
     rows = store.search_memories(query="agent scope keyword", run_id="run-2")
@@ -1264,9 +1398,7 @@ def test_search_memories_filters_by_created_by_agent_and_run_across_all_three_me
     fts_rows = store.search_memories_fts(query="keyword", run_id="run-1")
     assert [row["id"] for row in fts_rows] == [openclaw_run_1["id"]]
 
-    vector_rows = store.search_memories_vector(
-        query_vector=[1.0, 0.0], created_by_agent_ids=("openclaw",)
-    )
+    vector_rows = store.search_memories_vector(query_vector=[1.0, 0.0], created_by_agent_ids=("openclaw",))
     assert [row["id"] for row in vector_rows] == [openclaw_run_1["id"]]
     vector_rows = store.search_memories_vector(query_vector=[1.0, 0.0], run_id="run-3")
     assert [row["id"] for row in vector_rows] == [hermes["id"]]
@@ -1348,10 +1480,7 @@ def test_bootstrap_upgrades_a_pre_existing_db_file_with_scope_columns(tmp_path: 
     assert {"project_id", "created_by_agent_id", "run_id"} <= memory_columns
     key_columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_api_keys)")}
     assert "project_scope" in key_columns
-    index_names = {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
-    }
+    index_names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()}
     assert "memories_user_project_idx" in index_names
 
     # The upgraded file is fully usable, including the new filters.
@@ -1434,6 +1563,382 @@ def test_find_live_memory_by_canonical_text_requires_exact_project_scope() -> No
     assert found is not None
     assert found["id"] == expected["id"]
     conn.close()
+
+
+def test_explicit_empty_scope_is_authoritative_across_sqlite_read_predicates() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _create_memory(
+        store,
+        canonical_text="Explicit empty scope sentinel",
+        project_id="stale-project",
+        metadata_json={
+            "project_scope": [],
+            "project_id": "stale-project",
+            "agentic_memory": {"project_scope": ["stale-project"]},
+        },
+    )
+    store.update_memory_embedding(memory_id=memory["id"], vector=[1.0, 0.0])
+    source = _create_source(
+        store,
+        title="Explicit empty source sentinel",
+        metadata_json={
+            "project_scope": [],
+            "project_id": "stale-project",
+            "agentic_memory": {"project_scope": ["stale-project"]},
+        },
+    )
+    store.create_source_chunk(
+        {
+            "source_id": source["id"],
+            "chunk_index": 0,
+            "text": "explicit empty source sentinel",
+        }
+    )
+    store.create_open_loop(
+        {
+            "title": "Explicit empty loop sentinel",
+            "project_id": "stale-project",
+            "metadata_json": {
+                "project_scope": [],
+                "agentic_memory": {"project_scope": ["stale-project"]},
+            },
+        }
+    )
+
+    assert store.list_memories(projects=("stale-project",)) == []
+    assert store.search_memories(query="explicit empty scope sentinel", projects=("stale-project",)) == []
+    assert store.search_memories_fts(query="explicit empty scope sentinel", projects=("stale-project",)) == []
+    assert store.search_memories_vector(query_vector=[1.0, 0.0], projects=("stale-project",)) == []
+    assert (
+        store.search_memories_by_time(
+            window_start=datetime(2020, 1, 1, tzinfo=UTC),
+            window_end=datetime(2030, 1, 1, tzinfo=UTC),
+            projects=("stale-project",),
+        )
+        == []
+    )
+    assert store.search_sources(query="empty source", scope_projects=("stale-project",)) == []
+    assert store.search_source_chunks(query="empty source", scope_projects=("stale-project",)) == []
+    assert store.list_open_loops(scope_projects=("stale-project",)) == []
+    assert (
+        store.find_live_memory_by_canonical_text(
+            "Explicit empty scope sentinel",
+            domain="project",
+            sensitivity="private",
+            project_scope=("stale-project",),
+        )
+        is None
+    )
+    unscoped = store.find_live_memory_by_canonical_text(
+        "Explicit empty scope sentinel",
+        domain="project",
+        sensitivity="private",
+        project_scope=(),
+    )
+    assert unscoped is not None
+    assert unscoped["id"] == memory["id"]
+
+
+def test_nested_canonical_scope_is_presence_aware_for_sqlite_memories_and_open_loops() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    stale_project = "stale-project"
+    scalar_metadata = {
+        "project_id": stale_project,
+        "agentic_memory": {"project_scope": " Alpha "},
+        "agent_identity": {"project_scope": [1, 1e0, 1e1, True]},
+    }
+    memory = _create_memory(
+        store,
+        canonical_text="Nested canonical SQLite memory",
+        project_id=stale_project,
+        metadata_json=scalar_metadata,
+    )
+    open_loop = store.create_open_loop(
+        {
+            "title": "Nested canonical SQLite loop",
+            "project_id": stale_project,
+            "metadata_json": scalar_metadata,
+        }
+    )
+
+    for nested_key, malformed in (
+        ("agentic_memory", []),
+        ("agentic_memory", None),
+        ("agent_identity", {"leak": stale_project}),
+    ):
+        metadata = {
+            "project_id": stale_project,
+            nested_key: {"project_scope": malformed},
+        }
+        _create_memory(
+            store,
+            canonical_text=f"Fail closed nested {nested_key} {malformed!r}",
+            project_id=stale_project,
+            metadata_json=metadata,
+        )
+        store.create_open_loop(
+            {
+                "title": f"Fail closed nested loop {nested_key} {malformed!r}",
+                "project_id": stale_project,
+                "metadata_json": metadata,
+            }
+        )
+
+    assert store.list_memories(projects=(stale_project,), limit=1) == []
+    assert store.list_open_loops(scope_projects=(stale_project,), limit=1) == []
+    for accepted in ("alpha", "1", "10", "TRUE"):
+        assert [row["id"] for row in store.list_memories(projects=(accepted,), limit=1)] == [memory["id"]]
+        assert [row["id"] for row in store.list_open_loops(scope_projects=(accepted,), limit=1)] == [open_loop["id"]]
+    conn.close()
+
+
+def test_persisted_source_envelope_scope_precedes_stale_root_alias_in_sqlite() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    marker = "persisted source envelope sentinel"
+    stale_project = "stale-project"
+    real_project = "real-project"
+
+    def create_source_with_chunk(
+        suffix: str,
+        metadata_json: dict[str, object],
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        source = _create_source(
+            store,
+            title=f"{marker} {suffix}",
+            metadata_json=metadata_json,
+        )
+        chunk = store.create_source_chunk(
+            {
+                "source_id": source["id"],
+                "chunk_index": 0,
+                "text": f"{marker} {suffix}",
+            }
+        )
+        return source, chunk
+
+    empty_source, _empty_chunk = create_source_with_chunk(
+        "empty",
+        {
+            "project_id": stale_project,
+            "metadata_json": {"project_scope": []},
+        },
+    )
+    real_source, real_chunk = create_source_with_chunk(
+        "real",
+        {
+            "project_id": stale_project,
+            "metadata_json": {"project_scope": [real_project]},
+        },
+    )
+    scalar_source, scalar_chunk = create_source_with_chunk(
+        "scalar parity",
+        {
+            "project_id": stale_project,
+            "metadata_json": {
+                "project_scope": [
+                    [" Alpha "],
+                    7,
+                    True,
+                    1.5,
+                    {"leak": "wrong-project"},
+                    None,
+                    " ",
+                ]
+            },
+        },
+    )
+
+    def source_ids(project: str) -> set[object]:
+        return {
+            row["id"]
+            for row in store.search_sources(
+                query=marker,
+                scope_projects=(project,),
+                limit=20,
+            )
+        }
+
+    def chunk_ids(project: str) -> set[object]:
+        return {
+            row["id"]
+            for row in store.search_source_chunks(
+                query=marker,
+                scope_projects=(project,),
+                limit=20,
+            )
+        }
+
+    assert source_ids(stale_project) == set()
+    assert chunk_ids(stale_project) == set()
+    assert source_ids(real_project) == {real_source["id"]}
+    assert chunk_ids(real_project) == {real_chunk["id"]}
+    for scalar_identity in ("alpha", "7", "TRUE"):
+        assert source_ids(scalar_identity) == {scalar_source["id"]}
+        assert chunk_ids(scalar_identity) == {scalar_chunk["id"]}
+    for rejected_identity in ("1.5", "wrong-project"):
+        assert source_ids(rejected_identity) == set()
+        assert chunk_ids(rejected_identity) == set()
+    assert empty_source["id"] not in source_ids(real_project)
+    conn.close()
+
+
+def test_persisted_source_nested_scope_presence_blocks_stale_aliases_in_sqlite() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    marker = "nested source presence sentinel"
+    stale_project = "stale-project"
+
+    def create_source_with_chunk(
+        suffix: str,
+        metadata_json: dict[str, object],
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        source = _create_source(
+            store,
+            title=f"{marker} {suffix}",
+            metadata_json=metadata_json,
+        )
+        chunk = store.create_source_chunk(
+            {
+                "source_id": source["id"],
+                "chunk_index": 0,
+                "text": f"{marker} {suffix}",
+            }
+        )
+        return source, chunk
+
+    valid_source, valid_chunk = create_source_with_chunk(
+        "valid",
+        {
+            "project_id": stale_project,
+            "agentic_memory": {"project_scope": " Alpha "},
+            "agent_identity": {"project_scope": [7, 1e1, True]},
+        },
+    )
+    invalid_sources: set[object] = set()
+    invalid_chunks: set[object] = set()
+    for index, nested in enumerate(
+        (
+            {"agentic_memory": {"project_scope": ["\t\n"]}},
+            {"agent_identity": {"project_scope": None}},
+            {"agentic_memory": {"project_scope": {"leak": stale_project}}},
+            {"agent_identity": {"project_scope": 1.5}},
+        )
+    ):
+        source, chunk = create_source_with_chunk(
+            f"invalid-{index}",
+            {"project_id": stale_project, **nested},
+        )
+        invalid_sources.add(source["id"])
+        invalid_chunks.add(chunk["id"])
+
+    def source_ids(project: str) -> set[object]:
+        return {
+            row["id"]
+            for row in store.search_sources(
+                query=marker,
+                scope_projects=(project,),
+                limit=20,
+            )
+        }
+
+    def chunk_ids(project: str) -> set[object]:
+        return {
+            row["id"]
+            for row in store.search_source_chunks(
+                query=marker,
+                scope_projects=(project,),
+                limit=20,
+            )
+        }
+
+    for accepted in ("alpha", "7", "10", "TRUE"):
+        assert source_ids(accepted) == {valid_source["id"]}
+        assert chunk_ids(accepted) == {valid_chunk["id"]}
+    assert source_ids(stale_project) == set()
+    assert chunk_ids(stale_project) == set()
+    assert invalid_sources.isdisjoint(source_ids("alpha"))
+    assert invalid_chunks.isdisjoint(chunk_ids("alpha"))
+    conn.close()
+
+
+def test_sqlite_scope_identity_is_case_order_whitespace_and_duplicate_insensitive() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _create_memory(
+        store,
+        canonical_text="Canonical scope identity sentinel",
+        metadata_json={"project_scope": [" Beta ", "ALICE", "alice"]},
+    )
+
+    rows = store.list_memories(projects=(" beta ",))
+    exact = store.find_live_memory_by_canonical_text(
+        "canonical scope identity sentinel",
+        domain="project",
+        sensitivity="private",
+        project_scope=("alice", "BETA", "beta"),
+    )
+
+    assert [row["id"] for row in rows] == [memory["id"]]
+    assert exact is not None
+    assert exact["id"] == memory["id"]
+
+
+def test_sqlite_scope_identity_preserves_non_ascii_case_and_unicode_whitespace() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+
+    def visible_ids(scope: str) -> set[object]:
+        return {row["id"] for row in store.list_memories(projects=(scope,), limit=20)}
+
+    scoped = {
+        scope: _create_memory(
+            store,
+            canonical_text=f"Unicode project scope {index}",
+            metadata_json={"project_scope": [scope]},
+        )
+        for index, scope in enumerate(
+            (
+                "İ",
+                "i",
+                "Straße",
+                "STRASSE",
+                "Σ",
+                "σ",
+                "ς",
+                "\u00a0Alice\u00a0",
+                "\u00a0alice\u00a0",
+            )
+        )
+    }
+
+    for scope, memory in scoped.items():
+        assert visible_ids(scope) == {memory["id"]}
+
+    assert visible_ids("\t I \n") == {scoped["i"]["id"]}
+    assert visible_ids("straße") == set()
+
+
+def test_sqlite_scope_identity_uses_deterministic_mixed_unicode_order() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _create_memory(
+        store,
+        canonical_text="Mixed project identity ordering",
+        metadata_json={"project_scope": ["é", "Z", "Ä", "a", "z", "İ", "i"]},
+    )
+
+    exact = store.find_live_memory_by_canonical_text(
+        "Mixed project identity ordering",
+        domain="project",
+        sensitivity="private",
+        project_scope=("İ", "i", "Ä", "z", "a", "é"),
+    )
+
+    assert exact is not None
+    assert exact["id"] == memory["id"]
 
 
 def test_search_memories_excludes_expired_valid_to_unless_include_expired() -> None:
@@ -1592,7 +2097,9 @@ def test_search_memories_by_time_applies_scoping_filters_and_limit() -> None:
     )
 
     # Limit keeps the proximity order's head.
-    second = _create_memory(alice, canonical_text="scoped march later", valid_from="2023-03-01T00:00:00Z", memory_type="decision")
+    second = _create_memory(
+        alice, canonical_text="scoped march later", valid_from="2023-03-01T00:00:00Z", memory_type="decision"
+    )
     limited = alice.search_memories_by_time(
         window_start=datetime(2023, 3, 1, tzinfo=UTC),
         window_end=datetime(2023, 4, 1, tzinfo=UTC),
@@ -1642,9 +2149,7 @@ def test_vector_store_and_search_roundtrip_with_dimension_padding() -> None:
     assert store.update_memory_embedding(memory_id=close["id"], vector=[1.0, 0.0, 0.0]) == {"id": close["id"]}
     assert store.update_memory_embedding(memory_id=far["id"], vector=[0.0, 1.0, 0.0]) == {"id": far["id"]}
 
-    blob = conn.execute(
-        "SELECT embedding FROM memories WHERE id = ?", (close["id"],)
-    ).fetchone()[0]
+    blob = conn.execute("SELECT embedding FROM memories WHERE id = ?", (close["id"],)).fetchone()[0]
     assert len(blob) == 1536 * 4  # float32 payload at storage width
 
     rows = store.search_memories_vector(query_vector=[0.9, 0.1, 0.0])
@@ -1680,15 +2185,18 @@ def test_signed_embedding_compare_and_set_rejects_vector_prepared_before_text_ed
         memory_id=str(memory["id"]),
         patch={"canonical_text": "New fact", "summary": "New"},
     )
-    assert store.update_memory_embedding(
-        memory_id=str(memory["id"]),
-        vector=[1.0, 0.0],
-        provider="stub",
-        model="embed-v1",
-        endpoint="stub-endpoint",
-        content_sha256=old_digest,
-        signature_version=2,
-    ) is None
+    assert (
+        store.update_memory_embedding(
+            memory_id=str(memory["id"]),
+            vector=[1.0, 0.0],
+            provider="stub",
+            model="embed-v1",
+            endpoint="stub-endpoint",
+            content_sha256=old_digest,
+            signature_version=2,
+        )
+        is None
+    )
 
     row = conn.execute(
         "SELECT embedding, metadata_json FROM memories WHERE id = ?",
@@ -1703,15 +2211,18 @@ def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> 
     conn = _open_connection()
     store = _make_store(conn)
     memory = _create_memory(store, canonical_text="signed vector memory")
-    assert store.update_memory_embedding(
-        memory_id=str(memory["id"]),
-        vector=[1.0, 0.0],
-        provider="openai_compatible",
-        model="embed-v1",
-        endpoint="host-a",
-        content_sha256=memory_embedding_content_sha256(memory),
-        signature_version=2,
-    ) is not None
+    assert (
+        store.update_memory_embedding(
+            memory_id=str(memory["id"]),
+            vector=[1.0, 0.0],
+            provider="openai_compatible",
+            model="embed-v1",
+            endpoint="host-a",
+            content_sha256=memory_embedding_content_sha256(memory),
+            signature_version=2,
+        )
+        is not None
+    )
 
     matching = store.search_memories_vector(
         query_vector=[1.0, 0.0],
@@ -1738,11 +2249,14 @@ def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> 
     assert [row["id"] for row in matching] == [memory["id"]]
     assert mismatched == []
     assert mismatched_endpoint == []
-    assert store.list_memories_missing_embeddings(
-        embedding_provider="openai_compatible",
-        embedding_model="embed-v1",
-        embedding_signature_version=2,
-    ) == []
+    assert (
+        store.list_memories_missing_embeddings(
+            embedding_provider="openai_compatible",
+            embedding_model="embed-v1",
+            embedding_signature_version=2,
+        )
+        == []
+    )
     incompatible = store.list_memories_missing_embeddings(
         embedding_provider="openai_compatible",
         embedding_model="embed-v2",
@@ -1750,9 +2264,7 @@ def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> 
     )
     assert [row["id"] for row in incompatible] == [memory["id"]]
     assert incompatible[0]["embedding_present"] == 1
-    metadata = conn.execute(
-        "SELECT metadata_json FROM memories WHERE id = ?", (str(memory["id"]),)
-    ).fetchone()[0]
+    metadata = conn.execute("SELECT metadata_json FROM memories WHERE id = ?", (str(memory["id"]),)).fetchone()[0]
     parsed_metadata = json.loads(metadata)
     assert parsed_metadata["_alice_embedding"] == {
         "content_sha256": memory_embedding_content_sha256(memory),
@@ -1765,9 +2277,7 @@ def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> 
     # Simulate a stale restored snapshot or third-party adapter that puts the
     # old vector/signature back after text changed. Signature-aware search must
     # reject it even when lifecycle hooks and update triggers were bypassed.
-    embedding_blob = conn.execute(
-        "SELECT embedding FROM memories WHERE id = ?", (str(memory["id"]),)
-    ).fetchone()[0]
+    embedding_blob = conn.execute("SELECT embedding FROM memories WHERE id = ?", (str(memory["id"]),)).fetchone()[0]
     conn.execute(
         "UPDATE memories SET canonical_text = ? WHERE id = ?",
         ("signed vector memory changed", str(memory["id"])),
@@ -1776,12 +2286,15 @@ def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> 
         "UPDATE memories SET embedding = ?, metadata_json = ? WHERE id = ?",
         (embedding_blob, metadata, str(memory["id"])),
     )
-    assert store.search_memories_vector(
-        query_vector=[1.0, 0.0],
-        embedding_provider="openai_compatible",
-        embedding_model="embed-v1",
-        embedding_signature_version=2,
-    ) == []
+    assert (
+        store.search_memories_vector(
+            query_vector=[1.0, 0.0],
+            embedding_provider="openai_compatible",
+            embedding_model="embed-v1",
+            embedding_signature_version=2,
+        )
+        == []
+    )
     stale_backfill = store.list_memories_missing_embeddings(
         embedding_provider="openai_compatible",
         embedding_model="embed-v1",
@@ -1836,9 +2349,7 @@ def test_open_loop_crud_lifecycle() -> None:
     assert updated["priority"] == "urgent"
     assert updated["title"] == loop["title"]
 
-    resolved = store.update_open_loop_status(
-        loop_id=loop["id"], status="resolved", resolution_note="Partner confirmed"
-    )
+    resolved = store.update_open_loop_status(loop_id=loop["id"], status="resolved", resolution_note="Partner confirmed")
     assert resolved["status"] == "resolved"
     assert resolved["resolved_at"] is not None
     assert resolved["closed_at"] is not None
@@ -1851,8 +2362,7 @@ def test_open_loop_crud_lifecycle() -> None:
     assert reopened["resolution_note"] is None
 
     loop_events = [
-        event["event_type"]
-        for event in store.list_events(target_type="open_loop", target_id=str(loop["id"]))
+        event["event_type"] for event in store.list_events(target_type="open_loop", target_id=str(loop["id"]))
     ]
     assert loop_events.count("open_loop.created") == 1
     assert loop_events.count("open_loop.updated") == 3
@@ -1953,8 +2463,7 @@ def test_agent_api_key_create_verify_touch_revoke_and_count() -> None:
     assert store.revoke_agent_api_key(key_id=key["id"]) is None  # already revoked
 
     key_events = [
-        event["event_type"]
-        for event in store.list_events(target_type="agent_api_key", target_id=str(key["id"]))
+        event["event_type"] for event in store.list_events(target_type="agent_api_key", target_id=str(key["id"]))
     ]
     assert key_events.count("agent.key_created") == 1
     assert key_events.count("agent.key_revoked") == 1
@@ -2216,23 +2725,14 @@ def test_bootstrap_upgrades_a_pre_existing_db_file_with_the_temporal_slice(tmp_p
 
     memory_columns = {row[1] for row in conn.execute("PRAGMA table_info(memories)")}
     assert {"superseded_by", "supersedes"} <= memory_columns
-    table_names = {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
-    }
+    table_names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
     assert "graph_edges" in table_names
-    index_names = {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
-    }
+    index_names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()}
     assert {"memories_user_superseded_by_idx", "graph_edges_user_edge_idx"} <= index_names
 
     # The metadata-only pointers were backfilled into the real columns.
     upgraded = SQLiteVNextStore(conn, user_id)
-    assert (
-        upgraded.get_memory(str(old["id"]))["superseded_by"]
-        == "11111111-1111-4111-8111-111111111111"
-    )
+    assert upgraded.get_memory(str(old["id"]))["superseded_by"] == "11111111-1111-4111-8111-111111111111"
     assert upgraded.get_memory(str(replacement["id"]))["supersedes"] == old["id"]
 
     # A second bootstrap does not re-run the backfill or fail.
@@ -2543,30 +3043,18 @@ def test_bootstrap_upgrades_a_pre_existing_db_file_with_the_entity_substrate(tmp
     conn.execute("DROP TABLE entity_relationship_events")
     conn.execute("DROP TABLE vnext_entities")
     conn.commit()
-    tables = {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
-    }
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
     assert "vnext_entities" not in tables
     conn.close()
 
     conn = sqlite3.connect(str(db_path))
     bootstrap_sqlite_schema(conn)
-    tables = {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
-    }
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
     assert {"vnext_entities", "entity_relationship_events"} <= tables
-    index_names = {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
-    }
+    index_names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()}
     assert "vnext_entities_user_normalized_name_idx" in index_names
     assert "entity_relationship_events_entity_changed_idx" in index_names
-    trigger_names = {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'").fetchall()
-    }
+    trigger_names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'").fetchall()}
     assert "entity_relationship_events_append_only_update" in trigger_names
     assert "entity_relationship_events_append_only_delete" in trigger_names
 
@@ -2574,9 +3062,7 @@ def test_bootstrap_upgrades_a_pre_existing_db_file_with_the_entity_substrate(tmp
     store = _make_store(conn)
     entity = _create_entity(store, name="Type3 Capital")
     store.record_relationship_change(entity_id=entity["id"], relationship_type="portfolio")
-    assert [row["relationship_type_after"] for row in store.list_relationship_events(entity["id"])] == [
-        "portfolio"
-    ]
+    assert [row["relationship_type_after"] for row in store.list_relationship_events(entity["id"])] == ["portfolio"]
     with pytest.raises(sqlite3.IntegrityError, match="append-only"):
         conn.execute("DELETE FROM entity_relationship_events")
     conn.close()
@@ -2657,7 +3143,8 @@ def test_redact_memory_content_expunges_content_and_archives() -> None:
     assert "SECRET" not in _table_dump(conn, "memories")
     # Exactly one memory.redacted event was appended, itself content-free.
     redaction_events = [
-        event for event in store.list_events(target_type="memory", target_id=str(memory["id"]))
+        event
+        for event in store.list_events(target_type="memory", target_id=str(memory["id"]))
         if event["event_type"] == "memory.redacted"
     ]
     assert len(redaction_events) == 1
@@ -2747,7 +3234,8 @@ def test_redact_memory_revisions_scrubs_content_and_preserves_skeleton() -> None
     assert edited_after["metadata_json"] == {"redacted": True}
     assert "SECRET" not in _table_dump(conn, "memory_revisions")
     redaction_events = [
-        event for event in store.list_events(target_type="memory", target_id=str(memory["id"]))
+        event
+        for event in store.list_events(target_type="memory", target_id=str(memory["id"]))
         if event["event_type"] == "memory.redacted"
     ]
     assert len(redaction_events) == 1
@@ -2755,6 +3243,173 @@ def test_redact_memory_revisions_scrubs_content_and_preserves_skeleton() -> None
         "operation": "redact_memory_revisions",
         "redacted_revisions": 2,
     }
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    ("review_action", "terminal_status", "revision_type", "event_target_type"),
+    [
+        ("accept", "accepted", "promoted", "project"),
+        ("reject", "rejected", "rejected", "artifact"),
+    ],
+)
+def test_project_update_review_evidence_skeleton_survives_sqlite_redaction(
+    review_action: str,
+    terminal_status: str,
+    revision_type: str,
+    event_target_type: str,
+) -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    project_id = str(uuid4())
+    artifact_id = str(uuid4())
+    actor_id = str(uuid4())
+    memory = _create_memory(
+        store,
+        canonical_text=f"SECRET-{terminal_status}-PROJECT-STATE",
+        project_id=project_id,
+        project_scope=[project_id],
+        memory_type="project_state",
+    )
+    memory_id = str(memory["id"])
+    revision = store.append_revision(
+        {
+            "memory_id": memory_id,
+            "memory_key": memory["memory_key"],
+            "action": "project_update_review",
+            "revision_type": revision_type,
+            "text_before": f"SECRET-{terminal_status}-BEFORE",
+            "text_after": f"SECRET-{terminal_status}-AFTER",
+            "reason": f"SECRET-{terminal_status}-REASON",
+            "actor_type": "user",
+            "actor_id": actor_id,
+            "metadata_json": {
+                "artifact_id": artifact_id,
+                "project_id": project_id,
+                "action": review_action,
+            },
+        }
+    )
+    event_type = f"project.update_candidate_{terminal_status}"
+    event_target_id = project_id if terminal_status == "accepted" else artifact_id
+    event_payload = (
+        {
+            "artifact_id": artifact_id,
+            "candidate_memory_id": memory_id,
+            "action": review_action,
+        }
+        if terminal_status == "accepted"
+        else {"project_id": project_id, "source_ids": []}
+    )
+    event = store.append_event(
+        {
+            "event_type": event_type,
+            "actor_type": "user",
+            "actor_id": actor_id,
+            "target_type": event_target_type,
+            "target_id": event_target_id,
+            "payload_json": event_payload,
+        }
+    )
+
+    # SQLite intentionally has no project/artifact repository surface. This
+    # is store-evidence parity only; VNextProjectService replay belongs to the
+    # live PostgreSQL test above its real repository implementation.
+    store.redact_memory_revisions(memory_id=memory_id)
+    store.redact_memory_events(memory_id=memory_id)
+
+    redacted_revision = next(row for row in store.list_revisions(memory_id) if row["id"] == revision["id"])
+    for field in (
+        "id",
+        "memory_id",
+        "sequence_no",
+        "action",
+        "memory_key",
+        "revision_number",
+        "revision_type",
+        "actor_type",
+        "actor_id",
+        "created_at",
+    ):
+        assert redacted_revision[field] == revision[field]
+    assert redacted_revision["action"] == "project_update_review"
+    assert redacted_revision["revision_type"] == revision_type
+    assert redacted_revision["metadata_json"] == {"redacted": True}
+    assert redacted_revision["text_before"] == "[REDACTED]"
+    assert redacted_revision["text_after"] == "[REDACTED]"
+    assert redacted_revision["reason"] == "[REDACTED]"
+
+    redacted_event = next(row for row in store.list_events() if row["id"] == event["id"])
+    for field in (
+        "id",
+        "event_type",
+        "actor_type",
+        "actor_id",
+        "target_type",
+        "target_id",
+        "occurred_at",
+        "trace_id",
+        "run_id",
+    ):
+        assert redacted_event[field] == event[field]
+    assert redacted_event["event_type"] == event_type
+    assert redacted_event["target_type"] == event_target_type
+    assert redacted_event["target_id"] == event_target_id
+    if terminal_status == "accepted":
+        assert redacted_event["payload_json"] == {
+            "redacted": True,
+            "memory_id": memory_id,
+            "event_type": event_type,
+        }
+        assert redacted_event["integrity_hash"] is None
+    else:
+        assert redacted_event["payload_json"] == event_payload
+    conn.close()
+
+
+def test_project_update_candidate_created_event_keeps_exact_sqlite_redaction_skeleton() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _create_memory(store, status="candidate", memory_type="project_state")
+    memory_id = str(memory["id"])
+    event = store.append_event(
+        {
+            "event_type": "project.update_candidate_created",
+            "actor_type": "agent",
+            "actor_id": "review-agent",
+            "target_type": "artifact",
+            "target_id": str(uuid4()),
+            "trace_id": "trace-candidate-created",
+            "run_id": "run-candidate-created",
+            "payload_json": {
+                "candidate_memory_id": memory_id,
+                "summary": "SECRET candidate content",
+            },
+            "integrity_hash": "secret-derived-hash",
+        }
+    )
+
+    store.redact_memory_events(memory_id=memory_id)
+
+    redacted = next(row for row in store.list_events() if row["id"] == event["id"])
+    for field in (
+        "id",
+        "event_type",
+        "actor_type",
+        "actor_id",
+        "target_type",
+        "target_id",
+        "occurred_at",
+        "trace_id",
+        "run_id",
+    ):
+        assert redacted[field] == event[field]
+    assert redacted["payload_json"] == {
+        "redacted": True,
+        "memory_id": memory_id,
+        "event_type": "project.update_candidate_created",
+    }
+    assert redacted["integrity_hash"] is None
     conn.close()
 
 
@@ -2795,7 +3450,16 @@ def test_redact_memory_events_scrubs_payloads_and_preserves_skeleton() -> None:
     for event_id, before_row in before.items():
         after_row = after[event_id]
         # Skeleton intact.
-        for column in ("event_type", "actor_type", "actor_id", "target_type", "target_id", "occurred_at", "trace_id", "run_id"):
+        for column in (
+            "event_type",
+            "actor_type",
+            "actor_id",
+            "target_type",
+            "target_id",
+            "occurred_at",
+            "trace_id",
+            "run_id",
+        ):
             assert after_row[column] == before_row[column]
         # Content gone: exactly the redaction shape, hash cleared.
         assert after_row["payload_json"] == {
@@ -2810,9 +3474,7 @@ def test_redact_memory_events_scrubs_payloads_and_preserves_skeleton() -> None:
     assert "SECRET-PATCH" not in dump
     assert "SECRET-EVT" not in dump
     assert "hash-abc" not in dump
-    redaction_events = [
-        row for row in after.values() if row["event_type"] == "memory.redacted"
-    ]
+    redaction_events = [row for row in after.values() if row["event_type"] == "memory.redacted"]
     assert len(redaction_events) == 1
     assert redaction_events[0]["payload_json"] == {
         "operation": "redact_memory_events",
@@ -2826,9 +3488,7 @@ def test_append_only_still_enforced_for_normal_updates_after_redaction_support()
     store = _make_store(conn)
     memory = _secret_memory(store)
     revision = _secret_revision(store, memory)
-    event = store.append_event(
-        {"event_type": "custom.note", "actor_type": "system", "payload_json": {"text": "x"}}
-    )
+    event = store.append_event({"event_type": "custom.note", "actor_type": "system", "payload_json": {"text": "x"}})
 
     # Without redaction mode: every UPDATE and DELETE is rejected.
     with pytest.raises(sqlite3.IntegrityError, match="append-only"):
@@ -2848,12 +3508,10 @@ def test_append_only_still_enforced_for_normal_updates_after_redaction_support()
     conn.execute("UPDATE redaction_mode SET enabled = 1 WHERE id = 1")
     try:
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
-            conn.execute(
-                "UPDATE event_log SET event_type = 'evil' WHERE id = ?", (event["id"],)
-            )
+            conn.execute("UPDATE event_log SET event_type = 'evil' WHERE id = ?", (event["id"],))
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             conn.execute(
-                "UPDATE event_log SET payload_json = '{\"free\": \"rewrite\"}' WHERE id = ?",
+                'UPDATE event_log SET payload_json = \'{"free": "rewrite"}\' WHERE id = ?',
                 (event["id"],),
             )
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
@@ -2910,9 +3568,7 @@ def test_redaction_is_user_scoped() -> None:
     # User A's content is untouched.
     assert "SECRET-TITLE" in _table_dump(conn, "memories")
     assert "SECRET-BEFORE" in _table_dump(conn, "memory_revisions")
-    assert [
-        row for row in store_a.list_events() if row["event_type"] == "memory.redacted"
-    ] == []
+    assert [row for row in store_a.list_events() if row["event_type"] == "memory.redacted"] == []
     conn.close()
 
 
@@ -2931,9 +3587,7 @@ def test_redacted_memory_is_invisible_to_search() -> None:
     assert store.search_memories_fts(query="sprocket") == []
     assert store.search_memories_vector(query_vector=[0.5, 0.25]) == []
     # The FTS shadow index itself no longer matches the redacted content.
-    assert conn.execute(
-        "SELECT count(*) FROM memories_fts WHERE memories_fts MATCH 'sprocket'"
-    ).fetchone()[0] == 0
+    assert conn.execute("SELECT count(*) FROM memories_fts WHERE memories_fts MATCH 'sprocket'").fetchone()[0] == 0
     conn.close()
 
 

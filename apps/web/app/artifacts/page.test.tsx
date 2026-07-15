@@ -1,5 +1,5 @@
 import React from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ArtifactsPage from "./page";
@@ -51,6 +51,16 @@ vi.mock("../../lib/api", async () => {
     listTaskArtifacts: listTaskArtifactsMock,
   };
 });
+
+function deferred<T = never>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
 
 describe("ArtifactsPage", () => {
   beforeEach(() => {
@@ -157,5 +167,43 @@ describe("ArtifactsPage", () => {
       fixtureArtifact.id,
       "user-1",
     );
+  });
+
+  it("starts workspace and chunk reads in the same request wave", async () => {
+    const artifact = taskArtifactFixtures[0];
+    if (!artifact) {
+      throw new Error("Expected at least one task artifact fixture.");
+    }
+
+    getApiConfigMock.mockReturnValue({
+      apiBaseUrl: "https://api.example.com",
+      userId: "user-1",
+      defaultThreadId: "thread-1",
+      defaultToolId: "tool-1",
+    });
+    hasLiveApiConfigMock.mockReturnValue(true);
+    listTaskArtifactsMock.mockResolvedValue({
+      items: [artifact],
+      summary: { total_count: 1, order: ["created_at_asc", "id_asc"] },
+    });
+    getTaskArtifactDetailMock.mockResolvedValue({ artifact });
+
+    const workspace = deferred();
+    const chunks = deferred();
+    getTaskWorkspaceDetailMock.mockReturnValue(workspace.promise);
+    listTaskArtifactChunksMock.mockReturnValue(chunks.promise);
+
+    const pagePromise = ArtifactsPage({
+      searchParams: Promise.resolve({ artifact: artifact.id }),
+    });
+
+    await waitFor(() => {
+      expect(getTaskWorkspaceDetailMock).toHaveBeenCalledTimes(1);
+      expect(listTaskArtifactChunksMock).toHaveBeenCalledTimes(1);
+    });
+
+    workspace.reject(new Error("workspace unavailable"));
+    chunks.reject(new Error("chunks unavailable"));
+    await pagePromise;
   });
 });

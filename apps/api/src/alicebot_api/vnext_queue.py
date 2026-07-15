@@ -7,6 +7,7 @@ from typing import Protocol
 
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_agent_control import resource_project_scope
+from alicebot_api.vnext_project_update_guard import is_project_update_artifact
 from alicebot_api.vnext_repositories import JsonObject
 
 DEFAULT_VNEXT_ARTIFACT_EXPORT_ROOT = Path("/tmp/alicebot-vnext-artifact-exports")
@@ -58,6 +59,7 @@ class VNextQueueStore(Protocol):
         artifact_id: str,
         status: str,
         expected_status: str | None = None,
+        actor_type: str = "system",
     ) -> JsonObject | None: ...
 
     def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
@@ -269,7 +271,16 @@ class VNextQueueService:
             )
             return QueueProcessResult(status="failed", task_id=task_id, error_message=str(exc))
 
-    def review_artifact(self, *, artifact_id: str, action: str) -> JsonObject:
+    def review_artifact(
+        self,
+        *,
+        artifact_id: str,
+        action: str,
+        actor_type: str = "system",
+        actor_id: str | None = None,
+        trace_id: str | None = None,
+        run_id: str | None = None,
+    ) -> JsonObject:
         action_to_status = {
             "review": "reviewed",
             "accept": "accepted",
@@ -277,7 +288,13 @@ class VNextQueueService:
             "archive": "archived",
         }
         if action == "promote":
-            return self._promote_artifact(artifact_id=artifact_id)
+            return self._promote_artifact(
+                artifact_id=artifact_id,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                trace_id=trace_id,
+                run_id=run_id,
+            )
         status = action_to_status.get(action)
         if status is None:
             raise VNextQueueValidationError(
@@ -286,6 +303,10 @@ class VNextQueueService:
         artifact = self.store.get_artifact_for_update(artifact_id)
         if artifact is None:
             raise VNextQueueNotFoundError(f"artifact {artifact_id} was not found")
+        if is_project_update_artifact(artifact):
+            raise VNextQueueValidationError(
+                "project update artifacts must be reviewed through the coupled project-update lifecycle"
+            )
         current_status = str(artifact.get("status") or "draft")
         if current_status == status:
             return artifact
@@ -297,26 +318,42 @@ class VNextQueueService:
             artifact_id=artifact_id,
             status=status,
             expected_status=current_status,
+            actor_type=actor_type,
         )
         if updated_artifact is None:
             raise VNextQueueValidationError("artifact review conflicted with another reviewer")
         append_event(
             self.store,
             event_type="artifact.reviewed",
-            actor_type="system",
+            actor_type=actor_type,
+            actor_id=actor_id,
             target_type="artifact",
             target_id=artifact_id,
+            trace_id=trace_id,
+            run_id=run_id,
             payload={"action": action, "status": status},
         )
         return updated_artifact
 
-    def _promote_artifact(self, *, artifact_id: str) -> JsonObject:
+    def _promote_artifact(
+        self,
+        *,
+        artifact_id: str,
+        actor_type: str,
+        actor_id: str | None,
+        trace_id: str | None,
+        run_id: str | None,
+    ) -> JsonObject:
         # Promotion creates a trusted-memory side effect. Lock the artifact for
         # the duration of the caller's transaction so concurrent reviewers
         # cannot both observe the pre-promotion state and create two memories.
         artifact = self.store.get_artifact_for_update(artifact_id)
         if artifact is None:
             raise VNextQueueNotFoundError(f"artifact {artifact_id} was not found")
+        if is_project_update_artifact(artifact):
+            raise VNextQueueValidationError(
+                "project update artifacts must be reviewed through the coupled project-update lifecycle"
+            )
         artifact_status = str(artifact.get("status") or "draft")
         if artifact_status == "promoted_to_memory":
             for event in self.store.list_events(target_type="artifact", target_id=artifact_id):
@@ -374,7 +411,7 @@ class VNextQueueService:
                     "promotion_reviewed": True,
                 },
             },
-            actor_type="user",
+            actor_type=actor_type,
         )
         memory_id = str(promoted.get("id") or "")
         if not memory_id:
@@ -383,15 +420,19 @@ class VNextQueueService:
             artifact_id=artifact_id,
             status="promoted_to_memory",
             expected_status=artifact_status,
+            actor_type=actor_type,
         )
         if updated_artifact is None:
             raise VNextQueueValidationError("artifact promotion conflicted with another reviewer")
         append_event(
             self.store,
             event_type="artifact.promoted_to_memory",
-            actor_type="user",
+            actor_type=actor_type,
+            actor_id=actor_id,
             target_type="artifact",
             target_id=artifact_id,
+            trace_id=trace_id,
+            run_id=run_id,
             payload={"memory_id": memory_id},
         )
         return {**updated_artifact, "promoted_memory_id": memory_id}

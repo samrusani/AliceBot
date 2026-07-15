@@ -33,8 +33,8 @@ export type TraceItem = {
   metadata: string[];
   evidence: string[];
   events: TraceEventItem[];
-  detailSource: ApiSource;
-  eventSource: ApiSource;
+  detailSource: ApiSource | "unavailable";
+  eventSource: ApiSource | "unavailable";
   detailUnavailable?: boolean;
   eventsUnavailable?: boolean;
 };
@@ -46,6 +46,26 @@ function formatDate(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function detailSourceLabel(source: TraceItem["detailSource"]) {
+  if (source === "live") {
+    return "Live trace detail";
+  }
+  if (source === "fixture") {
+    return "Fixture trace detail";
+  }
+  return "Unavailable";
+}
+
+function eventSourceLabel(source: TraceItem["eventSource"]) {
+  if (source === "live") {
+    return "Live event review";
+  }
+  if (source === "fixture") {
+    return "Fixture event review";
+  }
+  return "Unavailable";
 }
 
 export function TraceList({
@@ -174,10 +194,10 @@ export function TraceList({
               <span className="attribute-item">Source: {selected.source}</span>
               <span className="attribute-item">Scope: {selected.scope}</span>
               <span className="attribute-item">
-                Detail: {selected.detailSource === "live" ? "Live trace detail" : "Fixture trace detail"}
+                Detail: {detailSourceLabel(selected.detailSource)}
               </span>
               <span className="attribute-item">
-                Events: {selected.eventSource === "live" ? "Live event review" : "Fixture event review"}
+                Events: {eventSourceLabel(selected.eventSource)}
               </span>
               {selected.related.threadId ? (
                 <span className="attribute-item">Thread: {selected.related.threadId}</span>

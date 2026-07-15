@@ -16,6 +16,29 @@ def test_revision_follows_persistence_scheduler_hardening() -> None:
     assert module.down_revision == "20260713_0087"
 
 
+def test_migration_fingerprint_v1_has_a_literal_golden_vector() -> None:
+    module = load_migration_module()
+
+    actual = module.provider_config_fingerprint_v1(
+        provider_key="openai_compatible",
+        model_provider="openai_responses",
+        display_name="Provider",
+        base_url="https://provider.example/v1",
+        api_key="provider_secret_ref:test",
+        auth_mode="bearer",
+        default_model="gpt-5-mini",
+        status="active",
+        model_list_path="/models",
+        healthcheck_path="/models",
+        invoke_path="/responses",
+        azure_api_version="",
+        azure_auth_secret_ref="",
+        metadata={"nested": {"z": 2, "a": 1}, "enabled": True},
+    )
+
+    assert actual == "6f2ce85910465032f0276f2230b6220de4507033dc5c1b9ec10d16925e1ad1d6"
+
+
 def test_upgrade_adds_durable_response_jobs_and_provider_fences(monkeypatch) -> None:
     module = load_migration_module()
     executed: list[str] = []

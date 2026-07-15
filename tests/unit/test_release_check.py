@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import io
 import json
 from hashlib import sha256
 import math
 from pathlib import Path
 import subprocess
+import tarfile
+import zipfile
 
 import pytest
 
@@ -32,11 +35,15 @@ def _seed_metadata_tree(tmp_path: Path, *, python_version: str, web_version: str
                 "[project]",
                 'name = "alice-memory"',
                 f'version = "{python_version}"',
+                'readme = "docs/pypi-description.md"',
                 "",
             )
         ),
         encoding="utf-8",
     )
+    description = tmp_path / "docs" / "pypi-description.md"
+    description.parent.mkdir(parents=True)
+    description.write_text("# Alice Memory\n\nEvergreen package description.\n", encoding="utf-8")
     web_dir = tmp_path / "apps" / "web"
     web_dir.mkdir(parents=True)
     (web_dir / "package.json").write_text(
@@ -54,6 +61,67 @@ def _seed_metadata_tree(tmp_path: Path, *, python_version: str, web_version: str
         '__version__ = _distribution_version("alice-memory")\n',
         encoding="utf-8",
     )
+
+
+def _write_distribution_pair(
+    dist_dir: Path,
+    *,
+    version: str,
+    wheel_description: str,
+    sdist_description: str,
+) -> None:
+    dist_dir.mkdir(parents=True)
+    wheel = dist_dir / f"alice_memory-{version}-py3-none-any.whl"
+    wheel_metadata = (
+        "Metadata-Version: 2.4\n"
+        "Name: alice-memory\n"
+        f"Version: {version}\n"
+        "Description-Content-Type: text/markdown\n\n"
+        f"{wheel_description}"
+    )
+    with zipfile.ZipFile(wheel, mode="w") as archive:
+        archive.writestr(
+            f"alice_memory-{version}.dist-info/METADATA",
+            wheel_metadata,
+        )
+        archive.writestr("alicebot_api/_resources/alembic.ini", "[alembic]\n")
+        archive.writestr("alicebot_api/_resources/alembic/env.py", "# env\n")
+        archive.writestr(
+            "alicebot_api/_resources/alembic/versions/20260714_0090_example.py",
+            "revision = 'example'\n",
+        )
+        archive.writestr(
+            "alicebot_api/_resources/eval/public_eval_suites.json",
+            "{}\n",
+        )
+
+    sdist = dist_dir / f"alice_memory-{version}.tar.gz"
+    root = f"alice_memory-{version}"
+    sdist_metadata = (
+        "Metadata-Version: 2.4\n"
+        "Name: alice-memory\n"
+        f"Version: {version}\n"
+        "Description-Content-Type: text/markdown\n\n"
+        f"{sdist_description}"
+    )
+
+    def add_text(archive: tarfile.TarFile, name: str, content: str) -> None:
+        payload = content.encode("utf-8")
+        info = tarfile.TarInfo(name)
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+
+    with tarfile.open(sdist, mode="w:gz") as archive:
+        add_text(archive, f"{root}/PKG-INFO", sdist_metadata)
+        add_text(
+            archive,
+            f"{root}/pyproject.toml",
+            f'[project]\nname = "alice-memory"\nversion = "{version}"\n',
+        )
+        add_text(archive, f"{root}/apps/api/alembic.ini", "[alembic]\n")
+        add_text(archive, f"{root}/apps/api/alembic/env.py", "# env\n")
+        add_text(archive, f"{root}/eval/fixtures/public_eval_suites.json", "{}\n")
+        add_text(archive, f"{root}/setup.py", "# setup\n")
 
 
 def test_release_metadata_uses_pyproject_as_canonical_version(tmp_path: Path) -> None:
@@ -80,6 +148,73 @@ def test_release_metadata_rejects_prerelease_version(tmp_path: Path) -> None:
     _metadata, issues = release_check.validate_metadata(tmp_path)
 
     assert any("stable SemVer" in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
+    "description",
+    (
+        "Alice v1.2.3 package description.\n",
+        "Alice is the latest published release.\n",
+        "Alice is in release gating.\n",
+        "Alice is an unpublished candidate.\n",
+    ),
+)
+def test_release_metadata_rejects_version_state_in_package_description(
+    tmp_path: Path,
+    description: str,
+) -> None:
+    _seed_metadata_tree(tmp_path, python_version="1.2.3", web_version="1.2.3")
+    (tmp_path / release_check.PACKAGE_DESCRIPTION_RELATIVE_PATH).write_text(
+        description,
+        encoding="utf-8",
+    )
+
+    _metadata, issues = release_check.validate_metadata(tmp_path)
+
+    assert any("package description" in issue or "pypi-description" in issue for issue in issues)
+
+
+def test_distribution_metadata_uses_the_evergreen_package_description(
+    tmp_path: Path,
+) -> None:
+    expected = "# Alice Memory\n\nEvergreen package description.\n"
+    dist_dir = tmp_path / "dist"
+    _write_distribution_pair(
+        dist_dir,
+        version="1.2.3",
+        wheel_description=expected,
+        sdist_description=expected,
+    )
+
+    _artifacts, issues = release_check.validate_distributions(
+        dist_dir,
+        version="1.2.3",
+        expected_description=expected,
+    )
+
+    assert issues == []
+
+
+def test_distribution_metadata_rejects_stale_readme_descriptions(
+    tmp_path: Path,
+) -> None:
+    expected = "# Alice Memory\n\nEvergreen package description.\n"
+    dist_dir = tmp_path / "dist"
+    _write_distribution_pair(
+        dist_dir,
+        version="1.2.3",
+        wheel_description="The candidate is in release gating.\n",
+        sdist_description="The previous release is the latest published release.\n",
+    )
+
+    _artifacts, issues = release_check.validate_distributions(
+        dist_dir,
+        version="1.2.3",
+        expected_description=expected,
+    )
+
+    assert "wheel METADATA long description does not match the evergreen package description" in issues
+    assert "sdist PKG-INFO long description does not match the evergreen package description" in issues
 
 
 def test_release_metadata_accepts_fastapi_subclass_constructor(tmp_path: Path) -> None:

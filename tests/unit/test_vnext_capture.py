@@ -12,6 +12,7 @@ import pytest
 import alicebot_api.vnext_capture as vnext_capture
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
+from alicebot_api.store import ContinuityStoreInvariantError
 from alicebot_api.vnext_capture import (
     USER_ASSERTED_VALUE_CONFIDENCE,
     USER_ASSERTED_VALUE_RULE,
@@ -19,6 +20,7 @@ from alicebot_api.vnext_capture import (
     VNextCaptureService,
     VNextCaptureValidationError,
     chunk_text,
+    capture_dedupe_key_for_text,
     content_hash_for_text,
     extract_candidate_memories,
     order_candidates_for_promotion,
@@ -194,6 +196,39 @@ def test_identical_text_in_different_projects_is_not_deduped() -> None:
     assert len({str(source["id"]) for source in store.sources}) == 2
 
 
+def test_capture_scope_identity_dedupes_case_order_whitespace_and_duplicates() -> None:
+    store = InMemoryVNextCaptureStore()
+    service = VNextCaptureService(store)
+    text = "Fact: Canonical project scope identity is deterministic."
+
+    first = service.capture_text(text, project_scope=(" Beta ", "ALICE", "alice"))
+    repeated = service.capture_text(text, project_scope=("alice", "beta"))
+
+    assert repeated.duplicate is True
+    assert repeated.source_id == first.source_id
+    assert content_hash_for_text(text, ("Beta", "Alice")) == content_hash_for_text(text, (" alice ", "BETA", "beta"))
+
+
+def test_explicit_empty_capture_scope_does_not_resurrect_metadata_scope() -> None:
+    store = InMemoryVNextCaptureStore()
+    result = VNextCaptureService(store).capture_source(
+        SourceCaptureInput(
+            source_type="note",
+            raw_text="Fact: Explicit de-scoping remains authoritative.",
+            project_scope=(),
+            metadata_json={
+                "project_scope": ["stale-project"],
+                "agentic_memory": {"project_scope": ["stale-project"]},
+            },
+        )
+    )
+
+    assert result.status == "imported"
+    assert store.sources[0]["metadata_json"]["project_scope"] == []
+    assert store.memories[0]["metadata_json"]["project_scope"] == []
+    assert memory_project_scope(store.memories[0]) == ()
+
+
 def test_scoped_identity_keeps_true_raw_digest_separate() -> None:
     store = InMemoryVNextCaptureStore()
     raw_text = "  Fact: Scoped evidence keeps its exact bytes.\r\n"
@@ -230,6 +265,80 @@ def test_pre_v094_scoped_hash_is_still_recognized_as_same_capture() -> None:
     assert result.duplicate is True
     assert result.source_id == legacy["id"]
     assert len(store.sources) == 1
+
+
+def test_stale_dedupe_fast_path_candidate_is_revalidated_before_duplicate_skip() -> None:
+    text = "Fact: A stale source key is only a candidate selector."
+    requested_hash = content_hash_for_text(text, ("Alpha",))
+
+    class StaleFastPathStore(InMemoryVNextCaptureStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stale = {
+                "id": "stale-source",
+                "source_type": "manual_text",
+                "content_hash": requested_hash,
+                "dedupe_key": capture_dedupe_key_for_text(
+                    text,
+                    ("Alpha",),
+                    domain="project",
+                    sensitivity="private",
+                ),
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"raw_text": text, "project_scope": ["Beta"]},
+            }
+
+        def get_source_by_dedupe_key(self, _dedupe_key: str) -> dict[str, object]:
+            return self.stale
+
+        def get_sources_by_content_hash(self, _content_hash: str) -> list[dict[str, object]]:
+            return [self.stale]
+
+    store = StaleFastPathStore()
+    result = VNextCaptureService(store).capture_text(
+        text,
+        domain="project",
+        sensitivity="private",
+        project_scope=("Alpha",),
+    )
+
+    assert result.status == "imported"
+    assert result.source_id != "stale-source"
+    assert len(store.sources) == 1
+
+
+def test_atomic_dedupe_winner_is_revalidated_and_mismatch_fails_closed() -> None:
+    text = "Fact: Atomic conflict winners must match current source identity."
+
+    class MismatchedAtomicWinnerStore(InMemoryVNextCaptureStore):
+        def get_or_create_source(
+            self,
+            source: dict[str, object],
+            **_kwargs: object,
+        ) -> tuple[dict[str, object], bool]:
+            return (
+                {
+                    **source,
+                    "id": "wrong-winner",
+                    "metadata_json": {
+                        **dict(source["metadata_json"]),
+                        "project_scope": ["Beta"],
+                    },
+                },
+                False,
+            )
+
+    with pytest.raises(
+        ContinuityStoreInvariantError,
+        match="does not match capture identity",
+    ):
+        VNextCaptureService(MismatchedAtomicWinnerStore()).capture_text(
+            text,
+            domain="project",
+            sensitivity="private",
+            project_scope=("Alpha",),
+        )
 
 
 def test_concurrent_sqlite_capture_claims_one_atomic_dedupe_identity(tmp_path: Path) -> None:
@@ -350,9 +459,7 @@ def test_import_chatgpt_export_preserves_roles_without_duplicating_raw_json(tmp_
         "[TITLE]: Alice vNext\n"
         "[USER]: Fact: ChatGPT exports should preserve provenance."
     )
-    assert store.memories[0]["canonical_text"] == (
-        "[USER]: Fact: ChatGPT exports should preserve provenance."
-    )
+    assert store.memories[0]["canonical_text"] == ("[USER]: Fact: ChatGPT exports should preserve provenance.")
     assert store.memories[0]["metadata_json"]["provenance_role"] == "user"
 
 
@@ -737,11 +844,7 @@ def test_private_sensitivity_skips_entity_extraction_entirely() -> None:
     assert result.status == "imported"
     assert store.list_entities() == []
     assert store.list_edges(from_id=result.source_id) == []
-    assert not [
-        event
-        for event in store.list_events()
-        if str(event.get("event_type", "")).startswith("entity.")
-    ]
+    assert not [event for event in store.list_events() if str(event.get("event_type", "")).startswith("entity.")]
 
 
 class _BrokenEntityLookupStore(SQLiteVNextStore):
@@ -764,16 +867,12 @@ def test_entity_extraction_failure_never_fails_capture() -> None:
 
     assert result.status == "imported"
     assert store.list_entities() == []
-    failures = [
-        event for event in store.list_events() if event.get("event_type") == "entity.extraction_failed"
-    ]
+    failures = [event for event in store.list_events() if event.get("event_type") == "entity.extraction_failed"]
     assert len(failures) == 1
     assert failures[0]["target_id"] == result.source_id
     assert failures[0]["payload_json"]["error_type"] == "RuntimeError"
     # No source.import_failed was logged: the capture itself succeeded.
-    assert not [
-        event for event in store.list_events() if event.get("event_type") == "source.import_failed"
-    ]
+    assert not [event for event in store.list_events() if event.get("event_type") == "source.import_failed"]
 
 
 def test_stores_without_the_entity_surface_skip_linking_silently() -> None:
@@ -783,9 +882,7 @@ def test_stores_without_the_entity_surface_skip_linking_silently() -> None:
     result = service.capture_text("Fact: We met Sami Rusani of Type3 Capital.", sensitivity="internal")
 
     assert result.status == "imported"
-    assert not [
-        event for event in store.events if event.get("event_type") == "entity.extraction_failed"
-    ]
+    assert not [event for event in store.events if event.get("event_type") == "entity.extraction_failed"]
 
 
 def test_existing_prefix_rules_are_untouched_by_new_rules() -> None:
@@ -917,12 +1014,15 @@ def test_capture_stamps_provenance_metadata_only_for_tagged_candidates() -> None
     service = VNextCaptureService(store)
 
     service.capture_text(
-        "[USER]: I paid $50 for the taxi from the airport.\n\n"
-        "Fact: Untagged content keeps its legacy metadata shape."
+        "[USER]: I paid $50 for the taxi from the airport.\n\nFact: Untagged content keeps its legacy metadata shape."
     )
 
-    tagged = next(memory for memory in store.memories if memory["metadata_json"]["extraction_rule"] == "user_asserted_value")
-    untagged = next(memory for memory in store.memories if memory["metadata_json"]["extraction_rule"] == "prefixed_semantic")
+    tagged = next(
+        memory for memory in store.memories if memory["metadata_json"]["extraction_rule"] == "user_asserted_value"
+    )
+    untagged = next(
+        memory for memory in store.memories if memory["metadata_json"]["extraction_rule"] == "prefixed_semantic"
+    )
     assert tagged["metadata_json"]["provenance_role"] == "user"
     assert tagged["metadata_json"]["assertion_class"] == "user_asserted"
     assert "provenance_role" not in untagged["metadata_json"]
@@ -940,18 +1040,16 @@ def test_assistant_derived_memory_still_promotes_and_recalls() -> None:
 
     candidates = store.list_memories(status="candidate")
     assistant_memories = [
-        memory
-        for memory in candidates
-        if memory["metadata_json"].get("provenance_role") == "assistant"
+        memory for memory in candidates if memory["metadata_json"].get("provenance_role") == "assistant"
     ]
     assert assistant_memories, "assistant-derived content must still capture"
     for memory in candidates:
         store.update_memory(memory_id=str(memory["id"]), patch={"status": "active"}, actor_type="system")
 
     hits = store.search_memories_fts(query="Kyoto shuttle fare", limit=10)
-    assert any(
-        hit["metadata_json"].get("provenance_role") == "assistant" for hit in hits
-    ), "assistant-derived memories must remain recallable"
+    assert any(hit["metadata_json"].get("provenance_role") == "assistant" for hit in hits), (
+        "assistant-derived memories must remain recallable"
+    )
 
 
 # -- cross-batch dedupe of user-asserted-value promotions ----------------------------
@@ -1027,9 +1125,7 @@ def test_user_asserted_value_dedupe_respects_scope_domain_sensitivity_and_status
         project_scope=("Alpha",),
     )
 
-    omega_memories = [
-        row for row in store.list_memories() if "Omega Seamaster" in str(row["canonical_text"])
-    ]
+    omega_memories = [row for row in store.list_memories() if "Omega Seamaster" in str(row["canonical_text"])]
     assert len(omega_memories) == 5
 
 
@@ -1043,9 +1139,7 @@ def test_agent_capture_populates_first_class_agent_and_run_attribution() -> None
         agent_identity={"agent_id": "hermes", "agent_run_id": "run-42"},
     ).capture_text("Fact: Agent capture attribution is durable.")
 
-    memory = next(
-        row for row in store.list_memories() if row["metadata_json"].get("source_id") == result.source_id
-    )
+    memory = next(row for row in store.list_memories() if row["metadata_json"].get("source_id") == result.source_id)
     assert memory["created_by_agent_id"] == "hermes"
     assert memory["run_id"] == "run-42"
 
@@ -1059,9 +1153,7 @@ def test_cross_batch_dedupe_is_scoped_to_user_asserted_value_rule() -> None:
     service.capture_text("Note one.\n\nFact: The ingest worker restarts nightly at 02:00.")
     service.capture_text("Note two.\n\nFact: The ingest worker restarts nightly at 02:00.")
 
-    repeated = [
-        memory for memory in store.list_memories() if "restarts nightly" in str(memory.get("canonical_text"))
-    ]
+    repeated = [memory for memory in store.list_memories() if "restarts nightly" in str(memory.get("canonical_text"))]
     assert len(repeated) == 2
 
 
@@ -1166,12 +1258,8 @@ def test_project_scoped_capture_is_recallable_by_its_project_and_scoped_out_of_o
     for memory in store.list_memories(status="candidate"):
         store.update_memory(memory_id=str(memory["id"]), patch={"status": "active"}, actor_type="system")
 
-    owning = store.search_memories_fts(
-        query="Helios staged rollout", projects=("project-helios",), limit=10
-    )
-    other = store.search_memories_fts(
-        query="Helios staged rollout", projects=("project-other",), limit=10
-    )
+    owning = store.search_memories_fts(query="Helios staged rollout", projects=("project-helios",), limit=10)
+    other = store.search_memories_fts(query="Helios staged rollout", projects=("project-other",), limit=10)
     unscoped = store.search_memories_fts(query="Helios staged rollout", limit=10)
 
     assert len(owning) == 1, "the owning project's filtered recall must retrieve its captured memory"

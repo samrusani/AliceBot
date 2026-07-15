@@ -443,52 +443,64 @@ export default async function MemoriesPage({
   let selectedMemorySource: ApiSource | null = selectedMemory ? selectedListSource : null;
   let selectedMemoryUnavailableReason: string | undefined;
 
-  if (selectedFromVisibleList && liveModeReady && selectedListSource === "live") {
-    try {
-      const payload = await getMemoryDetail(
-        apiConfig.apiBaseUrl,
-        selectedFromVisibleList.id,
-        apiConfig.userId,
-      );
-      selectedMemory = payload.memory;
-      selectedMemorySource = "live";
-    } catch (error) {
-      const fixtureMemory = getFixtureMemory(selectedFromVisibleList.id);
-      if (fixtureMemory) {
-        selectedMemory = fixtureMemory;
-        selectedMemorySource = "fixture";
-      }
-      selectedMemoryUnavailableReason =
-        error instanceof Error ? error.message : "Selected memory detail could not be loaded.";
-    }
-  }
-
   const selectedOpenLoopId = resolveSelectedOpenLoopId(requestedOpenLoopId, openLoops);
   const selectedOpenLoopFromList = openLoops.find((item) => item.id === selectedOpenLoopId) ?? null;
   let selectedOpenLoop = selectedOpenLoopFromList;
   let selectedOpenLoopSource: ApiSource | null = selectedOpenLoop ? openLoopSource : null;
   let selectedOpenLoopUnavailableReason: string | undefined;
 
-  if (selectedOpenLoopFromList && liveModeReady && openLoopSource === "live") {
-    try {
-      const payload = await getOpenLoopDetail(
-        apiConfig.apiBaseUrl,
-        selectedOpenLoopFromList.id,
-        apiConfig.userId,
-      );
-      selectedOpenLoop = payload.open_loop;
-      selectedOpenLoopSource = "live";
-    } catch (error) {
-      const fixtureOpenLoop = openLoopFixtures.find((item) => item.id === selectedOpenLoopFromList.id);
-      if (fixtureOpenLoop) {
-        selectedOpenLoop = fixtureOpenLoop;
-        selectedOpenLoopSource = "fixture";
-      } else {
-        selectedOpenLoop = null;
-        selectedOpenLoopSource = null;
+  const loadSelectedMemory =
+    selectedFromVisibleList && liveModeReady && selectedListSource === "live";
+  const loadSelectedOpenLoop =
+    selectedOpenLoopFromList && liveModeReady && openLoopSource === "live";
+
+  if (loadSelectedMemory || loadSelectedOpenLoop) {
+    const [memoryDetailResult, openLoopDetailResult] = await Promise.allSettled([
+      loadSelectedMemory
+        ? getMemoryDetail(apiConfig.apiBaseUrl, selectedFromVisibleList.id, apiConfig.userId)
+        : Promise.resolve(null),
+      loadSelectedOpenLoop
+        ? getOpenLoopDetail(apiConfig.apiBaseUrl, selectedOpenLoopFromList.id, apiConfig.userId)
+        : Promise.resolve(null),
+    ]);
+
+    if (loadSelectedMemory) {
+      if (memoryDetailResult.status === "fulfilled" && memoryDetailResult.value) {
+        selectedMemory = memoryDetailResult.value.memory;
+        selectedMemorySource = "live";
+      } else if (memoryDetailResult.status === "rejected") {
+        const fixtureMemory = getFixtureMemory(selectedFromVisibleList.id);
+        if (fixtureMemory) {
+          selectedMemory = fixtureMemory;
+          selectedMemorySource = "fixture";
+        }
+        selectedMemoryUnavailableReason =
+          memoryDetailResult.reason instanceof Error
+            ? memoryDetailResult.reason.message
+            : "Selected memory detail could not be loaded.";
       }
-      selectedOpenLoopUnavailableReason =
-        error instanceof Error ? error.message : "Selected open loop could not be loaded.";
+    }
+
+    if (loadSelectedOpenLoop) {
+      if (openLoopDetailResult.status === "fulfilled" && openLoopDetailResult.value) {
+        selectedOpenLoop = openLoopDetailResult.value.open_loop;
+        selectedOpenLoopSource = "live";
+      } else if (openLoopDetailResult.status === "rejected") {
+        const fixtureOpenLoop = openLoopFixtures.find(
+          (item) => item.id === selectedOpenLoopFromList.id,
+        );
+        if (fixtureOpenLoop) {
+          selectedOpenLoop = fixtureOpenLoop;
+          selectedOpenLoopSource = "fixture";
+        } else {
+          selectedOpenLoop = null;
+          selectedOpenLoopSource = null;
+        }
+        selectedOpenLoopUnavailableReason =
+          openLoopDetailResult.reason instanceof Error
+            ? openLoopDetailResult.reason.message
+            : "Selected open loop could not be loaded.";
+      }
     }
   }
 
@@ -499,13 +511,24 @@ export default async function MemoriesPage({
   let revisionSource: ApiSource | "unavailable" | null = selectedMemory ? "fixture" : null;
   let revisionUnavailableReason: string | undefined;
 
+  let labels = selectedMemory ? getFixtureMemoryLabels(selectedMemory.id) : [];
+  let labelSummary: MemoryReviewLabelSummary | null = selectedMemory
+    ? getFixtureMemoryLabelSummary(selectedMemory.id)
+    : null;
+  let labelSource: ApiSource | "unavailable" | null = selectedMemory ? "fixture" : null;
+  let labelUnavailableReason: string | undefined;
+
   if (selectedMemory && liveModeReady && selectedMemorySource === "live") {
-    try {
-      const payload = await getMemoryRevisions(apiConfig.apiBaseUrl, selectedMemory.id, apiConfig.userId);
-      revisions = payload.items;
-      revisionSummary = payload.summary;
+    const [revisionResult, labelResult] = await Promise.allSettled([
+      getMemoryRevisions(apiConfig.apiBaseUrl, selectedMemory.id, apiConfig.userId),
+      listMemoryLabels(apiConfig.apiBaseUrl, selectedMemory.id, apiConfig.userId),
+    ]);
+
+    if (revisionResult.status === "fulfilled") {
+      revisions = revisionResult.value.items;
+      revisionSummary = revisionResult.value.summary;
       revisionSource = "live";
-    } catch (error) {
+    } else {
       const fixtureRevisions = getFixtureMemoryRevisions(selectedMemory.id);
       if (fixtureRevisions.length > 0) {
         revisions = fixtureRevisions;
@@ -517,24 +540,16 @@ export default async function MemoriesPage({
         revisionSource = "unavailable";
       }
       revisionUnavailableReason =
-        error instanceof Error ? error.message : "Revision history could not be loaded.";
+        revisionResult.reason instanceof Error
+          ? revisionResult.reason.message
+          : "Revision history could not be loaded.";
     }
-  }
 
-  let labels = selectedMemory ? getFixtureMemoryLabels(selectedMemory.id) : [];
-  let labelSummary: MemoryReviewLabelSummary | null = selectedMemory
-    ? getFixtureMemoryLabelSummary(selectedMemory.id)
-    : null;
-  let labelSource: ApiSource | "unavailable" | null = selectedMemory ? "fixture" : null;
-  let labelUnavailableReason: string | undefined;
-
-  if (selectedMemory && liveModeReady && selectedMemorySource === "live") {
-    try {
-      const payload = await listMemoryLabels(apiConfig.apiBaseUrl, selectedMemory.id, apiConfig.userId);
-      labels = payload.items;
-      labelSummary = payload.summary;
+    if (labelResult.status === "fulfilled") {
+      labels = labelResult.value.items;
+      labelSummary = labelResult.value.summary;
       labelSource = "live";
-    } catch (error) {
+    } else {
       const fixtureLabels = memoryLabelFixtures[selectedMemory.id];
       if (fixtureLabels) {
         labels = fixtureLabels;
@@ -546,7 +561,9 @@ export default async function MemoriesPage({
         labelSource = "unavailable";
       }
       labelUnavailableReason =
-        error instanceof Error ? error.message : "Memory labels could not be loaded.";
+        labelResult.reason instanceof Error
+          ? labelResult.reason.message
+          : "Memory labels could not be loaded.";
     }
   }
 

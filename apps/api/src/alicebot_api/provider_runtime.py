@@ -437,6 +437,7 @@ class OpenAICompatibleAdapter(BaseProviderAdapter):
                 api_key=config.api_key,
                 timeout_seconds=settings.model_timeout_seconds,
                 invoke_path=config.invoke_path or self.default_invoke_path,
+                auth_mode=config.auth_mode,
             ),
             request=request,
         )

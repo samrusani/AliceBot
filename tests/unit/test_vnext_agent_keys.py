@@ -352,11 +352,82 @@ def test_resolve_agent_identity_binds_project_scope_from_the_key_record() -> Non
         store,
         user_id=user_id,
         raw_key=raw_key,
-        payload={"agent_id": "openclaw", "project_scope": ["alicebot"]},
+        payload={"agent_id": "openclaw", "project_scope": ["  AliceBot  "]},
     )
     assert narrowed is not None
-    assert narrowed.project_scope == ("alicebot",)
+    assert narrowed.project_scope == ("AliceBot",)
     assert narrowed.project_scope_locked is True
+
+
+@pytest.mark.parametrize(
+    ("bound_scope", "claimed_scope"),
+    [
+        ("İ", "i"),
+        ("Straße", "STRASSE"),
+        ("Σ", "σ"),
+        ("Σ", "ς"),
+        ("\u00a0Alice\u00a0", "\u00a0alice\u00a0"),
+    ],
+)
+def test_key_binding_rejects_non_ascii_case_variants(
+    bound_scope: str,
+    claimed_scope: str,
+) -> None:
+    store = FakeAgentKeyStore()
+    user_id = uuid4()
+    _record, raw_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="openclaw",
+        permission_profile="project_scoped_agent",
+        project_scope=bound_scope,
+    )
+
+    with pytest.raises(AgentKeyAuthenticationError, match="outside that scope"):
+        resolve_agent_identity(
+            store,
+            user_id=user_id,
+            raw_key=raw_key,
+            payload={"agent_id": "openclaw", "project_scope": [claimed_scope]},
+        )
+
+
+@pytest.mark.parametrize("bound_scope", ["İ", "Straße", "Σ", "σ", "ς", "\u00a0Alice\u00a0"])
+def test_key_binding_allows_exact_non_ascii_self_match(bound_scope: str) -> None:
+    store = FakeAgentKeyStore()
+    user_id = uuid4()
+    _record, raw_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="openclaw",
+        permission_profile="project_scoped_agent",
+        project_scope=bound_scope,
+    )
+
+    identity = resolve_agent_identity(
+        store,
+        user_id=user_id,
+        raw_key=raw_key,
+        payload={"agent_id": "openclaw", "project_scope": [bound_scope]},
+    )
+
+    assert identity is not None
+    assert identity.project_scope == (bound_scope,)
+    assert identity.project_scope_locked is True
+
+
+def test_key_binding_rejects_blank_scope_instead_of_silently_unbinding() -> None:
+    store = FakeAgentKeyStore()
+    user_id = uuid4()
+
+    with pytest.raises(AgentKeyValidationError, match="must not be blank"):
+        create_agent_key(
+            store,
+            user_id=user_id,
+            agent_id="openclaw",
+            permission_profile="project_scoped_agent",
+            project_scope=" \t\n",
+        )
 
 
 def test_resolve_agent_identity_rejects_project_scope_widening_and_audits() -> None:

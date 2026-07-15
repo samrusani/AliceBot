@@ -38,6 +38,7 @@ from alicebot_api.vnext_projects import (
     VNextProjectStore,
     VNextProjectValidationError,
 )
+from alicebot_api.vnext_project_scope import normalize_project_scope, project_scope_identity
 from alicebot_api.vnext_repositories import JsonObject
 
 
@@ -555,7 +556,7 @@ class _StagedSchedulerStore:
 
 
 def _normalized_project_scope(values: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(normalized for value in values if (normalized := " ".join(str(value).split()).strip())))
+    return normalize_project_scope(values)
 
 
 def _row_matches_projects(
@@ -569,8 +570,8 @@ def _row_matches_projects(
     row_scope = list(resource_project_scope(row))
     if project_row and row.get("id") is not None:
         row_scope.append(str(row["id"]))
-    allowed = {value.casefold() for value in projects}
-    return any(value.casefold() in allowed for value in row_scope)
+    allowed = set(project_scope_identity(projects))
+    return bool(allowed.intersection(project_scope_identity(row_scope)))
 
 
 def _supports_explicit_parameter(method: object, name: str) -> bool:

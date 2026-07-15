@@ -84,8 +84,8 @@ function buildBaseTraceItem(trace: TraceReviewSummaryItem): TraceItem {
     ],
     evidence: [],
     events: [],
-    detailSource: "live",
-    eventSource: "live",
+    detailSource: "unavailable",
+    eventSource: "unavailable",
   };
 }
 
@@ -120,41 +120,56 @@ function buildEventTitle(event: TraceReviewEventItem) {
   return `${formatKind(event.kind)} event`;
 }
 
-function buildLiveTraceItem(
-  trace: TraceReviewItem,
-  events: TraceReviewEventItem[],
-  options?: {
-    detailUnavailable?: boolean;
-    eventsUnavailable?: boolean;
-  },
+function buildSelectedTraceItem(
+  summary: TraceReviewSummaryItem,
+  detail: TraceReviewItem | null,
+  events: TraceReviewEventItem[] | null,
 ): TraceItem {
-  const metadata = [
-    `Trace: ${trace.id}`,
-    `Thread: ${trace.thread_id}`,
-    `Compiler: ${trace.compiler_version}`,
-    `Status: ${formatStatus(trace.status)}`,
-    ...Object.entries(trace.limits).map(([key, value]) => `Limit ${key}: ${stringifyValue(value)}`),
+  const trace = detail ?? summary;
+  const base = buildBaseTraceItem(trace);
+  const metadata = detail
+    ? [
+        `Trace: ${detail.id}`,
+        `Thread: ${detail.thread_id}`,
+        `Compiler: ${detail.compiler_version}`,
+        `Status: ${formatStatus(detail.status)}`,
+        ...Object.entries(detail.limits).map(
+          ([key, value]) => `Limit ${key}: ${stringifyValue(value)}`,
+        ),
+      ]
+    : base.metadata;
+
+  const evidence = [
+    ...(detail
+      ? []
+      : [
+          "The selected summary came from the live trace list, but full trace detail could not be read.",
+        ]),
+    ...(events === null
+      ? ["Ordered events could not be read from the live trace review API."]
+      : events.length
+        ? [
+            `${events.length} ordered event${events.length === 1 ? "" : "s"} loaded from the shipped trace review API.`,
+          ]
+        : ["No ordered events were returned for this trace."]),
   ];
 
-  const evidence = events.length
-    ? [
-        `${events.length} ordered event${events.length === 1 ? "" : "s"} loaded from the shipped trace review API.`,
-      ]
-    : ["No ordered events were returned for this trace."];
-
   return {
-    ...buildBaseTraceItem(trace),
+    ...base,
     metadata,
     evidence,
-    events: events.map<TraceEventItem>((event) => ({
-      id: event.id,
-      kind: event.kind,
-      title: buildEventTitle(event),
-      detail: buildEventDetail(event),
-      facts: buildEventFacts(event),
-    })),
-    detailUnavailable: options?.detailUnavailable,
-    eventsUnavailable: options?.eventsUnavailable,
+    events:
+      events?.map<TraceEventItem>((event) => ({
+        id: event.id,
+        kind: event.kind,
+        title: buildEventTitle(event),
+        detail: buildEventDetail(event),
+        facts: buildEventFacts(event),
+      })) ?? [],
+    detailSource: detail ? "live" : "unavailable",
+    eventSource: events === null ? "unavailable" : "live",
+    detailUnavailable: detail === null,
+    eventsUnavailable: events === null,
   };
 }
 
@@ -182,44 +197,15 @@ export default async function TracesPage({
 
       if (selectedSummary) {
         const selectedIndex = mapped.findIndex((item) => item.id === selectedSummary.id);
-        let selectedTrace = mapped[selectedIndex];
-
-        try {
-          const detailPayload = await getTraceDetail(
-            apiConfig.apiBaseUrl,
-            selectedSummary.id,
-            apiConfig.userId,
-          );
-
-          try {
-            const eventPayload = await getTraceEvents(
-              apiConfig.apiBaseUrl,
-              selectedSummary.id,
-              apiConfig.userId,
-            );
-
-            selectedTrace = buildLiveTraceItem(detailPayload.trace, eventPayload.items);
-          } catch {
-            selectedTrace = buildLiveTraceItem(detailPayload.trace, [], {
-              eventsUnavailable: true,
-            });
-          }
-        } catch {
-          selectedTrace = {
-            ...selectedTrace,
-            metadata: [
-              `Trace: ${selectedSummary.id}`,
-              `Thread: ${selectedSummary.thread_id}`,
-              `Compiler: ${selectedSummary.compiler_version}`,
-              `Status: ${formatStatus(selectedSummary.status)}`,
-            ],
-            evidence: [
-              "The selected summary came from the live trace list, but full trace detail could not be read.",
-            ],
-            detailUnavailable: true,
-            eventsUnavailable: true,
-          };
-        }
+        const [detailResult, eventResult] = await Promise.allSettled([
+          getTraceDetail(apiConfig.apiBaseUrl, selectedSummary.id, apiConfig.userId),
+          getTraceEvents(apiConfig.apiBaseUrl, selectedSummary.id, apiConfig.userId),
+        ]);
+        const selectedTrace = buildSelectedTraceItem(
+          selectedSummary,
+          detailResult.status === "fulfilled" ? detailResult.value.trace : null,
+          eventResult.status === "fulfilled" ? eventResult.value.items : null,
+        );
 
         if (selectedIndex >= 0) {
           mapped[selectedIndex] = selectedTrace;

@@ -235,12 +235,18 @@ alicebot agent keys create --agent-id openclaw --profile project_scoped_agent \
 When a key carries `--project-scope`, the resolved identity's project scope
 comes from the key record. Omitting a project filter inherits the complete
 binding; an explicit filter may narrow to a subset but never widen it.
-Every read and write is checked, including sources, open loops, recent
-changes, evidence, and supersession context. Lifecycle operations authorize
-the persisted target's project rather than trusting a project supplied by
-the caller. Violations are blocked and audited with
-`project_scope_binding_violation`. Keys issued without `--project-scope`
-keep the prior behavior: the payload's explicit project scope is honored.
+Lifecycle operations authorize the persisted target's project rather than
+trusting a project supplied by the caller. On the core MCP surface, recall,
+context packs, explanation expansion, open-loop listing, and resume lookup
+enforce the effective key-bound project set; target-specific event reads
+follow only after the backing row is admitted. The legacy
+`alice_vnext_context_tree` tool is not part of that core surface and remains
+disabled on key-bound servers. When legacy tools are enabled for a keyless
+local server, its five resource groups (projects, memories, sources, open
+loops, and artifacts) plus its separate event group use the caller's effective
+project set. Violations are blocked and audited with
+`project_scope_binding_violation`. Keys issued without `--project-scope` keep
+the prior behavior: the payload's explicit project scope is honored.
 
 `read_only_agent` cannot write. `memory_proposal_agent` can submit a
 review-only proposal but cannot approve, correct, forget, redact, or otherwise

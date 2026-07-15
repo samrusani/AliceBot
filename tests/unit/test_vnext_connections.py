@@ -275,6 +275,43 @@ def test_connection_report_enforces_project_scope_before_candidate_limits() -> N
     assert all(edge["to_id"] == "memory-project-a" for edge in store.edges.values())
 
 
+def test_connection_report_source_filter_honors_embedded_canonical_envelope() -> None:
+    store = InMemoryVNextConnectionStore()
+    for source_id, canonical_scope in (("source-empty", []), ("source-real", ["real"])):
+        store.sources.append(
+            {
+                "id": source_id,
+                "source_type": "manual_text",
+                "title": "Queue retrieval pattern note",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {
+                    "project_id": "stale",
+                    "raw_text": "Queue retrieval provenance trace review.",
+                    "metadata_json": {"project_scope": canonical_scope},
+                },
+            }
+        )
+    store.memories.append(
+        {
+            "id": "memory-real",
+            "memory_type": "semantic",
+            "canonical_text": "Queue retrieval provenance trace review.",
+            "domain": "project",
+            "sensitivity": "private",
+            "project_id": "real",
+        }
+    )
+
+    artifact = VNextConnectionService(store).generate_connection_report(
+        ConnectionFinderRequest(projects=("real",), max_connections=2)
+    )
+
+    assert artifact["metadata_json"]["source_ids"] == ["source-real"]
+    assert artifact["metadata_json"]["memory_ids"] == ["memory-real"]
+    assert {edge["from_id"] for edge in store.edges.values()} == {"source-real"}
+
+
 def test_connection_report_model_backed_mode_preserves_candidate_edges_and_metadata() -> None:
     store = _seed_store()
 

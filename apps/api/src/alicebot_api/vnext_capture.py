@@ -7,7 +7,7 @@ import json
 import math
 from pathlib import Path
 import re
-from typing import Protocol, Sequence
+from typing import Mapping, Protocol, Sequence
 
 from alicebot_api.memory_provenance import (
     ASSERTION_CLASS_USER_ASSERTED,
@@ -17,6 +17,7 @@ from alicebot_api.memory_provenance import (
     order_by_provenance,
     provenance_promotion_rank,
 )
+from alicebot_api.store import ContinuityStoreInvariantError
 from alicebot_api.vnext_embeddings import DeferredMemoryEmbedding, attach_memory_embeddings
 from alicebot_api.vnext_entities import (
     ENTITY_EXTRACTION_SKIP_SENSITIVITIES,
@@ -24,7 +25,13 @@ from alicebot_api.vnext_entities import (
     store_supports_entity_linking,
 )
 from alicebot_api.vnext_event_log import append_event
-from alicebot_api.vnext_project_scope import normalize_project_scope
+from alicebot_api.vnext_project_scope import (
+    normalize_project_scope,
+    project_scope_identity,
+    resolve_project_scope,
+    source_capture_identity_matches,
+    source_project_scope,
+)
 from alicebot_api.vnext_repositories import JsonObject
 
 
@@ -126,9 +133,9 @@ class SourceCaptureInput:
     sensitivity: str = "unknown"
     # Effective project scope for the capture. Persisted onto the source and
     # every promoted candidate memory so the owning project's filtered recall
-    # retrieves it and other projects are scoped out. Empty means unscoped,
-    # which keeps the byte-identical pre-scope metadata shape.
-    project_scope: tuple[str, ...] = ()
+    # retrieves it and other projects are scoped out. ``None`` means omitted;
+    # an empty tuple is an explicit unscoped declaration and is persisted.
+    project_scope: tuple[str, ...] | None = None
     captured_at: str | None = None
     source_created_at: str | None = None
     source_modified_at: str | None = None
@@ -144,7 +151,7 @@ def normalize_text(raw_text: str) -> str:
 
 def content_hash_for_text(raw_text: str, project_scope: Sequence[str] = ()) -> str:
     normalized = normalize_text(raw_text)
-    scope = tuple(sorted(project_scope))
+    scope = project_scope_identity(project_scope)
     if scope:
         # Fold project scope into the content identity so the same text captured
         # under different project scopes is NOT deduped away: each scope keeps
@@ -174,13 +181,49 @@ def capture_dedupe_key_for_text(
     domain or sensitivity without losing the newly intended classification.
     """
     normalized = normalize_text(raw_text)
-    scope = tuple(sorted(project_scope))
+    scope = project_scope_identity(project_scope)
     if scope:
         normalized += "\x1fproject_scope:" + "\x1f".join(scope)
     if domain is not None or sensitivity is not None:
         normalized += "\x1fdomain:" + str(domain or "unknown").strip().casefold()
         normalized += "\x1fsensitivity:" + str(sensitivity or "unknown").strip().casefold()
     return "capture-md5:" + md5(normalized.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+
+def capture_dedupe_key_for_source(source: Mapping[str, object]) -> str | None:
+    """Recompute a source identity from its current persisted envelope.
+
+    ``raw_text`` is the only lossless input to the capture normalizer. Older
+    rows which do not preserve it cannot safely retain a key after their scope
+    or classification changes, so callers must release the key in that case.
+    """
+
+    raw_text = source_capture_raw_text(source)
+    if raw_text is None or not raw_text.strip():
+        return None
+    return capture_dedupe_key_for_text(
+        raw_text,
+        source_project_scope(source),
+        domain=str(source.get("domain") or "unknown"),
+        sensitivity=str(source.get("sensitivity") or "unknown"),
+    )
+
+
+def capture_content_hash_for_source(source: Mapping[str, object]) -> str | None:
+    """Recompute the public text/project identity from preserved evidence."""
+
+    raw_text = source_capture_raw_text(source)
+    if raw_text is None or not raw_text.strip():
+        return None
+    return content_hash_for_text(raw_text, source_project_scope(source))
+
+
+def source_capture_raw_text(source: Mapping[str, object]) -> str | None:
+    """Return preserved raw capture evidence without normalizing it."""
+
+    metadata = source.get("metadata_json")
+    raw_text = metadata.get("raw_text") if isinstance(metadata, Mapping) else None
+    return raw_text if isinstance(raw_text, str) else None
 
 
 def _truncate(value: str, *, max_length: int) -> str:
@@ -518,11 +561,7 @@ def _ordered_chatgpt_nodes(conversation: dict[str, object]) -> list[dict[str, ob
     raw_mapping = conversation.get("mapping")
     if not isinstance(raw_mapping, dict):
         return []
-    mapping = {
-        str(node_id): node
-        for node_id, node in raw_mapping.items()
-        if isinstance(node, dict)
-    }
+    mapping = {str(node_id): node for node_id, node in raw_mapping.items() if isinstance(node, dict)}
     if not mapping:
         return []
 
@@ -538,9 +577,7 @@ def _ordered_chatgpt_nodes(conversation: dict[str, object]) -> list[dict[str, ob
         if not isinstance(explicit, list):
             continue
         ordered = [child for child in explicit if isinstance(child, str) and child in mapping]
-        children_by_parent[node_id] = list(
-            dict.fromkeys([*ordered, *children_by_parent[node_id]])
-        )
+        children_by_parent[node_id] = list(dict.fromkeys([*ordered, *children_by_parent[node_id]]))
 
     active_successor: dict[str, str] = {}
     current = conversation.get("current_node")
@@ -784,7 +821,7 @@ class VNextCaptureService:
         title: str | None = None,
         domain: str = "unknown",
         sensitivity: str = "unknown",
-        project_scope: tuple[str, ...] = (),
+        project_scope: tuple[str, ...] | None = None,
         metadata_json: JsonObject | None = None,
     ) -> CaptureResult:
         return self.capture_source(
@@ -794,7 +831,7 @@ class VNextCaptureService:
                 raw_text=raw_text,
                 domain=domain,
                 sensitivity=sensitivity,
-                project_scope=tuple(project_scope),
+                project_scope=(tuple(project_scope) if project_scope is not None else None),
                 metadata_json=metadata_json or {},
             )
         )
@@ -834,14 +871,19 @@ class VNextCaptureService:
             normalized_text = normalize_text(source_input.raw_text)
             # Effective project scope, from the dedicated field with a
             # fallback to any scope already carried in metadata_json (the
-            # connector path historically threads scope there). Empty scope
-            # injects no key, keeping scope-free captures byte-identical.
+            # connector path historically threads scope there). ``None``
+            # preserves the legacy no-key shape; an explicit empty scope
+            # persists ``project_scope: []`` so stale legacy aliases cannot
+            # widen it later.
+            project_scope_present = source_input.project_scope is not None or (
+                "project_scope" in source_input.metadata_json
+            )
             project_scope = normalize_project_scope(
-                source_input.project_scope or source_input.metadata_json.get("project_scope")
+                source_input.project_scope
+                if source_input.project_scope is not None
+                else source_input.metadata_json.get("project_scope")
             )
-            project_scope_metadata: JsonObject = (
-                {"project_scope": list(project_scope)} if project_scope else {}
-            )
+            project_scope_metadata: JsonObject = {"project_scope": list(project_scope)} if project_scope_present else {}
             # Public content identity stays text/project based. The internal
             # atomic dedupe identity additionally includes classification so an
             # exact recapture under a changed domain or sensitivity can retain
@@ -921,6 +963,16 @@ class VNextCaptureService:
                     actor_type=self.actor_type,
                 )
                 if not source_created:
+                    if not source_capture_identity_matches(
+                        source,
+                        content_hashes=(content_hash,),
+                        project_scope=project_scope,
+                        domain=source_input.domain,
+                        sensitivity=source_input.sensitivity,
+                    ):
+                        raise ContinuityStoreInvariantError(
+                            "atomic source dedupe winner does not match capture identity"
+                        )
                     source_id = str(source["id"])
                     self._log_event(
                         event_type="source.duplicate_skipped",
@@ -1060,9 +1112,7 @@ class VNextCaptureService:
                     },
                 )
 
-            deferred_embedding_inputs = tuple(
-                DeferredMemoryEmbedding.from_memory(memory) for memory in memory_rows
-            )
+            deferred_embedding_inputs = tuple(DeferredMemoryEmbedding.from_memory(memory) for memory in memory_rows)
             if not self.defer_embeddings:
                 attach_memory_embeddings(
                     self.store,
@@ -1086,9 +1136,7 @@ class VNextCaptureService:
                 content_hash=content_hash,
                 chunk_count=len(chunk_rows),
                 candidate_memory_count=len(candidates),
-                deferred_embedding_inputs=(
-                    deferred_embedding_inputs if self.defer_embeddings else ()
-                ),
+                deferred_embedding_inputs=(deferred_embedding_inputs if self.defer_embeddings else ()),
             )
         except Exception as exc:
             self._log_failure(
@@ -1114,7 +1162,15 @@ class VNextCaptureService:
         if callable(by_dedupe_key):
             source = by_dedupe_key(dedupe_key)
             if source is not None:
-                return source
+                recomputed_key = capture_dedupe_key_for_source(source)
+                if recomputed_key in (None, dedupe_key) and source_capture_identity_matches(
+                    source,
+                    content_hashes=(),
+                    project_scope=project_scope,
+                    domain=domain,
+                    sensitivity=sensitivity,
+                ):
+                    return source
 
         many_by_hash = getattr(self.store, "get_sources_by_content_hash", None)
         for candidate_hash in dict.fromkeys((content_hash, legacy_content_hash)):
@@ -1124,16 +1180,12 @@ class VNextCaptureService:
                 match = self.store.get_source_by_content_hash(candidate_hash)
                 matches = [] if match is None else [match]
             for source in matches:
-                metadata = source.get("metadata_json")
-                source_scope = normalize_project_scope(
-                    metadata.get("project_scope") if isinstance(metadata, dict) else None
-                )
-                source_domain = str(source.get("domain") or "unknown").strip().casefold()
-                source_sensitivity = str(source.get("sensitivity") or "unknown").strip().casefold()
-                if (
-                    source_scope == project_scope
-                    and source_domain == domain.strip().casefold()
-                    and source_sensitivity == sensitivity.strip().casefold()
+                if source_capture_identity_matches(
+                    source,
+                    content_hashes=(content_hash, legacy_content_hash),
+                    project_scope=project_scope,
+                    domain=domain,
+                    sensitivity=sensitivity,
                 ):
                     return source
         return None
@@ -1187,21 +1239,15 @@ class VNextCaptureService:
                 continue
             if str(row.get("sensitivity") or "unknown") != sensitivity:
                 continue
-            metadata = row.get("metadata_json")
-            row_scope = normalize_project_scope(
-                row.get("project_scope")
-                or (metadata.get("project_scope") if isinstance(metadata, dict) else None)
-                or row.get("project_id")
-            )
-            if row_scope != project_scope:
+            row_scope = resolve_project_scope(row).identity
+            if row_scope != project_scope_identity(project_scope):
                 continue
             existing_texts.add(str(row.get("canonical_text") or "").casefold())
         existing_texts.discard("")
         return [
             candidate
             for candidate in candidates
-            if candidate.extraction_rule != USER_ASSERTED_VALUE_RULE
-            or candidate.text.casefold() not in existing_texts
+            if candidate.extraction_rule != USER_ASSERTED_VALUE_RULE or candidate.text.casefold() not in existing_texts
         ]
 
     def _link_captured_entities(
@@ -1378,10 +1424,14 @@ class VNextCaptureService:
         transcript_format = "chatgpt_conversation_v1"
         if not transcripts:
             extracted_texts = _extract_text_from_json_value(payload)
-            fallback_text = "\n".join(extracted_texts) if extracted_texts else json.dumps(
-                payload,
-                sort_keys=True,
-                ensure_ascii=False,
+            fallback_text = (
+                "\n".join(extracted_texts)
+                if extracted_texts
+                else json.dumps(
+                    payload,
+                    sort_keys=True,
+                    ensure_ascii=False,
+                )
             )
             fallback_title = export_path.name
             transcripts = [
@@ -1390,9 +1440,7 @@ class VNextCaptureService:
                     external_id=f"{export_path.name}#conversation-1",
                     title=fallback_title,
                     raw_text=(
-                        f"[CONVERSATION]: {export_path.name}#conversation-1\n"
-                        f"[TITLE]: {fallback_title}\n"
-                        f"{fallback_text}"
+                        f"[CONVERSATION]: {export_path.name}#conversation-1\n[TITLE]: {fallback_title}\n{fallback_text}"
                     ),
                     message_count=len(extracted_texts),
                     created_at=None,
@@ -1437,9 +1485,7 @@ class VNextCaptureService:
                 )
             except Exception as exc:
                 failed_count += 1
-                errors.append(
-                    f"conversation {transcript.index} ({transcript.external_id}): {exc}"
-                )
+                errors.append(f"conversation {transcript.index} ({transcript.external_id}): {exc}")
                 continue
             deferred_embedding_inputs.extend(result.deferred_embedding_inputs)
             if result.duplicate:
@@ -1489,9 +1535,13 @@ __all__ = [
     "VNextCaptureStore",
     "VNextCaptureValidationError",
     "candidate_promotion_rank",
+    "capture_content_hash_for_source",
+    "capture_dedupe_key_for_source",
+    "capture_dedupe_key_for_text",
     "chunk_text",
     "content_hash_for_text",
     "extract_candidate_memories",
     "normalize_text",
     "order_candidates_for_promotion",
+    "source_capture_raw_text",
 ]

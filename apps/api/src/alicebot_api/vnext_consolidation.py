@@ -63,6 +63,7 @@ from alicebot_api.vnext_model_intelligence import (
     generate_consolidation_merge,
     resolve_model_route,
 )
+from alicebot_api.vnext_project_scope import project_scope_identity
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_rollups import (
     RollupOptions,
@@ -416,10 +417,9 @@ def _scoped_rows(
             if domain not in domains and domain != "unknown":
                 continue
         if projects:
-            allowed_projects = {value.casefold() for value in projects}
-            if not any(
-                value.casefold() in allowed_projects
-                for value in resource_project_scope(row)
+            allowed_projects = set(project_scope_identity(projects))
+            if not allowed_projects.intersection(
+                project_scope_identity(resource_project_scope(row))
             ):
                 continue
         scoped.append(row)
@@ -435,7 +435,7 @@ def _project_scope_key(row: JsonObject) -> tuple[str, ...]:
     global scope).
     """
 
-    return tuple(sorted({value.casefold() for value in resource_project_scope(row)}))
+    return project_scope_identity(resource_project_scope(row))
 
 
 def _shared_project_scope(rows: list[JsonObject]) -> tuple[str, ...]:

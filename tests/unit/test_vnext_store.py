@@ -8,9 +8,14 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from alicebot_api.store import ContinuityStoreInvariantError
+from alicebot_api.vnext_capture import capture_dedupe_key_for_text
 from alicebot_api.vnext_embeddings import memory_embedding_content_sha256
 from alicebot_api.vnext_event_log import build_event_log_record
-from alicebot_api.vnext_store import PostgresVNextStore, _search_patterns
+from alicebot_api.vnext_store import (
+    PostgresVNextStore,
+    _jsonb_project_scope_values_sql,
+    _search_patterns,
+)
 
 
 class RecordingCursor:
@@ -61,6 +66,21 @@ def _event_log_insert_count(cursor: RecordingCursor) -> int:
     return sum(1 for query, _params in cursor.executed if "INSERT INTO event_log" in query)
 
 
+def test_postgres_project_scope_sql_mirrors_conservative_python_identity() -> None:
+    sql = _jsonb_project_scope_values_sql(
+        "metadata_json",
+        legacy_keys=("project_id", "project", "projects"),
+        project_id_expression="project_id",
+    )
+
+    assert "octet_length(normalized_scope.value) = char_length(normalized_scope.value)" in sql
+    assert "translate(" in sql
+    assert "chr(9) || chr(10) || chr(11) || chr(12) || chr(13)" in sql
+    assert 'COLLATE "C"' in sql
+    assert "[[:space:]]" not in sql
+    assert "SELECT DISTINCT lower" not in sql
+
+
 def test_source_crud_and_chunks_write_audit_events() -> None:
     source_id = str(uuid4())
     chunk_id = str(uuid4())
@@ -69,6 +89,14 @@ def test_source_crud_and_chunks_write_audit_events() -> None:
             {"id": source_id},
             _event_row(source_id),
             {"id": source_id},
+            {
+                "id": source_id,
+                "content_hash": "sha256:abc",
+                "dedupe_key": "capture-md5:legacy",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"path": "docs/spec.md"},
+            },
             {"id": source_id},
             _event_row(source_id),
             {"id": source_id},
@@ -120,7 +148,9 @@ def test_source_crud_and_chunks_write_audit_events() -> None:
     assert isinstance(source_insert_params[-1], Jsonb)
     assert source_insert_params[-1].obj == {"path": "docs/spec.md"}
 
-    source_update_query, source_update_params = cursor.executed[3]
+    source_update_query, source_update_params = next(
+        (query, params) for query, params in cursor.executed if "UPDATE sources" in query and "SET title" in query
+    )
     assert "UPDATE sources" in source_update_query
     assert source_update_params is not None
 
@@ -203,6 +233,147 @@ def test_get_or_create_source_returns_concurrent_winner_without_create_event() -
     assert len(cursor.executed) == 2
     assert "SELECT" in cursor.executed[1][0]
     assert _event_log_insert_count(cursor) == 0
+
+
+def test_get_or_create_source_rejects_incompatible_postgres_conflict_winner() -> None:
+    source_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            None,
+            {
+                "id": source_id,
+                "content_hash": "sha256:abc",
+                "dedupe_key": "capture-md5:stale",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"project_scope": ["Beta"]},
+            },
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    with pytest.raises(ContinuityStoreInvariantError, match="does not match capture identity"):
+        store.get_or_create_source(
+            {
+                "source_type": "manual_text",
+                "content_hash": "sha256:abc",
+                "dedupe_key": "capture-md5:stale",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"project_scope": ["Alpha"]},
+            }
+        )
+
+    assert _event_log_insert_count(cursor) == 0
+
+
+def test_update_source_recomputes_postgres_dedupe_key_with_the_same_statement() -> None:
+    source_id = str(uuid4())
+    raw_text = "Fact: PostgreSQL source review rotates the capture identity."
+    current = {
+        "id": source_id,
+        "content_hash": "sha256:abc",
+        "dedupe_key": capture_dedupe_key_for_text(
+            raw_text,
+            ("Alpha",),
+            domain="project",
+            sensitivity="private",
+        ),
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {"raw_text": raw_text, "project_scope": ["Alpha"]},
+    }
+    cursor = RecordingCursor(
+        fetchone_results=[
+            current,
+            None,
+            {**current, "domain": "professional"},
+            _event_row(source_id),
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.update_source(
+        source_id=source_id,
+        patch={
+            "domain": "professional",
+            "metadata_json": {"raw_text": raw_text, "project_scope": ["Beta"]},
+        },
+    )
+
+    update_query, update_params = next(
+        (query, params) for query, params in cursor.executed if "UPDATE sources" in query and "SET title" in query
+    )
+    assert "metadata_json = COALESCE(%s, metadata_json)" in update_query
+    assert "dedupe_key = %s" in update_query
+    assert update_params is not None
+    assert update_params[8] == capture_dedupe_key_for_text(
+        raw_text,
+        ("Beta",),
+        domain="professional",
+        sensitivity="private",
+    )
+
+
+def test_update_source_postgres_collision_fails_before_mutation_event() -> None:
+    source_id = str(uuid4())
+    raw_text = "Fact: Collision owners remain unchanged."
+    current = {
+        "id": source_id,
+        "content_hash": "sha256:first",
+        "dedupe_key": capture_dedupe_key_for_text(
+            raw_text,
+            ("Alpha",),
+            domain="project",
+            sensitivity="private",
+        ),
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {"raw_text": raw_text, "project_scope": ["Alpha"]},
+    }
+    cursor = RecordingCursor(fetchone_results=[current, {"id": str(uuid4())}])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    with pytest.raises(ContinuityStoreInvariantError, match="already belongs"):
+        store.update_source(
+            source_id=source_id,
+            patch={"metadata_json": {"raw_text": raw_text, "project_scope": ["Beta"]}},
+        )
+
+    assert not any("UPDATE sources" in query for query, _params in cursor.executed)
+    assert _event_log_insert_count(cursor) == 0
+
+
+def test_update_source_postgres_releases_key_when_changed_identity_has_no_raw_text() -> None:
+    source_id = str(uuid4())
+    current = {
+        "id": source_id,
+        "content_hash": "sha256:legacy",
+        "dedupe_key": "capture-md5:legacy",
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {"project_scope": ["Alpha"]},
+    }
+    cursor = RecordingCursor(
+        fetchone_results=[
+            current,
+            {**current, "dedupe_key": None, "metadata_json": {"project_scope": ["Beta"]}},
+            _event_row(source_id),
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    updated = store.update_source(
+        source_id=source_id,
+        patch={"metadata_json": {"project_scope": ["Beta"]}},
+    )
+
+    update_params = next(
+        params for query, params in cursor.executed if "UPDATE sources" in query and "SET title" in query
+    )
+    assert update_params is not None
+    assert update_params[8] is None
+    assert updated["dedupe_key"] is None
 
 
 def test_search_patterns_strip_quotes_and_add_keyword_fallbacks() -> None:
@@ -321,7 +492,7 @@ def test_keyword_search_methods_apply_domain_sensitivity_and_limit_filters() -> 
 def test_project_scope_sql_uses_canonical_key_precedence_for_all_resources() -> None:
     cursor = RecordingCursor(fetchone_results=[], fetchall_result=[])
     store = PostgresVNextStore(RecordingConnection(cursor))
-    project = "canonical-project"
+    project = " Canonical-Project "
 
     store.list_memories(projects=(project,), limit=1)
     store.search_sources(query="scope marker", scope_projects=(project,), limit=1)
@@ -331,7 +502,6 @@ def test_project_scope_sql_uses_canonical_key_precedence_for_all_resources() -> 
     memory_query, source_query, artifact_query, open_loop_query = [query for query, _ in cursor.executed]
     for query, metadata_expression in (
         (memory_query, "metadata_json"),
-        (source_query, "metadata_json"),
         (artifact_query, "metadata_json"),
         (open_loop_query, "metadata_json"),
     ):
@@ -341,10 +511,89 @@ def test_project_scope_sql_uses_canonical_key_precedence_for_all_resources() -> 
         assert query.index(canonical_guard) < query.index(nested_fallback)
         assert f"jsonb_typeof({metadata_expression} -> 'project_scope') = 'array'" in query
         assert "ELSE '[]'::jsonb" in query
-        assert "jsonb_path_query_array" in query
+        assert f"{metadata_expression} #> '{{agent_identity,project_scope}}'" in query
+        assert f"({metadata_expression} -> 'agentic_memory') ? 'project_scope'" in query
+        assert f"({metadata_expression} -> 'agent_identity') ? 'project_scope'" in query
+        assert "WITH RECURSIVE" in query
+        assert "'string', 'boolean'" in query
+        assert "'number'" in query
+        assert "::numeric = trunc(" in query
+        assert "THEN '0'" in query
+        assert "octet_length(normalized_scope.value) = char_length(normalized_scope.value)" in query
+        assert "translate(" in query
+        assert "chr(9) || chr(10) || chr(11) || chr(12) || chr(13)" in query
+        assert 'COLLATE "C"' in query
+        assert "[[:space:]]" not in query
         assert "?| %s::text[]" in query
 
+    source_canonical_guards = (
+        "WHEN source_resource.value ? 'project_scope'",
+        "WHEN source_containers.metadata_json ? 'project_scope'",
+        "WHEN source_containers.scope_json ? 'project_scope'",
+    )
+    assert all(guard in source_query for guard in source_canonical_guards)
+    assert [source_query.index(guard) for guard in source_canonical_guards] == sorted(
+        source_query.index(guard) for guard in source_canonical_guards
+    )
+    assert "source_nested.agentic_memory -> 'project_scope'" in source_query
+    assert "source_nested.agent_identity -> 'project_scope'" in source_query
+    assert "source_candidates.nested_scope_present" in source_query
+    for nested_type, nested_presence in (
+        (
+            "source_nested.agentic_memory",
+            "source_nested.agentic_memory ? 'project_scope'",
+        ),
+        (
+            "source_nested.agent_identity",
+            "source_nested.agent_identity ? 'project_scope'",
+        ),
+        (
+            "source_containers.scope_json -> 'agentic_memory'",
+            "(source_containers.scope_json -> 'agentic_memory') ? 'project_scope'",
+        ),
+        (
+            "source_containers.scope_json -> 'agent_identity'",
+            "(source_containers.scope_json -> 'agent_identity') ? 'project_scope'",
+        ),
+    ):
+        assert f"jsonb_typeof({nested_type}) = 'object'" in source_query
+        assert nested_presence in source_query
+    assert "nested_candidate_value" not in source_query
+    assert "WITH RECURSIVE" in source_query
+    assert "jsonb_array_elements" in source_query
+    assert "'string', 'boolean'" in source_query
+    assert "'number'" in source_query
+    assert "::numeric = trunc(" in source_query
+    assert "THEN '0'" in source_query
+    assert "^-?(0|[1-9][0-9]*)$" not in source_query
+    assert "source_containers.scope_json #> '{agent_identity,project_id}'" not in source_query
+    assert "?| %s::text[]" in source_query
+
     assert "OR project_id::text = ANY" not in open_loop_query
+    for _query, params in cursor.executed:
+        assert params is not None
+        assert "canonical-project" in str(params)
+        assert project not in str(params)
+
+
+def test_exact_memory_scope_lookup_uses_conservative_order_insensitive_identity() -> None:
+    cursor = RecordingCursor(fetchone_results=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.find_live_memory_by_canonical_text(
+        "Same fact",
+        domain="project",
+        sensitivity="private",
+        project_scope=(" Beta ", "ALICE", "alice"),
+    )
+
+    query, params = cursor.executed[0]
+    assert "octet_length(normalized_scope.value) = char_length(normalized_scope.value)" in query
+    assert 'COLLATE "C"' in query
+    assert "metadata_json ? 'project_scope'" in query
+    assert params is not None
+    assert isinstance(params[-1], Jsonb)
+    assert params[-1].obj == ["alice", "beta"]
 
 
 def test_search_memories_by_time_builds_window_predicate_and_proximity_order() -> None:
@@ -751,6 +1000,125 @@ def test_list_memories_pushes_scope_and_limit_into_postgres_query() -> None:
     assert params == ("active", ["project"], ["private"], 7)
     with pytest.raises(ValueError, match="limit must be positive"):
         store.list_memories(limit=0)
+
+
+def test_resume_store_queries_apply_admission_predicates_before_limit() -> None:
+    cursor = RecordingCursor(fetchone_results=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+    since = datetime(2030, 7, 10, tzinfo=UTC)
+    until = datetime(2030, 7, 11, tzinfo=UTC)
+
+    store.list_memories(
+        status=None,
+        statuses=("active", "candidate"),
+        memory_types=("decision",),
+        projects=("Project A",),
+        created_at_start=since,
+        created_at_end=until,
+        query="release",
+        order_by_created_at=True,
+        limit=1,
+    )
+    store.list_open_loops(
+        status=None,
+        statuses=("open", "waiting"),
+        query=r"Release%_\Marker",
+        scope_projects=("Project A",),
+        scope_window_start=since,
+        scope_window_end=until,
+        limit=1,
+    )
+    store.list_resume_memory_events(
+        statuses=("active", "candidate"),
+        projects=("Project A",),
+        query="release",
+        occurred_at_start=since,
+        occurred_at_end=until,
+        limit=2,
+    )
+    store.list_open_loop_events(
+        statuses=("open", "waiting"),
+        scope_projects=("Project A",),
+        query=r"Release%_\Marker",
+        occurred_at_start=since,
+        occurred_at_end=until,
+        limit=2,
+    )
+    # Established context-tree consumers retain the original method contract.
+    store.list_memory_events(
+        scope_projects=("Project A",),
+        scope_window_start=since,
+        scope_window_end=until,
+        limit=2,
+    )
+
+    memory_query, loop_query, memory_event_query, loop_event_query, shared_event_query = (
+        query for query, _params in cursor.executed
+    )
+    loop_params = cursor.executed[1][1]
+    loop_event_params = cursor.executed[3][1]
+    assert "status = ANY(%s::text[])" in memory_query
+    assert "memory_type = ANY(%s::text[])" in memory_query
+    assert "created_at >= %s::timestamptz" in memory_query
+    assert "strpos(lower(COALESCE(title, ''))" in memory_query
+    assert memory_query.index("status = ANY") < memory_query.index("LIMIT %s")
+    assert memory_query.index("created_at >=") < memory_query.index("LIMIT %s")
+    assert "status = ANY(%s::text[])" in loop_query
+    assert "translate(COALESCE(title, ''), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')" in loop_query
+    assert "metadata_json ->> 'next_action'" in loop_query
+    for guard, match in (
+        (
+            "jsonb_typeof(metadata_json -> 'next_action') = 'string'",
+            "COALESCE(metadata_json ->> 'next_action', '')",
+        ),
+        (
+            "jsonb_typeof(metadata_json #> '{agentic_memory,next_action}') = 'string'",
+            "COALESCE(metadata_json #>> '{agentic_memory,next_action}', '')",
+        ),
+    ):
+        assert guard in loop_query
+        assert loop_query.index(guard) < loop_query.index(match)
+    assert "metadata_json::text" not in loop_query
+    assert "CAST(metadata_json AS text)" not in loop_query
+    assert loop_query.count('COLLATE "C"') >= 8
+    assert loop_query.count("ESCAPE E'\\\\'") == 4
+    assert "strpos(lower(" not in loop_query
+    assert loop_params is not None
+    assert loop_params.count(r"Release\%\_\\Marker") == 4
+    assert loop_query.index("status = ANY") < loop_query.index("LIMIT %s")
+    assert loop_query.index("opened_at, updated_at, created_at") < loop_query.index("LIMIT %s")
+    for event_query in (memory_event_query, loop_event_query):
+        assert "JOIN" in event_query
+        assert "event.occurred_at >= %s::timestamptz" in event_query
+        assert event_query.index("event.occurred_at >=") < event_query.index("LIMIT %s")
+        assert event_query.index("ORDER BY event.occurred_at DESC") < event_query.index("LIMIT %s")
+    assert "loop.metadata_json ->> 'next_action'" in loop_event_query
+    for guard, match in (
+        (
+            "jsonb_typeof(loop.metadata_json -> 'next_action') = 'string'",
+            "COALESCE(loop.metadata_json ->> 'next_action', '')",
+        ),
+        (
+            "jsonb_typeof(loop.metadata_json #> '{agentic_memory,next_action}') = 'string'",
+            "COALESCE(loop.metadata_json #>> '{agentic_memory,next_action}', '')",
+        ),
+    ):
+        assert guard in loop_event_query
+        assert loop_event_query.index(guard) < loop_event_query.index(match)
+    assert "loop.metadata_json::text" not in loop_event_query
+    assert "CAST(loop.metadata_json AS text)" not in loop_event_query
+    assert "jsonb_path_query(" in loop_event_query
+    assert '@.type() == "string"' in loop_event_query
+    assert "payload_leaf.value #>> '{}'" in loop_event_query
+    assert loop_event_query.count('COLLATE "C"') >= 10
+    assert loop_event_query.count("ESCAPE E'\\\\'") == 5
+    assert "strpos(lower(" not in loop_event_query
+    assert loop_event_params is not None
+    assert loop_event_params.count(r"Release\%\_\\Marker") == 5
+    assert "event.payload_json ->> 'text'" not in loop_event_query
+    assert "event.payload_json::text" not in loop_event_query
+    assert "event_type_prefix" not in shared_event_query
+    assert "JOIN memories m" in shared_event_query
 
 
 def test_memory_and_rollup_counts_are_exact_scoped_database_reads() -> None:
@@ -1967,8 +2335,85 @@ def test_signed_embedding_update_compares_current_memory_content_digest() -> Non
 
     query, params = cursor.executed[0]
     assert "digest(" in query
+    assert "NULLIF(btrim(title, chr(9)" in query
+    assert "[[:space:]]" not in query
     assert "= %s" in query
     assert params[-2:] == (memory_id, "a" * 64)
+
+
+def test_embedding_digest_sql_uses_exact_python_strip_table_at_every_cas_boundary() -> None:
+    python_strip_codepoints = (
+        9,
+        10,
+        11,
+        12,
+        13,
+        28,
+        29,
+        30,
+        31,
+        32,
+        133,
+        160,
+        5760,
+        8192,
+        8193,
+        8194,
+        8195,
+        8196,
+        8197,
+        8198,
+        8199,
+        8200,
+        8201,
+        8202,
+        8232,
+        8233,
+        8239,
+        8287,
+        12288,
+    )
+    memory_id = str(uuid4())
+
+    vector_cursor = RecordingCursor(fetchone_results=[], fetchall_result=[])
+    PostgresVNextStore(RecordingConnection(vector_cursor)).search_memories_vector(
+        query_vector=[1.0, 0.0],
+        embedding_provider="stub",
+        embedding_model="embed-v1",
+        embedding_signature_version=2,
+    )
+    vector_query = next(query for query, _params in vector_cursor.executed if "vector_distance" in query)
+
+    update_cursor = RecordingCursor(fetchone_results=[])
+    PostgresVNextStore(RecordingConnection(update_cursor)).update_memory_embedding(
+        memory_id=memory_id,
+        vector=[1.0, 0.0],
+        provider="stub",
+        model="embed-v1",
+        endpoint="stub-endpoint",
+        content_sha256="a" * 64,
+        signature_version=2,
+    )
+    update_query = update_cursor.executed[0][0]
+
+    missing_cursor = RecordingCursor(fetchone_results=[], fetchall_result=[])
+    PostgresVNextStore(RecordingConnection(missing_cursor)).list_memories_missing_embeddings(
+        embedding_provider="stub",
+        embedding_model="embed-v1",
+        embedding_signature_version=2,
+    )
+    missing_query = missing_cursor.executed[0][0]
+
+    for query in (vector_query, update_query, missing_query):
+        assert "[[:space:]]" not in query
+        assert "regexp_replace(title" not in query
+        assert "regexp_replace(canonical_text" not in query
+        assert "regexp_replace(summary" not in query
+        for codepoint in python_strip_codepoints:
+            assert query.count(f"chr({codepoint})") >= 3
+        assert "NULLIF(btrim(title," in query
+        assert "NULLIF(btrim(canonical_text," in query
+        assert "NULLIF(btrim(summary," in query
 
 
 def test_embedding_backfill_includes_unsigned_or_incompatible_vectors() -> None:
