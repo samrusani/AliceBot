@@ -2,11 +2,9 @@
 
 ## Snapshot
 
-- `v0.10.3` is the latest published release. It is available from PyPI and
+- `v0.10.4` is the latest published release. It is available from PyPI and
   GitHub, and its exact wheel and source-distribution digests are recorded in
-  `docs/release/v0.10.3-checksums.txt`.
-- `v0.10.4` is the current release-hardening candidate on top of
-  that immutable baseline. It has not been tagged or published.
+  `docs/release/v0.10.4-checksums.txt`.
 - The historical LongMemEval_s result is **79.4% (397/500)** from one run on
   2026-07-07. It is a historical benchmark receipt, not a measurement of the
   current release and not a repeated-run estimate.
@@ -65,11 +63,11 @@ receipt:
 - `docs/release/v0.10.3-release-notes.md`
 - `docs/release/v0.10.3-checksums.txt`
 
-## What `v0.10.4` Targets
+## What `v0.10.4` Shipped
 
-The current remediation fixes forward without changing the immutable v0.10.3
-tag, release notes, checksums, or published artifacts. Its release boundary
-includes:
+`v0.10.4` remediates the fifth external audit's confirmed findings and fixes
+forward without changing the immutable v0.10.3 tag, release notes, checksums,
+or published artifacts. The published release includes:
 
 - workspace-explicit hosted settings operations;
 - coupled project-update review across HTTP, MCP, CLI, lifecycle, and both
@@ -251,7 +249,13 @@ Publishing provenance, and their hashes match
 `docs/release/v0.10.3-checksums.txt`. The source tag remains the release
 boundary; later commits on `main` are not silently part of that release.
 
-The `v0.10.4` remediation tree is a candidate only. It has no tag,
+`v0.10.4` is tagged, published, and immutable. Its release record is
+authoritative:
+
+- `docs/release/v0.10.4-release-notes.md`
+- `docs/release/v0.10.4-checksums.txt`
+
+Superseded text (historical): the remediation tree was a candidate with no tag,
 checksum receipt, PyPI files, or GitHub Release and must not be described as
 published before those external facts exist.
 

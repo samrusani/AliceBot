@@ -1,7 +1,6 @@
 # Releasing Alice
 
-`v0.10.3` is the latest published release.
-`v0.10.4` is the current release-hardening candidate. Preparing it
+`v0.10.4` is the latest published release. Preparing a future candidate
 does not authorize a tag, PyPI upload, or GitHub Release.
 
 ## One Release Identity

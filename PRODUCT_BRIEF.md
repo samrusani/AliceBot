@@ -13,11 +13,10 @@ Agent developers — people building or operating AI agents who need durable, ex
 - Local-first: your data stays on your machine; models and embeddings are pluggable via OpenAI-compatible endpoints.
 
 ## Current Posture
-- `v0.10.3` is the latest published release and immutable baseline. Its PyPI
+- `v0.10.4` is the latest published release and immutable baseline. Its PyPI
   wheel and source distribution have Trusted Publishing provenance, with exact
-  digests in `docs/release/v0.10.3-checksums.txt`.
-- `v0.10.4` is the current release-hardening candidate. It fixes
-  forward from that baseline and has not been tagged or published.
+  digests in `docs/release/v0.10.4-checksums.txt`. It carries the fifth-audit
+  remediation and fixes forward from the sound v0.10.3 baseline.
 - The product baseline includes hybrid retrieval, the eleven-tool core MCP
   surface, the Memory Operations Protocol, per-agent API keys, Context API v2,
   temporal graph memory/entity resolution, and six live eval suites.
