@@ -54,11 +54,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -503,7 +499,7 @@ def test_approval_endpoints_list_and_detail_are_deterministic_and_user_scoped(
     detail_status, detail_payload = invoke_request(
         "GET",
         f"/v0/approvals/{second_payload['approval']['id']}",
-        query_params={"user_id": str(owner['user_id'])},
+        query_params={"user_id": str(owner["user_id"])},
     )
     isolated_list_status, isolated_list_payload = invoke_request(
         "GET",
@@ -513,7 +509,7 @@ def test_approval_endpoints_list_and_detail_are_deterministic_and_user_scoped(
     isolated_detail_status, isolated_detail_payload = invoke_request(
         "GET",
         f"/v0/approvals/{first_payload['approval']['id']}",
-        query_params={"user_id": str(intruder['user_id'])},
+        query_params={"user_id": str(intruder["user_id"])},
     )
 
     assert first_status == 200
@@ -537,7 +533,7 @@ def test_approval_endpoints_list_and_detail_are_deterministic_and_user_scoped(
     }
     assert isolated_detail_status == 404
     assert isolated_detail_payload == {
-        "detail": f"approval {first_payload['approval']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -621,7 +617,7 @@ def test_approval_resolution_endpoints_update_reads_and_emit_trace(
     reject_status, reject_payload = invoke_request(
         "POST",
         f"/v0/approvals/{second_request_payload['approval']['id']}/reject",
-        payload={"user_id": str(owner['user_id'])},
+        payload={"user_id": str(owner["user_id"])},
     )
     list_status, list_payload = invoke_request(
         "GET",
@@ -631,7 +627,7 @@ def test_approval_resolution_endpoints_update_reads_and_emit_trace(
     detail_status, detail_payload = invoke_request(
         "GET",
         f"/v0/approvals/{second_request_payload['approval']['id']}",
-        query_params={"user_id": str(owner['user_id'])},
+        query_params={"user_id": str(owner["user_id"])},
     )
 
     assert approve_status == 200
@@ -889,13 +885,15 @@ def test_approval_resolution_rejects_duplicate_conflicting_and_cross_user_attemp
 
     assert first_approve_status == 200
     assert duplicate_status == 409
-    assert duplicate_payload == {"detail": f"approval {approval_id} was already approved"}
+    assert duplicate_payload == {
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
+    }
     assert conflict_status == 409
     assert conflict_payload == {
-        "detail": f"approval {approval_id} was already approved and cannot be rejected"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
     assert intruder_status == 404
-    assert intruder_payload == {"detail": f"approval {approval_id} was not found"}
+    assert intruder_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -1091,10 +1089,7 @@ def test_approval_resolution_rejects_inconsistent_linkage_without_mutating_task_
 
     assert boundary_status == 409
     assert boundary_payload == {
-        "detail": (
-            f"approval {request_payload['approval']['id']} is inconsistent with linked task step "
-            f"{create_step_payload['task_step']['id']}"
-        )
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:

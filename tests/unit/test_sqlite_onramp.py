@@ -71,6 +71,27 @@ TRUSTED_AGENT = {
     "permission_profile": "trusted_local_agent",
 }
 
+_ONRAMP_ERROR_MESSAGES = {
+    "export_source_not_found": "The export database does not exist",
+    "export_path_conflict": "The export output conflicts with the database or a SQLite sidecar",
+    "export_failed": "The export could not be completed",
+    "import_source_not_found": "The import file does not exist",
+    "import_path_conflict": "The import input conflicts with the database or a SQLite sidecar",
+    "import_snapshot_failed": "The import file could not be read into a stable snapshot",
+    "import_validation_failed": "The import file is invalid or incompatible",
+    "restore_failed": "The import was aborted before publication; no records were written",
+    "restore_committed_hardening_failed": (
+        "The restore committed, but database permissions were not hardened; do not retry blindly"
+    ),
+    "restore_committed_summary_failed": ("The restore committed, but summary output failed; do not retry blindly"),
+}
+
+
+def _assert_onramp_error(stderr: str, *, code: str) -> None:
+    records = [json.loads(line) for line in stderr.splitlines() if line.startswith("{")]
+    assert records == [{"error": {"code": code, "message": _ONRAMP_ERROR_MESSAGES[code]}}]
+    assert "Traceback" not in stderr
+
 
 @pytest.fixture
 def sqlite_context(tmp_path, monkeypatch) -> MCPRuntimeContext:
@@ -626,7 +647,7 @@ def test_memory_manage_redact_expunges_content_and_keeps_audit_skeleton(sqlite_c
             "SELECT count(*) FROM event_log WHERE event_type = 'memory.redacted' AND target_id = ?",
             (memory_id,),
         ).fetchone()[0]
-        assert redaction_events == 3  # content, revisions, and events operations each left proof
+        assert redaction_events == 1  # one aggregate, content-free receipt
 
 
 def test_memory_manage_redact_is_blocked_for_non_admin_agents(sqlite_context) -> None:
@@ -1183,9 +1204,7 @@ def test_project_scope_bound_key_is_enforced_in_sqlite_mode(sqlite_context, monk
             arguments={"query": "scope", "projects": ["other-project"]},
         )
 
-    with pytest.raises(
-        MCPToolError, match="^requested explanation is unavailable$"
-    ) as explain_error:
+    with pytest.raises(MCPToolError, match="^requested explanation is unavailable$") as explain_error:
         call_mcp_tool(
             sqlite_context,
             name="alice_explain",
@@ -1382,6 +1401,45 @@ def test_recent_decisions_filters_query_project_and_window(sqlite_context) -> No
         arguments={"person": "Priya"},
     )
     assert ignored["filters_ignored"] == ["person"]
+
+
+def test_public_resume_and_recent_decisions_share_ascii_literal_memory_matching(sqlite_context) -> None:
+    rows = {
+        "release": _capture_decision(sqlite_context, "Release the local runtime"),
+        "arende": _capture_decision(sqlite_context, "Ärende remains exact"),
+        "strasse": _capture_decision(sqlite_context, "Straße remains exact"),
+        "literals": _capture_decision(sqlite_context, r"Keep 100% under_score path\segment literal"),
+    }
+    expectations = {
+        "release": {rows["release"]},
+        "RELEASE": {rows["release"]},
+        "ärende": set(),
+        "Ärende": {rows["arende"]},
+        "STRASSE": set(),
+        "Straße": {rows["strasse"]},
+        "%": {rows["literals"]},
+        "_": {rows["literals"]},
+        "\\": {rows["literals"]},
+        r"missing%_\path": set(),
+    }
+
+    for query, expected_ids in expectations.items():
+        recent = call_mcp_tool(
+            sqlite_context,
+            name="alice_recent_decisions",
+            arguments={"query": query, "limit": 50},
+        )
+        resume = call_mcp_tool(
+            sqlite_context,
+            name="alice_resume",
+            arguments={"query": query, "max_open_loops": 0, "max_recent_changes": 0},
+        )
+        assert {str(row["id"]) for row in recent["decisions"]} == expected_ids
+        last_decision = resume["brief"]["last_decision"]
+        if expected_ids:
+            assert str(last_decision["id"]) in expected_ids
+        else:
+            assert last_decision is None
 
 
 def test_open_loops_list_and_close_actions(sqlite_context) -> None:
@@ -1850,9 +1908,7 @@ def test_reindex_embeddings_rebuilds_unsigned_sqlite_vectors(tmp_path, monkeypat
         assert signature["endpoint"]
 
 
-def test_reindex_embeddings_calls_provider_outside_sqlite_transactions(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_reindex_embeddings_calls_provider_outside_sqlite_transactions(tmp_path, monkeypatch, capsys) -> None:
     db_path = tmp_path / "memory.db"
     bootstrap_database(db_path, user_id=USER_ID, user_email="local@alice")
     with sqlite_user_connection(db_path, USER_ID) as conn:
@@ -1949,7 +2005,7 @@ def test_export_writes_jsonl_records(sqlite_context, tmp_path) -> None:
 def test_export_fails_cleanly_when_database_missing(tmp_path, capsys) -> None:
     exit_code = onramp_main(["export", "--db", str(tmp_path / "nope.db")])
     assert exit_code == 1
-    assert "does not exist" in capsys.readouterr().err
+    _assert_onramp_error(capsys.readouterr().err, code="export_source_not_found")
 
 
 def _active_wal_database_family(tmp_path: Path) -> tuple[Path, sqlite3.Connection]:
@@ -1992,7 +2048,7 @@ def test_export_rejects_every_database_family_path_with_active_wal(tmp_path, cap
             )
             == 1
         )
-        assert "database or SQLite sidecar" in capsys.readouterr().err
+        _assert_onramp_error(capsys.readouterr().err, code="export_path_conflict")
         if before is None:
             assert not family_path.exists()
         else:
@@ -2026,7 +2082,7 @@ def test_export_rejects_inode_and_symlink_aliases_to_database_family(tmp_path, c
             )
             == 1
         )
-        assert "database or SQLite sidecar" in capsys.readouterr().err
+        _assert_onramp_error(capsys.readouterr().err, code="export_path_conflict")
     finally:
         connection.close()
 
@@ -2049,7 +2105,7 @@ def test_import_rejects_database_family_input_before_decoding(tmp_path, capsys, 
             )
             == 1
         )
-        assert "database or SQLite sidecar" in capsys.readouterr().err
+        _assert_onramp_error(capsys.readouterr().err, code="import_path_conflict")
     finally:
         connection.close()
 
@@ -2079,7 +2135,7 @@ def test_import_rejects_inode_and_symlink_aliases_to_database_family(tmp_path, c
             )
             == 1
         )
-        assert "database or SQLite sidecar" in capsys.readouterr().err
+        _assert_onramp_error(capsys.readouterr().err, code="import_path_conflict")
     finally:
         connection.close()
 
@@ -2107,7 +2163,7 @@ def test_lexical_sidecar_names_are_rejected_even_when_symlink_points_elsewhere(t
         )
         == 1
     )
-    assert "database or SQLite sidecar" in capsys.readouterr().err
+    _assert_onramp_error(capsys.readouterr().err, code="export_path_conflict")
     assert safe_dump.exists()
 
     assert (
@@ -2124,7 +2180,7 @@ def test_lexical_sidecar_names_are_rejected_even_when_symlink_points_elsewhere(t
         )
         == 1
     )
-    assert "database or SQLite sidecar" in capsys.readouterr().err
+    _assert_onramp_error(capsys.readouterr().err, code="import_path_conflict")
 
 
 def test_case_variant_of_absent_sidecar_name_is_reserved(tmp_path, capsys) -> None:
@@ -2147,7 +2203,7 @@ def test_case_variant_of_absent_sidecar_name_is_reserved(tmp_path, capsys) -> No
         )
         == 1
     )
-    assert "database or SQLite sidecar" in capsys.readouterr().err
+    _assert_onramp_error(capsys.readouterr().err, code="export_path_conflict")
     assert not reserved.exists()
 
 
@@ -2171,7 +2227,7 @@ def test_unicode_normalization_variant_of_absent_sidecar_is_reserved(tmp_path, c
         )
         == 1
     )
-    assert "database or SQLite sidecar" in capsys.readouterr().err
+    _assert_onramp_error(capsys.readouterr().err, code="export_path_conflict")
 
 
 @pytest.mark.parametrize("alias_kind", ["same_path", "hard_link"])
@@ -2198,7 +2254,7 @@ def test_export_rejects_output_aliasing_the_database_without_data_loss(tmp_path,
     )
 
     assert exit_code == 1
-    assert "database or SQLite sidecar" in capsys.readouterr().err
+    _assert_onramp_error(capsys.readouterr().err, code="export_path_conflict")
     assert db_path.read_bytes() == before
     with sqlite_user_connection(db_path, USER_ID) as conn:
         assert SQLiteVNextStore(conn, USER_ID).get_memory(str(seeded["memory"]["id"])) is not None
@@ -2229,7 +2285,7 @@ def test_export_replaces_destination_atomically_and_keeps_it_on_failure(tmp_path
         )
         == 1
     )
-    assert "simulated write failure" in capsys.readouterr().err
+    _assert_onramp_error(capsys.readouterr().err, code="export_failed")
     assert out_path.read_text(encoding="utf-8") == "known-good-backup\n"
 
 
@@ -2342,7 +2398,7 @@ def test_export_rejects_unknown_user_instead_of_writing_an_empty_backup(tmp_path
         )
         == 1
     )
-    assert "does not contain user" in capsys.readouterr().err
+    _assert_onramp_error(capsys.readouterr().err, code="export_failed")
     assert not out_path.exists()
 
 
@@ -2369,7 +2425,7 @@ def test_export_rejects_non_alice_sqlite_schema_without_mutating_it(tmp_path, ca
         )
         == 1
     )
-    assert "unsupported Alice SQLite schema" in capsys.readouterr().err
+    _assert_onramp_error(capsys.readouterr().err, code="export_failed")
     assert db_path.read_bytes() == before
     assert not out_path.exists()
 
@@ -2402,8 +2458,8 @@ def test_export_rejects_unknown_newer_portable_columns_without_data_loss(tmp_pat
         == 1
     )
     err = capsys.readouterr().err
-    assert "unsupported newer Alice SQLite schema" in err
-    assert "future_user_owned_state" in err
+    _assert_onramp_error(err, code="export_failed")
+    assert "future_user_owned_state" not in err
     assert not out_path.exists()
     with sqlite3.connect(db_path) as conn:
         assert conn.execute(
@@ -2439,8 +2495,8 @@ def test_export_rejects_unknown_future_application_table(tmp_path, capsys) -> No
         == 1
     )
     err = capsys.readouterr().err
-    assert "unknown application tables" in err
-    assert "future_user_records" in err
+    _assert_onramp_error(err, code="export_failed")
+    assert "future_user_records" not in err
     assert not out_path.exists()
 
 
@@ -2491,8 +2547,7 @@ def test_import_normalizes_input_filesystem_errors_without_traceback(tmp_path, c
         == 1
     )
     err = capsys.readouterr().err
-    assert "could not read import file" in err
-    assert "Traceback" not in err
+    _assert_onramp_error(err, code="import_snapshot_failed")
 
 
 def test_export_and_import_normalize_output_setup_errors(tmp_path, capsys) -> None:
@@ -2517,8 +2572,7 @@ def test_export_and_import_normalize_output_setup_errors(tmp_path, capsys) -> No
         == 1
     )
     export_error = capsys.readouterr().err
-    assert "export failed" in export_error
-    assert "Traceback" not in export_error
+    _assert_onramp_error(export_error, code="export_failed")
 
     assert (
         onramp_main(
@@ -2535,8 +2589,7 @@ def test_export_and_import_normalize_output_setup_errors(tmp_path, capsys) -> No
         == 1
     )
     import_error = capsys.readouterr().err
-    assert "import aborted; no records were written" in import_error
-    assert "Traceback" not in import_error
+    _assert_onramp_error(import_error, code="restore_failed")
 
 
 def test_new_local_database_and_export_use_private_permissions(tmp_path) -> None:
@@ -3307,7 +3360,7 @@ def test_import_rejects_truncated_or_tampered_versioned_export(tmp_path, capsys,
 
     assert onramp_main(["import", "--in", str(damaged), "--db", str(target), "--user-id", str(USER_ID)]) == 1
     err = capsys.readouterr().err
-    assert "integrity" in err or "footer" in err
+    _assert_onramp_error(err, code="import_validation_failed")
     assert not target.exists()
 
 
@@ -3328,8 +3381,8 @@ def test_legacy_import_rejects_unknown_fields_instead_of_dropping_them(tmp_path,
 
     assert onramp_main(["import", "--in", str(legacy), "--db", str(target), "--user-id", str(USER_ID)]) == 1
     err = capsys.readouterr().err
-    assert "legacy memory has unknown fields" in err
-    assert "future_user_owned_state" in err
+    _assert_onramp_error(err, code="import_validation_failed")
+    assert "future_user_owned_state" not in err
     assert not target.exists()
 
 
@@ -3374,7 +3427,7 @@ def test_import_rejects_integrity_consistent_mixed_user_export(tmp_path, capsys)
         )
         == 1
     )
-    assert "different export user" in capsys.readouterr().err
+    _assert_onramp_error(capsys.readouterr().err, code="import_validation_failed")
 
 
 def test_import_rejects_input_aliasing_target_database(tmp_path, capsys) -> None:
@@ -3382,7 +3435,7 @@ def test_import_rejects_input_aliasing_target_database(tmp_path, capsys) -> None
     bootstrap_database(db_path, user_id=USER_ID, user_email="local@alice")
     before = db_path.read_bytes()
     assert onramp_main(["import", "--in", str(db_path), "--db", str(db_path), "--user-id", str(USER_ID)]) == 1
-    assert "database or SQLite sidecar" in capsys.readouterr().err
+    _assert_onramp_error(capsys.readouterr().err, code="import_path_conflict")
     assert db_path.read_bytes() == before
 
 
@@ -3508,7 +3561,7 @@ def test_import_mode_skip_rejects_a_same_id_with_different_content(tmp_path, cap
         )
         == 1
     )
-    assert "same id but different content" in capsys.readouterr().err
+    _assert_onramp_error(capsys.readouterr().err, code="restore_failed")
     with sqlite_user_connection(origin_db, USER_ID) as conn:
         row = conn.execute("SELECT canonical_text FROM memories WHERE id = ?", (str(conflicting["id"]),)).fetchone()
     assert row["canonical_text"] != "conflicting backup content"
@@ -3554,10 +3607,8 @@ def test_import_mode_fail_aborts_on_collision_and_writes_nothing(tmp_path, capsy
     )
     assert exit_code == 1
     err = capsys.readouterr().err
-    assert "line 2" in err
-    assert str(colliding_memory["id"]) in err
-    assert "already exists" in err
-    assert "no records were written" in err
+    _assert_onramp_error(err, code="restore_failed")
+    assert str(colliding_memory["id"]) not in err
 
     # Rollback: the novel source from line 1 must not have been kept.
     with sqlite_user_connection(origin_db, USER_ID) as conn:
@@ -3585,7 +3636,7 @@ def test_failed_import_into_new_database_leaves_no_partial_restore(tmp_path, cap
     target = tmp_path / "restored" / "memory.db"
 
     assert onramp_main(["import", "--in", str(invalid), "--db", str(target), "--user-id", str(USER_ID)]) == 1
-    assert "no records were written" in capsys.readouterr().err
+    _assert_onramp_error(capsys.readouterr().err, code="restore_failed")
     assert not target.exists()
     assert list(target.parent.glob(f".{target.name}.restore.*")) == []
 
@@ -3617,7 +3668,7 @@ def test_failed_existing_target_import_rolls_back_staged_schema_upgrade(tmp_path
     )
 
     assert onramp_main(["import", "--in", str(invalid), "--db", str(target), "--user-id", str(USER_ID)]) == 1
-    assert "no records were written" in capsys.readouterr().err
+    _assert_onramp_error(capsys.readouterr().err, code="restore_failed")
     with sqlite3.connect(target) as conn:
         assert (
             conn.execute(
@@ -3728,10 +3779,8 @@ def test_post_publication_permission_error_reports_committed_restore_truthfully(
     monkeypatch.setattr(onramp_module, "_secure_sqlite_files", fail_only_after_publication)
     assert onramp_main(["import", "--in", str(dump), "--db", str(target), "--user-id", str(USER_ID)]) == 2
     captured = capsys.readouterr()
-    assert "restore committed; permissions were not hardened" in captured.err
-    assert "DO NOT blindly retry" in captured.err
-    assert f"inspect {target}" in captured.err
-    assert "import aborted" not in captured.err
+    _assert_onramp_error(captured.err, code="restore_committed_hardening_failed")
+    assert str(target) not in captured.err
     with sqlite3.connect(target) as conn:
         assert conn.execute("SELECT 1 FROM memories WHERE id = ?", (seeded["memory"]["id"],)).fetchone()
         assert conn.execute(
@@ -3787,10 +3836,7 @@ def test_closed_summary_output_reports_committed_restore_without_rollback_claim(
 
     assert exit_code == 2
     err = capsys.readouterr().err
-    assert "restore committed; summary output failed" in err
-    assert "DO NOT blindly retry" in err
-    assert "import aborted" not in err
-    assert "no records were written" not in err
+    _assert_onramp_error(err, code="restore_committed_summary_failed")
     with sqlite3.connect(target) as conn:
         assert conn.execute("PRAGMA quick_check").fetchone() == ("ok",)
         assert conn.execute("SELECT 1 FROM memories WHERE id = ?", (seeded["memory"]["id"],)).fetchone()
@@ -3812,8 +3858,7 @@ def test_import_malformed_line_reports_line_number_and_creates_nothing(tmp_path,
     exit_code = onramp_main(["import", "--in", str(bad), "--db", str(target_db), "--user-id", str(USER_ID)])
     assert exit_code == 1
     err = capsys.readouterr().err
-    assert "line 2" in err
-    assert "invalid JSON" in err
+    _assert_onramp_error(err, code="import_validation_failed")
     # Parsing happens before any database work: nothing was created.
     assert not target_db.exists()
 
@@ -3827,14 +3872,13 @@ def test_import_unknown_record_type_reports_line_number(tmp_path, capsys) -> Non
     exit_code = onramp_main(["import", "--in", str(bad), "--db", str(tmp_path / "t.db"), "--user-id", str(USER_ID)])
     assert exit_code == 1
     err = capsys.readouterr().err
-    assert "line 1" in err
-    assert "unknown record_type 'wombat'" in err
+    _assert_onramp_error(err, code="import_validation_failed")
 
 
 def test_import_missing_file_fails_cleanly(tmp_path, capsys) -> None:
     exit_code = onramp_main(["import", "--in", str(tmp_path / "nope.jsonl"), "--db", str(tmp_path / "t.db")])
     assert exit_code == 1
-    assert "does not exist" in capsys.readouterr().err
+    _assert_onramp_error(capsys.readouterr().err, code="import_source_not_found")
 
 
 def test_import_reads_old_exports_lacking_newer_record_types(tmp_path) -> None:

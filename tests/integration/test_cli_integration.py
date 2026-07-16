@@ -638,7 +638,8 @@ def test_cli_public_eval_run_rejects_unknown_suite_key(migrated_database_urls) -
     run_result = run_cli(["evals", "run", "--suite-key", "missing_suite"], env=env)
 
     assert run_result.returncode == 1
-    assert "unknown suite_key values: missing_suite" in run_result.stderr
+    assert run_result.stdout == ""
+    assert run_result.stderr == ('{"error":{"code":"invalid_request","message":"The command request is invalid"}}\n')
 
 
 def test_cli_task_brief_compile_compare_and_show(migrated_database_urls) -> None:

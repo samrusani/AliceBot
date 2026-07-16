@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from io import StringIO
 import json
+import logging
 import os
 from pathlib import Path
 import sys
@@ -308,6 +310,29 @@ DEFAULT_MAINTENANCE_REPORT_PATH = (
 DEFAULT_VNEXT_DEMO_DATASET_PATH = Path(__file__).resolve().parents[4] / "fixtures" / "vnext" / "demo_dataset.json"
 REVIEW_STATUS_CHOICES = ("correction_ready", "active", "stale", "superseded", "deleted", "all")
 DEMO_SECRET_MARKERS = ("sk-", "xoxb-", "ghp_", "password", "access_token", "refresh_token", "@gmail.com")
+
+logger = logging.getLogger(__name__)
+
+_CLI_INVALID_REQUEST = ("invalid_request", "The command request is invalid")
+_CLI_NOT_FOUND = ("not_found", "The requested resource was not found")
+_CLI_DATABASE_FAILED = ("database_operation_failed", "The database operation failed")
+_CLI_FILESYSTEM_FAILED = ("filesystem_operation_failed", "The filesystem operation failed")
+_CLI_COMMAND_FAILED = ("command_failed", "The command could not be completed")
+
+
+def _emit_cli_error(*, code: str, message: str) -> None:
+    """Write the versioned CLI failure contract without exception internals."""
+
+    print(
+        json.dumps(
+            {"error": {"code": code, "message": message}},
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 class EvalGateFailure(Exception):
@@ -1859,14 +1884,10 @@ def _run_vnext_memory_accept_consolidation(ctx: CLIContext, args: argparse.Names
 
 def _run_vnext_memory_redact(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
-        # Redaction has no commit-service seam, so the destructive-action
-        # policy (memory.redact: human or admin agent only) is checked here.
-        identity, _actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
-            store,
-            args,
-            action="memory.redact",
-        )
-        ensure_policy_allowed(decision)
+        # The shared flow authorizes the destructive action against the locked
+        # memory.  Keeping the policy seam there also makes an exact replay a
+        # strict no-write operation on every surface.
+        identity = _vnext_agent_identity_from_args(args)
         payload = redact_memory_flow(store, memory_id=args.memory_id, reason=args.reason, identity=identity)
     return _json_dumps(payload)
 
@@ -1944,9 +1965,9 @@ def _run_vnext_memories_backfill_embeddings(ctx: CLIContext, args: argparse.Name
         batch_failed = len(embeddable) - attached
         failed += batch_failed
         if batch_failed:
-            print(
-                f"warning: embedding batch failed for {batch_failed} of {len(embeddable)} memories",
-                file=sys.stderr,
+            _emit_cli_error(
+                code="embedding_batch_failed",
+                message="An embedding batch failed",
             )
         # Exact for a fully persisted batch. For partial persistence, report a
         # guaranteed lower bound instead of claiming an incompatible vector
@@ -3305,7 +3326,18 @@ def _run_alpha_smoke(ctx: CLIContext, *, name: str, runner) -> JsonObject:
     try:
         return {"name": name, "result": json.loads(runner(ctx, argparse.Namespace())), "status": "passed"}
     except Exception as exc:
-        return {"name": name, "status": "failed", "error_type": type(exc).__name__, "error": str(exc)}
+        logger.debug(
+            "Alpha smoke failed name=%s",
+            name,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return {
+            "name": name,
+            "status": "failed",
+            "error_type": None,
+            "error_code": "smoke_failed",
+            "error": "The smoke check failed",
+        }
 
 
 def _headless_file_contains(path: Path, markers: tuple[str, ...]) -> bool:
@@ -3659,7 +3691,17 @@ def _check_headless_http_url(url: str | None) -> JsonObject:
         with urlopen(request, timeout=2.0) as response:
             status_code = int(response.getcode())
     except (OSError, URLError) as exc:
-        return {"status": "failed", "url": url, "error_type": type(exc).__name__, "error": str(exc)}
+        logger.debug(
+            "Headless reachability check failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return {
+            "status": "failed",
+            "url": url,
+            "error_type": None,
+            "error_code": "reachability_failed",
+            "error": "The reachability check failed",
+        }
     return {"status": "passed" if status_code < 500 else "failed", "url": url, "status_code": status_code}
 
 
@@ -3669,7 +3711,16 @@ def _check_headless_mcp_import() -> JsonObject:
 
         spec = importlib.util.find_spec("alicebot_api.mcp_server")
     except Exception as exc:
-        return {"status": "failed", "error_type": type(exc).__name__, "error": str(exc)}
+        logger.debug(
+            "Headless MCP import check failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return {
+            "status": "failed",
+            "error_type": None,
+            "error_code": "import_check_failed",
+            "error": "The MCP import check failed",
+        }
     if spec is None:
         return {"status": "failed", "error": "alicebot_api.mcp_server module was not found"}
     return {
@@ -3717,7 +3768,16 @@ def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
                 )
                 headless["demo_cycle"] = {"status": "passed", "load": demo_load, "reset": demo_reset}
             except Exception as exc:
-                headless["demo_cycle"] = {"status": "failed", "error_type": type(exc).__name__, "error": str(exc)}
+                logger.debug(
+                    "Headless demo cycle failed",
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+                headless["demo_cycle"] = {
+                    "status": "failed",
+                    "error_type": None,
+                    "error_code": "demo_cycle_failed",
+                    "error": "The demo cycle failed",
+                }
 
     smokes: list[JsonObject] = []
     if not args.skip_smokes:
@@ -5796,12 +5856,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     vnext_memory_redact_parser = vnext_memories_subparsers.add_parser(
         "redact",
-        help="Permanently expunge a memory's content from the row, revisions, and event payloads, keeping the audit skeleton (human or admin agent only).",
+        help=(
+            "Permanently scrub governed memory-lifecycle copies and coupled project-update "
+            "artifact copies, keeping the audit skeleton. Alice source/source-chunk evidence is "
+            "retained (human or admin agent only)."
+        ),
     )
     _add_vnext_agent_arguments(vnext_memory_redact_parser)
     vnext_memory_redact_parser.add_argument("memory_id", help="Memory id.")
     vnext_memory_redact_parser.add_argument(
-        "--reason", required=True, help="Redaction reason. Stored in the audit trail."
+        "--reason",
+        required=True,
+        help=(
+            "Redaction reason. Required for authorization and lifecycle intent; intentionally "
+            "not retained after successful true redaction."
+        ),
     )
     vnext_memory_redact_parser.set_defaults(handler=_run_vnext_memory_redact)
 
@@ -6828,7 +6897,16 @@ def _validate_arguments(args: argparse.Namespace) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    parser_stderr = StringIO()
+    try:
+        with redirect_stderr(parser_stderr):
+            args = parser.parse_args(argv)
+    except SystemExit as exc:
+        if exc.code in (None, 0):
+            raise
+        logger.debug("CLI argument parsing failed: %s", parser_stderr.getvalue().strip())
+        _emit_cli_error(code=_CLI_INVALID_REQUEST[0], message=_CLI_INVALID_REQUEST[1])
+        return int(exc.code) if isinstance(exc.code, int) else 2
 
     try:
         _validate_arguments(args)
@@ -6867,7 +6945,53 @@ def main(argv: list[str] | None = None) -> int:
         TemporalStateValidationError,
         TrustedFactPromotionNotFoundError,
     ) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        not_found_errors = (
+            ContinuityLifecycleNotFoundError,
+            ContinuityReviewNotFoundError,
+            ContinuityContradictionNotFoundError,
+            ContinuityEvidenceNotFoundError,
+            TaskBriefNotFoundError,
+            TrustedFactPromotionNotFoundError,
+        )
+        invalid_request_errors = (
+            ValueError,
+            ContinuityCaptureValidationError,
+            VNextCaptureValidationError,
+            VNextBrainValidationError,
+            VNextConnectionValidationError,
+            VNextConnectorValidationError,
+            VNextContradictionValidationError,
+            VNextProjectValidationError,
+            VNextQueueValidationError,
+            VNextRetrievalValidationError,
+            VNextSchedulerValidationError,
+            ContinuityLifecycleValidationError,
+            ContinuityRecallValidationError,
+            ContinuityBriefValidationError,
+            ContinuityResumptionValidationError,
+            ContinuityOpenLoopValidationError,
+            ContinuityReviewValidationError,
+            ContinuityContradictionValidationError,
+            MemoryMutationValidationError,
+            TaskBriefValidationError,
+            TemporalStateValidationError,
+        )
+        if isinstance(exc, not_found_errors):
+            code, message = _CLI_NOT_FOUND
+        elif isinstance(exc, invalid_request_errors):
+            code, message = _CLI_INVALID_REQUEST
+        elif isinstance(exc, psycopg.Error):
+            code, message = _CLI_DATABASE_FAILED
+        elif isinstance(exc, OSError):
+            code, message = _CLI_FILESYSTEM_FAILED
+        else:
+            code, message = _CLI_COMMAND_FAILED
+        logger.debug(
+            "CLI command failed public_code=%s",
+            code,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        _emit_cli_error(code=code, message=message)
         return 1
     except EvalGateFailure as exc:
         # Honor the JSON output contract (report to stdout) while signaling a
@@ -6879,6 +7003,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except PartialCommandFailure as exc:
         print(exc.output)
+        return 1
+    except Exception as exc:  # pragma: no cover - boundary fail-closed backstop
+        logger.debug(
+            "Unhandled CLI command failure",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        _emit_cli_error(code=_CLI_COMMAND_FAILED[0], message=_CLI_COMMAND_FAILED[1])
         return 1
 
     print(output)

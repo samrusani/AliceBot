@@ -153,12 +153,12 @@ _ACTIVE_SPRINT_FORBIDDEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     (
-        "Phase 2 active-work claim",
+        "Phase 3 active-work claim",
         re.compile(
-            r"(?:\bphase\s*2\b.{0,80}\b(?:active|underway|in\s+progress|"
+            r"(?:\bphase\s*3\b.{0,80}\b(?:active|underway|in\s+progress|"
             r"authorized|current\s+(?:work|sprint))\b|"
             r"\b(?:active|underway|in\s+progress|authorized|current\s+(?:work|sprint))"
-            r"\b.{0,80}\bphase\s*2\b)",
+            r"\b.{0,80}\bphase\s*3\b)",
             flags=re.IGNORECASE,
         ),
     ),
@@ -193,11 +193,14 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path=str(_ACTIVE_SPRINT_PACKET),
         required_markers=(
-            "<!-- alice-sprint-scope: phase-1-only -->",
-            "Alice v0.11.0 Phase 1 periphery cut and product-identity reconciliation.",
+            "<!-- alice-sprint-scope: phase-2-only -->",
+            "Alice v0.11.1 Phase 2 debt sweep.",
+            "Branch: `codex/v0111-phase2-debt-sweep`",
+            "Items 2.0 through 2.14",
+            "coupled true redaction converges",
             "Text extraction happens outside Alice.",
             "Alice does not perform OCR or transcription.",
-            "Stop after that handoff; do not begin Phase 2.",
+            "Stop after the Phase 2 handoff; do not begin Phase 3.",
         ),
     ),
     ControlDocTruthRule(

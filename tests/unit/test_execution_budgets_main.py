@@ -79,9 +79,7 @@ def test_create_execution_budget_endpoint_maps_validation_error_to_400(monkeypat
         yield object()
 
     def fake_create_execution_budget_record(*_args, **_kwargs):
-        raise ExecutionBudgetValidationError(
-            "execution budget requires at least one selector: tool_key or domain_hint"
-        )
+        raise ExecutionBudgetValidationError("execution budget requires at least one selector: tool_key or domain_hint")
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
@@ -97,9 +95,7 @@ def test_create_execution_budget_endpoint_maps_validation_error_to_400(monkeypat
     )
 
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": "execution budget requires at least one selector: tool_key or domain_hint"
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_list_execution_budgets_endpoint_returns_payload(monkeypatch) -> None:
@@ -223,7 +219,7 @@ def test_get_execution_budget_endpoint_maps_missing_record_to_404(monkeypatch) -
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
-        "detail": f"execution budget {execution_budget_id} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -308,7 +304,7 @@ def test_deactivate_execution_budget_endpoint_maps_lifecycle_error_to_409(monkey
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": f"execution budget {execution_budget_id} is inactive and cannot be deactivated"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
 

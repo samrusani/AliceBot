@@ -58,11 +58,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -328,6 +324,6 @@ def test_memory_review_label_endpoints_enforce_per_user_isolation_and_not_found_
     )
 
     assert create_status == 404
-    assert create_payload == {"detail": f"memory {seeded['memory_id']} was not found"}
+    assert create_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert list_status == 404
-    assert list_payload == {"detail": f"memory {seeded['memory_id']} was not found"}
+    assert list_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}

@@ -96,7 +96,9 @@ def test_get_tool_endpoint_maps_not_found_to_404(monkeypatch) -> None:
     response = main_module.get_tool(tool_id, user_id)
 
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": f"tool {tool_id} was not found"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
 
 def test_evaluate_tool_allowlist_endpoint_translates_request_and_returns_trace_payload(monkeypatch) -> None:
@@ -187,9 +189,7 @@ def test_evaluate_tool_allowlist_endpoint_maps_validation_errors_to_400(monkeypa
     )
 
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": "thread_id must reference an existing thread owned by the user"
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_route_tool_endpoint_translates_request_and_returns_trace_payload(monkeypatch) -> None:
@@ -310,6 +310,4 @@ def test_route_tool_endpoint_maps_validation_errors_to_400(monkeypatch) -> None:
     )
 
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": "tool_id must reference an existing active tool owned by the user"
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}

@@ -56,11 +56,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -229,9 +225,7 @@ def test_embedding_config_endpoints_create_and_list_in_deterministic_order(
     with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
         expected_configs = ContinuityStore(conn).list_embedding_configs()
 
-    assert [item["id"] for item in list_payload["items"]] == [
-        str(config["id"]) for config in expected_configs
-    ]
+    assert [item["id"] for item in list_payload["items"]] == [str(config["id"]) for config in expected_configs]
 
 
 def test_embedding_config_create_rejects_duplicate_provider_model_version(
@@ -275,12 +269,7 @@ def test_embedding_config_create_rejects_duplicate_provider_model_version(
     assert first_status == 201
     assert first_payload["embedding_config"]["version"] == "2026-03-12"
     assert second_status == 400
-    assert second_payload == {
-        "detail": (
-            "embedding config already exists for provider/model/version under the user scope: "
-            "openai/text-embedding-3-large/2026-03-12"
-        )
-    }
+    assert second_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_memory_embedding_endpoints_persist_and_read_embeddings(
@@ -372,9 +361,7 @@ def test_memory_embedding_endpoints_persist_and_read_embeddings(
     with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
         stored = ContinuityStore(conn).list_memory_embeddings_for_memory(seeded["memory_id"])
 
-    assert [item["id"] for item in list_payload["items"]] == [
-        str(embedding["id"]) for embedding in stored
-    ]
+    assert [item["id"] for item in list_payload["items"]] == [str(embedding["id"]) for embedding in stored]
     assert len(stored) == 2
     assert stored[0]["embedding_config_id"] == first_config_id
     assert stored[0]["vector"] == [0.9, 0.8, 0.7]
@@ -461,24 +448,15 @@ def test_memory_embedding_writes_reject_invalid_references_dimension_mismatches_
     )
 
     assert missing_config_status == 400
-    assert missing_config_payload["detail"].startswith(
-        "embedding_config_id must reference an existing embedding config owned by the user"
-    )
+    assert missing_config_payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
     assert missing_memory_status == 400
-    assert missing_memory_payload["detail"].startswith(
-        "memory_id must reference an existing memory owned by the user"
-    )
+    assert missing_memory_payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
     assert mismatch_status == 400
-    assert mismatch_payload["detail"] == "vector length must match embedding config dimensions (3): 2"
+    assert mismatch_payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
     assert cross_user_status == 400
-    assert cross_user_payload["detail"] == (
-        f"memory_id must reference an existing memory owned by the user: {owner['memory_id']}"
-    )
+    assert cross_user_payload["detail"] == ({"code": "invalid_request", "message": "The request is invalid"})
     assert cross_user_config_status == 400
-    assert cross_user_config_payload["detail"] == (
-        "embedding_config_id must reference an existing embedding config owned by the user: "
-        f"{owner_config_id}"
-    )
+    assert cross_user_config_payload["detail"] == ({"code": "invalid_request", "message": "The request is invalid"})
 
 
 def test_embedding_reads_respect_per_user_isolation(
@@ -537,11 +515,9 @@ def test_embedding_reads_respect_per_user_isolation(
         },
     }
     assert list_status == 404
-    assert list_payload == {"detail": f"memory {owner['memory_id']} was not found"}
+    assert list_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert detail_status == 404
-    assert detail_payload == {
-        "detail": f"memory embedding {write_payload['embedding']['id']} was not found"
-    }
+    assert detail_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
 
 
 def test_semantic_memory_retrieval_returns_deterministic_results_and_excludes_deleted_memories(
@@ -723,16 +699,11 @@ def test_semantic_memory_retrieval_rejects_invalid_config_dimension_mismatch_and
     )
 
     assert missing_status == 400
-    assert missing_payload["detail"].startswith(
-        "embedding_config_id must reference an existing embedding config owned by the user"
-    )
+    assert missing_payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
     assert mismatch_status == 400
-    assert mismatch_payload["detail"] == "query_vector length must match embedding config dimensions (3): 2"
+    assert mismatch_payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
     assert cross_user_status == 400
-    assert cross_user_payload["detail"] == (
-        "embedding_config_id must reference an existing embedding config owned by the user: "
-        f"{owner_config_id}"
-    )
+    assert cross_user_payload["detail"] == ({"code": "invalid_request", "message": "The request is invalid"})
 
 
 def test_semantic_memory_retrieval_scopes_results_per_user(

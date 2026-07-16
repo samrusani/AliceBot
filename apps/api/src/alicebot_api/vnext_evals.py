@@ -59,6 +59,7 @@ from dataclasses import fields as dataclass_fields
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -94,6 +95,18 @@ from alicebot_api.vnext_retrieval import (
     VNextRetrievalStore,
 )
 from alicebot_api.vnext_store import PostgresVNextStore
+
+logger = logging.getLogger(__name__)
+EVAL_CASE_ERROR_CODE = "eval_case_failed"
+EVAL_CASE_ERROR_MESSAGE = "The evaluation case could not be completed"
+EMBEDDING_PROVIDER_FAILED_NOTE = "embedding failed, continuing FTS-only: embedding_provider_failed"
+MEMORY_TYPES_FILTER_INCOMPATIBLE_NOTE = (
+    "memory_types filter detected but incompatible: invalid_filter_signature"
+)
+VNEXT_EVAL_LIVE_STORE_UNAVAILABLE_REASON = "live store unavailable"
+VNEXT_EVAL_UNSUPPORTED_SQLITE_URL_REASON = (
+    "unsupported sqlite eval URL (expected sqlite:///<path> or sqlite:///:memory:)"
+)
 
 JsonObject = dict[str, object]
 RetrievalFn = Callable[..., JsonObject]
@@ -783,7 +796,11 @@ def seed_retrieval_corpus(store: object, corpus: JsonObject) -> JsonObject:
                     embedded_count += 1
             embedding_note = f"embedded via {provider.provider}/{provider.model}"
         except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
-            embedding_note = f"embedding failed, continuing FTS-only: {exc}"
+            logger.warning(
+                "Retrieval evaluation corpus embedding failed error_code=embedding_provider_failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            embedding_note = EMBEDDING_PROVIDER_FAILED_NOTE
     elif provider is not None:
         embedding_note = "store does not support update_memory_embedding; vector stage inactive"
 
@@ -1100,20 +1117,25 @@ def _run_suite_against_live_store(
         return skipped(VNEXT_EVAL_LIVE_STORE_SKIP_REASON)
     if database_url.startswith("sqlite:"):
         if not database_url.startswith(VNEXT_EVAL_SQLITE_URL_PREFIX) or database_url == VNEXT_EVAL_SQLITE_URL_PREFIX:
-            return skipped(
-                "unsupported sqlite eval URL (expected sqlite:///<path> or "
-                f"sqlite:///:memory:): {database_url}"
-            )
+            return skipped(VNEXT_EVAL_UNSUPPORTED_SQLITE_URL_REASON)
         try:
             with _ephemeral_sqlite_eval_store(database_url) as live_store:
                 return run_with_store(live_store, backend="sqlite")
         except sqlite3.Error as exc:
-            return skipped(f"live store unavailable ({type(exc).__name__}): {exc}")
+            logger.error(
+                "SQLite evaluation store was unavailable",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            return skipped(VNEXT_EVAL_LIVE_STORE_UNAVAILABLE_REASON)
     try:
         with _ephemeral_eval_store(database_url) as live_store:
             return run_with_store(live_store, backend="postgres")
     except psycopg.Error as exc:
-        return skipped(f"live store unavailable ({type(exc).__name__}): {exc}")
+        logger.error(
+            "Postgres evaluation store was unavailable",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return skipped(VNEXT_EVAL_LIVE_STORE_UNAVAILABLE_REASON)
 
 
 def _run_retrieval_quality_suite(
@@ -1445,6 +1467,12 @@ def generate_correction_suppression_corpus() -> JsonObject:
 
 
 def _error_case(case_key: str, exc: Exception) -> JsonObject:
+    logger.error(
+        "correction-suppression evaluation case failed case_key=%s error_code=%s",
+        case_key,
+        EVAL_CASE_ERROR_CODE,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
     return {
         "case_key": case_key,
         "status": "fail",
@@ -1455,7 +1483,10 @@ def _error_case(case_key: str, exc: Exception) -> JsonObject:
             "replacement_reciprocal_rank": 0.0,
             "audit_complete": 0.0,
         },
-        "evidence": {"error_type": type(exc).__name__, "error_message": str(exc)},
+        "evidence": {
+            "error_code": EVAL_CASE_ERROR_CODE,
+            "error_message": EVAL_CASE_ERROR_MESSAGE,
+        },
     }
 
 
@@ -1872,8 +1903,13 @@ def run_decision_recovery_eval(
             filtered_retrieve = filtered_retrieval_fn(store, ("decision",))
             filter_note = "filtered via VNextRetrievalRequest.memory_types=('decision',)"
         except TypeError as exc:  # sibling landed an incompatible signature
+            logger.warning(
+                "Decision-recovery memory-types filter was incompatible "
+                "error_code=invalid_filter_signature",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
             filtered_retrieve = None
-            filter_note = f"memory_types filter detected but incompatible: {exc}"
+            filter_note = MEMORY_TYPES_FILTER_INCOMPATIBLE_NOTE
 
     cases: list[JsonObject] = []
     for query in cast(list[JsonObject], resolved_corpus.get("queries", [])):
@@ -2208,12 +2244,22 @@ def run_provenance_explanation_eval(
                 case, store=store, service=service, source_ids=source_ids
             )
         except Exception as exc:  # defensive: sibling churn must not abort the report
+            case_key = str(case.get("case_key", "unknown"))
+            logger.error(
+                "provenance evaluation case failed case_key=%s error_code=%s",
+                case_key,
+                EVAL_CASE_ERROR_CODE,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
             case_record = {
-                "case_key": str(case.get("case_key", "unknown")),
+                "case_key": case_key,
                 "status": "fail",
                 "metrics": {"explain_complete": 0.0},
                 "checks": {},
-                "evidence": {"error_type": type(exc).__name__, "error_message": str(exc)},
+                "evidence": {
+                    "error_code": EVAL_CASE_ERROR_CODE,
+                    "error_message": EVAL_CASE_ERROR_MESSAGE,
+                },
             }
             resolved_links = 0
             orphan_links = 0

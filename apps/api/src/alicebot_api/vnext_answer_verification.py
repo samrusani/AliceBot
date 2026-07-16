@@ -42,12 +42,16 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
+import logging
 import time
 
 from alicebot_api.vnext_repositories import JsonObject
 
 
 VERIFY_TEMPERATURE = 0.0
+ANSWER_VERIFICATION_ERROR_CODE = "answer_verification_failed"
+
+logger = logging.getLogger(__name__)
 
 # What the gate substitutes when an integrator opts into gating and the
 # verdict found a load-bearing fabrication. Deliberately plain: it
@@ -275,11 +279,16 @@ def verify_answer_grounding(
     try:
         reply = _call_chat(chat_config, prompt)
     except Exception as exc:  # noqa: BLE001 - fail-open: verification must never break answering
+        logger.warning(
+            "Answer-grounding verification failed open error_code=%s",
+            ANSWER_VERIFICATION_ERROR_CODE,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
         return AnswerGroundingVerdict(
             grounded=True,
             ungrounded_claims=(),
             raw_response=None,
-            error=f"{type(exc).__name__}: {exc}",
+            error=ANSWER_VERIFICATION_ERROR_CODE,
             parse_note=None,
             latency_seconds=time.monotonic() - started,
             provider=str(provider) if provider is not None else None,
@@ -315,6 +324,7 @@ def apply_answer_grounding_gate(
 
 
 __all__ = [
+    "ANSWER_VERIFICATION_ERROR_CODE",
     "ANSWER_VERIFIER_PROMPT_TEMPLATE",
     "ANSWER_VERIFIER_TEMPLATE_SHA256",
     "AnswerGroundingVerdict",

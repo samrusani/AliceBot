@@ -40,6 +40,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import hashlib
 import json
+import logging
 import os
 import time
 from typing import Any, Protocol, Sequence
@@ -49,6 +50,8 @@ from urllib.request import Request, urlopen
 from alicebot_api.vnext_ranking import content_stable_tiebreak
 from alicebot_api.vnext_repositories import JsonObject
 
+
+logger = logging.getLogger(__name__)
 
 RERANKER_BASE_URL_ENV = "ALICE_RERANKER_BASE_URL"
 RERANKER_MODEL_ENV = "ALICE_RERANKER_MODEL"
@@ -74,6 +77,7 @@ RERANK_TEXT_KEYS = ("title", "canonical_text", "summary", "text")
 RERANK_STATUS_RERANKED = "reranked"
 RERANK_STATUS_NOOP = "noop: fewer than two candidates"
 RERANK_FAIL_OPEN_PREFIX = "fail_open: "
+RERANK_STATUS_FAIL_OPEN_PROVIDER_ERROR = f"{RERANK_FAIL_OPEN_PREFIX}provider_error"
 
 # The frozen listwise scoring prompt. HONESTY CONTRACT: generic relevance
 # scoring only — no query-type routing, no benchmark vocabulary, no answer
@@ -361,9 +365,15 @@ def rerank(
         scores = parse_rerank_scores(completion.content, expected_count=scored_count)
     except Exception as exc:  # noqa: BLE001 - fail-open is the stage contract
         latency_ms = int(round((time.monotonic() - started) * 1000))
+        logger.warning(
+            "Reranker failed open error_code=provider_error provider=%s model=%s",
+            provider.provider,
+            provider.model,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
         return _identity_outcome(
             total,
-            status=f"{RERANK_FAIL_OPEN_PREFIX}{type(exc).__name__}: {exc}",
+            status=RERANK_STATUS_FAIL_OPEN_PROVIDER_ERROR,
             model=provider.model,
             latency_ms=latency_ms,
         )
@@ -510,6 +520,7 @@ __all__ = [
     "RERANK_PROMPT_TEMPLATE",
     "RERANK_SOURCE_CANDIDATE_CAP",
     "RERANK_STATUS_NOOP",
+    "RERANK_STATUS_FAIL_OPEN_PROVIDER_ERROR",
     "RERANK_STATUS_RERANKED",
     "RERANK_TEXT_KEYS",
     "RERANK_TEXT_MAX_CHARS",

@@ -11,6 +11,7 @@ import pytest
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import (
     SQLiteVNextStore,
+    _PROJECT_UPDATE_EVENT_LOOKUP_SQL,
     ensure_sqlite_user,
     sqlite_user_connection,
 )
@@ -20,6 +21,9 @@ from alicebot_api.vnext_embeddings import (
     EMBEDDING_SIGNATURE_METADATA_KEY,
     memory_embedding_content_sha256,
 )
+from alicebot_api.mcp_tools import redact_memory_flow
+from alicebot_api.vnext_memory_commit import VNextMemoryCommitService, VNextMemoryCommitValidationError
+from alicebot_api.vnext_project_update_guard import PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE
 
 
 def _open_connection() -> sqlite3.Connection:
@@ -697,6 +701,224 @@ def test_list_memories_applies_scope_and_limit_in_query() -> None:
     assert store.list_memories(status="active", sensitivity_allowed=[]) == []
     with pytest.raises(ValueError, match="limit must be positive"):
         store.list_memories(limit=0)
+    conn.close()
+
+
+def test_memory_queries_use_ascii_case_insensitive_literal_substrings() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    rows = {
+        "title": _create_memory(store, title="Release title", canonical_text="unrelated canonical text"),
+        "canonical": _create_memory(store, title="Unrelated title", canonical_text="Release canonical text"),
+        "summary": _create_memory(
+            store,
+            title="Unrelated title",
+            canonical_text="unrelated canonical text",
+            summary="Release summary",
+        ),
+        "arende": _create_memory(store, title="Ärende row", canonical_text="unrelated canonical text"),
+        "strasse": _create_memory(store, title="Straße row", canonical_text="unrelated canonical text"),
+        "literals": _create_memory(
+            store,
+            title=r"100% under_score path\segment",
+            canonical_text="unrelated canonical text",
+        ),
+    }
+    for index, row in enumerate(rows.values()):
+        store.append_event(
+            {
+                "id": f"memory-query-event-{index}",
+                "event_type": "memory.reviewed",
+                "actor_type": "system",
+                "target_type": "memory",
+                "target_id": row["id"],
+                "occurred_at": f"2030-07-10T12:{index:02d}:00Z",
+                "payload_json": {},
+            }
+        )
+
+    expectations = {
+        "release": {str(rows[key]["id"]) for key in ("title", "canonical", "summary")},
+        "RELEASE": {str(rows[key]["id"]) for key in ("title", "canonical", "summary")},
+        "ärende": set(),
+        "Ärende": {str(rows["arende"]["id"])},
+        "STRASSE": set(),
+        "Straße": {str(rows["strasse"]["id"])},
+        "%": {str(rows["literals"]["id"])},
+        "_": {str(rows["literals"]["id"])},
+        "\\": {str(rows["literals"]["id"])},
+        r"missing%_\path": set(),
+    }
+    for query, expected_ids in expectations.items():
+        memories = store.list_memories(query=query, order_by_created_at=True, limit=50)
+        resume_events = store.list_resume_memory_events(statuses=("active",), query=query, limit=100)
+        assert {str(row["id"]) for row in memories} == expected_ids
+        assert {str(event["target_id"]) for event in resume_events} == expected_ids
+
+    assert len(store.list_memories(query="   ", limit=50)) == len(rows)
+    assert {
+        str(event["target_id"])
+        for event in store.list_resume_memory_events(statuses=("active",), query="   ", limit=100)
+    } == {str(row["id"]) for row in rows.values()}
+    conn.close()
+
+
+def test_sqlite_project_update_event_lookup_preserves_target_and_payload_only_linkage() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    artifact_id = "artifact-1"
+    candidate_memory_id = "memory-1"
+    expected_ids = {
+        "creation-target",
+        "creation-payload",
+        "accepted-target",
+        "rejected-payload",
+    }
+    events = (
+        {
+            "id": "creation-target",
+            "event_type": "project.update_candidate_created",
+            "target_type": "artifact",
+            "target_id": artifact_id,
+            "payload_json": {
+                "artifact_id": artifact_id,
+                "candidate_memory_id": candidate_memory_id,
+                "memory_id": candidate_memory_id,
+            },
+        },
+        {
+            "id": "creation-payload",
+            "event_type": "project.update_candidate_created",
+            "target_type": "artifact",
+            "target_id": "competing-artifact",
+            "payload_json": {"memory_id": candidate_memory_id},
+        },
+        {
+            "id": "accepted-target",
+            "event_type": "project.update_candidate_accepted",
+            "target_type": "memory",
+            "target_id": candidate_memory_id,
+            "payload_json": {},
+        },
+        {
+            "id": "rejected-payload",
+            "event_type": "project.update_candidate_rejected",
+            "target_type": "project",
+            "target_id": "project-1",
+            "payload_json": {"artifact_id": artifact_id},
+        },
+        {
+            "id": "unrelated-project-update",
+            "event_type": "project.update_candidate_rejected",
+            "target_type": "artifact",
+            "target_id": "artifact-2",
+            "payload_json": {"candidate_memory_id": "memory-2"},
+        },
+        {
+            "id": "wrong-event-type",
+            "event_type": "memory.reviewed",
+            "target_type": "artifact",
+            "target_id": artifact_id,
+            "payload_json": {"candidate_memory_id": candidate_memory_id},
+        },
+    )
+    for index, event in enumerate(events):
+        store.append_event(
+            {
+                **event,
+                "actor_type": "system",
+                "occurred_at": f"2030-07-10T12:{index:02d}:00Z",
+            }
+        )
+
+    actual = store.list_project_update_events(
+        artifact_id=artifact_id,
+        candidate_memory_id=candidate_memory_id,
+    )
+
+    assert {str(event["id"]) for event in actual} == expected_ids
+    assert len(actual) == len(expected_ids)
+    assert [str(event["id"]) for event in actual] == [
+        "rejected-payload",
+        "accepted-target",
+        "creation-payload",
+        "creation-target",
+    ]
+
+    plan_rows = conn.execute(
+        f"EXPLAIN QUERY PLAN {_PROJECT_UPDATE_EVENT_LOOKUP_SQL}",
+        (
+            store.user_id,
+            artifact_id,
+            store.user_id,
+            candidate_memory_id,
+            store.user_id,
+            artifact_id,
+            store.user_id,
+            candidate_memory_id,
+            store.user_id,
+            candidate_memory_id,
+        ),
+    ).fetchall()
+    plan = "\n".join(str(row[3]) for row in plan_rows)
+    assert plan.count("USING INDEX event_log_project_update_target_idx") == 2
+    assert plan.count("USING INDEX event_log_project_update_artifact_id_idx") == 1
+    assert plan.count("USING INDEX event_log_project_update_candidate_memory_id_idx") == 1
+    assert plan.count("USING INDEX event_log_project_update_memory_id_idx") == 1
+    assert "event_log_user_occurred_idx" not in plan
+    conn.close()
+
+
+@pytest.mark.parametrize("marker", ["workflow", "memory_key"])
+@pytest.mark.parametrize("operation", ["correct", "forget", "undo", "redact"])
+def test_sqlite_pending_project_update_candidate_blocks_generic_memory_mutations(
+    marker: str,
+    operation: str,
+) -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    metadata: dict[str, object] = {"candidate": True}
+    memory_key = "ordinary.pending.candidate"
+    if marker == "workflow":
+        metadata["workflow"] = "project_auto_update"
+    else:
+        memory_key = "project_update.alice.digest"
+    memory = _create_memory(
+        store,
+        memory_key=memory_key,
+        status="candidate",
+        metadata_json=metadata,
+        canonical_text="Proposed project state.",
+    )
+    state_before = (
+        store.get_memory(str(memory["id"])),
+        store.list_revisions(str(memory["id"])),
+        store.list_events(),
+    )
+
+    with pytest.raises(
+        VNextMemoryCommitValidationError,
+        match=f"^{PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE}$",
+    ):
+        service = VNextMemoryCommitService(store)
+        if operation == "correct":
+            service.correct(
+                identity=None,
+                memory_id=str(memory["id"]),
+                canonical_text="Generic correction must not apply.",
+            )
+        elif operation == "forget":
+            service.forget(identity=None, memory_id=str(memory["id"]), reason="Must not apply.")
+        elif operation == "undo":
+            service.undo(identity=None, memory_id=str(memory["id"]), reason="Must not apply.")
+        else:
+            redact_memory_flow(store, memory_id=str(memory["id"]), reason="Must not apply.")
+
+    assert (
+        store.get_memory(str(memory["id"])),
+        store.list_revisions(str(memory["id"])),
+        store.list_events(),
+    ) == state_before
     conn.close()
 
 
@@ -3129,7 +3351,8 @@ def test_redact_memory_content_expunges_content_and_archives() -> None:
     assert metadata["redacted_at"]
     # Structural keys survive; content-bearing keys are gone.
     assert metadata["project_id"] == "proj-123"
-    assert metadata["consolidation_digest"] == "digest-abc"
+    assert "consolidation_digest" not in metadata
+    assert "source_refs" not in metadata
     assert "note" not in metadata
     # Skeleton is intact and the embedding is really gone.
     direct = conn.execute(
@@ -3137,7 +3360,7 @@ def test_redact_memory_content_expunges_content_and_archives() -> None:
         (str(memory["id"]),),
     ).fetchone()
     assert direct[0] == memory["id"]
-    assert direct[1] == memory["memory_key"]
+    assert direct[1] == f"redacted.{memory['id']}"
     assert direct[2] == memory["created_at"]
     assert direct[3] is None
     assert "SECRET" not in _table_dump(conn, "memories")
@@ -3206,8 +3429,6 @@ def test_redact_memory_revisions_scrubs_content_and_preserves_skeleton() -> None
             "memory_id",
             "sequence_no",
             "action",
-            "memory_key",
-            "source_event_ids",
             "revision_number",
             "revision_type",
             "actor_type",
@@ -3215,6 +3436,8 @@ def test_redact_memory_revisions_scrubs_content_and_preserves_skeleton() -> None
             "created_at",
         ):
             assert after_row[column] == before_row[column]
+        assert after_row["memory_key"] == f"redacted.{memory['id']}"
+        assert after_row["source_event_ids"] == []
     by_id = {row["id"]: row for row in after}
     created_after = by_id[created["id"]]
     edited_after = by_id[edited["id"]]
@@ -3324,7 +3547,6 @@ def test_project_update_review_evidence_skeleton_survives_sqlite_redaction(
         "memory_id",
         "sequence_no",
         "action",
-        "memory_key",
         "revision_number",
         "revision_type",
         "actor_type",
@@ -3332,6 +3554,8 @@ def test_project_update_review_evidence_skeleton_survives_sqlite_redaction(
         "created_at",
     ):
         assert redacted_revision[field] == revision[field]
+    assert redacted_revision["memory_key"] == f"redacted.{memory_id}"
+    assert redacted_revision["source_event_ids"] == []
     assert redacted_revision["action"] == "project_update_review"
     assert redacted_revision["revision_type"] == revision_type
     assert redacted_revision["metadata_json"] == {"redacted": True}
@@ -3435,11 +3659,25 @@ def test_redact_memory_events_scrubs_payloads_and_preserves_skeleton() -> None:
             "payload_json": {"text": "UNRELATED-SECRET"},
         }
     )
+    unrelated_uuid_prose = store.append_event(
+        {
+            "event_type": "custom.prose",
+            "actor_type": "system",
+            "payload_json": {"text": f"The unrelated note mentions {memory['id']} in prose."},
+            "integrity_hash": "unrelated-prose-hash",
+        }
+    )
     before = {
         row["id"]: row
         for row in store.list_events()
-        if str(memory["id"]) in json.dumps(row["payload_json"])
-        or (row["target_type"] == "memory" and row["target_id"] == str(memory["id"]))
+        if (row["target_type"] == "memory" and row["target_id"] == str(memory["id"]))
+        or (
+            isinstance(row["payload_json"], dict)
+            and (
+                row["payload_json"].get("memory_id") == str(memory["id"])
+                or row["payload_json"].get("candidate_memory_id") == str(memory["id"])
+            )
+        )
     }
     assert len(before) >= 3
 
@@ -3470,6 +3708,10 @@ def test_redact_memory_events_scrubs_payloads_and_preserves_skeleton() -> None:
         assert after_row["integrity_hash"] is None
     # Unrelated events are untouched.
     assert after[unrelated["id"]]["payload_json"] == {"text": "UNRELATED-SECRET"}
+    assert after[unrelated_uuid_prose["id"]]["payload_json"] == {
+        "text": f"The unrelated note mentions {memory['id']} in prose."
+    }
+    assert after[unrelated_uuid_prose["id"]]["integrity_hash"] == "unrelated-prose-hash"
     dump = _table_dump(conn, "event_log")
     assert "SECRET-PATCH" not in dump
     assert "SECRET-EVT" not in dump
@@ -3521,6 +3763,240 @@ def test_append_only_still_enforced_for_normal_updates_after_redaction_support()
             )
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             conn.execute("DELETE FROM event_log WHERE id = ?", (event["id"],))
+    finally:
+        conn.execute("UPDATE redaction_mode SET enabled = 0 WHERE id = 1")
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    "linkage",
+    [
+        "memory_target",
+        "payload_memory",
+        "payload_candidate_memory",
+        "artifact_target",
+        "payload_artifact",
+    ],
+)
+def test_sqlite_event_redaction_trigger_accepts_legitimate_old_linkage(linkage: str) -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory_id = str(uuid4())
+    artifact_id = str(uuid4())
+    event_type = "custom.content_bearing_event"
+    target_type: str | None = None
+    target_id: str | None = None
+    payload: dict[str, object] = {"content": "SECRET"}
+
+    if linkage == "memory_target":
+        target_type = "memory"
+        target_id = memory_id
+    elif linkage == "payload_memory":
+        payload["memory_id"] = memory_id
+    elif linkage == "payload_candidate_memory":
+        payload["candidate_memory_id"] = memory_id
+    else:
+        store.append_event(
+            {
+                "event_type": "project.update_candidate_created",
+                "actor_type": "system",
+                "target_type": "artifact",
+                "target_id": artifact_id,
+                "payload_json": {
+                    "artifact_id": artifact_id,
+                    "candidate_memory_id": memory_id,
+                },
+            }
+        )
+        if linkage == "artifact_target":
+            target_type = "artifact"
+            target_id = artifact_id
+        else:
+            payload["artifact_id"] = artifact_id
+
+    event = store.append_event(
+        {
+            "event_type": event_type,
+            "actor_type": "system",
+            "target_type": target_type,
+            "target_id": target_id,
+            "payload_json": payload,
+            "integrity_hash": "content-derived-hash",
+        }
+    )
+    marker = json.dumps(
+        {"redacted": True, "memory_id": memory_id, "event_type": event_type},
+        separators=(",", ":"),
+    )
+
+    conn.execute("UPDATE redaction_mode SET enabled = 1 WHERE id = 1")
+    try:
+        conn.execute(
+            "UPDATE event_log SET payload_json = ?, integrity_hash = NULL WHERE id = ?",
+            (marker, event["id"]),
+        )
+    finally:
+        conn.execute("UPDATE redaction_mode SET enabled = 0 WHERE id = 1")
+
+    redacted = next(row for row in store.list_events() if row["id"] == event["id"])
+    assert redacted["payload_json"] == {
+        "redacted": True,
+        "memory_id": memory_id,
+        "event_type": event_type,
+    }
+    assert redacted["integrity_hash"] is None
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "wrong_memory_target",
+        "conflicting_direct_links",
+        "wrong_artifact_resolution",
+        "conflicting_artifact_resolution",
+        "other_user_artifact_resolution",
+        "unlinked",
+    ],
+)
+def test_sqlite_event_redaction_trigger_rejects_fabricated_or_unlinked_memory_id(
+    failure: str,
+) -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    linked_memory_id = str(uuid4())
+    marker_memory_id = linked_memory_id
+    competing_memory_id = str(uuid4())
+    artifact_id = str(uuid4())
+    target_type: str | None = None
+    target_id: str | None = None
+    payload: dict[str, object] = {"content": "SECRET"}
+
+    if failure == "wrong_memory_target":
+        target_type = "memory"
+        target_id = linked_memory_id
+        marker_memory_id = competing_memory_id
+    elif failure == "conflicting_direct_links":
+        target_type = "memory"
+        target_id = linked_memory_id
+        payload["candidate_memory_id"] = competing_memory_id
+    elif failure != "unlinked":
+        resolver_store = _make_store(conn) if failure == "other_user_artifact_resolution" else store
+        resolver_store.append_event(
+            {
+                "event_type": "project.update_candidate_created",
+                "actor_type": "system",
+                "target_type": "artifact",
+                "target_id": artifact_id,
+                "payload_json": {
+                    "artifact_id": artifact_id,
+                    "candidate_memory_id": linked_memory_id,
+                },
+            }
+        )
+        if failure == "conflicting_artifact_resolution":
+            store.append_event(
+                {
+                    "event_type": "project.update_candidate_accepted",
+                    "actor_type": "system",
+                    "payload_json": {
+                        "artifact_id": artifact_id,
+                        "candidate_memory_id": competing_memory_id,
+                    },
+                }
+            )
+        if failure == "wrong_artifact_resolution":
+            marker_memory_id = competing_memory_id
+            payload["artifact_id"] = artifact_id
+        else:
+            target_type = "artifact"
+            target_id = artifact_id
+
+    event_type = "custom.content_bearing_event"
+    event = store.append_event(
+        {
+            "event_type": event_type,
+            "actor_type": "system",
+            "target_type": target_type,
+            "target_id": target_id,
+            "payload_json": payload,
+            "integrity_hash": "content-derived-hash",
+        }
+    )
+    marker = json.dumps(
+        {
+            "redacted": True,
+            "memory_id": marker_memory_id,
+            "event_type": event_type,
+        },
+        separators=(",", ":"),
+    )
+
+    conn.execute("UPDATE redaction_mode SET enabled = 1 WHERE id = 1")
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="event_log is append-only"):
+            conn.execute(
+                "UPDATE event_log SET payload_json = ?, integrity_hash = NULL WHERE id = ?",
+                (marker, event["id"]),
+            )
+    finally:
+        conn.execute("UPDATE redaction_mode SET enabled = 0 WHERE id = 1")
+
+    unchanged = next(row for row in store.list_events() if row["id"] == event["id"])
+    assert unchanged["payload_json"] == payload
+    assert unchanged["integrity_hash"] == "content-derived-hash"
+    conn.close()
+
+
+def test_sqlite_redaction_trigger_preserves_revision_nullability_skeleton() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _secret_memory(store)
+    nonnull_revision = _secret_revision(store, memory)
+    null_revision = store.append_revision(
+        {
+            "memory_id": memory["id"],
+            "memory_key": memory["memory_key"],
+            "previous_value": None,
+            "new_value": None,
+            "candidate": {},
+            "text_before": None,
+            "text_after": "created",
+            "reason": None,
+            "metadata_json": {},
+        }
+    )
+    conn.execute("UPDATE redaction_mode SET enabled = 1 WHERE id = 1")
+    try:
+        update_sql = """
+            UPDATE memory_revisions
+            SET memory_key = 'redacted.' || memory_id,
+                source_event_ids = '[]',
+                candidate = '{"redacted":true}',
+                text_before = ?,
+                text_after = '[REDACTED]',
+                reason = ?,
+                previous_value = ?,
+                new_value = ?,
+                metadata_json = '{"redacted":true}'
+            WHERE id = ?
+        """
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            conn.execute(
+                update_sql,
+                ("[REDACTED]", None, None, None, null_revision["id"]),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            conn.execute(
+                update_sql,
+                (
+                    None,
+                    "[REDACTED]",
+                    '{"redacted":true}',
+                    '{"redacted":true}',
+                    nonnull_revision["id"],
+                ),
+            )
     finally:
         conn.execute("UPDATE redaction_mode SET enabled = 0 WHERE id = 1")
     conn.close()
@@ -3588,6 +4064,96 @@ def test_redacted_memory_is_invisible_to_search() -> None:
     assert store.search_memories_vector(query_vector=[0.5, 0.25]) == []
     # The FTS shadow index itself no longer matches the redacted content.
     assert conn.execute("SELECT count(*) FROM memories_fts WHERE memories_fts MATCH 'sprocket'").fetchone()[0] == 0
+    conn.close()
+
+
+def test_quoted_provenance_cannot_reintroduce_content_after_sqlite_redaction() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _secret_memory(store)
+    store.redact_memory_bundle(memory_id=str(memory["id"]), project_update_artifacts=[])
+
+    with pytest.raises(ValueError, match="quoted provenance cannot be added to a redacted target"):
+        store.create_provenance_link(
+            {
+                "target_type": "memory",
+                "target_id": str(memory["id"]),
+                "quote": "must not survive",
+            }
+        )
+
+    assert store.list_provenance_links(target_type="memory", target_id=str(memory["id"])) == []
+    conn.close()
+
+
+def test_sqlite_redaction_timestamp_requires_marker_and_receipt_but_preserves_legacy_marker() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    fabricated = _create_memory(
+        store,
+        metadata_json={"redacted_at": "2001-02-03T04:05:06Z"},
+        canonical_text="ordinary content",
+    )
+    first = store.redact_memory_bundle(memory_id=str(fabricated["id"]), project_update_artifacts=[])
+    first_metadata = first["memory"]["metadata_json"]
+    assert isinstance(first_metadata, dict)
+    assert first_metadata["redacted_at"] != "2001-02-03T04:05:06Z"
+
+    legacy = _create_memory(store, canonical_text="legacy content")
+    legacy_id = str(legacy["id"])
+    prior_timestamp = "2002-03-04T05:06:07Z"
+    conn.execute(
+        """
+        UPDATE memories
+        SET title = '[REDACTED]', canonical_text = '[REDACTED]', summary = NULL,
+            trust_reason = '[REDACTED]', value = '{"redacted":true}',
+            metadata_json = ?, embedding = NULL, fact_keys = NULL,
+            status = 'archived', deleted_at = '2026-07-15T00:00:00Z'
+        WHERE id = ? AND user_id = ?
+        """,
+        (json.dumps({"redacted": True, "redacted_at": prior_timestamp}), legacy_id, store.user_id),
+    )
+    store.append_event(
+        {
+            "event_type": "memory.redacted",
+            "actor_type": "user",
+            "target_type": "memory",
+            "target_id": legacy_id,
+            "payload_json": {"operation": "legacy_redaction"},
+        }
+    )
+
+    repaired = store.redact_memory_bundle(memory_id=legacy_id, project_update_artifacts=[])
+    repaired_metadata = repaired["memory"]["metadata_json"]
+    assert isinstance(repaired_metadata, dict)
+    assert repaired_metadata["redacted_at"] == prior_timestamp
+    conn.close()
+
+
+def test_sqlite_redact_flow_replay_proves_full_bundle_before_no_write_shortcut() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _secret_memory(store)
+
+    first = redact_memory_flow(store, memory_id=str(memory["id"]), reason="Operator erasure")
+    assert first["idempotent_replay"] is False
+    frozen = (
+        _table_dump(conn, "memories"),
+        _table_dump(conn, "memory_revisions"),
+        _table_dump(conn, "event_log"),
+        _table_dump(conn, "provenance_links"),
+    )
+
+    second = redact_memory_flow(store, memory_id=str(memory["id"]), reason="Operator erasure")
+    assert second["idempotent_replay"] is True
+    assert second["redacted_revisions"] == 0
+    assert second["redacted_events"] == 0
+    assert (
+        _table_dump(conn, "memories"),
+        _table_dump(conn, "memory_revisions"),
+        _table_dump(conn, "event_log"),
+        _table_dump(conn, "provenance_links"),
+    ) == frozen
     conn.close()
 
 

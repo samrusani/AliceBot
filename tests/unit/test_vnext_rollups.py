@@ -17,6 +17,8 @@ import pytest
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_consolidation import MemoryConsolidationRequest, VNextConsolidationService
+from alicebot_api.vnext_embeddings import VNextEmbeddingProviderError
+from alicebot_api.vnext_model_intelligence import VNextModelIntelligenceError
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_rollups import (
     ROLLUP_CANDIDATE_KIND,
@@ -1106,6 +1108,71 @@ def test_model_backed_summary_is_grounded_and_disclosed() -> None:
     assert consolidation["model_provenance"]["prompt_hash"].startswith("sha256:")
     assert consolidation["merge_refusal"] is None
     assert stub.prompts and "[UNTRUSTED_CONTEXT_JSON]" in stub.prompts[0]
+
+
+def test_model_backed_summary_provider_failure_uses_static_refusal_reason() -> None:
+    sentinel = "UNIQUE_ROLLUP_MODEL_EXCEPTION_SENTINEL"
+
+    class FailingSummaryProvider(StubSummaryProvider):
+        def chat(self, *, prompt: str, temperature: float) -> str:
+            raise VNextModelIntelligenceError(sentinel)
+
+    store = FakeRollupStore()
+    _seed_game_memories(store)
+    VNextRollupService(store, merge_provider=FailingSummaryProvider("unused")).propose_rollups(
+        generation_mode="model_backed", route=StubRoute()
+    )
+
+    cards = _rollup_candidates(store)
+    assert cards
+    assert all(
+        card["metadata_json"]["consolidation"]["merge_refusal"] == "provider_error"
+        for card in cards
+    )
+    assert sentinel not in str(cards)
+
+
+def test_semantic_rollup_failures_use_static_skip_reasons() -> None:
+    presence_sentinel = "UNIQUE_ROLLUP_PRESENCE_EXCEPTION_SENTINEL"
+    provider_sentinel = "UNIQUE_ROLLUP_EMBEDDING_EXCEPTION_SENTINEL"
+    rows = [
+        {
+            "id": f"memory-{index}",
+            "title": f"Unrelated {index}",
+            "canonical_text": f"Distinct semantic fixture {index}",
+            "created_at": f"2026-07-01T00:0{index}:00Z",
+        }
+        for index in range(3)
+    ]
+
+    class PresenceFailureStore(FakeRollupStore):
+        def list_memory_ids_with_embeddings(self, ids: list[str]) -> set[str]:
+            raise RuntimeError(presence_sentinel)
+
+    class ProviderFailureStore(FakeRollupStore):
+        def list_memory_ids_with_embeddings(self, ids: list[str]) -> set[str]:
+            return set(ids)
+
+    class Provider:
+        provider = "test"
+        model = "test"
+
+        def embed_batch(self, texts: object) -> list[list[float]]:
+            raise VNextEmbeddingProviderError(provider_sentinel)
+
+    presence_service = VNextRollupService(PresenceFailureStore(), embedding_provider=Provider())
+    _clusters, presence_record = presence_service._semantic_clusters(
+        rows, options=RollupOptions(), domains=None, sensitivity_allowed=None
+    )
+    provider_service = VNextRollupService(ProviderFailureStore(), embedding_provider=Provider())
+    _clusters, provider_record = provider_service._semantic_clusters(
+        rows, options=RollupOptions(), domains=None, sensitivity_allowed=None
+    )
+
+    assert presence_record["skipped"] == ["embedding_presence_read_failed"]
+    assert provider_record["skipped"] == ["embedding_provider_failed"]
+    assert presence_sentinel not in str(presence_record)
+    assert provider_sentinel not in str(provider_record)
 
 
 def test_model_summary_is_not_allowed_to_describe_a_truncated_group() -> None:

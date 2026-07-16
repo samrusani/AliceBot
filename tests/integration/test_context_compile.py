@@ -49,11 +49,7 @@ def invoke_compile_context(payload: dict[str, Any]) -> tuple[int, dict[str, Any]
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -639,10 +635,7 @@ def test_compile_context_endpoint_persists_trace_and_trace_events(migrated_datab
         for event in trace_events
         if event["kind"] == "context.included"
     )
-    assert all(
-        event["payload"].get("entity_id") != str(ignored_entity_edge["id"])
-        for event in trace_events
-    )
+    assert all(event["payload"].get("entity_id") != str(ignored_entity_edge["id"]) for event in trace_events)
     assert trace_events[-1]["payload"]["included_memory_count"] == 1
     assert trace_events[-1]["payload"]["excluded_deleted_memory_count"] == 1
     assert trace_events[-1]["payload"]["excluded_memory_limit_count"] == 0
@@ -827,8 +820,7 @@ def test_compile_context_prefers_updated_active_memory_within_same_transaction(
         if event["kind"] == "context.included"
     )
     assert any(
-        event["payload"]["reason"] == "entity_limit_exceeded"
-        and event["payload"]["name"] == excluded_entity["name"]
+        event["payload"]["reason"] == "entity_limit_exceeded" and event["payload"]["name"] == excluded_entity["name"]
         for event in trace_events
         if event["kind"] == "context.excluded"
     )
@@ -916,14 +908,10 @@ def test_compile_context_endpoint_merges_hybrid_memory_provenance_and_trace_even
             "extracted_by_model": memories["coffee"]["extracted_by_model"],
             "trust_reason": memories["coffee"]["trust_reason"],
             "valid_from": (
-                None
-                if memories["coffee"]["valid_from"] is None
-                else memories["coffee"]["valid_from"].isoformat()
+                None if memories["coffee"]["valid_from"] is None else memories["coffee"]["valid_from"].isoformat()
             ),
             "valid_to": (
-                None
-                if memories["coffee"]["valid_to"] is None
-                else memories["coffee"]["valid_to"].isoformat()
+                None if memories["coffee"]["valid_to"] is None else memories["coffee"]["valid_to"].isoformat()
             ),
             "last_confirmed_at": (
                 None
@@ -1063,16 +1051,11 @@ def test_compile_context_semantic_validation_rejects_missing_config_dimension_mi
     )
 
     assert missing_status == 400
-    assert missing_payload["detail"].startswith(
-        "embedding_config_id must reference an existing embedding config owned by the user"
-    )
+    assert missing_payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
     assert mismatch_status == 400
-    assert mismatch_payload["detail"] == "query_vector length must match embedding config dimensions (3): 2"
+    assert mismatch_payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
     assert cross_user_status == 400
-    assert cross_user_payload["detail"] == (
-        "embedding_config_id must reference an existing embedding config owned by the user: "
-        f"{owner_config_id}"
-    )
+    assert cross_user_payload["detail"] == ({"code": "invalid_request", "message": "The request is invalid"})
 
 
 def test_compile_context_artifact_retrieval_integrates_chunks_traces_and_exclusion_rules(
@@ -1966,21 +1949,14 @@ def test_compile_context_semantic_artifact_retrieval_validation_and_isolation(
     assert invalid_shape_status == 422
     assert "task_id" in json.dumps(invalid_shape_payload)
     assert missing_status == 400
-    assert missing_payload["detail"].startswith(
-        "embedding_config_id must reference an existing embedding config owned by the user"
-    )
+    assert missing_payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
     assert mismatch_status == 400
-    assert mismatch_payload["detail"] == "query_vector length must match embedding config dimensions (3): 2"
+    assert mismatch_payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
     assert isolated_task_status == 404
-    assert isolated_task_payload == {
-        "detail": f"task {owner_artifact_scope['task_id']} was not found"
-    }
+    assert isolated_task_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert isolated_artifact_status == 404
     assert isolated_artifact_payload == {
-        "detail": (
-            "task artifact "
-            f"{owner_artifact_scope['artifact_ids']['docs']} was not found"
-        )
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -2054,21 +2030,14 @@ def test_compile_context_artifact_retrieval_validation_and_isolation(
     )
 
     assert blank_query_status == 400
-    assert blank_query_payload == {
-        "detail": "artifact chunk retrieval query must include at least one word"
-    }
+    assert blank_query_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
     assert invalid_shape_status == 422
     assert "task_id" in json.dumps(invalid_shape_payload)
     assert isolated_task_status == 404
-    assert isolated_task_payload == {
-        "detail": f"task {owner_artifact_scope['task_id']} was not found"
-    }
+    assert isolated_task_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert isolated_artifact_status == 404
     assert isolated_artifact_payload == {
-        "detail": (
-            "task artifact "
-            f"{owner_artifact_scope['artifact_ids']['docs']} was not found"
-        )
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 

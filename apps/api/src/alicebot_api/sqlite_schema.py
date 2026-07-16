@@ -251,6 +251,12 @@ _EDGE_TYPES_SQL = _sql_list(EDGE_TYPES)
 _AGENT_TYPES_SQL = _sql_list(AGENT_TYPES)
 _PERMISSION_PROFILES_SQL = _sql_list(PERMISSION_PROFILES)
 _ENTITY_TYPES_SQL = _sql_list(ENTITY_TYPES)
+_PROJECT_UPDATE_EVENT_TYPES = (
+    "project.update_candidate_created",
+    "project.update_candidate_accepted",
+    "project.update_candidate_rejected",
+)
+_PROJECT_UPDATE_EVENT_TYPES_SQL = _sql_list(_PROJECT_UPDATE_EVENT_TYPES)
 
 # Default matches the store's Python-generated ISO-8601 UTC "Z" convention
 # closely enough for lexicographic ordering (milliseconds vs microseconds).
@@ -905,6 +911,53 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS event_log_user_occurred_idx
       ON event_log (user_id, occurred_at DESC, id DESC)
     """,
+    f"""
+    CREATE INDEX IF NOT EXISTS event_log_project_update_target_idx
+      ON event_log (
+        user_id,
+        target_type,
+        target_id,
+        event_type,
+        occurred_at DESC,
+        id DESC
+      )
+      WHERE event_type IN ({_PROJECT_UPDATE_EVENT_TYPES_SQL})
+        AND target_type IS NOT NULL
+        AND target_id IS NOT NULL
+    """,
+    f"""
+    CREATE INDEX IF NOT EXISTS event_log_project_update_artifact_id_idx
+      ON event_log (
+        user_id,
+        event_type,
+        json_extract(payload_json, '$.artifact_id'),
+        occurred_at DESC,
+        id DESC
+      )
+      WHERE event_type IN ({_PROJECT_UPDATE_EVENT_TYPES_SQL})
+    """,
+    f"""
+    CREATE INDEX IF NOT EXISTS event_log_project_update_candidate_memory_id_idx
+      ON event_log (
+        user_id,
+        event_type,
+        json_extract(payload_json, '$.candidate_memory_id'),
+        occurred_at DESC,
+        id DESC
+      )
+      WHERE event_type IN ({_PROJECT_UPDATE_EVENT_TYPES_SQL})
+    """,
+    f"""
+    CREATE INDEX IF NOT EXISTS event_log_project_update_memory_id_idx
+      ON event_log (
+        user_id,
+        event_type,
+        json_extract(payload_json, '$.memory_id'),
+        occurred_at DESC,
+        id DESC
+      )
+      WHERE event_type IN ({_PROJECT_UPDATE_EVENT_TYPES_SQL})
+    """,
     """
     CREATE INDEX IF NOT EXISTS agent_api_keys_user_agent_idx
       ON agent_api_keys (user_id, agent_id)
@@ -974,6 +1027,109 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
       AND NEW.run_id IS OLD.run_id
       AND NEW.integrity_hash IS NULL
       AND json_extract(NEW.payload_json, '$.redacted') IS 1
+      AND json_type(NEW.payload_json, '$.memory_id') = 'text'
+      AND length(trim(json_extract(NEW.payload_json, '$.memory_id'))) > 0
+      AND json_extract(NEW.payload_json, '$.event_type') IS NEW.event_type
+      AND (SELECT COUNT(*) FROM json_each(NEW.payload_json)) = 3
+      -- Retain only the memory identity already proved by the immutable old
+      -- event. Every direct linkage that is present must agree. Artifact-only
+      -- linkages are resolved through same-user project-update events carrying
+      -- an immutable candidate_memory_id; a missing or conflicting resolution
+      -- fails closed.
+      AND (
+        OLD.target_type IS NOT 'memory'
+        OR OLD.target_id IS json_extract(NEW.payload_json, '$.memory_id')
+      )
+      AND (
+        json_type(OLD.payload_json, '$.memory_id') IS NOT 'text'
+        OR json_extract(OLD.payload_json, '$.memory_id')
+             IS json_extract(NEW.payload_json, '$.memory_id')
+      )
+      AND (
+        json_type(OLD.payload_json, '$.candidate_memory_id') IS NOT 'text'
+        OR json_extract(OLD.payload_json, '$.candidate_memory_id')
+             IS json_extract(NEW.payload_json, '$.memory_id')
+      )
+      AND (
+        OLD.target_type IS NOT 'artifact'
+        OR (
+          SELECT COUNT(DISTINCT json_extract(
+                   artifact_event.payload_json,
+                   '$.candidate_memory_id'
+                 )) = 1
+             AND MAX(json_extract(
+                   artifact_event.payload_json,
+                   '$.candidate_memory_id'
+                 )) IS json_extract(NEW.payload_json, '$.memory_id')
+          FROM event_log AS artifact_event
+          WHERE artifact_event.user_id = OLD.user_id
+            AND artifact_event.event_type IN ({_PROJECT_UPDATE_EVENT_TYPES_SQL})
+            AND json_type(
+                  artifact_event.payload_json,
+                  '$.candidate_memory_id'
+                ) = 'text'
+            AND length(trim(json_extract(
+                  artifact_event.payload_json,
+                  '$.candidate_memory_id'
+                ))) > 0
+            AND (
+              (
+                artifact_event.target_type = 'artifact'
+                AND artifact_event.target_id = OLD.target_id
+              )
+              OR (
+                json_type(artifact_event.payload_json, '$.artifact_id') = 'text'
+                AND json_extract(artifact_event.payload_json, '$.artifact_id')
+                      = OLD.target_id
+              )
+            )
+        )
+      )
+      AND (
+        json_type(OLD.payload_json, '$.artifact_id') IS NOT 'text'
+        OR (
+          SELECT COUNT(DISTINCT json_extract(
+                   artifact_event.payload_json,
+                   '$.candidate_memory_id'
+                 )) = 1
+             AND MAX(json_extract(
+                   artifact_event.payload_json,
+                   '$.candidate_memory_id'
+                 )) IS json_extract(NEW.payload_json, '$.memory_id')
+          FROM event_log AS artifact_event
+          WHERE artifact_event.user_id = OLD.user_id
+            AND artifact_event.event_type IN ({_PROJECT_UPDATE_EVENT_TYPES_SQL})
+            AND json_type(
+                  artifact_event.payload_json,
+                  '$.candidate_memory_id'
+                ) = 'text'
+            AND length(trim(json_extract(
+                  artifact_event.payload_json,
+                  '$.candidate_memory_id'
+                ))) > 0
+            AND (
+              (
+                artifact_event.target_type = 'artifact'
+                AND artifact_event.target_id = json_extract(
+                      OLD.payload_json,
+                      '$.artifact_id'
+                    )
+              )
+              OR (
+                json_type(artifact_event.payload_json, '$.artifact_id') = 'text'
+                AND json_extract(artifact_event.payload_json, '$.artifact_id')
+                      = json_extract(OLD.payload_json, '$.artifact_id')
+              )
+            )
+        )
+      )
+      AND (
+        OLD.target_type IS 'memory'
+        OR OLD.target_type IS 'artifact'
+        OR json_type(OLD.payload_json, '$.memory_id') IS 'text'
+        OR json_type(OLD.payload_json, '$.candidate_memory_id') IS 'text'
+        OR json_type(OLD.payload_json, '$.artifact_id') IS 'text'
+      )
     )
     BEGIN
       SELECT RAISE(ABORT, 'event_log is append-only');
@@ -997,22 +1153,38 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
       AND NEW.memory_id IS OLD.memory_id
       AND NEW.sequence_no IS OLD.sequence_no
       AND NEW.action IS OLD.action
-      AND NEW.memory_key IS OLD.memory_key
-      AND NEW.source_event_ids IS OLD.source_event_ids
+      AND NEW.memory_key IS ('redacted.' || NEW.memory_id)
+      AND json(NEW.source_event_ids) IS json('[]')
       AND NEW.revision_number IS OLD.revision_number
       AND NEW.revision_type IS OLD.revision_type
       AND NEW.actor_type IS OLD.actor_type
       AND NEW.actor_id IS OLD.actor_id
       AND NEW.created_at IS OLD.created_at
       AND NEW.text_after IS '{REDACTION_MARKER}'
-      AND (NEW.text_before IS NULL OR NEW.text_before IS '{REDACTION_MARKER}')
-      AND (NEW.reason IS NULL OR NEW.reason IS '{REDACTION_MARKER}')
-      AND (NEW.previous_value IS NULL
-           OR json_extract(NEW.previous_value, '$.redacted') IS 1)
-      AND (NEW.new_value IS NULL
-           OR json_extract(NEW.new_value, '$.redacted') IS 1)
-      AND json_extract(NEW.candidate, '$.redacted') IS 1
-      AND json_extract(NEW.metadata_json, '$.redacted') IS 1
+      AND (
+        (OLD.text_before IS NULL AND NEW.text_before IS NULL)
+        OR (OLD.text_before IS NOT NULL AND NEW.text_before IS '{REDACTION_MARKER}')
+      )
+      AND (
+        (OLD.reason IS NULL AND NEW.reason IS NULL)
+        OR (OLD.reason IS NOT NULL AND NEW.reason IS '{REDACTION_MARKER}')
+      )
+      AND (
+        (OLD.previous_value IS NULL AND NEW.previous_value IS NULL)
+        OR (
+          OLD.previous_value IS NOT NULL
+          AND json(NEW.previous_value) IS json('{{"redacted":true}}')
+        )
+      )
+      AND (
+        (OLD.new_value IS NULL AND NEW.new_value IS NULL)
+        OR (
+          OLD.new_value IS NOT NULL
+          AND json(NEW.new_value) IS json('{{"redacted":true}}')
+        )
+      )
+      AND json(NEW.candidate) IS json('{{"redacted":true}}')
+      AND json(NEW.metadata_json) IS json('{{"redacted":true}}')
     )
     BEGIN
       SELECT RAISE(ABORT, 'memory_revisions is append-only');
@@ -1410,16 +1582,23 @@ def _backfill_source_dedupe_keys(conn: sqlite3.Connection) -> None:
         # singular project aliases; treating only metadata.project_scope as
         # scoped would permanently assign those rows the global dedupe key.
         source_scope = resolve_source_metadata_project_scope(metadata).values
-        key = (
-            _source_capture_dedupe_key(
-                raw_text=raw_text,
-                project_scope=source_scope,
-                domain=record["domain"],
-                sensitivity=record["sensitivity"],
+        if isinstance(raw_text, str):
+            # The capture surface rejects a Python-whitespace-only string.
+            # Such a historical row has no reproducible capture identity, so
+            # leave its live dedupe key NULL instead of substituting the
+            # content hash used only when raw_text is absent/non-string.
+            key = (
+                _source_capture_dedupe_key(
+                    raw_text=raw_text,
+                    project_scope=source_scope,
+                    domain=record["domain"],
+                    sensitivity=record["sensitivity"],
+                )
+                if raw_text.strip()
+                else None
             )
-            if isinstance(raw_text, str) and raw_text.strip()
-            else str(record["content_hash"])
-        )
+        else:
+            key = str(record["content_hash"])
         conn.execute(
             """
             UPDATE sources AS candidate
@@ -1440,7 +1619,7 @@ def _backfill_source_dedupe_keys(conn: sqlite3.Connection) -> None:
 
 
 _SOURCE_DEDUPE_IDENTITY_STATE_KEY = "source_dedupe_identity_version"
-_SOURCE_DEDUPE_IDENTITY_VERSION = "5"
+_SOURCE_DEDUPE_IDENTITY_VERSION = "6"
 
 
 def _repair_source_dedupe_identity(conn: sqlite3.Connection) -> None:

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 
+import alicebot_api.vnext_scheduler_runtime as scheduler_runtime
 from alicebot_api.vnext_scheduler import VNextSchedulerValidationError
 from alicebot_api.vnext_scheduler_runtime import (
     SchedulerRuntimeConfig,
@@ -22,6 +23,49 @@ from alicebot_api.vnext_scheduler_runtime import (
     run_foreground_daemon,
     stop_daemon,
 )
+
+
+def test_background_once_scheduler_forwards_once_to_spawned_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spawned_commands: list[list[str]] = []
+
+    class FakeProcess:
+        pid = 24680
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            raise AssertionError("healthy spawned process must not be terminated")
+
+    def fake_popen(command, **_kwargs):
+        spawned_commands.append(list(command))
+        return FakeProcess()
+
+    monkeypatch.setattr(scheduler_runtime, "daemon_status", lambda **_kwargs: {"running": False})
+    monkeypatch.setattr(scheduler_runtime, "_process_identity", lambda pid: f"identity:{pid}")
+    monkeypatch.setattr(scheduler_runtime, "_acquire_owner_lease", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(scheduler_runtime, "_replace_owner_lease", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(scheduler_runtime.subprocess, "Popen", fake_popen)
+
+    config = SchedulerRuntimeConfig(
+        database_url="postgresql://db/alice",
+        user_id=uuid4(),
+        pid_file=tmp_path / "scheduler.pid",
+        status_file=tmp_path / "scheduler-status.json",
+        log_file=tmp_path / "scheduler.log",
+        once=True,
+    )
+
+    result = scheduler_runtime.start_background_daemon(config)
+
+    assert result["started"] is True
+    assert len(spawned_commands) == 1
+    command = spawned_commands[0]
+    assert command.count("--once") == 1
+    assert command.index("--foreground") < command.index("--once")
 
 
 def test_daemon_status_preserves_explicit_stopped_state_for_foreground_once(tmp_path: Path) -> None:
@@ -186,8 +230,44 @@ def test_foreground_once_returns_nonzero_when_claimed_workflow_fails(
     result = run_foreground_daemon(config)
 
     assert result["exit_code"] == 1
-    assert result["last_error"] == "1 scheduled workflow(s) failed"
+    assert result["last_error"] == "Scheduler workflow execution failed"
+    assert result["last_error_code"] == "scheduler_workflow_failed"
     assert result["running"] is False
+
+
+def test_foreground_once_scan_exception_is_static_and_omits_exception_details(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = "UNIQUE_SCHEDULER_SCAN_EXCEPTION_SENTINEL"
+    monkeypatch.setattr(
+        "alicebot_api.vnext_scheduler_runtime._process_identity",
+        lambda _pid: "test-process-birth",
+    )
+
+    def fail_scan(**_kwargs: object) -> dict[str, object]:
+        raise RuntimeError(sentinel)
+
+    monkeypatch.setattr(
+        "alicebot_api.vnext_scheduler_runtime.run_due_workflows_durable",
+        fail_scan,
+    )
+    config = SchedulerRuntimeConfig(
+        database_url="postgresql://db/alice",
+        user_id=uuid4(),
+        pid_file=tmp_path / "scheduler.pid",
+        status_file=tmp_path / "scheduler-status.json",
+        log_file=tmp_path / "scheduler.log",
+        once=True,
+    )
+
+    result = run_foreground_daemon(config)
+
+    assert result["exit_code"] == 1
+    assert result["last_error_code"] == "scheduler_scan_failed"
+    assert result["last_error"] == "Scheduler scan failed"
+    assert result["last_error_type"] is None
+    assert sentinel not in json.dumps(result)
 
 
 def test_successful_daemon_scan_clears_stale_error_type(

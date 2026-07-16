@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alice-memory"
-version = "0.11.0"
+version = "0.11.1"
 description = "Alice: the continuity layer for AI agents. Local-first memory with provenance, open loops, resumption, and review-governed writes."
 readme = "docs/pypi-description.md"
 license = "MIT"
@@ -24,7 +24,7 @@ dependencies = [
   "fastapi>=0.115,<1.0",
   "numpy>=1.26,<3.0",
   "psycopg[binary,pool]>=3.2,<4.0",
-  "redis>=5.0,<6.0",
+  "redis>=5.0,<9.0",
   "sqlalchemy>=2.0,<3.0",
   "uvicorn>=0.34,<1.0",
 ]
@@ -38,8 +38,9 @@ Changelog = "https://github.com/samrusani/AliceBot/blob/main/CHANGELOG.md"
 [project.optional-dependencies]
 dev = [
   "build>=1.3,<2.0",
+  "coverage>=7.7,<8.0",
   "mypy>=1.16,<2.0",
-  "pytest>=8.3,<9.0",
+  "pytest>=8.3,<10.0",
   "pytest-cov>=6.2,<7.0",
   "ruff>=0.12,<1.0",
   "twine>=6.1,<7.0",

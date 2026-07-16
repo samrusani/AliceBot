@@ -54,11 +54,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -234,7 +230,7 @@ def test_task_endpoints_list_detail_lifecycle_and_user_isolation(
     step_detail_status, step_detail_payload = invoke_request(
         "GET",
         f"/v0/task-steps/{step_list_payload['items'][0]['id']}",
-        query_params={"user_id": str(owner['user_id'])},
+        query_params={"user_id": str(owner["user_id"])},
     )
     isolated_list_status, isolated_list_payload = invoke_request(
         "GET",
@@ -244,17 +240,17 @@ def test_task_endpoints_list_detail_lifecycle_and_user_isolation(
     isolated_detail_status, isolated_detail_payload = invoke_request(
         "GET",
         f"/v0/tasks/{pending_payload['task']['id']}",
-        query_params={"user_id": str(intruder['user_id'])},
+        query_params={"user_id": str(intruder["user_id"])},
     )
     isolated_step_list_status, isolated_step_list_payload = invoke_request(
         "GET",
         f"/v0/tasks/{pending_payload['task']['id']}/steps",
-        query_params={"user_id": str(intruder['user_id'])},
+        query_params={"user_id": str(intruder["user_id"])},
     )
     isolated_step_detail_status, isolated_step_detail_payload = invoke_request(
         "GET",
         f"/v0/task-steps/{step_list_payload['items'][0]['id']}",
-        query_params={"user_id": str(intruder['user_id'])},
+        query_params={"user_id": str(intruder["user_id"])},
     )
 
     assert list_status == 200
@@ -326,15 +322,15 @@ def test_task_endpoints_list_detail_lifecycle_and_user_isolation(
     }
     assert isolated_detail_status == 404
     assert isolated_detail_payload == {
-        "detail": f"task {pending_payload['task']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
     assert isolated_step_list_status == 404
     assert isolated_step_list_payload == {
-        "detail": f"task {pending_payload['task']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
     assert isolated_step_detail_status == 404
     assert isolated_step_detail_payload == {
-        "detail": f"task step {step_list_payload['items'][0]['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -494,7 +490,7 @@ def test_task_step_sequence_and_transition_endpoints_preserve_parent_consistency
     )
     assert duplicate_create_status == 409
     assert duplicate_create_payload["detail"] == (
-        f"task {request_payload['task']['id']} latest step {create_payload['task_step']['id']} is created and cannot append a next step"
+        {"code": "conflict", "message": "The request conflicts with the current resource state"}
     )
 
     invalid_transition_status, invalid_transition_payload = invoke_request(
@@ -515,7 +511,7 @@ def test_task_step_sequence_and_transition_endpoints_preserve_parent_consistency
     )
     assert invalid_transition_status == 409
     assert invalid_transition_payload["detail"] == (
-        f"task step {create_payload['task_step']['id']} is created and cannot transition to executed; allowed: approved, denied"
+        {"code": "conflict", "message": "The request conflicts with the current resource state"}
     )
 
     approve_step_status, approve_step_payload = invoke_request(
@@ -661,11 +657,11 @@ def test_task_step_sequence_and_transition_endpoints_preserve_parent_consistency
     )
     assert isolated_create_status == 404
     assert isolated_create_payload == {
-        "detail": f"task {request_payload['task']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
     assert isolated_transition_status == 404
     assert isolated_transition_payload == {
-        "detail": f"task step {create_payload['task_step']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
@@ -864,9 +860,7 @@ def test_task_step_mutations_reject_visible_links_from_other_task_lineages(
     )
     assert wrong_create_status == 409
     assert wrong_create_payload == {
-        "detail": (
-            f"approval {second_request_payload['approval']['id']} does not belong to task {first_request_payload['task']['id']}"
-        )
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
     create_status, create_payload = invoke_request(
@@ -936,9 +930,7 @@ def test_task_step_mutations_reject_visible_links_from_other_task_lineages(
     )
     assert wrong_execute_status == 409
     assert wrong_execute_payload == {
-        "detail": (
-            f"tool execution {second_execution_id} does not belong to task {first_request_payload['task']['id']}"
-        )
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
     assert first_execution_id != second_execution_id

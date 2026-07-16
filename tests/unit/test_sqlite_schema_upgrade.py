@@ -523,6 +523,154 @@ def test_bootstrap_repairs_precanonical_source_dedupe_identity_once() -> None:
     assert conn.execute("SELECT dedupe_key FROM sources ORDER BY captured_at, id").fetchall() == [(expected,), (None,)]
 
 
+def test_bootstrap_v6_clears_live_whitespace_raw_text_without_reclassifying_other_sources() -> None:
+    conn = sqlite3.connect(":memory:")
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    user_id = "00000000-0000-0000-0000-000000000411"
+    ensure_sqlite_user(conn, user_id, "source-whitespace-v6@example.com")
+    whitespace_cases = {
+        "ascii": " \t\r\n",
+        "unit_separator_control": "\u001c\u001f",
+        "nbsp": "\u00a0",
+        "nel": "\u0085",
+        "em_space": "\u2003",
+    }
+    expected_by_id: dict[str, str | None] = {}
+    for index, (name, raw_text) in enumerate(whitespace_cases.items(), start=1):
+        source_id = f"00000000-0000-0000-0006-{index:012d}"
+        expected_by_id[source_id] = None
+        conn.execute(
+            """
+            INSERT INTO sources (
+              id, user_id, source_type, content_hash, dedupe_key, captured_at,
+              domain, sensitivity, metadata_json
+            ) VALUES (?, ?, 'manual_text', ?, ?, ?, 'project', 'private', ?)
+            """,
+            (
+                source_id,
+                user_id,
+                f"sha256:whitespace-{name}",
+                f"capture-md5:pre-v6-{name}",
+                f"2026-04-{index:02d}T00:00:00Z",
+                json.dumps({"raw_text": raw_text}, ensure_ascii=False),
+            ),
+        )
+
+    nonempty_id = "00000000-0000-0000-0006-000000000010"
+    nonempty_text = "\u00a0Fact: nonempty survives the defensive repair.\u2003"
+    expected_by_id[nonempty_id] = capture_dedupe_key_for_text(
+        nonempty_text,
+        domain="project",
+        sensitivity="private",
+    )
+    absent_id = "00000000-0000-0000-0006-000000000011"
+    expected_by_id[absent_id] = "sha256:absent-raw-text"
+    nonstring_id = "00000000-0000-0000-0006-000000000012"
+    expected_by_id[nonstring_id] = "sha256:nonstring-raw-text"
+    for source_id, content_hash, old_key, metadata in (
+        (nonempty_id, "sha256:nonempty", "capture-md5:pre-v6-nonempty", {"raw_text": nonempty_text}),
+        (absent_id, "sha256:absent-raw-text", "capture-md5:pre-v6-absent", {"source": "legacy"}),
+        (
+            nonstring_id,
+            "sha256:nonstring-raw-text",
+            "capture-md5:pre-v6-nonstring",
+            {"raw_text": ["not", "text"]},
+        ),
+    ):
+        conn.execute(
+            """
+            INSERT INTO sources (
+              id, user_id, source_type, content_hash, dedupe_key, captured_at,
+              domain, sensitivity, metadata_json
+            ) VALUES (?, ?, 'manual_text', ?, ?,
+                      '2026-04-10T00:00:00Z', 'project', 'private', ?)
+            """,
+            (source_id, user_id, content_hash, old_key, json.dumps(metadata, ensure_ascii=False)),
+        )
+
+    deleted_id = "00000000-0000-0000-0006-000000000013"
+    conn.execute(
+        """
+        INSERT INTO sources (
+          id, user_id, source_type, content_hash, dedupe_key, captured_at,
+          domain, sensitivity, metadata_json, deleted_at
+        ) VALUES (?, ?, 'manual_text', 'sha256:deleted-whitespace',
+                  'capture-md5:deleted-whitespace', '2026-04-11T00:00:00Z',
+                  'project', 'private', ?, '2026-04-12T00:00:00Z')
+        """,
+        (deleted_id, user_id, json.dumps({"raw_text": "\u00a0"}, ensure_ascii=False)),
+    )
+    conn.execute(
+        "UPDATE alice_schema_state SET value = '5' WHERE key = ?",
+        (sqlite_schema._SOURCE_DEDUPE_IDENTITY_STATE_KEY,),
+    )
+    conn.commit()
+
+    def assert_repaired() -> None:
+        rows = conn.execute(
+            "SELECT id, dedupe_key FROM sources WHERE deleted_at IS NULL ORDER BY id"
+        ).fetchall()
+        assert dict(rows) == expected_by_id
+        assert conn.execute(
+            "SELECT dedupe_key FROM sources WHERE id = ?",
+            (deleted_id,),
+        ).fetchone() == ("capture-md5:deleted-whitespace",)
+        assert conn.execute(
+            "SELECT value FROM alice_schema_state WHERE key = ?",
+            (sqlite_schema._SOURCE_DEDUPE_IDENTITY_STATE_KEY,),
+        ).fetchone() == ("6",)
+
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    assert_repaired()
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    assert_repaired()
+
+
+def test_bootstrap_installs_bounded_project_update_event_indexes() -> None:
+    conn = sqlite3.connect(":memory:")
+    sqlite_schema.bootstrap_sqlite_schema(conn)
+    rows = conn.execute(
+        """
+        SELECT name, sql
+        FROM sqlite_master
+        WHERE type = 'index' AND name LIKE 'event_log_project_update_%'
+        ORDER BY name
+        """
+    ).fetchall()
+    definitions = {name: sql for name, sql in rows}
+    assert set(definitions) == {
+        "event_log_project_update_artifact_id_idx",
+        "event_log_project_update_candidate_memory_id_idx",
+        "event_log_project_update_memory_id_idx",
+        "event_log_project_update_target_idx",
+    }
+    event_types = (
+        "project.update_candidate_created",
+        "project.update_candidate_accepted",
+        "project.update_candidate_rejected",
+    )
+    for definition in definitions.values():
+        assert "WHERE event_type IN" in definition
+        assert all(f"'{event_type}'" in definition for event_type in event_types)
+        assert "user_id" in definition
+        assert "event_type" in definition
+        assert "occurred_at DESC" in definition
+        assert "id DESC" in definition
+    assert "target_type" in definitions["event_log_project_update_target_idx"]
+    assert "target_id" in definitions["event_log_project_update_target_idx"]
+    assert "target_type IS NOT NULL" in definitions["event_log_project_update_target_idx"]
+    assert "target_id IS NOT NULL" in definitions["event_log_project_update_target_idx"]
+    assert "json_extract(payload_json, '$.artifact_id')" in definitions[
+        "event_log_project_update_artifact_id_idx"
+    ]
+    assert "json_extract(payload_json, '$.candidate_memory_id')" in definitions[
+        "event_log_project_update_candidate_memory_id_idx"
+    ]
+    assert "json_extract(payload_json, '$.memory_id')" in definitions[
+        "event_log_project_update_memory_id_idx"
+    ]
+
+
 def test_bootstrap_v5_dedupe_repair_preserves_unicode_scope_distinctions() -> None:
     conn = sqlite3.connect(":memory:")
     sqlite_schema.bootstrap_sqlite_schema(conn)

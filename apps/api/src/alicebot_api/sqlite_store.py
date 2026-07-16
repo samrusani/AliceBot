@@ -66,6 +66,8 @@ from alicebot_api.vnext_store import (
     REDACTION_MARKER,
     _search_patterns,
     fts_fallback_tokens,
+    is_redacted_memory,
+    is_prior_redacted_memory_marker,
     redacted_memory_metadata,
 )
 
@@ -84,6 +86,39 @@ EVENT_LOG_COLUMNS = (
     "trace_id",
     "run_id",
     "integrity_hash",
+)
+
+_PROJECT_UPDATE_EVENT_TYPES_SQL = """
+                    'project.update_candidate_created',
+                    'project.update_candidate_accepted',
+                    'project.update_candidate_rejected'
+                  """
+_PROJECT_UPDATE_EVENT_LINKAGE_SQL = (
+    ("event_log_project_update_target_idx", "target_type = 'artifact' AND target_id = ?"),
+    ("event_log_project_update_target_idx", "target_type = 'memory' AND target_id = ?"),
+    ("event_log_project_update_artifact_id_idx", "json_extract(payload_json, '$.artifact_id') = ?"),
+    (
+        "event_log_project_update_candidate_memory_id_idx",
+        "json_extract(payload_json, '$.candidate_memory_id') = ?",
+    ),
+    ("event_log_project_update_memory_id_idx", "json_extract(payload_json, '$.memory_id') = ?"),
+)
+_PROJECT_UPDATE_EVENT_LOOKUP_SQL = (
+    "\nUNION\n".join(
+        f"""
+                SELECT {", ".join(EVENT_LOG_COLUMNS)}
+                FROM event_log INDEXED BY {index_name}
+                WHERE user_id = ?
+                  AND event_type IN (
+{_PROJECT_UPDATE_EVENT_TYPES_SQL}
+                  )
+                  AND {linkage_sql}
+        """
+        for index_name, linkage_sql in _PROJECT_UPDATE_EVENT_LINKAGE_SQL
+    )
+    + """
+                ORDER BY occurred_at DESC, id DESC
+    """
 )
 
 SOURCE_COLUMNS = (
@@ -1089,11 +1124,12 @@ class SQLiteVNextStore:
         normalized_query = str(query).strip() if query is not None else ""
         if normalized_query:
             filters.append(
-                "(instr(lower(COALESCE(memory.title, '')), lower(?)) > 0"
-                " OR instr(lower(COALESCE(memory.canonical_text, '')), lower(?)) > 0"
-                " OR instr(lower(COALESCE(memory.summary, '')), lower(?)) > 0)"
+                f"({_sqlite_ascii_literal_contains_sql("COALESCE(memory.title, '')")}"
+                f" OR {_sqlite_ascii_literal_contains_sql("COALESCE(memory.canonical_text, '')")}"
+                f" OR {_sqlite_ascii_literal_contains_sql("COALESCE(memory.summary, '')")})"
             )
-            params.extend((normalized_query, normalized_query, normalized_query))
+            escaped_query = _escape_like_literal(normalized_query)
+            params.extend((escaped_query, escaped_query, escaped_query))
         if occurred_at_start is not None:
             filters.append("julianday(event.occurred_at) >= julianday(?)")
             params.append(_iso_or_none(occurred_at_start))
@@ -1114,6 +1150,33 @@ class SQLiteVNextStore:
                 LIMIT ?
                 """,
             tuple(params),
+        )
+
+    def list_project_update_events(
+        self,
+        *,
+        artifact_id: str,
+        candidate_memory_id: str,
+    ) -> list[VNextRow]:
+        """Return every creation/decision event coupled to one project update."""
+
+        # UNION makes every linkage arm independently indexable. It also
+        # deduplicates one full event row that matches multiple linkage arms
+        # before applying the stable replay order.
+        return self._fetch_all(
+            _PROJECT_UPDATE_EVENT_LOOKUP_SQL,
+            (
+                self.user_id,
+                artifact_id,
+                self.user_id,
+                candidate_memory_id,
+                self.user_id,
+                artifact_id,
+                self.user_id,
+                candidate_memory_id,
+                self.user_id,
+                candidate_memory_id,
+            ),
         )
 
     def list_memory_events(
@@ -1921,6 +1984,103 @@ class SQLiteVNextStore:
             self.conn.execute("BEGIN IMMEDIATE")
         return self.get_memory(memory_id)
 
+    def get_memory_for_redaction(self, memory_id: str) -> VNextRow | None:
+        """Acquire the writer lock and load a redaction target tombstone."""
+
+        if not self.conn.in_transaction:
+            self.conn.execute("BEGIN IMMEDIATE")
+        return self._fetch_optional_one(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM memories
+                WHERE id = ?
+                  AND user_id = ?
+                """,
+            (str(memory_id), self.user_id),
+        )
+
+    def lock_project_update_artifacts_for_redaction(self, memory_id: str) -> list[VNextRow]:
+        """SQLite intentionally has no generated-artifact repository."""
+
+        del memory_id
+        return []
+
+    def memory_redaction_bundle_is_exact(self, memory_id: str, artifact_ids: Sequence[str]) -> bool:
+        if artifact_ids:
+            return False
+        mid = str(memory_id)
+        row = self._fetch_one(
+            "check exact sqlite memory redaction bundle",
+            """
+                SELECT
+                  EXISTS (
+                    SELECT 1 FROM event_log
+                    WHERE user_id = ?
+                      AND event_type = 'memory.redacted'
+                      AND target_type = 'memory'
+                      AND target_id = ?
+                  )
+                  AND EXISTS (
+                    SELECT 1 FROM memories
+                    WHERE user_id = ? AND id = ?
+                      AND embedding IS NULL AND fact_keys IS NULL
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM memory_revisions
+                    WHERE user_id = ? AND memory_id = ?
+                      AND (
+                        memory_key IS NOT 'redacted.' || memory_id
+                        OR json(source_event_ids) IS NOT json('[]')
+                        OR json(candidate) IS NOT json('{"redacted":true}')
+                        OR text_after IS NOT '[REDACTED]'
+                        OR text_before IS NOT CASE WHEN text_before IS NULL THEN NULL ELSE '[REDACTED]' END
+                        OR reason IS NOT CASE WHEN reason IS NULL THEN NULL ELSE '[REDACTED]' END
+                        OR json(previous_value) IS NOT json(CASE
+                          WHEN previous_value IS NULL THEN NULL ELSE '{"redacted":true}' END)
+                        OR json(new_value) IS NOT json(CASE
+                          WHEN new_value IS NULL THEN NULL ELSE '{"redacted":true}' END)
+                        OR json(metadata_json) IS NOT json('{"redacted":true}')
+                      )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM event_log
+                    WHERE user_id = ?
+                      AND (
+                        (target_type = 'memory' AND target_id = ?)
+                        OR json_extract(payload_json, '$.memory_id') = ?
+                        OR json_extract(payload_json, '$.candidate_memory_id') = ?
+                      )
+                      AND (
+                        json(payload_json) IS NOT json(json_object(
+                          'redacted', json('true'), 'memory_id', ?, 'event_type', event_type
+                        ))
+                        OR integrity_hash IS NOT NULL
+                      )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM provenance_links
+                    WHERE user_id = ? AND target_type = 'memory' AND target_id = ?
+                      AND quote IS NOT NULL AND quote IS NOT '[REDACTED]'
+                  ) AS exact
+                """,
+            (
+                self.user_id,
+                mid,
+                self.user_id,
+                mid,
+                self.user_id,
+                mid,
+                self.user_id,
+                mid,
+                mid,
+                mid,
+                mid,
+                self.user_id,
+                mid,
+            ),
+        )
+        return bool(row.get("exact"))
+
     def list_pending_derived_candidates_for_member(
         self,
         *,
@@ -2077,11 +2237,12 @@ class SQLiteVNextStore:
             normalized_query = str(query).strip()
             if normalized_query:
                 query_sql = (
-                    " AND (instr(lower(COALESCE(title, '')), lower(?)) > 0"
-                    " OR instr(lower(COALESCE(canonical_text, '')), lower(?)) > 0"
-                    " OR instr(lower(COALESCE(summary, '')), lower(?)) > 0)"
+                    f" AND ({_sqlite_ascii_literal_contains_sql("COALESCE(title, '')")}"
+                    f" OR {_sqlite_ascii_literal_contains_sql("COALESCE(canonical_text, '')")}"
+                    f" OR {_sqlite_ascii_literal_contains_sql("COALESCE(summary, '')")})"
                 )
-                params.extend((normalized_query, normalized_query, normalized_query))
+                escaped_query = _escape_like_literal(normalized_query)
+                params.extend((escaped_query, escaped_query, escaped_query))
         order_sql = (
             "ORDER BY created_at DESC, id DESC"
             if order_by_created_at
@@ -3342,6 +3503,241 @@ class SQLiteVNextStore:
         finally:
             self._execute("UPDATE redaction_mode SET enabled = 0 WHERE id = 1")
 
+    def redact_memory_bundle(
+        self,
+        *,
+        memory_id: str,
+        project_update_artifacts: Sequence[Mapping[str, object]],
+        actor_type: str = "user",
+    ) -> VNextRow:
+        """Scrub the SQLite memory/revision/event/provenance parity surface.
+
+        SQLite deliberately has no generated-artifact or quality-rating
+        subsystem, so those response counts are always zero rather than being
+        silently inferred from an unavailable table.
+        """
+
+        if project_update_artifacts:
+            raise ContinuityStoreInvariantError("SQLite cannot redact generated artifacts")
+        mid = str(memory_id)
+        current = self._fetch_optional_one(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)},
+                       embedding IS NULL AS _redaction_embedding_cleared,
+                       fact_keys IS NULL AS _redaction_fact_keys_cleared
+                FROM memories
+                WHERE id = ? AND user_id = ?
+            """,
+            (mid, self.user_id),
+        )
+        if current is None:
+            raise ContinuityStoreInvariantError("redact_memory_bundle did not find the memory to redact")
+        current_metadata = current.get("metadata_json")
+        prior_receipt = self._fetch_optional_one(
+            """
+                SELECT id FROM event_log
+                WHERE user_id = ?
+                  AND event_type = 'memory.redacted'
+                  AND target_type = 'memory'
+                  AND target_id = ?
+                ORDER BY occurred_at ASC, id ASC
+                LIMIT 1
+            """,
+            (self.user_id, mid),
+        )
+        prior_redacted_at = ""
+        if is_prior_redacted_memory_marker(current) and prior_receipt is not None:
+            assert isinstance(current_metadata, Mapping)
+            prior_redacted_at = str(current_metadata.get("redacted_at") or "").strip()
+        redacted_at = prior_redacted_at or _utc_now_iso()
+        memory_metadata = redacted_memory_metadata(current_metadata, redacted_at=redacted_at)
+        memory_key = f"redacted.{mid}"
+        marker_json = _json_object_text(REDACTED_JSON_VALUE)
+        metadata_json = _json_object_text(memory_metadata)
+
+        with self._redaction_mode():
+            provenance = self._execute(
+                """
+                UPDATE provenance_links
+                SET quote = ?
+                WHERE user_id = ?
+                  AND target_type = 'memory'
+                  AND target_id = ?
+                  AND quote IS NOT NULL
+                  AND quote IS NOT ?
+                """,
+                (REDACTION_MARKER, self.user_id, mid, REDACTION_MARKER),
+            )
+            redacted_provenance_links = provenance.rowcount
+
+            revisions = self._execute(
+                """
+                UPDATE memory_revisions
+                SET memory_key = ?,
+                    previous_value = CASE WHEN previous_value IS NULL THEN NULL ELSE ? END,
+                    new_value = CASE WHEN new_value IS NULL THEN NULL ELSE ? END,
+                    source_event_ids = '[]',
+                    candidate = ?,
+                    text_before = CASE WHEN text_before IS NULL THEN NULL ELSE ? END,
+                    text_after = ?,
+                    reason = CASE WHEN reason IS NULL THEN NULL ELSE ? END,
+                    metadata_json = ?
+                WHERE memory_id = ?
+                  AND user_id = ?
+                  AND (
+                    memory_key IS NOT ?
+                    OR previous_value IS NOT CASE WHEN previous_value IS NULL THEN NULL ELSE ? END
+                    OR new_value IS NOT CASE WHEN new_value IS NULL THEN NULL ELSE ? END
+                    OR json(source_event_ids) IS NOT json('[]')
+                    OR json(candidate) IS NOT json(?)
+                    OR text_before IS NOT CASE WHEN text_before IS NULL THEN NULL ELSE ? END
+                    OR text_after IS NOT ?
+                    OR reason IS NOT CASE WHEN reason IS NULL THEN NULL ELSE ? END
+                    OR json(metadata_json) IS NOT json(?)
+                  )
+                """,
+                (
+                    memory_key,
+                    marker_json,
+                    marker_json,
+                    marker_json,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    marker_json,
+                    mid,
+                    self.user_id,
+                    memory_key,
+                    marker_json,
+                    marker_json,
+                    marker_json,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    marker_json,
+                ),
+            )
+            redacted_revisions = revisions.rowcount
+
+            events = self._execute(
+                """
+                UPDATE event_log
+                SET payload_json = json_object(
+                      'redacted', json('true'),
+                      'memory_id', ?,
+                      'event_type', event_type
+                    ),
+                    integrity_hash = NULL
+                WHERE user_id = ?
+                  AND (
+                    (target_type = 'memory' AND target_id = ?)
+                    OR (
+                      json_type(payload_json, '$.memory_id') = 'text'
+                      AND json_extract(payload_json, '$.memory_id') = ?
+                    )
+                    OR (
+                      json_type(payload_json, '$.candidate_memory_id') = 'text'
+                      AND json_extract(payload_json, '$.candidate_memory_id') = ?
+                    )
+                  )
+                  AND (
+                    json(payload_json) IS NOT json(json_object(
+                      'redacted', json('true'),
+                      'memory_id', ?,
+                      'event_type', event_type
+                    ))
+                    OR integrity_hash IS NOT NULL
+                  )
+                """,
+                (mid, self.user_id, mid, mid, mid, mid),
+            )
+            redacted_events = events.rowcount
+
+            now = _utc_now_iso()
+            memory_update = self._execute(
+                """
+                UPDATE memories
+                SET memory_key = ?,
+                    title = CASE WHEN title IS NULL THEN NULL ELSE ? END,
+                    canonical_text = ?,
+                    summary = CASE WHEN summary IS NULL THEN NULL ELSE ? END,
+                    trust_reason = CASE WHEN trust_reason IS NULL THEN NULL ELSE ? END,
+                    value = ?,
+                    source_event_ids = '[]',
+                    metadata_json = ?,
+                    commit_digest = NULL,
+                    confirmation_id = NULL,
+                    embedding = NULL,
+                    fact_keys = NULL,
+                    status = 'archived',
+                    deleted_at = COALESCE(deleted_at, ?),
+                    updated_at = ?
+                WHERE id = ?
+                  AND user_id = ?
+                  AND (
+                    memory_key IS NOT ?
+                    OR title IS NOT CASE WHEN title IS NULL THEN NULL ELSE ? END
+                    OR canonical_text IS NOT ?
+                    OR summary IS NOT CASE WHEN summary IS NULL THEN NULL ELSE ? END
+                    OR trust_reason IS NOT CASE WHEN trust_reason IS NULL THEN NULL ELSE ? END
+                    OR json(value) IS NOT json(?)
+                    OR json(source_event_ids) IS NOT json('[]')
+                    OR json(metadata_json) IS NOT json(?)
+                    OR commit_digest IS NOT NULL
+                    OR confirmation_id IS NOT NULL
+                    OR embedding IS NOT NULL
+                    OR fact_keys IS NOT NULL
+                    OR status IS NOT 'archived'
+                    OR deleted_at IS NULL
+                  )
+                """,
+                (
+                    memory_key,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    marker_json,
+                    metadata_json,
+                    now,
+                    now,
+                    mid,
+                    self.user_id,
+                    memory_key,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    marker_json,
+                    metadata_json,
+                ),
+            )
+            memory_changed = memory_update.rowcount > 0
+
+        redacted_memory = self._get_row("redact_memory_bundle", "memories", MEMORY_COLUMNS, mid)
+        changed = bool(memory_changed or redacted_provenance_links or redacted_revisions or redacted_events)
+        if changed:
+            receipt = build_event_log_record(
+                event_type="memory.redacted",
+                actor_type=actor_type,
+                target_type="memory",
+                target_id=mid,
+                payload={"redacted": True, "memory_id": mid, "event_type": "memory.redacted"},
+            )
+            receipt["integrity_hash"] = None
+            self.append_event(receipt)
+
+        return {
+            "memory": redacted_memory,
+            "redacted_revisions": redacted_revisions,
+            "redacted_events": redacted_events,
+            "redacted_artifacts": 0,
+            "redacted_artifact_ids": [],
+            "redacted_quality_ratings": 0,
+            "redacted_provenance_links": redacted_provenance_links,
+            "idempotent_replay": not changed,
+        }
+
     def redact_memory_content(self, *, memory_id: str, actor_type: str = "user") -> VNextRow:
         """Expunge a memory's content in place, keeping the skeleton.
 
@@ -3372,12 +3768,16 @@ class SQLiteVNextStore:
             self._execute(
                 """
                     UPDATE memories
-                    SET title = CASE WHEN title IS NULL THEN NULL ELSE ? END,
+                    SET memory_key = 'redacted.' || id,
+                        title = CASE WHEN title IS NULL THEN NULL ELSE ? END,
                         canonical_text = ?,
                         summary = CASE WHEN summary IS NULL THEN NULL ELSE ? END,
                         trust_reason = CASE WHEN trust_reason IS NULL THEN NULL ELSE ? END,
                         value = ?,
+                        source_event_ids = '[]',
                         metadata_json = ?,
+                        commit_digest = NULL,
+                        confirmation_id = NULL,
                         embedding = NULL,
                         fact_keys = NULL,
                         status = 'archived',
@@ -3425,8 +3825,10 @@ class SQLiteVNextStore:
             cursor = self._execute(
                 """
                     UPDATE memory_revisions
-                    SET previous_value = CASE WHEN previous_value IS NULL THEN NULL ELSE ? END,
+                    SET memory_key = 'redacted.' || memory_id,
+                        previous_value = CASE WHEN previous_value IS NULL THEN NULL ELSE ? END,
                         new_value = CASE WHEN new_value IS NULL THEN NULL ELSE ? END,
+                        source_event_ids = '[]',
                         candidate = ?,
                         text_before = CASE WHEN text_before IS NULL THEN NULL ELSE ? END,
                         text_after = ?,
@@ -3480,10 +3882,17 @@ class SQLiteVNextStore:
                     WHERE user_id = ?
                       AND (
                         (target_type = 'memory' AND target_id = ?)
-                        OR instr(payload_json, ?) > 0
+                        OR (
+                          json_type(payload_json, '$.memory_id') = 'text'
+                          AND json_extract(payload_json, '$.memory_id') = ?
+                        )
+                        OR (
+                          json_type(payload_json, '$.candidate_memory_id') = 'text'
+                          AND json_extract(payload_json, '$.candidate_memory_id') = ?
+                        )
                       )
                     """,
-                (mid, self.user_id, mid, mid),
+                (mid, self.user_id, mid, mid, mid),
             )
             redacted_count = cursor.rowcount
         self._append_mutation_event(
@@ -3498,6 +3907,13 @@ class SQLiteVNextStore:
     # -- provenance ----------------------------------------------------------------
 
     def create_provenance_link(self, link: JsonObject, *, actor_type: str = "system") -> VNextRow:
+        if (
+            link.get("quote") is not None
+            and link.get("target_type") == "memory"
+            and (memory := self.get_memory_for_redaction(str(link.get("target_id") or ""))) is not None
+            and is_redacted_memory(memory)
+        ):
+            raise ValueError("quoted provenance cannot be added to a redacted target")
         link_id = _new_id(link.get("id"))
         self._execute(
             """

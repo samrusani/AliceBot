@@ -56,11 +56,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -601,9 +597,7 @@ def test_thread_resumption_brief_endpoint_returns_bounded_sections_and_workflow_
         "total_count": 2,
         "order": ["updated_at_asc", "created_at_asc", "id_asc"],
     }
-    assert [item["memory_key"] for item in payload["brief"]["memory_highlights"]["items"]] == [
-        "user.preference.coffee"
-    ]
+    assert [item["memory_key"] for item in payload["brief"]["memory_highlights"]["items"]] == ["user.preference.coffee"]
     assert payload["brief"]["workflow"]["task"]["id"] == str(task["id"])
     assert payload["brief"]["workflow"]["latest_task_step"]["id"] == str(latest_step["id"])
     assert payload["brief"]["workflow"]["latest_task_step"]["sequence_no"] == 2
@@ -663,7 +657,7 @@ def test_thread_continuity_endpoints_enforce_user_isolation_and_not_found(
     missing_brief_status, missing_brief_payload = invoke_request(
         "GET",
         f"/v0/threads/{missing_thread_id}/resumption-brief",
-        query_params={"user_id": str(owner['user_id'])},
+        query_params={"user_id": str(owner["user_id"])},
     )
 
     assert list_status == 200
@@ -675,15 +669,15 @@ def test_thread_continuity_endpoints_enforce_user_isolation_and_not_found(
         },
     }
     assert detail_status == 404
-    assert detail_payload == {"detail": f"thread {owner['second_thread']['id']} was not found"}
+    assert detail_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert sessions_status == 404
-    assert sessions_payload == {"detail": f"thread {owner['second_thread']['id']} was not found"}
+    assert sessions_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert events_status == 404
-    assert events_payload == {"detail": f"thread {owner['second_thread']['id']} was not found"}
+    assert events_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert brief_status == 404
-    assert brief_payload == {"detail": f"thread {owner['second_thread']['id']} was not found"}
+    assert brief_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert missing_brief_status == 404
-    assert missing_brief_payload == {"detail": f"thread {missing_thread_id} was not found"}
+    assert missing_brief_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
 
 
 def test_thread_creation_rejects_invalid_agent_profile_id_with_deterministic_422(

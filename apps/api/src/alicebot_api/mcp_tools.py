@@ -181,6 +181,10 @@ from alicebot_api.vnext_memory_commit import (
     is_pending_consolidation_candidate,
     memory_commit_request_from_payload,
 )
+from alicebot_api.vnext_project_update_guard import (
+    PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE,
+    is_pending_project_update_memory,
+)
 from alicebot_api.vnext_project_scope import (
     project_identifier_identity,
     project_scopes_overlap,
@@ -215,7 +219,13 @@ from alicebot_api.vnext_retrieval import (
 from alicebot_api.vnext_scheduler import SchedulerRunRequest, VNextSchedulerService
 from alicebot_api.vnext_scheduler_runtime import run_due_workflows_durable, run_now_durable
 from alicebot_api.vnext_json import json_safe
-from alicebot_api.vnext_store import REDACTION_MARKER, PostgresVNextStore
+from alicebot_api.vnext_store import (
+    REDACTED_JSON_VALUE,
+    REDACTION_MARKER,
+    is_redacted_memory,
+    PostgresVNextStore,
+    is_redacted_project_update_artifact,
+)
 
 
 _REVIEW_STATUS_CHOICES = (
@@ -1637,6 +1647,10 @@ def _handle_alice_open_loops(context: MCPRuntimeContext, arguments: Mapping[str,
 _SQLITE_REVIEWABLE_STATUSES = frozenset({"active", "candidate"})
 _SQLITE_NEXT_ACTION_MEMORY_TYPES = frozenset({"open_loop", "commitment"})
 _SQLITE_OPEN_LOOP_ACTIVE_STATUSES = frozenset({"open", "waiting"})
+_ASCII_QUERY_CASE_TRANSLATION = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "abcdefghijklmnopqrstuvwxyz",
+)
 
 
 def _utc_now_iso_text() -> str:
@@ -1682,10 +1696,10 @@ def _row_in_window(
 def _memory_matches_query(row: Mapping[str, object], query: str | None) -> bool:
     if query is None:
         return True
-    needle = query.casefold()
+    needle = query.translate(_ASCII_QUERY_CASE_TRANSLATION)
     for key in ("title", "canonical_text", "summary"):
         value = row.get(key)
-        if isinstance(value, str) and needle in value.casefold():
+        if isinstance(value, str) and needle in value.translate(_ASCII_QUERY_CASE_TRANSLATION):
             return True
     return False
 
@@ -2361,6 +2375,8 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
             raise MCPToolError(f"memory {memory_id} cannot be reviewed from status '{memory.get('status')}'") from exc
         if is_pending_consolidation_candidate(memory):
             raise MCPToolError("memory became a pending consolidation candidate during review; retry the approval")
+        if is_pending_project_update_memory(memory):
+            raise MCPToolError(PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE)
         event_payload: VNextJsonObject = {
             "requested_action": requested_action,
             "resolved_action": resolved_action,
@@ -4218,6 +4234,10 @@ def _handle_alice_vnext_forget_memory(context: MCPRuntimeContext, arguments: Map
 _REDACT_RETIRED_STATUSES = {"superseded", "archived", "rejected"}
 
 
+def _memory_redaction_is_exact(memory: Mapping[str, object]) -> bool:
+    return is_redacted_memory(memory)
+
+
 def redact_memory_flow(
     store,
     *,
@@ -4225,13 +4245,16 @@ def redact_memory_flow(
     reason: str,
     identity: AgentIdentity | None = None,
 ) -> VNextJsonObject:
-    """Expunge one memory's content everywhere, keeping the audit skeleton.
+    """Scrub one memory's governed lifecycle copies, keeping the audit skeleton.
 
     Order: forget/archive first (when the row is still live, so the
     lifecycle trail records why it left recall), then redact the memory row
-    content, then its revisions, then event payloads that reference it. The
-    skeleton — ids, types, timestamps, actors, and the ``memory.redacted``
-    event trail — survives, which is what proves redaction happened.
+    content, its revisions, matching event payloads and quoted provenance,
+    plus any coupled terminal project-update artifact copies. The skeleton —
+    ids, types, timestamps, actors, and the ``memory.redacted`` event trail —
+    survives, which is what proves redaction happened. Source and source-chunk
+    evidence is intentionally retained because it may support other memories;
+    removing that evidence requires separate source hygiene.
 
     Policy is the caller's job: ``memory.redact`` is restricted to a human
     or an admin agent (HUMAN_OR_ADMIN_ACTIONS); every surface (MCP, HTTP,
@@ -4242,29 +4265,67 @@ def redact_memory_flow(
         raise VNextMemoryCommitValidationError("reason is required to redact a memory")
     memory_service = VNextMemoryCommitService(store)
     memory_service.lock_supersession_graph()
-    get_memory_for_update = getattr(store, "get_memory_for_update", None)
-    memory = get_memory_for_update(memory_id) if callable(get_memory_for_update) else store.get_memory(memory_id)
+    memory = store.get_memory_for_redaction(memory_id)
     if memory is None:
         raise VNextMemoryCommitValidationError("memory was not found")
-    memory_service.authorize_memory_action(
-        identity=identity,
-        action="memory.redact",
-        memory=memory,
+    if is_pending_project_update_memory(memory):
+        raise VNextMemoryCommitValidationError(PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE)
+    project_update_artifacts = store.lock_project_update_artifacts_for_redaction(memory_id)
+    if any(str(artifact.get("status") or "") not in {"accepted", "rejected"} for artifact in project_update_artifacts):
+        raise VNextMemoryCommitValidationError(PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE)
+
+    artifact_ids = [str(artifact.get("id") or "") for artifact in project_update_artifacts]
+    exact_replay = _memory_redaction_is_exact(memory) and all(
+        is_redacted_project_update_artifact(artifact) for artifact in project_update_artifacts
     )
+    exact_bundle_check = getattr(store, "memory_redaction_bundle_is_exact", None)
+    exact_replay = bool(
+        exact_replay
+        and callable(exact_bundle_check)
+        and exact_bundle_check(memory_id, artifact_ids)
+    )
+    if exact_replay:
+        # Preserve strict no-write idempotence for authenticated agents: the
+        # ordinary policy adapter upserts the identity and appends a policy
+        # event.  A replay still evaluates the same authorization, but does not
+        # create new durable rows.
+        decision = evaluate_agent_policy(
+            identity=identity,
+            action="memory.redact",
+            domains=(str(memory.get("domain") or "unknown"),),
+            sensitivity_allowed=(str(memory.get("sensitivity") or "unknown"),),
+            project_scope=resource_project_scope(memory),
+            require_explicit_project_scope=True,
+        )
+        if decision.decision == "blocked":
+            raise AgentPolicyBlockedError(decision)
+    else:
+        memory_service.authorize_memory_action(
+            identity=identity,
+            action="memory.redact",
+            memory=memory,
+        )
     actor_type = "agent" if identity is not None else "user"
     forgotten_first = False
     if str(memory.get("status") or "") not in _REDACT_RETIRED_STATUSES:
         memory_service.forget(identity=identity, memory_id=memory_id, reason=reason_text)
         forgotten_first = True
-    redacted_memory = store.redact_memory_content(memory_id=memory_id, actor_type=actor_type)
-    revisions_result = store.redact_memory_revisions(memory_id=memory_id, actor_type=actor_type)
-    events_result = store.redact_memory_events(memory_id=memory_id, actor_type=actor_type)
+    result = store.redact_memory_bundle(
+        memory_id=memory_id,
+        project_update_artifacts=project_update_artifacts,
+        actor_type=actor_type,
+    )
     return {
         "status": "redacted",
-        "memory": redacted_memory,
+        "memory": result.get("memory"),
         "forgotten_first": forgotten_first,
-        "redacted_revisions": revisions_result.get("redacted_revisions"),
-        "redacted_events": events_result.get("redacted_events"),
+        "redacted_revisions": result.get("redacted_revisions"),
+        "redacted_events": result.get("redacted_events"),
+        "redacted_artifacts": result.get("redacted_artifacts"),
+        "redacted_artifact_ids": result.get("redacted_artifact_ids"),
+        "redacted_quality_ratings": result.get("redacted_quality_ratings"),
+        "redacted_provenance_links": result.get("redacted_provenance_links"),
+        "idempotent_replay": result.get("idempotent_replay"),
         "redaction_marker": REDACTION_MARKER,
         "reason": reason_text,
     }
@@ -5842,9 +5903,11 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
             "confirmation, undo a commit, forget a memory, expire or unexpire its validity "
             "window, accept a consolidation candidate, or redact its content. Undo, forget, "
             "and expire hide the memory from recall but keep its revisions and audit events; "
-            "redact permanently expunges the content everywhere while keeping the audit "
-            "skeleton, and is restricted to a human operator or an admin agent (as is "
-            "accept_consolidation)."
+            "redact permanently scrubs governed memory-lifecycle copies and any coupled "
+            "terminal project-update artifact copies while keeping the audit skeleton. Alice "
+            "source and source-chunk evidence is retained because it may be shared and requires "
+            "separate source hygiene. Redact is restricted to a human operator or an admin agent "
+            "(as is accept_consolidation)."
         ),
         "inputSchema": {
             "type": "object",
@@ -5860,8 +5923,10 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
                         "closes the memory's validity window (valid_to) so recall stops returning it, "
                         "'unexpire' reopens that window, 'accept_consolidation' accepts a "
                         "consolidation candidate and supersedes the memories it merges, and 'redact' "
-                        "permanently expunges the memory's content from the row, its revisions, and "
-                        "event payloads while keeping the audit skeleton."
+                        "permanently scrubs the governed memory row, revisions, matching event "
+                        "payloads and quoted provenance, plus any coupled terminal project-update "
+                        "artifact copies. It keeps the audit skeleton and Alice source/source-chunk "
+                        "evidence."
                     ),
                 },
                 "confirmation_id": {
@@ -5878,7 +5943,13 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Why this change is being made. Stored in the audit trail. Required for expire, unexpire, accept_consolidation, and redact.",
+                    "description": (
+                        "Why this change is being made. For expire, unexpire, and "
+                        "accept_consolidation, the required reason is stored in the audit trail. "
+                        "For redact, the reason is required for authorization and lifecycle intent "
+                        "but intentionally not retained after successful true redaction. Required "
+                        "for expire, unexpire, accept_consolidation, and redact."
+                    ),
                 },
                 "valid_to": {
                     "type": "string",
@@ -7257,9 +7328,7 @@ def _enabled_tool_definitions() -> list[dict[str, object]]:
         legacy_definitions = _LEGACY_TOOL_DEFINITIONS
         if not legacy_surfaces_enabled():
             legacy_definitions = [
-                definition
-                for definition in legacy_definitions
-                if str(definition["name"]) not in _TASK_BRIEF_TOOL_NAMES
+                definition for definition in legacy_definitions if str(definition["name"]) not in _TASK_BRIEF_TOOL_NAMES
             ]
         return [*_CORE_TOOL_DEFINITIONS, *legacy_definitions]
     return list(_CORE_TOOL_DEFINITIONS)

@@ -190,7 +190,9 @@ def test_source_review_http_collision_returns_409_after_full_transaction_rollbac
     )
 
     assert status == 409
-    assert payload == {"detail": "source capture identity already belongs to another live source"}
+    assert payload == {
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
+    }
     with user_connection(database_url, user_id) as conn:
         store = PostgresVNextStore(conn)
         assert store.get_source(alpha_id) == alpha_before

@@ -162,5 +162,5 @@ def test_get_tool_execution_endpoint_maps_missing_record_to_404(monkeypatch) -> 
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
-        "detail": f"tool execution {execution_id} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }

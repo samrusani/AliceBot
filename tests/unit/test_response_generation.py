@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import inspect
 import json
 from uuid import UUID
 
 import pytest
 
-from alicebot_api.config import Settings
+import alicebot_api.response_generation as response_generation
 from alicebot_api.contracts import (
     ContextCompilerLimits,
     ModelInvocationRequest,
@@ -15,13 +16,15 @@ from alicebot_api.contracts import (
 )
 from alicebot_api.response_generation import (
     ModelInvocationError,
+    OpenAICompatibleTransportConfig,
     PreparedResponseGeneration,
     ResponseGenerationConflictError,
     assemble_prompt,
     build_assistant_response_payload,
     complete_response_generation,
-    invoke_model,
-    resolve_thread_model_runtime,
+    fail_response_generation,
+    invoke_openai_compatible_model,
+    prepare_response_generation,
 )
 
 
@@ -207,7 +210,9 @@ class FakeHTTPResponse:
         return self.body
 
 
-def test_invoke_model_sends_tools_disabled_request_and_parses_response(monkeypatch) -> None:
+def test_invoke_openai_compatible_model_sends_tools_disabled_request_and_parses_response(
+    monkeypatch,
+) -> None:
     captured: dict[str, object] = {}
 
     def fake_urlopen(request, timeout):
@@ -245,13 +250,11 @@ def test_invoke_model_sends_tools_disabled_request_and_parses_response(monkeypat
         ),
         compile_trace_id="compile-trace-123",
     )
-    response = invoke_model(
-        settings=Settings(
-            model_provider="openai_responses",
-            model_base_url="https://example.test/v1",
-            model_name="gpt-5-mini",
-            model_api_key="secret-key",
-            model_timeout_seconds=17,
+    response = invoke_openai_compatible_model(
+        transport=OpenAICompatibleTransportConfig(
+            base_url="https://example.test/v1",
+            api_key="secret-key",
+            timeout_seconds=17,
         ),
         request=ModelInvocationRequest(
             provider="openai_responses",
@@ -282,7 +285,9 @@ def test_invoke_model_sends_tools_disabled_request_and_parses_response(monkeypat
     )
 
 
-def test_invoke_model_parses_optional_cached_input_token_telemetry(monkeypatch) -> None:
+def test_invoke_openai_compatible_model_parses_optional_cached_input_token_telemetry(
+    monkeypatch,
+) -> None:
     def fake_urlopen(_request, timeout):
         del timeout
         return FakeHTTPResponse(
@@ -317,13 +322,11 @@ def test_invoke_model_parses_optional_cached_input_token_telemetry(monkeypatch) 
         compile_trace_id="compile-trace-123",
     )
 
-    response = invoke_model(
-        settings=Settings(
-            model_provider="openai_responses",
-            model_base_url="https://example.test/v1",
-            model_name="gpt-5-mini",
-            model_api_key="secret-key",
-            model_timeout_seconds=17,
+    response = invoke_openai_compatible_model(
+        transport=OpenAICompatibleTransportConfig(
+            base_url="https://example.test/v1",
+            api_key="secret-key",
+            timeout_seconds=17,
         ),
         request=ModelInvocationRequest(
             provider="openai_responses",
@@ -340,7 +343,7 @@ def test_invoke_model_parses_optional_cached_input_token_telemetry(monkeypatch) 
     }
 
 
-def test_invoke_model_normalizes_non_utf8_provider_payload(monkeypatch) -> None:
+def test_invoke_openai_compatible_model_normalizes_non_utf8_provider_payload(monkeypatch) -> None:
     monkeypatch.setattr(
         "alicebot_api.response_generation.urlopen",
         lambda *_args, **_kwargs: FakeHTTPResponse(b"\xff\xfe"),
@@ -355,12 +358,11 @@ def test_invoke_model_normalizes_non_utf8_provider_payload(monkeypatch) -> None:
     )
 
     with pytest.raises(ModelInvocationError, match="invalid JSON"):
-        invoke_model(
-            settings=Settings(
-                model_provider="openai_responses",
-                model_base_url="https://example.test/v1",
-                model_name="gpt-5-mini",
-                model_api_key="secret-key",
+        invoke_openai_compatible_model(
+            transport=OpenAICompatibleTransportConfig(
+                base_url="https://example.test/v1",
+                api_key="secret-key",
+                timeout_seconds=60,
             ),
             request=ModelInvocationRequest(
                 provider="openai_responses",
@@ -370,7 +372,9 @@ def test_invoke_model_normalizes_non_utf8_provider_payload(monkeypatch) -> None:
         )
 
 
-def test_invoke_model_rejects_blank_bearer_key_before_transport(monkeypatch) -> None:
+def test_invoke_openai_compatible_model_rejects_blank_bearer_key_before_transport(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         "alicebot_api.response_generation.urlopen",
         lambda *_args, **_kwargs: pytest.fail("blank bearer credentials must fail before transport"),
@@ -385,12 +389,11 @@ def test_invoke_model_rejects_blank_bearer_key_before_transport(monkeypatch) -> 
     )
 
     with pytest.raises(ModelInvocationError, match="MODEL_API_KEY is not configured"):
-        invoke_model(
-            settings=Settings(
-                model_provider="openai_responses",
-                model_base_url="https://example.test/v1",
-                model_name="gpt-5-mini",
-                model_api_key="   ",
+        invoke_openai_compatible_model(
+            transport=OpenAICompatibleTransportConfig(
+                base_url="https://example.test/v1",
+                api_key="   ",
+                timeout_seconds=60,
             ),
             request=ModelInvocationRequest(
                 provider="openai_responses",
@@ -448,83 +451,81 @@ def test_build_assistant_response_payload_captures_model_and_prompt_metadata() -
     }
 
 
-class FakeProfileStore:
-    def __init__(self, profile: dict[str, object] | None) -> None:
-        self.profile = profile
-        self.lookups: list[str] = []
+def test_response_generation_compatibility_exports_and_fallback_contract_are_absent() -> None:
+    for obsolete_export in (
+        "invoke_model",
+        "resolve_thread_model_runtime",
+        "invoke_prepared_response",
+        "generate_response",
+    ):
+        assert not hasattr(response_generation, obsolete_export)
 
-    def get_agent_profile_optional(self, profile_id: str):
-        self.lookups.append(profile_id)
-        return self.profile
+    parameters = inspect.signature(prepare_response_generation).parameters
+    assert "settings" not in parameters
+    assert parameters["runtime_override"].default is inspect.Parameter.empty
+    assert "agent_profile_id" not in PreparedResponseGeneration.__dataclass_fields__
 
 
-def test_resolve_thread_model_runtime_prefers_profile_runtime_when_present() -> None:
-    settings = Settings(
-        model_provider="openai_responses",
-        model_name="gpt-5-mini",
+@pytest.mark.parametrize(
+    ("error_code", "message"),
+    (
+        ("upstream_failure", "An upstream service failed"),
+        ("conflict", "The request conflicts with the current resource state"),
+    ),
+)
+def test_response_failure_and_persisted_trace_are_static(
+    error_code: str,
+    message: str,
+) -> None:
+    sentinel = "UNIQUE_RESPONSE_PROVIDER_EXCEPTION_SENTINEL"
+    prompt = assemble_prompt(
+        request=PromptAssemblyInput(
+            context_pack=make_context_pack(),
+            system_instruction="System instruction",
+            developer_instruction="Developer instruction",
+        ),
+        compile_trace_id="compile-trace-123",
     )
-    store = FakeProfileStore(
-        {
-            "id": "coach_default",
-            "name": "Coach Default",
-            "description": "Coaching profile",
-            "model_provider": "openai_responses",
-            "model_name": "gpt-5",
-        }
+    prepared = PreparedResponseGeneration(
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        thread_id=UUID("22222222-2222-4222-8222-222222222222"),
+        limits=ContextCompilerLimits(),
+        compiled_trace_id="compile-trace-123",
+        compiled_trace_event_count=1,
+        prompt=prompt,
+        model_request=ModelInvocationRequest(
+            provider="openai_responses",
+            model="gpt-5-mini",
+            prompt=prompt,
+        ),
+        user_event_id=UUID("33333333-3333-4333-8333-333333333333"),
+        user_event_sequence_no=1,
     )
 
-    provider, model = resolve_thread_model_runtime(
+    class FailureStore:
+        def __init__(self) -> None:
+            self.events: list[dict[str, object]] = []
+
+        def create_trace(self, **_kwargs: object) -> dict[str, object]:
+            return {"id": UUID("44444444-4444-4444-8444-444444444444")}
+
+        def append_trace_event(self, **kwargs: object) -> None:
+            self.events.append(dict(kwargs))
+
+    store = FailureStore()
+    failure = fail_response_generation(
         store=store,  # type: ignore[arg-type]
-        thread={"agent_profile_id": "coach_default"},  # type: ignore[arg-type]
-        settings=settings,
+        prepared=prepared,
+        error=ModelInvocationError(sentinel),
+        error_code=error_code,  # type: ignore[arg-type]
     )
 
-    assert store.lookups == ["coach_default"]
-    assert provider == "openai_responses"
-    assert model == "gpt-5"
-
-
-def test_resolve_thread_model_runtime_falls_back_when_profile_runtime_missing_or_partial() -> None:
-    settings = Settings(
-        model_provider="openai_responses",
-        model_name="gpt-5-mini",
-    )
-
-    missing_runtime_store = FakeProfileStore(
-        {
-            "id": "coach_default",
-            "name": "Coach Default",
-            "description": "Coaching profile",
-            "model_provider": None,
-            "model_name": None,
-        }
-    )
-    partial_runtime_store = FakeProfileStore(
-        {
-            "id": "coach_default",
-            "name": "Coach Default",
-            "description": "Coaching profile",
-            "model_provider": "openai_responses",
-            "model_name": None,
-        }
-    )
-    missing_profile_store = FakeProfileStore(None)
-
-    assert resolve_thread_model_runtime(
-        store=missing_runtime_store,  # type: ignore[arg-type]
-        thread={"agent_profile_id": "coach_default"},  # type: ignore[arg-type]
-        settings=settings,
-    ) == ("openai_responses", "gpt-5-mini")
-    assert resolve_thread_model_runtime(
-        store=partial_runtime_store,  # type: ignore[arg-type]
-        thread={"agent_profile_id": "coach_default"},  # type: ignore[arg-type]
-        settings=settings,
-    ) == ("openai_responses", "gpt-5-mini")
-    assert resolve_thread_model_runtime(
-        store=missing_profile_store,  # type: ignore[arg-type]
-        thread={"agent_profile_id": "coach_default"},  # type: ignore[arg-type]
-        settings=settings,
-    ) == ("openai_responses", "gpt-5-mini")
+    assert failure.error_code == error_code
+    assert failure.detail == message
+    assert sentinel not in repr(failure)
+    assert store.events[-1]["payload"]["error_code"] == error_code
+    assert store.events[-1]["payload"]["error_message"] == message
+    assert sentinel not in json.dumps(store.events, default=str)
 
 
 def test_interleaved_response_completion_rejects_superseded_user_turn() -> None:
@@ -556,7 +557,6 @@ def test_interleaved_response_completion_rejects_superseded_user_turn() -> None:
             compiled_trace_event_count=1,
             prompt=prompt,
             model_request=model_request,
-            agent_profile_id="assistant_default",
             user_event_id=event_id,
             user_event_sequence_no=sequence_no,
         )
@@ -616,6 +616,4 @@ def test_interleaved_response_completion_rejects_superseded_user_turn() -> None:
             model_response=model_response,
         )
 
-    assert [event["payload"]["text"] for event in store.assistant_events] == [
-        "Latest-turn answer"
-    ]
+    assert [event["payload"]["text"] for event in store.assistant_events] == ["Latest-turn answer"]

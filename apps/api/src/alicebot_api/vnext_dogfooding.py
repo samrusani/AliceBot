@@ -8,6 +8,7 @@ from typing import Protocol
 from alicebot_api.vnext_connectors import VNextConnectorService, VNextConnectorStore
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_repositories import JsonObject
+from alicebot_api.vnext_store import is_redacted_project_update_artifact
 
 
 class VNextDogfoodingStore(VNextConnectorStore, Protocol):
@@ -124,7 +125,11 @@ def _trend_by_day(rows: list[JsonObject], *, days: int = 7) -> list[JsonObject]:
 def _top_failure_causes(events: list[JsonObject]) -> list[JsonObject]:
     failures: Counter[str] = Counter()
     for event in events:
-        if event.get("event_type") not in {"connector.item_failed", "connector.sync_failed", "connector.state_update_failed"}:
+        if event.get("event_type") not in {
+            "connector.item_failed",
+            "connector.sync_failed",
+            "connector.state_update_failed",
+        }:
             continue
         payload = _event_payload(event)
         cause = str(payload.get("error_type") or payload.get("reason") or payload.get("error_message") or "unknown")
@@ -173,9 +178,7 @@ class VNextDogfoodingService:
             memories = self.store.list_memories(status=None)[:500]
         count_memories_by_status = getattr(self.store, "count_memories_by_status", None)
         memory_status_counts = (
-            count_memories_by_status()
-            if callable(count_memories_by_status)
-            else _status_counts(memories)
+            count_memories_by_status() if callable(count_memories_by_status) else _status_counts(memories)
         )
         artifacts = self.store.list_artifacts(limit=500)
         ratings = self.store.list_artifact_quality_ratings(limit=500)
@@ -196,11 +199,7 @@ class VNextDogfoodingService:
             for event in events
             if str(event.get("event_type") or "") in {"agent.policy_blocked", "agent.policy_filtered"}
         ]
-        feedback_events = [
-            event
-            for event in events
-            if event.get("event_type") == "artifact.insight_feedback_recorded"
-        ]
+        feedback_events = [event for event in events if event.get("event_type") == "artifact.insight_feedback_recorded"]
         quality_scores: list[float] = []
         for rating in ratings:
             usefulness = rating.get("usefulness")
@@ -228,8 +227,7 @@ class VNextDogfoodingService:
                 "events": {"limit": 5_000, "returned_count": len(events)},
             },
             "captures_by_connector": [
-                {"connector_name": name, "count": count}
-                for name, count in sorted(connector_counts.items())
+                {"connector_name": name, "count": count} for name, count in sorted(connector_counts.items())
             ],
             "captures_today": captures_today,
             "captures_this_week": captures_this_week,
@@ -309,6 +307,17 @@ class VNextDogfoodingService:
             raise ValueError("useful_insight must be yes, no, or not_sure")
         if surfaced_missed is not None and surfaced_missed not in {"yes", "no", "not_sure"}:
             raise ValueError("surfaced_missed must be yes, no, or not_sure")
+        get_artifact_for_update = getattr(self.store, "get_artifact_for_update", None)
+        get_artifact = getattr(self.store, "get_artifact", None)
+        artifact = (
+            get_artifact_for_update(artifact_id)
+            if callable(get_artifact_for_update)
+            else get_artifact(artifact_id)
+            if callable(get_artifact)
+            else None
+        )
+        if isinstance(artifact, dict) and is_redacted_project_update_artifact(artifact):
+            raise ValueError("feedback cannot be added to a redacted artifact")
         return append_event(
             self.store,
             event_type="artifact.insight_feedback_recorded",

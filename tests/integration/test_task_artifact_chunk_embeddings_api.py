@@ -54,11 +54,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -291,13 +287,9 @@ def test_task_artifact_chunk_embedding_endpoints_persist_and_read_embeddings(
     }
 
     with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
-        stored = ContinuityStore(conn).list_task_artifact_chunk_embeddings_for_artifact(
-            seeded["task_artifact_id"]
-        )
+        stored = ContinuityStore(conn).list_task_artifact_chunk_embeddings_for_artifact(seeded["task_artifact_id"])
 
-    assert [item["id"] for item in artifact_list_payload["items"]] == [
-        str(embedding["id"]) for embedding in stored
-    ]
+    assert [item["id"] for item in artifact_list_payload["items"]] == [str(embedding["id"]) for embedding in stored]
     assert [item["task_artifact_chunk_id"] for item in artifact_list_payload["items"]] == [
         str(seeded["first_chunk_id"]),
         str(seeded["second_chunk_id"]),
@@ -387,25 +379,15 @@ def test_task_artifact_chunk_embedding_writes_reject_invalid_refs_dimension_mism
     )
 
     assert missing_config_status == 400
-    assert missing_config_payload["detail"].startswith(
-        "embedding_config_id must reference an existing embedding config owned by the user"
-    )
+    assert missing_config_payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
     assert missing_chunk_status == 400
-    assert missing_chunk_payload["detail"].startswith(
-        "task_artifact_chunk_id must reference an existing task artifact chunk owned by the user"
-    )
+    assert missing_chunk_payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
     assert mismatch_status == 400
-    assert mismatch_payload["detail"] == "vector length must match embedding config dimensions (3): 2"
+    assert mismatch_payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
     assert cross_user_chunk_status == 400
-    assert cross_user_chunk_payload["detail"] == (
-        "task_artifact_chunk_id must reference an existing task artifact chunk owned by the "
-        f"user: {owner['first_chunk_id']}"
-    )
+    assert cross_user_chunk_payload["detail"] == ({"code": "invalid_request", "message": "The request is invalid"})
     assert cross_user_config_status == 400
-    assert cross_user_config_payload["detail"] == (
-        "embedding_config_id must reference an existing embedding config owned by the user: "
-        f"{owner_config_id}"
-    )
+    assert cross_user_config_payload["detail"] == ({"code": "invalid_request", "message": "The request is invalid"})
 
 
 def test_task_artifact_chunk_embedding_reads_respect_per_user_isolation(
@@ -459,16 +441,8 @@ def test_task_artifact_chunk_embedding_reads_respect_per_user_isolation(
 
     assert write_status == 201
     assert artifact_list_status == 404
-    assert artifact_list_payload == {
-        "detail": f"task artifact {owner['task_artifact_id']} was not found"
-    }
+    assert artifact_list_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert chunk_list_status == 404
-    assert chunk_list_payload == {
-        "detail": f"task artifact chunk {owner['first_chunk_id']} was not found"
-    }
+    assert chunk_list_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert detail_status == 404
-    assert detail_payload == {
-        "detail": (
-            f"task artifact chunk embedding {write_payload['embedding']['id']} was not found"
-        )
-    }
+    assert detail_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}

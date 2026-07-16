@@ -1,16 +1,20 @@
 #!/usr/bin/env node
 // Dependency vulnerability audit against npm's bulk advisory endpoint.
 //
-// npm retired the legacy quick-audit endpoint that `pnpm audit` calls
-// (HTTP 410 since 2026-07), so this script preserves the CI gate's exact
-// semantics through the replacement API: collect the installed dependency
-// tree (production-only with --prod), submit name -> [versions] to
+// Alice intentionally remains on the reproducible Node 20 / pnpm 10.23.0
+// toolchain for this patch carrier. pnpm 11 has moved `pnpm audit` to npm's
+// bulk endpoint (upstream decision: https://github.com/orgs/pnpm/discussions/11377),
+// but changing package-manager majors is a separate compatibility decision.
+// Keep this stricter fail-closed wrapper while pnpm 10 is pinned: collect the
+// installed dependency tree (production-only with --prod), submit
+// name -> [versions] to
 // /-/npm/v1/security/advisories/bulk, range-match each installed version
 // against every advisory's vulnerable_versions, and fail closed at the
 // configured severity threshold. Endpoint or parsing failures exit nonzero:
 // an audit that cannot run must never pass silently.
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { validateBulkAdvisoryResponse } from "./npm-advisory-response.mjs";
 
 const require = createRequire(import.meta.url);
 const semver = require("semver");
@@ -71,7 +75,7 @@ async function fetchAdvisories(versions) {
   if (!response.ok) {
     throw new Error(`bulk advisory endpoint returned HTTP ${response.status}`);
   }
-  return response.json();
+  return validateBulkAdvisoryResponse(await response.json());
 }
 
 const versions = collectVersions();

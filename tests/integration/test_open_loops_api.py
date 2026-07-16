@@ -57,11 +57,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -161,7 +157,10 @@ def test_open_loop_endpoints_create_list_detail_and_isolation(
         query_params={"user_id": str(intruder_id)},
     )
     assert intruder_detail_status == 404
-    assert "was not found" in intruder_detail_payload["detail"]
+    assert intruder_detail_payload["detail"] == {
+        "code": "not_found",
+        "message": "The requested resource was not found",
+    }
 
     intruder_mutation_status, intruder_mutation_payload = invoke_request(
         "POST",
@@ -173,7 +172,10 @@ def test_open_loop_endpoints_create_list_detail_and_isolation(
         },
     )
     assert intruder_mutation_status == 404
-    assert "was not found" in intruder_mutation_payload["detail"]
+    assert intruder_mutation_payload["detail"] == {
+        "code": "not_found",
+        "message": "The requested resource was not found",
+    }
 
 
 def test_open_loop_status_endpoint_rejects_invalid_values_and_persists_audit_fields(
@@ -208,7 +210,7 @@ def test_open_loop_status_endpoint_rejects_invalid_values_and_persists_audit_fie
         },
     )
     assert invalid_status == 400
-    assert invalid_payload == {"detail": "status must be one of: open, resolved, dismissed"}
+    assert invalid_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
     resolve_status, resolve_payload = invoke_request(
         "POST",
@@ -222,10 +224,7 @@ def test_open_loop_status_endpoint_rejects_invalid_values_and_persists_audit_fie
     assert resolve_status == 200
     assert resolve_payload["open_loop"]["status"] == "resolved"
     assert resolve_payload["open_loop"]["resolved_at"] is not None
-    assert (
-        resolve_payload["open_loop"]["resolution_note"]
-        == "Resolved after checking the latest cart."
-    )
+    assert resolve_payload["open_loop"]["resolution_note"] == "Resolved after checking the latest cart."
 
     repeat_status, repeat_payload = invoke_request(
         "POST",
@@ -236,7 +235,7 @@ def test_open_loop_status_endpoint_rejects_invalid_values_and_persists_audit_fie
         },
     )
     assert repeat_status == 400
-    assert repeat_payload == {"detail": "open loop status can only transition from open"}
+    assert repeat_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_open_loop_status_endpoint_supports_open_to_dismissed_with_audit_fields(
@@ -275,10 +274,7 @@ def test_open_loop_status_endpoint_supports_open_to_dismissed_with_audit_fields(
     assert dismiss_status == 200
     assert dismiss_payload["open_loop"]["status"] == "dismissed"
     assert dismiss_payload["open_loop"]["resolved_at"] is not None
-    assert (
-        dismiss_payload["open_loop"]["resolution_note"]
-        == "No follow-up required after manual verification."
-    )
+    assert dismiss_payload["open_loop"]["resolution_note"] == "No follow-up required after manual verification."
 
 
 def test_memory_admission_can_create_open_loop_when_requested(
@@ -319,10 +315,7 @@ def test_memory_admission_can_create_open_loop_when_requested(
         query_params={"user_id": str(seeded["user_id"]), "status": "open", "limit": "10"},
     )
     assert list_status == 200
-    assert any(
-        item["title"] == "Reconfirm delivery window before next order"
-        for item in list_payload["items"]
-    )
+    assert any(item["title"] == "Reconfirm delivery window before next order" for item in list_payload["items"])
 
 
 def test_context_compile_includes_bounded_open_loop_slice_when_present(

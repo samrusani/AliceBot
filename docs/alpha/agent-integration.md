@@ -205,6 +205,27 @@ Rules:
 - Manage keys with `alicebot agent keys list` (prefixes only, never hashes) and `alicebot agent keys revoke <key-prefix-or-id>`.
 - MCP servers bind a key by setting `ALICE_AGENT_API_KEY` in the server env. Key-bound MCP runs fail closed to the eleven core tools: legacy tools are neither listed nor callable, even if `ALICE_MCP_LEGACY_TOOLS=1` is also set.
 
+### HTTP error contract
+
+Exceptions handled by the HTTP API use a stable structured envelope and keep
+diagnostic details in server logs:
+
+```json
+{
+  "detail": {
+    "code": "invalid_request",
+    "message": "The request is invalid"
+  }
+}
+```
+
+Clients should branch on `detail.code`, not on the human-readable message.
+The public families are `authentication_failed`, `forbidden`,
+`invalid_request`, `not_found`, `conflict`, `upstream_failure`, and
+`internal_error`. Deliberate static route errors and FastAPI validation errors
+retain their documented string or array `detail` variants; all variants remain
+under the same top-level `detail` key and are described by the OpenAPI schema.
+
 ## Scopes
 
 Memories carry four scopes. `user_id` is the hard tenancy boundary (RLS);

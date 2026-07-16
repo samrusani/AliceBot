@@ -745,7 +745,11 @@ class VNextConsolidationService:
         try:
             embedded_ids = set(list_memory_ids_with_embeddings(selected_ids))
         except Exception as exc:  # noqa: BLE001 - store backends raise driver-specific errors
-            outcome.skipped.append(f"embedding_presence_read_failed: {exc}")
+            logger.warning(
+                "Consolidation embedding-presence read failed error_code=embedding_presence_read_failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            outcome.skipped.append("embedding_presence_read_failed")
             return outcome
         embedded_rows_and_text = [
             (row, text)
@@ -767,7 +771,11 @@ class VNextConsolidationService:
                     return outcome
                 derived_vectors.extend(np.asarray(vector, dtype=np.float32) for vector in batch_vectors)
         except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
-            outcome.skipped.append(f"embedding_provider_failed: {exc}")
+            logger.warning(
+                "Consolidation embedding provider failed error_code=embedding_provider_failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            outcome.skipped.append("embedding_provider_failed")
             return outcome
 
         # Best-effort drift diagnostic ONLY (never presence): a single probe

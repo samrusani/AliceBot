@@ -413,7 +413,9 @@ def test_attach_memory_embedding_logs_event_but_never_blocks_on_failure() -> Non
     assert store.embeddings == []
     assert store.events[-1]["event_type"] == "memory.embedding_failed"
     assert store.events[-1]["actor_id"] == "hermes"
-    assert "connection refused" in str(store.events[-1]["payload_json"])
+    assert store.events[-1]["payload_json"]["error_code"] == "embedding_preparation_failed"
+    assert store.events[-1]["payload_json"]["error_message"] == "Memory embedding preparation failed"
+    assert "connection refused" not in str(store.events[-1]["payload_json"])
 
 
 def test_attach_memory_embedding_never_blocks_on_store_write_failure() -> None:
@@ -431,7 +433,9 @@ def test_attach_memory_embedding_never_blocks_on_store_write_failure() -> None:
 
     assert attached is False
     assert store.events[-1]["event_type"] == "memory.embedding_failed"
-    assert "database temporarily unavailable" in str(store.events[-1]["payload_json"])
+    assert store.events[-1]["payload_json"]["error_code"] == "embedding_persistence_failed"
+    assert store.events[-1]["payload_json"]["error_message"] == "Memory embedding persistence failed"
+    assert "database temporarily unavailable" not in str(store.events[-1]["payload_json"])
 
 
 def test_attach_memory_embeddings_batches_provider_call_and_isolates_store_failures() -> None:
@@ -518,10 +522,15 @@ def test_two_phase_embedding_carries_provider_failures_to_persistence_log() -> N
 
     assert preparation.prepared == ()
     assert preparation.failures[0].memory_id == "memory-1"
+    assert preparation.failures[0].error_code == "embedding_preparation_failed"
+    assert preparation.failures[0].error_message == "Memory embedding preparation failed"
+    assert "connection refused" not in repr(preparation.failures[0])
     store = _AttachStore()
     assert persist_prepared_memory_embeddings(store, preparation) == 0
     assert store.events[-1]["event_type"] == "memory.embedding_failed"
-    assert "connection refused" in str(store.events[-1]["payload_json"])
+    assert store.events[-1]["payload_json"]["error_code"] == "embedding_preparation_failed"
+    assert store.events[-1]["payload_json"]["error_message"] == "Memory embedding preparation failed"
+    assert "connection refused" not in str(store.events[-1]["payload_json"])
 
 
 def test_best_effort_deferred_embedding_swallows_connection_acquire_failure(
@@ -582,7 +591,9 @@ def test_best_effort_deferred_embedding_isolates_store_write_failure() -> None:
 
     assert persisted == 0
     assert store.events[-1]["event_type"] == "memory.embedding_failed"
-    assert "vector write failed" in str(store.events[-1]["payload_json"])
+    assert store.events[-1]["payload_json"]["error_code"] == "embedding_persistence_failed"
+    assert store.events[-1]["payload_json"]["error_message"] == "Memory embedding persistence failed"
+    assert "vector write failed" not in str(store.events[-1]["payload_json"])
 
 
 def test_best_effort_deferred_embedding_swallows_followup_commit_failure(

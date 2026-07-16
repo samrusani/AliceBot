@@ -253,6 +253,23 @@ def test_consolidation_merge_refuses_unparseable_output() -> None:
     assert result.refusal_reason == "unparseable_model_output"
 
 
+def test_consolidation_merge_provider_failure_uses_static_refusal_reason() -> None:
+    sentinel = "UNIQUE_MODEL_PROVIDER_EXCEPTION_SENTINEL"
+
+    class FailingProvider(_StubProvider):
+        def chat(self, *, prompt: str, temperature: float) -> str:
+            raise VNextModelIntelligenceError(sentinel)
+
+    result = generate_consolidation_merge(
+        ConsolidationMergeRequest(cluster_members=_MEMBERS, route=_cloud_route()),
+        provider=FailingProvider("unused"),
+    )
+
+    assert result.status == "refused"
+    assert result.refusal_reason == "provider_error"
+    assert sentinel not in repr(result)
+
+
 def test_consolidation_merge_refuses_ungrounded_output() -> None:
     stub = _StubProvider(
         '{"title": "Fabricated", "canonical_text": "Giraffes migrate across Saturn during volcanic eclipses."}'

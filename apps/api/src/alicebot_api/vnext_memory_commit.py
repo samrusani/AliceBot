@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
+import logging
 from typing import Callable, Mapping, cast
 from uuid import UUID, uuid4
 
@@ -50,6 +51,10 @@ from alicebot_api.vnext_lifecycle import (
     supersession_would_cycle,
 )
 from alicebot_api.vnext_memory_version import memory_matches_snapshot
+from alicebot_api.vnext_project_update_guard import (
+    PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE,
+    is_pending_project_update_memory,
+)
 from alicebot_api.vnext_project_scope import project_scope_identity
 from alicebot_api.vnext_repositories import EventStore, JsonObject
 from alicebot_api.store import ContinuityStoreInvariantError
@@ -58,6 +63,9 @@ from alicebot_api.vnext_store import PostgresVNextStore, VNextRow
 
 MEMORY_COMMIT_WRITE_MODES = ("commit", "confirm_inline", "propose_review", "reject")
 MEMORY_COMMIT_STATUSES = ("committed", "confirmation_required", "review_required", "rejected")
+ENTITY_LINKING_ERROR_CODE = "entity_linking_failed"
+ENTITY_LINKING_ERROR_MESSAGE = "Memory entity linking failed"
+logger = logging.getLogger(__name__)
 # vNext memory row status vocabulary. Mirrors sqlite_schema.MEMORY_STATUSES
 # (owned by the schema workstream) plus "stale": the write-side marker the
 # staleness sweep applies to expired or long-unconfirmed working-state
@@ -487,6 +495,13 @@ def is_pending_consolidation_candidate(memory: Mapping[str, object]) -> bool:
         candidate_kind = metadata.get("candidate_kind")
         return isinstance(candidate_kind, str) and candidate_kind in DERIVED_CONSOLIDATION_CANDIDATE_KINDS
     return not isinstance(consolidation.get("accepted"), Mapping)
+
+
+def _require_project_update_decision_path(memory: Mapping[str, object]) -> None:
+    """Keep pending coupled candidates on their atomic project-review path."""
+
+    if is_pending_project_update_memory(memory):
+        raise VNextMemoryCommitValidationError(PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE)
 
 
 def _agentic_metadata(row: Mapping[str, object] | None) -> dict[str, object]:
@@ -1146,6 +1161,7 @@ class VNextMemoryCommitService:
             if locked is None:
                 raise VNextMemoryCommitValidationError("memory was not found")
             memory = locked
+        _require_project_update_decision_path(memory)
         self._policy_checked_write(identity=identity, action="memory.undo", memory=memory)
         successor: VNextRow | None = None
         if superseded_by_memory_id is not None:
@@ -1158,6 +1174,7 @@ class VNextMemoryCommitService:
                 raise VNextMemoryCommitValidationError("superseding memory was not found")
             if str(successor["id"]) == str(memory["id"]):
                 raise VNextMemoryCommitValidationError("a memory cannot supersede itself")
+            _require_project_update_decision_path(successor)
             self._policy_checked_write(identity=identity, action="memory.undo", memory=successor)
         return self._transition_memory(
             identity=identity,
@@ -1187,6 +1204,7 @@ class VNextMemoryCommitService:
         )
         if memory is None:
             raise VNextMemoryCommitValidationError("memory was not found")
+        _require_project_update_decision_path(memory)
         self._policy_checked_write(identity=identity, action="memory.correct", memory=memory)
         # Retirement is terminal: correcting a superseded/rejected/archived row
         # is rejected here through the central transition table (which also
@@ -1287,6 +1305,7 @@ class VNextMemoryCommitService:
         )
         if memory is None:
             raise VNextMemoryCommitValidationError("memory was not found")
+        _require_project_update_decision_path(memory)
         self._policy_checked_write(identity=identity, action="memory.forget", memory=memory)
         return self._transition_memory(
             identity=identity,
@@ -2488,6 +2507,13 @@ class VNextMemoryCommitService:
                         observed_at=observed_at,
                     )
         except Exception as exc:
+            logger.error(
+                "memory entity linking failed memory_id=%s stage=%s error_code=%s",
+                memory_id,
+                stage,
+                ENTITY_LINKING_ERROR_CODE,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
             append_event(
                 cast(EventStore, self.store),
                 event_type="entity.extraction_failed",
@@ -2498,8 +2524,8 @@ class VNextMemoryCommitService:
                 trace_id=trace_id,
                 payload={
                     "stage": stage,
-                    "error_type": type(exc).__name__,
-                    "error_message": str(exc),
+                    "error_code": ENTITY_LINKING_ERROR_CODE,
+                    "error_message": ENTITY_LINKING_ERROR_MESSAGE,
                 },
             )
 
@@ -2579,6 +2605,13 @@ class VNextMemoryCommitService:
                     continue
                 expire_edge(edge_id=str(edge["id"]), actor_type=actor_type)
         except Exception as exc:
+            logger.error(
+                "memory entity-link expiry failed memory_id=%s stage=%s error_code=%s",
+                memory_id,
+                stage,
+                ENTITY_LINKING_ERROR_CODE,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
             append_event(
                 self.store,
                 event_type="entity.extraction_failed",
@@ -2589,8 +2622,8 @@ class VNextMemoryCommitService:
                 trace_id=trace_id,
                 payload={
                     "stage": f"{stage}.replace_links",
-                    "error_type": type(exc).__name__,
-                    "error_message": str(exc),
+                    "error_code": ENTITY_LINKING_ERROR_CODE,
+                    "error_message": ENTITY_LINKING_ERROR_MESSAGE,
                 },
             )
             raise ContinuityStoreInvariantError("content mutation could not expire obsolete entity links") from exc

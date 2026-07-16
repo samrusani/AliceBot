@@ -8,11 +8,18 @@ Agent developers — people building or operating AI agents who need durable, ex
 
 ## What Makes It Different
 - Typed continuity objects: decisions, open loops, resumption briefs — not just extracted facts.
-- Explainable provenance: every memory traces back to source evidence, reviews, and corrections.
+- Explainable provenance: source-backed memories trace to source evidence where
+  present, while reviews and corrections preserve their own audit chain.
+  Explicit commits may legitimately have no source reference.
 - Review-governed writes: agent commits resolve to commit, confirm, review, or reject through policy; the review console is the trust boundary.
 - Local-first: your data stays on your machine; models and embeddings are pluggable via OpenAI-compatible endpoints.
 
 ## Current Posture
+- `v0.11.1` is the current uncommitted Phase 2 release-hardening candidate;
+  at package-input freeze, its bounded local builder matrix was green while
+  final package reproduction, a superseding receipt, and independent review
+  were still pending. Exact-SHA external release gates remain pending.
+
 - `v0.11.0` is the latest published release and immutable baseline. Its PyPI
   wheel and source distribution have Trusted Publishing provenance, with exact
   digests in `docs/release/v0.11.0-checksums.txt`.
@@ -32,6 +39,10 @@ Agent developers — people building or operating AI agents who need durable, ex
 - Alice is public-alpha, pre-1.0, single-user, and self-hosted. `alice-memory`
   is published on PyPI; `uvx alice-memory mcp` serves the core tools against a
   local SQLite file with no Docker or Postgres.
+- The Phase 2 candidate tightens default-surface integration coverage, stable
+  public failures, cross-store list/resume/recent-decision query parity,
+  bounded project-update replay, pending-candidate guards, and coupled true
+  redaction without expanding the local-first product boundary.
 
 ## Non-Goals (Now)
 - Hosted service, multi-tenant control plane, SLA, or managed cloud.

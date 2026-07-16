@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
 import json
+import logging
 import os
 import re
 from typing import Iterable, Protocol
@@ -12,6 +13,8 @@ from urllib.request import Request, urlopen
 
 from alicebot_api.vnext_repositories import JsonObject
 
+
+logger = logging.getLogger(__name__)
 
 GENERATION_MODES = ("deterministic", "model_backed")
 MODEL_ROUTE_MODES = ("local_only", "cloud_allowed", "cloud_requires_approval", "model_disabled")
@@ -634,7 +637,13 @@ def generate_consolidation_merge(
     try:
         raw = provider.chat(prompt=prompt, temperature=request.temperature)
     except VNextModelIntelligenceError as exc:
-        return _refusal(f"provider_error: {exc}", provider_name=provider.provider, model_name=provider.model)
+        logger.warning(
+            "Consolidation merge provider failed error_code=provider_error provider=%s model=%s",
+            provider.provider,
+            provider.model,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return _refusal("provider_error", provider_name=provider.provider, model_name=provider.model)
     parsed = _parse_consolidation_merge_output(raw)
     if parsed is None:
         return _refusal("unparseable_model_output", provider_name=provider.provider, model_name=provider.model)

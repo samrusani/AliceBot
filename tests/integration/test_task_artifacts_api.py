@@ -63,10 +63,7 @@ def _build_pdf_bytes(
             )
         else:
             content_body = (
-                f"<< /Length {len(content_stream)} >>\n".encode("ascii")
-                + b"stream\n"
-                + content_stream
-                + b"endstream"
+                f"<< /Length {len(content_stream)} >>\n".encode("ascii") + b"stream\n" + content_stream + b"endstream"
             )
 
         objects[page_object_id] = (
@@ -75,9 +72,7 @@ def _build_pdf_bytes(
         ).encode("ascii")
         objects[content_object_id] = content_body
 
-    objects[2] = (
-        f"<< /Type /Pages /Count {len(page_refs)} /Kids [{' '.join(page_refs)}] >>"
-    ).encode("ascii")
+    objects[2] = (f"<< /Type /Pages /Count {len(page_refs)} /Kids [{' '.join(page_refs)}] >>").encode("ascii")
 
     document = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
     max_object_id = max(objects)
@@ -94,10 +89,7 @@ def _build_pdf_bytes(
     for object_id in range(1, max_object_id + 1):
         document.extend(f"{offsets[object_id]:010d} 00000 n \n".encode("ascii"))
     document.extend(
-        (
-            f"trailer\n<< /Size {max_object_id + 1} /Root 1 0 R >>\n"
-            f"startxref\n{xref_offset}\n%%EOF\n"
-        ).encode("ascii")
+        (f"trailer\n<< /Size {max_object_id + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n").encode("ascii")
     )
     return bytes(document)
 
@@ -116,18 +108,14 @@ def _build_docx_bytes(
             '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
             "<w:body>"
             + "".join(
-                (
-                    "<w:p><w:r><w:t xml:space=\"preserve\">"
-                    f"{escape(paragraph)}"
-                    "</w:t></w:r></w:p>"
-                )
+                (f'<w:p><w:r><w:t xml:space="preserve">{escape(paragraph)}</w:t></w:r></w:p>')
                 for paragraph in paragraphs
             )
             + (
                 "<w:sectPr>"
-                "<w:pgSz w:w=\"12240\" w:h=\"15840\"/>"
-                "<w:pgMar w:top=\"1440\" w:right=\"1440\" w:bottom=\"1440\" w:left=\"1440\" "
-                "w:header=\"708\" w:footer=\"708\" w:gutter=\"0\"/>"
+                '<w:pgSz w:w="12240" w:h="15840"/>'
+                '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" '
+                'w:header="708" w:footer="708" w:gutter="0"/>'
                 "</w:sectPr>"
                 "</w:body>"
                 "</w:document>"
@@ -191,40 +179,31 @@ def _build_rfc822_email_bytes(
         )
     ]
     if malformed_multipart:
-        return (
-            "\r\n".join(
-                [
-                    *header_lines,
-                    "MIME-Version: 1.0",
-                    "Content-Type: multipart/mixed",
-                    "",
-                    "--broken-boundary",
-                    'Content-Type: text/plain; charset="utf-8"',
-                    "",
-                    "broken",
-                    "--broken-boundary--",
-                    "",
-                ]
-            ).encode("utf-8")
-        )
+        return "\r\n".join(
+            [
+                *header_lines,
+                "MIME-Version: 1.0",
+                "Content-Type: multipart/mixed",
+                "",
+                "--broken-boundary",
+                'Content-Type: text/plain; charset="utf-8"',
+                "",
+                "broken",
+                "--broken-boundary--",
+                "",
+            ]
+        ).encode("utf-8")
 
-    if (
-        plain_parts is None
-        and html_body is None
-        and attachment_text is None
-        and nested_message_bytes is None
-    ):
-        return (
-            "\r\n".join(
-                [
-                    *header_lines,
-                    'Content-Type: text/plain; charset="utf-8"',
-                    "Content-Transfer-Encoding: 8bit",
-                    "",
-                    plain_body or "",
-                ]
-            ).encode("utf-8")
-        )
+    if plain_parts is None and html_body is None and attachment_text is None and nested_message_bytes is None:
+        return "\r\n".join(
+            [
+                *header_lines,
+                'Content-Type: text/plain; charset="utf-8"',
+                "Content-Transfer-Encoding: 8bit",
+                "",
+                plain_body or "",
+            ]
+        ).encode("utf-8")
 
     boundary = "alicebot-boundary-001"
     lines = [
@@ -319,11 +298,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -529,16 +504,11 @@ def test_task_artifact_endpoints_register_list_detail_isolate_and_reject_duplica
 
     assert duplicate_status == 409
     assert duplicate_payload == {
-        "detail": (
-            "artifact docs/spec.txt is already registered for task workspace "
-            f"{workspace_payload['workspace']['id']}"
-        )
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
     assert escaped_status == 400
-    assert escaped_payload == {
-        "detail": f"artifact path {outside_file.resolve()} escapes workspace root {workspace_path.resolve()}"
-    }
+    assert escaped_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
     assert isolated_list_status == 200
     assert isolated_list_payload == {
@@ -548,12 +518,12 @@ def test_task_artifact_endpoints_register_list_detail_isolate_and_reject_duplica
 
     assert isolated_detail_status == 404
     assert isolated_detail_payload == {
-        "detail": f"task artifact {first_create_payload['artifact']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
     assert isolated_create_status == 404
     assert isolated_create_payload == {
-        "detail": f"task workspace {workspace_payload['workspace']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -693,23 +663,16 @@ def test_task_artifact_ingestion_and_chunk_endpoints_are_deterministic_and_isola
 
     assert isolated_chunk_list_status == 404
     assert isolated_chunk_list_payload == {
-        "detail": f"task artifact {register_payload['artifact']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
     assert isolated_ingest_status == 404
     assert isolated_ingest_payload == {
-        "detail": f"task artifact {register_payload['artifact']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
     assert unsupported_ingest_status == 400
-    assert unsupported_ingest_payload == {
-        "detail": (
-            "artifact docs/manual.bin has unsupported media type application/octet-stream; "
-            "supported types: text/plain, text/markdown, application/pdf, "
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document, "
-            "message/rfc822"
-        )
-    }
+    assert unsupported_ingest_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_task_artifact_pdf_ingestion_and_chunk_endpoints_are_deterministic_and_isolated(
@@ -830,12 +793,12 @@ def test_task_artifact_pdf_ingestion_and_chunk_endpoints_are_deterministic_and_i
 
     assert isolated_chunk_list_status == 404
     assert isolated_chunk_list_payload == {
-        "detail": f"task artifact {register_payload['artifact']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
     assert isolated_ingest_status == 404
     assert isolated_ingest_payload == {
-        "detail": f"task artifact {register_payload['artifact']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -957,12 +920,12 @@ def test_task_artifact_docx_ingestion_and_chunk_endpoints_are_deterministic_and_
 
     assert isolated_chunk_list_status == 404
     assert isolated_chunk_list_payload == {
-        "detail": f"task artifact {register_payload['artifact']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
     assert isolated_ingest_status == 404
     assert isolated_ingest_payload == {
-        "detail": f"task artifact {register_payload['artifact']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -1031,11 +994,7 @@ def test_task_artifact_rfc822_ingestion_and_chunk_endpoints_are_deterministic_an
         payload={"user_id": str(intruder["user_id"])},
     )
 
-    header_block = (
-        "From: Alice <alice@example.com>\n"
-        "To: Bob <bob@example.com>\n"
-        "Subject: Sprint Update\n\n"
-    )
+    header_block = "From: Alice <alice@example.com>\nTo: Bob <bob@example.com>\nSubject: Sprint Update\n\n"
     assert ingest_status == 200
     assert ingest_payload == {
         "artifact": {
@@ -1093,12 +1052,12 @@ def test_task_artifact_rfc822_ingestion_and_chunk_endpoints_are_deterministic_an
 
     assert isolated_chunk_list_status == 404
     assert isolated_chunk_list_payload == {
-        "detail": f"task artifact {register_payload['artifact']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
     assert isolated_ingest_status == 404
     assert isolated_ingest_payload == {
-        "detail": f"task artifact {register_payload['artifact']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -1164,12 +1123,7 @@ def test_task_artifact_rfc822_ingestion_excludes_nested_email_bodies(
         query_params={"user_id": str(owner["user_id"])},
     )
 
-    expected_text = (
-        "From: Alice <alice@example.com>\n"
-        "To: Bob <bob@example.com>\n"
-        "Subject: Sprint Update\n\n"
-        "Outer body"
-    )
+    expected_text = "From: Alice <alice@example.com>\nTo: Bob <bob@example.com>\nSubject: Sprint Update\n\nOuter body"
     assert ingest_status == 200
     assert ingest_payload == {
         "artifact": {
@@ -1364,9 +1318,7 @@ def test_task_artifact_ingestion_rejects_invalid_utf8_content(
     )
 
     assert ingest_status == 400
-    assert ingest_payload == {
-        "detail": "artifact docs/broken.txt is not valid UTF-8 text"
-    }
+    assert ingest_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_task_artifact_ingestion_rejects_textless_pdf_content(
@@ -1415,9 +1367,7 @@ def test_task_artifact_ingestion_rejects_textless_pdf_content(
     )
 
     assert ingest_status == 400
-    assert ingest_payload == {
-        "detail": "artifact docs/scanned.pdf does not contain extractable PDF text"
-    }
+    assert ingest_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_task_artifact_ingestion_rejects_textless_or_malformed_docx(
@@ -1483,13 +1433,9 @@ def test_task_artifact_ingestion_rejects_textless_or_malformed_docx(
     )
 
     assert textless_ingest_status == 400
-    assert textless_ingest_payload == {
-        "detail": "artifact docs/empty.docx does not contain extractable DOCX text"
-    }
+    assert textless_ingest_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
     assert malformed_ingest_status == 400
-    assert malformed_ingest_payload == {
-        "detail": "artifact docs/broken.docx is not a valid DOCX"
-    }
+    assert malformed_ingest_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_task_artifact_ingestion_rejects_textless_or_malformed_rfc822_email(
@@ -1555,13 +1501,9 @@ def test_task_artifact_ingestion_rejects_textless_or_malformed_rfc822_email(
     )
 
     assert textless_ingest_status == 400
-    assert textless_ingest_payload == {
-        "detail": "artifact mail/empty.eml does not contain extractable RFC822 email text"
-    }
+    assert textless_ingest_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
     assert malformed_ingest_status == 400
-    assert malformed_ingest_payload == {
-        "detail": "artifact mail/broken.eml is not a valid RFC822 email"
-    }
+    assert malformed_ingest_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_task_artifact_ingestion_enforces_rooted_workspace_paths(
@@ -1624,9 +1566,7 @@ def test_task_artifact_ingestion_enforces_rooted_workspace_paths(
     )
 
     assert ingest_status == 400
-    assert ingest_payload == {
-        "detail": f"artifact path {outside_file.resolve()} escapes workspace root {workspace_path.resolve()}"
-    }
+    assert ingest_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_task_artifact_docx_ingestion_enforces_rooted_workspace_paths(
@@ -1689,9 +1629,7 @@ def test_task_artifact_docx_ingestion_enforces_rooted_workspace_paths(
     )
 
     assert ingest_status == 400
-    assert ingest_payload == {
-        "detail": f"artifact path {outside_file.resolve()} escapes workspace root {workspace_path.resolve()}"
-    }
+    assert ingest_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_task_artifact_rfc822_ingestion_enforces_rooted_workspace_paths(
@@ -1754,9 +1692,7 @@ def test_task_artifact_rfc822_ingestion_enforces_rooted_workspace_paths(
     )
 
     assert ingest_status == 400
-    assert ingest_payload == {
-        "detail": f"artifact path {outside_file.resolve()} escapes workspace root {workspace_path.resolve()}"
-    }
+    assert ingest_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_task_artifact_chunk_retrieval_endpoints_are_scoped_deterministic_and_isolated(
@@ -2057,10 +1993,10 @@ def test_task_artifact_chunk_retrieval_endpoints_are_scoped_deterministic_and_is
 
     assert isolated_task_retrieve_status == 404
     assert isolated_task_retrieve_payload == {
-        "detail": f"task {owner['task_id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
     assert isolated_artifact_retrieve_status == 404
     assert isolated_artifact_retrieve_payload == {
-        "detail": f"task artifact {notes_register_payload['artifact']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }

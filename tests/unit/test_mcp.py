@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from copy import deepcopy
 from contextlib import contextmanager
 from datetime import UTC, datetime
+import inspect
 from io import BytesIO
 import json
 import sqlite3
@@ -23,9 +25,11 @@ from alicebot_api.vnext_embeddings import (
     EMBEDDINGS_MODEL_ENV,
 )
 from alicebot_api.vnext_event_log import build_event_log_record
+from alicebot_api.vnext_project_update_guard import PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE
 from alicebot_api.vnext_projects import PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE
-from alicebot_api.vnext_project_scope import memory_project_scope
+from alicebot_api.vnext_project_scope import memory_project_scope, project_identifier_identity
 from alicebot_api.vnext_retrieval import VECTOR_STAGE_DISABLED_NO_PROVIDER, VECTOR_STAGE_ENABLED
+from alicebot_api.vnext_store import PostgresVNextStore
 
 
 CORE_TOOL_NAMES = [
@@ -227,11 +231,7 @@ def test_mcp_tool_names_fence_deleted_surface_vocabulary() -> None:
     forbidden_fragments = ("telegram", "chief_of_staff", "model_pack", "hosted", "response", "_chat_")
     names = set(mcp_tools_module._CORE_TOOL_NAMES) | set(mcp_tools_module._LEGACY_TOOL_NAMES)
 
-    assert not {
-        name
-        for name in names
-        if any(fragment in name for fragment in forbidden_fragments)
-    }
+    assert not {name for name in names if any(fragment in name for fragment in forbidden_fragments)}
 
 
 def test_every_tool_definition_has_a_handler_and_vice_versa() -> None:
@@ -1112,6 +1112,7 @@ class FakeVNextMCPStore:
         self.entities: dict[str, dict[str, object]] = {}
         self.provenance_links: list[dict[str, object]] = []
         self.artifacts: dict[str, dict[str, object]] = {}
+        self.quality_ratings: list[dict[str, object]] = []
         self.open_loops: list[dict[str, object]] = []
         self.edges: dict[str, dict[str, object]] = {}
         self.workflows: dict[str, dict[str, object]] = {}
@@ -1142,6 +1143,93 @@ class FakeVNextMCPStore:
             }
         }
 
+    @staticmethod
+    def _is_live(row: dict[str, object]) -> bool:
+        return row.get("deleted_at") is None
+
+    @staticmethod
+    def _matches_domains(
+        row: dict[str, object],
+        domains: list[str] | None,
+        *,
+        empty_is_unrestricted: bool = False,
+    ) -> bool:
+        if domains is None or (empty_is_unrestricted and not domains):
+            return True
+        return row.get("domain") in domains or row.get("domain") == "unknown"
+
+    @staticmethod
+    def _matches_sensitivity(
+        row: dict[str, object],
+        sensitivity_allowed: list[str] | None,
+    ) -> bool:
+        if sensitivity_allowed is None:
+            return True
+        return (row.get("sensitivity") or "unknown") in sensitivity_allowed
+
+    @staticmethod
+    def _row_in_first_window(
+        row: dict[str, object],
+        *,
+        keys: tuple[str, ...],
+        since: datetime | None,
+        until: datetime | None,
+    ) -> bool:
+        for key in keys:
+            if row.get(key) not in {None, ""}:
+                return mcp_tools_module._row_in_window(
+                    row,
+                    key=key,
+                    since=since,
+                    until=until,
+                )
+        return since is None and until is None
+
+    @staticmethod
+    def _metadata_scope_values(row: dict[str, object], keys: tuple[str, ...]) -> set[str]:
+        metadata = row.get("metadata_json")
+        if not isinstance(metadata, dict):
+            return set()
+
+        values: set[str] = set()
+
+        def collect(value: object) -> None:
+            if isinstance(value, str):
+                normalized = value.strip().casefold()
+                if normalized:
+                    values.add(normalized)
+            elif isinstance(value, dict):
+                for nested in value.values():
+                    collect(nested)
+            elif isinstance(value, (list, tuple)):
+                for nested in value:
+                    collect(nested)
+
+        for key in keys:
+            collect(metadata.get(key))
+        return values
+
+    @classmethod
+    def _matches_people(cls, row: dict[str, object], people: Sequence[str]) -> bool:
+        if not people:
+            return True
+        requested = {str(person).strip().casefold() for person in people if str(person).strip()}
+        return bool(
+            requested
+            & cls._metadata_scope_values(
+                row,
+                ("person_id", "person_ids", "person", "people", "people_ids"),
+            )
+        )
+
+    @staticmethod
+    def _metadata_text(row: dict[str, object], key: str) -> str | None:
+        metadata = row.get("metadata_json")
+        if not isinstance(metadata, dict):
+            return None
+        value = metadata.get(key)
+        return str(value) if isinstance(value, str) else None
+
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
         return event
@@ -1171,8 +1259,12 @@ class FakeVNextMCPStore:
         self.chunks.append(row)
         return row
 
-    def list_source_chunks(self, source_id: str) -> list[dict[str, object]]:
-        return [chunk for chunk in self.chunks if str(chunk.get("source_id")) == source_id]
+    def list_source_chunks(self, source_id: str, *, limit: int = 500) -> list[dict[str, object]]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        rows = [chunk for chunk in self.chunks if str(chunk.get("source_id")) == source_id]
+        rows.sort(key=lambda row: (int(row.get("chunk_index") or 0), str(row.get("id") or "")))
+        return rows[:limit]
 
     def get_artifact(self, artifact_id: str) -> dict[str, object] | None:
         return self.artifacts.get(artifact_id)
@@ -1217,35 +1309,231 @@ class FakeVNextMCPStore:
     def get_memory_for_update(self, memory_id: str) -> dict[str, object] | None:
         return self.get_memory(memory_id)
 
-    def get_entity(self, entity_id: str) -> dict[str, object] | None:
-        return self.entities.get(entity_id)
+    def get_memory_for_redaction(self, memory_id: str) -> dict[str, object] | None:
+        return self.get_memory(memory_id)
 
-    def list_memories(self, *, status: str | None = None, **kwargs) -> list[dict[str, object]]:
-        statuses = kwargs.get("statuses")
-        memory_types = kwargs.get("memory_types")
-        projects = tuple(kwargs.get("projects") or ())
-        created_at_start = kwargs.get("created_at_start")
-        created_at_end = kwargs.get("created_at_end")
-        query = kwargs.get("query")
+    def lock_project_update_artifacts_for_redaction(self, memory_id: str) -> list[dict[str, object]]:
+        return sorted(
+            [
+                artifact
+                for artifact in self.artifacts.values()
+                if isinstance(artifact.get("metadata_json"), dict)
+                and artifact["metadata_json"].get("candidate_memory_id") == memory_id
+            ],
+            key=lambda artifact: str(artifact.get("id") or ""),
+        )
+
+    def redact_memory_bundle(
+        self,
+        *,
+        memory_id: str,
+        project_update_artifacts: list[dict[str, object]],
+        actor_type: str = "user",
+    ) -> dict[str, object]:
+        memory = self.get_memory(memory_id)
+        assert memory is not None, memory_id
+        metadata = memory.get("metadata_json")
+        redacted_at = (
+            str(metadata.get("redacted_at") or "now") if isinstance(metadata, dict) else "now"
+        )
+        structural = {
+            key: metadata[key]
+            for key in (
+                "project_id",
+                "project_scope",
+                "superseded_by",
+                "supersedes",
+                "run_id",
+                "agent_id",
+                "created_by_agent_id",
+            )
+            if isinstance(metadata, dict) and key in metadata
+        }
+        desired_memory = {
+            "memory_key": f"redacted.{memory_id}",
+            "title": None if memory.get("title") is None else "[REDACTED]",
+            "canonical_text": "[REDACTED]",
+            "summary": None if memory.get("summary") is None else "[REDACTED]",
+            "trust_reason": None if memory.get("trust_reason") is None else "[REDACTED]",
+            "value": {"redacted": True},
+            "source_event_ids": [],
+            "metadata_json": {**structural, "redacted": True, "redacted_at": redacted_at},
+            "commit_digest": None,
+            "confirmation_id": None,
+            "embedding_vector": None,
+            "fact_keys": None,
+            "status": "archived",
+            "deleted_at": memory.get("deleted_at") or "now",
+        }
+        memory_changed = any(memory.get(key) != value for key, value in desired_memory.items())
+        memory.update(desired_memory)
+
+        redacted_revisions = 0
+        for revision in self.revisions:
+            if str(revision.get("memory_id")) != memory_id:
+                continue
+            desired_revision = {
+                "memory_key": f"redacted.{memory_id}",
+                "previous_value": None if revision.get("previous_value") is None else {"redacted": True},
+                "new_value": None if revision.get("new_value") is None else {"redacted": True},
+                "source_event_ids": [],
+                "candidate": {"redacted": True},
+                "text_before": None if revision.get("text_before") is None else "[REDACTED]",
+                "text_after": "[REDACTED]",
+                "reason": None if revision.get("reason") is None else "[REDACTED]",
+                "metadata_json": {"redacted": True},
+            }
+            if any(revision.get(key) != value for key, value in desired_revision.items()):
+                revision.update(desired_revision)
+                redacted_revisions += 1
+
+        coupled_artifact_ids = [str(artifact["id"]) for artifact in project_update_artifacts]
+        changed_artifact_ids: list[str] = []
+        for artifact in project_update_artifacts:
+            artifact_id = str(artifact["id"])
+            old_metadata = artifact.get("metadata_json")
+            assert isinstance(old_metadata, dict)
+            desired_artifact = {
+                "title": "[REDACTED]",
+                "content_markdown": "[REDACTED]",
+                "prompt_hash": None,
+                "model_info_json": {"redacted": True},
+                "metadata_json": {
+                    "redacted": True,
+                    "redacted_at": redacted_at,
+                    "workflow": "project_auto_update",
+                    "project_id": old_metadata["project_id"],
+                    "project_scope": [old_metadata["project_id"]],
+                    "candidate_memory_id": memory_id,
+                    "review_action": old_metadata["review_action"],
+                },
+            }
+            if any(artifact.get(key) != value for key, value in desired_artifact.items()):
+                artifact.update(desired_artifact)
+                changed_artifact_ids.append(artifact_id)
+
+        redacted_events = 0
+        for event in self.events:
+            payload = event.get("payload_json")
+            coupled = str(event.get("target_id")) in {memory_id, *coupled_artifact_ids} or (
+                isinstance(payload, dict)
+                and any(
+                    str(payload.get(key)) in {memory_id, *coupled_artifact_ids}
+                    for key in ("memory_id", "candidate_memory_id", "artifact_id")
+                )
+            )
+            if not coupled:
+                continue
+            desired_payload = {
+                "redacted": True,
+                "memory_id": memory_id,
+                "event_type": event.get("event_type"),
+            }
+            if event.get("payload_json") != desired_payload or event.get("integrity_hash") is not None:
+                event["payload_json"] = desired_payload
+                event["integrity_hash"] = None
+                redacted_events += 1
+
+        changed = bool(memory_changed or changed_artifact_ids or redacted_revisions or redacted_events)
+        if changed:
+            self.append_event(
+                {
+                    "event_type": "memory.redacted",
+                    "actor_type": actor_type,
+                    "target_type": "memory",
+                    "target_id": memory_id,
+                    "payload_json": {
+                        "redacted": True,
+                        "memory_id": memory_id,
+                        "event_type": "memory.redacted",
+                    },
+                    "integrity_hash": None,
+                }
+            )
+        return {
+            "memory": memory,
+            "redacted_revisions": redacted_revisions,
+            "redacted_events": redacted_events,
+            "redacted_artifacts": len(changed_artifact_ids),
+            "redacted_artifact_ids": changed_artifact_ids,
+            "redacted_quality_ratings": 0,
+            "redacted_provenance_links": 0,
+            "idempotent_replay": not changed,
+        }
+
+    def get_memory_by_confirmation_id(self, confirmation_id: str) -> dict[str, object] | None:
         rows = [
             memory
             for memory in self.memories
-            if (status is None or memory.get("status") == status)
-            and (statuses is None or memory.get("status") in statuses)
-            and (memory_types is None or memory.get("memory_type") in memory_types)
-            and (not projects or mcp_tools_module._resource_matches_project_scope(memory, projects))
+            if self._is_live(memory) and memory.get("confirmation_id") == confirmation_id
+        ]
+        rows.sort(key=mcp_tools_module._created_at_sort_key, reverse=True)
+        return rows[0] if rows else None
+
+    def get_entity(self, entity_id: str) -> dict[str, object] | None:
+        return self.entities.get(entity_id)
+
+    def list_memories(
+        self,
+        *,
+        status: str | None = None,
+        statuses: Sequence[str] | None = None,
+        memory_types: Sequence[str] | None = None,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        projects: Sequence[str] | None = None,
+        created_at_start: datetime | None = None,
+        created_at_end: datetime | None = None,
+        query: str | None = None,
+        order_by_created_at: bool = False,
+        limit: int | None = None,
+    ) -> list[dict[str, object]]:
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be positive")
+        normalized_statuses = None
+        if statuses is not None:
+            normalized_statuses = tuple(dict.fromkeys(str(value) for value in statuses if str(value)))
+            if not normalized_statuses:
+                return []
+        normalized_memory_types = None
+        if memory_types is not None:
+            normalized_memory_types = tuple(dict.fromkeys(str(value) for value in memory_types if str(value)))
+            if not normalized_memory_types:
+                return []
+        project_scope = tuple(projects or ())
+        normalized_query = str(query).strip() if query is not None else None
+        if normalized_query == "":
+            normalized_query = None
+        rows = [
+            memory
+            for memory in self.memories
+            if self._is_live(memory)
+            and (status is None or memory.get("status") == status)
+            and (normalized_statuses is None or memory.get("status") in normalized_statuses)
+            and (normalized_memory_types is None or memory.get("memory_type") in normalized_memory_types)
+            and self._matches_domains(memory, domains, empty_is_unrestricted=True)
+            and self._matches_sensitivity(memory, sensitivity_allowed)
+            and (not project_scope or mcp_tools_module._resource_matches_project_scope(memory, project_scope))
             and mcp_tools_module._row_in_window(
                 memory,
                 key="created_at",
                 since=created_at_start,
                 until=created_at_end,
             )
-            and mcp_tools_module._memory_matches_query(memory, query)
+            and mcp_tools_module._memory_matches_query(memory, normalized_query)
         ]
-        if kwargs.get("order_by_created_at"):
+        if order_by_created_at:
             rows.sort(key=mcp_tools_module._created_at_sort_key, reverse=True)
-        limit = kwargs.get("limit")
-        return rows[: int(limit)] if limit is not None else rows
+        else:
+            rows.sort(
+                key=lambda row: (
+                    str(row.get("updated_at") or ""),
+                    str(row.get("created_at") or ""),
+                    str(row.get("id") or ""),
+                ),
+                reverse=True,
+            )
+        return rows[:limit] if limit is not None else rows
 
     def list_rollup_input_memories(
         self,
@@ -1254,26 +1542,114 @@ class FakeVNextMCPStore:
         sensitivity_allowed: list[str],
         excluded_candidate_kind: str,
         limit: int,
+        projects: Sequence[str] | None = None,
     ) -> list[dict[str, object]]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        if not sensitivity_allowed:
+            return []
+        project_scope = tuple(projects or ())
         rows = [
             memory
             for memory in self.memories
-            if memory.get("status") in {"active", "accepted"}
-            and (not domains or memory.get("domain") in {*domains, "unknown"})
-            and memory.get("sensitivity", "unknown") in sensitivity_allowed
-            and not (
-                isinstance(memory.get("metadata_json"), dict)
-                and memory["metadata_json"].get("candidate_kind") == excluded_candidate_kind
-            )
+            if self._is_live(memory)
+            and memory.get("status") in {"active", "accepted"}
+            and self._matches_domains(memory, domains, empty_is_unrestricted=True)
+            and self._matches_sensitivity(memory, sensitivity_allowed)
+            and self._metadata_text(memory, "candidate_kind") != excluded_candidate_kind
+            and (not project_scope or mcp_tools_module._resource_matches_project_scope(memory, project_scope))
         ]
         rows.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id"))), reverse=True)
         return [dict(row) for row in rows[:limit]]
 
-    def list_pending_rollup_candidates(self, **_kwargs) -> list[dict[str, object]]:
-        return []
+    def list_pending_rollup_candidates(
+        self,
+        *,
+        rollup_digests: tuple[str, ...],
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        candidate_kind: str,
+        limit: int,
+        projects: Sequence[str] | None = None,
+    ) -> list[dict[str, object]]:
+        unique_digests = tuple(sorted(set(rollup_digests)))
+        if not unique_digests or not sensitivity_allowed:
+            return []
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        project_scope = tuple(projects or ())
+        matches = [
+            memory
+            for memory in self.memories
+            if self._is_live(memory)
+            and memory.get("status") == "candidate"
+            and self._metadata_text(memory, "candidate_kind") == candidate_kind
+            and self._metadata_text(memory, "rollup_digest") in unique_digests
+            and self._matches_domains(memory, domains, empty_is_unrestricted=True)
+            and self._matches_sensitivity(memory, sensitivity_allowed)
+            and (not project_scope or mcp_tools_module._resource_matches_project_scope(memory, project_scope))
+        ]
+        matches.sort(
+            key=lambda row: (
+                str(self._metadata_text(row, "rollup_digest") or ""),
+                str(row.get("updated_at") or ""),
+                str(row.get("created_at") or ""),
+                str(row.get("id") or ""),
+            ),
+            reverse=True,
+        )
+        newest_by_digest: dict[str, dict[str, object]] = {}
+        for row in matches:
+            digest = self._metadata_text(row, "rollup_digest")
+            if digest is not None:
+                newest_by_digest.setdefault(digest, row)
+        rows = [newest_by_digest[digest] for digest in sorted(newest_by_digest)]
+        return [dict(row) for row in rows[: min(limit, len(unique_digests))]]
 
-    def list_accepted_rollup_cards(self, **_kwargs) -> list[dict[str, object]]:
-        return []
+    def list_accepted_rollup_cards(
+        self,
+        *,
+        rollup_keys: tuple[str, ...],
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        candidate_kind: str,
+        limit: int,
+        projects: Sequence[str] | None = None,
+    ) -> list[dict[str, object]]:
+        unique_keys = tuple(sorted(set(rollup_keys)))
+        if not unique_keys or not sensitivity_allowed:
+            return []
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        project_scope = tuple(projects or ())
+        matches = [
+            memory
+            for memory in self.memories
+            if self._is_live(memory)
+            and memory.get("status") in {"active", "accepted"}
+            and self._metadata_text(memory, "candidate_kind") == candidate_kind
+            and self._metadata_text(memory, "rollup_key") in unique_keys
+            and self._matches_domains(memory, domains, empty_is_unrestricted=True)
+            and self._matches_sensitivity(memory, sensitivity_allowed)
+            and (not project_scope or mcp_tools_module._resource_matches_project_scope(memory, project_scope))
+        ]
+        matches.sort(
+            key=lambda row: (
+                str(self._metadata_text(row, "rollup_key") or ""),
+                1 if row.get("status") == "active" else 0,
+                str(row.get("updated_at") or ""),
+                str(row.get("created_at") or ""),
+                str(row.get("id") or ""),
+            ),
+            reverse=True,
+        )
+        newest_by_key: dict[str, dict[str, object]] = {}
+        for row in matches:
+            rollup_key = self._metadata_text(row, "rollup_key")
+            if rollup_key is not None:
+                newest_by_key.setdefault(rollup_key, row)
+        rows = [newest_by_key[rollup_key] for rollup_key in sorted(newest_by_key)]
+        return [dict(row) for row in rows[: min(limit, len(unique_keys))]]
 
     def append_revision(self, revision: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**revision, "id": f"revision-{len(self.revisions) + 1}"}
@@ -1340,14 +1716,28 @@ class FakeVNextMCPStore:
             }
         ][: _kwargs.get("limit", 8)]
 
-    def list_open_loops(self, **_kwargs) -> list[dict[str, object]]:
-        status = _kwargs.get("status", "open")
-        statuses = _kwargs.get("statuses")
-        query = _kwargs.get("query")
-        project_id = _kwargs.get("project_id")
-        scope_projects = tuple(_kwargs.get("scope_projects") or ())
-        scope_window_start = _kwargs.get("scope_window_start")
-        scope_window_end = _kwargs.get("scope_window_end")
+    def list_open_loops(
+        self,
+        *,
+        status: str | None = "open",
+        statuses: Sequence[str] | None = None,
+        query: str | None = None,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        project_id: str | None = None,
+        person_id: str | None = None,
+        limit: int = 8,
+        scope_projects: Sequence[str] | None = None,
+        scope_people: tuple[str, ...] = (),
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
+    ) -> list[dict[str, object]]:
+        normalized_statuses = None
+        if statuses is not None:
+            normalized_statuses = tuple(dict.fromkeys(str(value) for value in statuses if str(value)))
+            if not normalized_statuses:
+                return []
+        project_scope = tuple(scope_projects or ())
         normalized_query = str(query).strip() if query is not None else ""
 
         def matches_query(row: dict[str, object]) -> bool:
@@ -1370,12 +1760,21 @@ class FakeVNextMCPStore:
             row
             for row in self.open_loops
             if (status is None or row.get("status") == status)
-            and (statuses is None or row.get("status") in statuses)
+            and (normalized_statuses is None or row.get("status") in normalized_statuses)
+            and self._matches_domains(row, domains)
+            and self._matches_sensitivity(row, sensitivity_allowed)
             and (project_id is None or row.get("project_id") == project_id)
-            and (not scope_projects or mcp_tools_module._resource_matches_project_scope(row, scope_projects))
-            and mcp_tools_module._row_in_window(
+            and (person_id is None or row.get("person_id") == person_id)
+            and (not project_scope or mcp_tools_module._resource_matches_project_scope(row, project_scope))
+            and (
+                not scope_people
+                or str(row.get("person_id") or "").strip().casefold()
+                in {person.strip().casefold() for person in scope_people}
+                or self._matches_people(row, scope_people)
+            )
+            and self._row_in_first_window(
                 row,
-                key="opened_at",
+                keys=("opened_at", "updated_at", "created_at"),
                 since=scope_window_start,
                 until=scope_window_end,
             )
@@ -1389,12 +1788,24 @@ class FakeVNextMCPStore:
             ),
             reverse=True,
         )
-        return rows[: int(_kwargs.get("limit", 8))]
+        return rows[:limit]
 
-    def list_open_loop_events(self, **kwargs) -> list[dict[str, object]]:
-        statuses = kwargs.get("statuses")
-        projects = tuple(kwargs.get("scope_projects") or ())
-        query = kwargs.get("query")
+    def list_open_loop_events(
+        self,
+        *,
+        statuses: Sequence[str],
+        scope_projects: Sequence[str] | None = None,
+        query: str | None = None,
+        occurred_at_start: datetime | None = None,
+        occurred_at_end: datetime | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, object]]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        normalized_statuses = tuple(dict.fromkeys(str(value) for value in statuses if str(value)))
+        if not normalized_statuses:
+            return []
+        projects = tuple(scope_projects or ())
         normalized_query = str(query).strip() if query is not None else ""
 
         def contains_query(value: object, needle: str) -> bool:
@@ -1429,7 +1840,7 @@ class FakeVNextMCPStore:
         eligible_loops = {
             str(row.get("id")): row
             for row in self.open_loops
-            if (statuses is None or row.get("status") in statuses)
+            if row.get("status") in normalized_statuses
             and (not projects or mcp_tools_module._resource_matches_project_scope(row, projects))
         }
         eligible_ids = {loop_id for loop_id in eligible_loops}
@@ -1442,23 +1853,39 @@ class FakeVNextMCPStore:
             and mcp_tools_module._row_in_window(
                 event,
                 key="occurred_at",
-                since=kwargs.get("occurred_at_start"),
-                until=kwargs.get("occurred_at_end"),
+                since=occurred_at_start,
+                until=occurred_at_end,
             )
         ]
         rows.sort(key=lambda row: (str(row.get("occurred_at") or ""), str(row.get("id") or "")), reverse=True)
-        return rows[: int(kwargs.get("limit", 20))]
+        return rows[:limit]
 
-    def list_resume_memory_events(self, **kwargs) -> list[dict[str, object]]:
-        statuses = kwargs.get("statuses")
-        projects = tuple(kwargs.get("projects") or ())
-        query = kwargs.get("query")
+    def list_resume_memory_events(
+        self,
+        *,
+        statuses: Sequence[str],
+        projects: Sequence[str] | None = None,
+        query: str | None = None,
+        occurred_at_start: datetime | None = None,
+        occurred_at_end: datetime | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, object]]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        normalized_statuses = tuple(dict.fromkeys(str(value) for value in statuses if str(value)))
+        if not normalized_statuses:
+            return []
+        project_scope = tuple(projects or ())
+        normalized_query = str(query).strip() if query is not None else None
+        if normalized_query == "":
+            normalized_query = None
         eligible_ids = {
             str(row.get("id"))
             for row in self.memories
-            if (statuses is None or row.get("status") in statuses)
-            and (not projects or mcp_tools_module._resource_matches_project_scope(row, projects))
-            and mcp_tools_module._memory_matches_query(row, query)
+            if self._is_live(row)
+            and row.get("status") in normalized_statuses
+            and (not project_scope or mcp_tools_module._resource_matches_project_scope(row, project_scope))
+            and mcp_tools_module._memory_matches_query(row, normalized_query)
         }
         rows = [
             event
@@ -1468,12 +1895,12 @@ class FakeVNextMCPStore:
             and mcp_tools_module._row_in_window(
                 event,
                 key="occurred_at",
-                since=kwargs.get("occurred_at_start"),
-                until=kwargs.get("occurred_at_end"),
+                since=occurred_at_start,
+                until=occurred_at_end,
             )
         ]
         rows.sort(key=lambda row: (str(row.get("occurred_at") or ""), str(row.get("id") or "")), reverse=True)
-        return rows[: int(kwargs.get("limit", 20))]
+        return rows[:limit]
 
     def get_open_loop(self, loop_id: str) -> dict[str, object] | None:
         for loop in self.open_loops:
@@ -1501,8 +1928,28 @@ class FakeVNextMCPStore:
             loop["resolution_note"] = resolution_note
         return loop
 
-    def list_artifacts(self, **_kwargs) -> list[dict[str, object]]:
-        return list(self.artifacts.values())[: _kwargs.get("limit", 4)]
+    def list_artifacts(
+        self,
+        *,
+        artifact_type: str | None = None,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        scope_projects: tuple[str, ...] = (),
+        limit: int = 8,
+    ) -> list[dict[str, object]]:
+        rows = [
+            row
+            for row in self.artifacts.values()
+            if (artifact_type is None or row.get("artifact_type") == artifact_type)
+            and self._matches_domains(row, domains)
+            and self._matches_sensitivity(row, sensitivity_allowed)
+            and (not scope_projects or mcp_tools_module._resource_matches_project_scope(row, scope_projects))
+        ]
+        rows.sort(
+            key=lambda row: (str(row.get("created_at") or ""), str(row.get("id") or "")),
+            reverse=True,
+        )
+        return rows[:limit]
 
     def get_project(self, project_id: str) -> dict[str, object] | None:
         return self.projects.get(project_id)
@@ -1510,19 +1957,58 @@ class FakeVNextMCPStore:
     def get_project_for_update(self, project_id: str) -> dict[str, object] | None:
         return self.get_project(project_id)
 
-    def list_projects(self, **kwargs) -> list[dict[str, object]]:
-        status = kwargs.get("status", "active")
-        limit = kwargs.get("limit", 8)
-        return [row for row in self.projects.values() if status is None or row.get("status") == status][:limit]
+    def list_projects(
+        self,
+        *,
+        status: str | None = "active",
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        scope_projects: Sequence[str] | None = None,
+        limit: int = 8,
+    ) -> list[dict[str, object]]:
+        requested_scope = {
+            project_identifier_identity(value) for value in scope_projects or () if project_identifier_identity(value)
+        }
+
+        def matches_project_scope(row: dict[str, object]) -> bool:
+            if not requested_scope:
+                return True
+            row_identities = {
+                project_identifier_identity(row.get(key))
+                for key in ("id", "slug", "name")
+                if project_identifier_identity(row.get(key))
+            }
+            return bool(requested_scope & row_identities)
+
+        rows = [
+            row
+            for row in self.projects.values()
+            if (status is None or row.get("status") == status)
+            and self._matches_domains(row, domains)
+            and self._matches_sensitivity(row, sensitivity_allowed)
+            and matches_project_scope(row)
+        ]
+        rows.sort(
+            key=lambda row: (
+                str(row.get("updated_at") or ""),
+                str(row.get("created_at") or ""),
+                str(row.get("id") or ""),
+            ),
+            reverse=True,
+        )
+        return rows[:limit]
 
     def update_project(self, *, project_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
         project = self.projects[project_id]
         project.update(patch)
         return project
 
-    def list_edges(self, **kwargs) -> list[dict[str, object]]:
-        from_id = kwargs.get("from_id")
-        to_id = kwargs.get("to_id")
+    def list_edges(
+        self,
+        *,
+        from_id: str | None = None,
+        to_id: str | None = None,
+    ) -> list[dict[str, object]]:
         return [
             edge
             for edge in self.edges.values()
@@ -1531,9 +2017,67 @@ class FakeVNextMCPStore:
             and edge.get("valid_to") is None
         ]
 
-    def list_beliefs(self, **kwargs) -> list[dict[str, object]]:
-        status = kwargs.get("status", "active")
-        return [row for row in self.beliefs.values() if status is None or row.get("status") == status]
+    def list_beliefs(
+        self,
+        *,
+        status: str | None = "active",
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        scope_projects: tuple[str, ...] = (),
+        scope_people: tuple[str, ...] = (),
+        scope_person_memory_ids: tuple[str, ...] = (),
+        scope_window_start: datetime | None = None,
+        scope_window_end: datetime | None = None,
+        limit: int = 8,
+    ) -> list[dict[str, object]]:
+        backing_by_id = {str(memory.get("id")): memory for memory in self.memories if self._is_live(memory)}
+        rows: list[dict[str, object]] = []
+        for belief in self.beliefs.values():
+            backing = backing_by_id.get(str(belief.get("memory_id") or ""))
+            if backing is None:
+                continue
+            if status is not None and belief.get("status") != status:
+                continue
+            if not self._matches_domains(backing, domains):
+                continue
+            if not self._matches_sensitivity(backing, sensitivity_allowed):
+                continue
+            if scope_projects and not mcp_tools_module._resource_matches_project_scope(
+                backing,
+                scope_projects,
+            ):
+                continue
+            if scope_people and (
+                str(backing.get("id") or "") not in scope_person_memory_ids
+                and not self._matches_people(backing, scope_people)
+            ):
+                continue
+            if not self._row_in_first_window(
+                backing,
+                keys=("valid_from", "last_seen_at", "updated_at", "first_seen_at", "created_at"),
+                since=scope_window_start,
+                until=scope_window_end,
+            ):
+                continue
+            rows.append(
+                {
+                    **belief,
+                    "domain": backing.get("domain"),
+                    "sensitivity": backing.get("sensitivity"),
+                    "memory_type": backing.get("memory_type"),
+                    "memory_canonical_text": backing.get("canonical_text"),
+                }
+            )
+        rows.sort(
+            key=lambda row: (
+                str(row.get("last_challenged_at") or ""),
+                str(row.get("last_reinforced_at") or ""),
+                str(row.get("first_seen_at") or ""),
+                str(row.get("id") or ""),
+            ),
+            reverse=True,
+        )
+        return rows[:limit]
 
     def get_belief(self, belief_id: str) -> dict[str, object] | None:
         return self.beliefs.get(belief_id)
@@ -1587,6 +2131,37 @@ class FakeVNextMCPStore:
         rows.sort(key=lambda row: (str(row.get("occurred_at") or ""), str(row.get("id") or "")), reverse=True)
         return rows[:limit] if limit is not None else rows
 
+    def list_project_update_events(
+        self,
+        *,
+        artifact_id: str,
+        candidate_memory_id: str,
+    ) -> list[dict[str, object]]:
+        event_types = {
+            "project.update_candidate_created",
+            "project.update_candidate_accepted",
+            "project.update_candidate_rejected",
+        }
+
+        def is_coupled(event: dict[str, object]) -> bool:
+            if (event.get("target_type") == "artifact" and event.get("target_id") == artifact_id) or (
+                event.get("target_type") == "memory" and event.get("target_id") == candidate_memory_id
+            ):
+                return True
+            payload = event.get("payload_json")
+            return isinstance(payload, dict) and (
+                payload.get("artifact_id") == artifact_id
+                or payload.get("candidate_memory_id") == candidate_memory_id
+                or payload.get("memory_id") == candidate_memory_id
+            )
+
+        rows = [event for event in self.events if event.get("event_type") in event_types and is_coupled(event)]
+        rows.sort(
+            key=lambda row: (str(row.get("occurred_at") or ""), str(row.get("id") or "")),
+            reverse=True,
+        )
+        return rows
+
     def upsert_scheduler_workflow(self, workflow: dict[str, object], **_kwargs) -> dict[str, object]:
         workflow_type = str(workflow["workflow_type"])
         row = {
@@ -1633,30 +2208,313 @@ class FakeVNextMCPStore:
     def try_scheduler_workflow_lock(self, _workflow_type: str) -> bool:
         return True
 
-    def list_artifact_quality_ratings(self, **kwargs) -> list[dict[str, object]]:
-        return [
+    def list_artifact_quality_ratings(
+        self,
+        *,
+        artifact_id: str | None = None,
+        scope_projects: Sequence[str] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, object]]:
+        rows = [
             {
                 "id": "rating-1",
                 "artifact_id": "artifact-1",
                 "usefulness": 4,
                 "source_grounding": 5,
             }
-        ][: kwargs.get("limit", 20)]
+        ]
+        if artifact_id is not None:
+            rows = [row for row in rows if row.get("artifact_id") == artifact_id]
+        project_scope = tuple(scope_projects or ())
+        if project_scope:
+            rows = [
+                row
+                for row in rows
+                if (artifact := self.artifacts.get(str(row.get("artifact_id") or ""))) is not None
+                and mcp_tools_module._resource_matches_project_scope(artifact, project_scope)
+            ]
+        return rows[:limit]
 
-    def list_provenance_links(self, **_kwargs) -> list[dict[str, object]]:
-        target_type = _kwargs.get("target_type")
-        target_id = _kwargs.get("target_id")
+    def list_provenance_links(
+        self,
+        *,
+        target_type: str,
+        target_id: str,
+    ) -> list[dict[str, object]]:
         return [
             row
             for row in self.provenance_links
-            if (target_type is None or row.get("target_type") == target_type)
-            and (target_id is None or row.get("target_id") == target_id)
+            if row.get("target_type") == target_type and row.get("target_id") == target_id
         ]
 
     def create_provenance_link(self, link: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**link, "id": f"provenance-{len(self.events) + 1}"}
         self.provenance_links.append(row)
         return row
+
+
+def test_fake_vnext_mcp_store_list_signatures_match_production_and_reject_unknown_keywords() -> None:
+    fake_list_methods = {
+        name: method
+        for name, method in inspect.getmembers(FakeVNextMCPStore, predicate=inspect.isfunction)
+        if name.startswith("list_")
+    }
+
+    assert fake_list_methods
+    for name, fake_method in fake_list_methods.items():
+        production_method = getattr(PostgresVNextStore, name)
+        fake_parameters = [
+            (parameter.name, parameter.kind, parameter.default)
+            for parameter in inspect.signature(fake_method).parameters.values()
+        ]
+        production_parameters = [
+            (parameter.name, parameter.kind, parameter.default)
+            for parameter in inspect.signature(production_method).parameters.values()
+        ]
+        assert fake_parameters == production_parameters, name
+        assert all(
+            parameter.kind is not inspect.Parameter.VAR_KEYWORD
+            for parameter in inspect.signature(fake_method).parameters.values()
+        ), name
+
+    with pytest.raises(TypeError, match="unexpected_keyword"):
+        FakeVNextMCPStore().list_memories(unexpected_keyword=True)  # type: ignore[call-arg]
+
+
+def test_fake_vnext_mcp_store_excludes_deleted_memories_and_deleted_backing_rows() -> None:
+    store = FakeVNextMCPStore()
+    common = {
+        "domain": "project",
+        "sensitivity": "private",
+        "memory_type": "semantic",
+        "created_at": "2026-07-15T10:00:00Z",
+        "updated_at": "2026-07-15T10:00:00Z",
+        "metadata_json": {"project_scope": ["project-1"]},
+    }
+    store.memories = [
+        {
+            **common,
+            "id": "memory-live",
+            "status": "active",
+            "canonical_text": "Release the live memory.",
+        },
+        {
+            **common,
+            "id": "memory-deleted",
+            "status": "active",
+            "canonical_text": "Never return the deleted memory.",
+            "deleted_at": "2026-07-15T11:00:00Z",
+        },
+        {
+            **common,
+            "id": "rollup-pending-live",
+            "status": "candidate",
+            "canonical_text": "Pending live rollup.",
+            "metadata_json": {
+                "candidate_kind": "daily_rollup",
+                "rollup_digest": "digest-1",
+                "project_scope": ["project-1"],
+            },
+        },
+        {
+            **common,
+            "id": "rollup-pending-deleted",
+            "status": "candidate",
+            "canonical_text": "Pending deleted rollup.",
+            "deleted_at": "2026-07-15T11:00:00Z",
+            "metadata_json": {
+                "candidate_kind": "daily_rollup",
+                "rollup_digest": "digest-1",
+                "project_scope": ["project-1"],
+            },
+        },
+        {
+            **common,
+            "id": "rollup-card-live",
+            "status": "active",
+            "canonical_text": "Accepted live rollup card.",
+            "metadata_json": {
+                "candidate_kind": "daily_rollup",
+                "rollup_key": "key-1",
+                "project_scope": ["project-1"],
+            },
+        },
+        {
+            **common,
+            "id": "rollup-card-deleted",
+            "status": "accepted",
+            "canonical_text": "Accepted deleted rollup card.",
+            "deleted_at": "2026-07-15T11:00:00Z",
+            "metadata_json": {
+                "candidate_kind": "daily_rollup",
+                "rollup_key": "key-1",
+                "project_scope": ["project-1"],
+            },
+        },
+        {
+            **common,
+            "id": "belief-memory-live",
+            "status": "active",
+            "memory_type": "belief",
+            "canonical_text": "Live backing memory.",
+        },
+        {
+            **common,
+            "id": "belief-memory-deleted",
+            "status": "active",
+            "memory_type": "belief",
+            "canonical_text": "Deleted backing memory.",
+            "deleted_at": "2026-07-15T11:00:00Z",
+        },
+    ]
+    store.events = [
+        {
+            "id": "event-live",
+            "target_type": "memory",
+            "target_id": "memory-live",
+            "occurred_at": "2026-07-15T12:00:00Z",
+        },
+        {
+            "id": "event-deleted",
+            "target_type": "memory",
+            "target_id": "memory-deleted",
+            "occurred_at": "2026-07-15T12:01:00Z",
+        },
+    ]
+    store.beliefs = {
+        "belief-live": {
+            "id": "belief-live",
+            "memory_id": "belief-memory-live",
+            "status": "active",
+        },
+        "belief-deleted": {
+            "id": "belief-deleted",
+            "memory_id": "belief-memory-deleted",
+            "status": "active",
+        },
+    }
+
+    listed_ids = {str(row["id"]) for row in store.list_memories(status=None)}
+    assert "memory-live" in listed_ids
+    assert not {"memory-deleted", "rollup-pending-deleted", "rollup-card-deleted"} & listed_ids
+    assert [
+        row["id"]
+        for row in store.list_pending_rollup_candidates(
+            rollup_digests=("digest-1",),
+            domains=["project"],
+            sensitivity_allowed=["private"],
+            candidate_kind="daily_rollup",
+            limit=10,
+        )
+    ] == ["rollup-pending-live"]
+    assert [
+        row["id"]
+        for row in store.list_accepted_rollup_cards(
+            rollup_keys=("key-1",),
+            domains=["project"],
+            sensitivity_allowed=["private"],
+            candidate_kind="daily_rollup",
+            limit=10,
+        )
+    ] == ["rollup-card-live"]
+    rollup_input_ids = {
+        str(row["id"])
+        for row in store.list_rollup_input_memories(
+            domains=["project"],
+            sensitivity_allowed=["private"],
+            excluded_candidate_kind="daily_rollup",
+            limit=20,
+        )
+    }
+    assert "memory-live" in rollup_input_ids
+    assert not {"memory-deleted", "rollup-card-deleted"} & rollup_input_ids
+    assert [row["id"] for row in store.list_resume_memory_events(statuses=("active", "accepted"), limit=20)] == [
+        "event-live"
+    ]
+    assert [row["id"] for row in store.list_beliefs(status="active")] == ["belief-live"]
+
+
+_FAKE_MEMORY_QUERY_CASES = [
+    pytest.param("Release READY", "release ready", True, id="ascii-case-insensitive"),
+    pytest.param("Ärende", "ärende", False, id="non-ascii-is-exact"),
+    pytest.param("Straße", "STRASSE", False, id="no-unicode-casefold-expansion"),
+    pytest.param("Progress is 100%", "%", True, id="percent-is-literal"),
+    pytest.param("snake_case", "_", True, id="underscore-is-literal"),
+    pytest.param(r"folder\release", r"\release", True, id="backslash-is-literal"),
+]
+
+
+@pytest.mark.parametrize(("stored_text", "query", "matches"), _FAKE_MEMORY_QUERY_CASES)
+def test_fake_vnext_mcp_store_memory_query_matches_resume_contract(
+    stored_text: str,
+    query: str,
+    matches: bool,
+) -> None:
+    store = FakeVNextMCPStore()
+    store.memories = [
+        {
+            "id": "memory-query",
+            "status": "active",
+            "title": stored_text,
+            "canonical_text": "",
+            "summary": "",
+        }
+    ]
+    store.events = [
+        {
+            "id": "event-query",
+            "target_type": "memory",
+            "target_id": "memory-query",
+            "occurred_at": "2026-07-15T12:00:00Z",
+        }
+    ]
+
+    listed = store.list_memories(status="active", query=query)
+    resumed = store.list_resume_memory_events(statuses=("active",), query=query)
+
+    assert bool(listed) is matches
+    assert bool(resumed) is matches
+
+
+@pytest.mark.parametrize(("stored_text", "query", "matches"), _FAKE_MEMORY_QUERY_CASES)
+def test_fake_public_resume_and_recent_decisions_share_memory_query_contract(
+    monkeypatch,
+    core_surface,
+    stored_text: str,
+    query: str,
+    matches: bool,
+) -> None:
+    store = FakeVNextMCPStore()
+    store.memories = [
+        {
+            "id": "decision-query",
+            "status": "active",
+            "memory_type": "decision",
+            "title": stored_text,
+            "canonical_text": "",
+            "summary": "",
+            "created_at": "2026-07-15T12:00:00Z",
+        }
+    ]
+    _patch_vnext_store(monkeypatch, store)
+
+    recent = call_mcp_tool(
+        _mcp_context(),
+        name="alice_recent_decisions",
+        arguments={"query": query},
+    )
+    resumed = call_mcp_tool(
+        _mcp_context(),
+        name="alice_resume",
+        arguments={
+            "query": query,
+            "max_open_loops": 0,
+            "max_recent_changes": 0,
+        },
+    )
+
+    assert bool(recent["decisions"]) is matches
+    assert bool(resumed["brief"]["last_decision"]) is matches
 
 
 def test_alice_vnext_context_pack_mcp_tool(monkeypatch, legacy_tools_enabled) -> None:
@@ -2281,6 +3139,16 @@ def test_alice_generate_connections_and_graph_mcp_tools(monkeypatch, legacy_tool
 
 def test_alice_generate_contradictions_and_belief_mcp_tools(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
+    store.memories.append(
+        {
+            "id": "memory-belief-1",
+            "status": "active",
+            "memory_type": "belief",
+            "canonical_text": "Alice should auto-promote generated artifacts into memory.",
+            "domain": "project",
+            "sensitivity": "private",
+        }
+    )
 
     @contextmanager
     def fake_vnext_store_context(_context):
@@ -2525,6 +3393,218 @@ def _patch_vnext_store(monkeypatch, store: FakeVNextMCPStore) -> None:
         yield store
 
     monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+
+
+def _seed_pending_project_update_mcp_candidate(
+    store: FakeVNextMCPStore,
+    *,
+    classifier: str,
+) -> tuple[str, str]:
+    artifact = mcp_tools_module.VNextProjectService(store).generate_project_update_candidate(
+        mcp_tools_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact_id = str(artifact["id"])
+    artifact_metadata = artifact["metadata_json"]
+    assert isinstance(artifact_metadata, dict)
+    old_memory_id = str(artifact_metadata["candidate_memory_id"])
+    memory = store.get_memory(old_memory_id)
+    assert memory is not None
+    memory_id = str(uuid4())
+    memory["id"] = memory_id
+    artifact_metadata["candidate_memory_id"] = memory_id
+    for revision in store.revisions:
+        if revision.get("memory_id") == old_memory_id:
+            revision["memory_id"] = memory_id
+    for event in store.events:
+        if event.get("target_type") == "memory" and event.get("target_id") == old_memory_id:
+            event["target_id"] = memory_id
+        payload = event.get("payload_json")
+        if isinstance(payload, dict):
+            for key in ("candidate_memory_id", "memory_id"):
+                if payload.get(key) == old_memory_id:
+                    payload[key] = memory_id
+
+    metadata = memory.get("metadata_json")
+    assert isinstance(metadata, dict)
+    if classifier == "workflow":
+        memory["memory_key"] = f"candidate.workflow-only.{uuid4().hex}"
+        assert metadata.get("workflow") == "project_auto_update"
+    else:
+        metadata.pop("workflow", None)
+        assert str(memory.get("memory_key") or "").startswith("project_update.")
+    return artifact_id, memory_id
+
+
+def _pending_project_update_mcp_state(
+    store: FakeVNextMCPStore,
+    *,
+    artifact_id: str,
+    memory_id: str,
+) -> dict[str, object]:
+    return deepcopy(
+        {
+            "candidate": store.get_memory(memory_id),
+            "artifact": store.get_artifact(artifact_id),
+            "project": store.get_project("project-1"),
+            "revisions": store.revisions,
+            "project_update_events": [
+                event
+                for event in store.events
+                if str(event.get("event_type") or "").startswith("project.update_candidate_")
+            ],
+        }
+    )
+
+
+@pytest.mark.parametrize("classifier", ["workflow", "memory-key"])
+@pytest.mark.parametrize(
+    ("action", "extra_arguments"),
+    [
+        pytest.param("approve", {}, id="approve"),
+        pytest.param(
+            "edit-and-approve",
+            {"body": {"text": "Do not edit a coupled candidate."}},
+            id="edit-and-approve",
+        ),
+        pytest.param("reject", {"reason": "Do not retire a coupled candidate."}, id="reject"),
+        pytest.param(
+            "supersede-existing",
+            {
+                "replacement_title": "Do not supersede a coupled candidate.",
+                "replacement_body": {"text": "Blocked replacement."},
+            },
+            id="supersede-existing",
+        ),
+    ],
+)
+def test_core_mcp_memory_correct_rejects_pending_project_update_candidates_without_mutation(
+    monkeypatch,
+    core_surface,
+    classifier: str,
+    action: str,
+    extra_arguments: dict[str, object],
+) -> None:
+    store = FakeVNextMCPStore()
+    artifact_id, memory_id = _seed_pending_project_update_mcp_candidate(
+        store,
+        classifier=classifier,
+    )
+    _patch_vnext_store(monkeypatch, store)
+    before = _pending_project_update_mcp_state(
+        store,
+        artifact_id=artifact_id,
+        memory_id=memory_id,
+    )
+
+    with pytest.raises(MCPToolError, match=PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_memory_correct",
+            arguments={"review_item_id": memory_id, "action": action, **extra_arguments},
+        )
+
+    assert (
+        _pending_project_update_mcp_state(
+            store,
+            artifact_id=artifact_id,
+            memory_id=memory_id,
+        )
+        == before
+    )
+
+
+@pytest.mark.parametrize("classifier", ["workflow", "memory-key"])
+@pytest.mark.parametrize("action", ["undo", "forget", "redact"])
+def test_core_mcp_memory_manage_rejects_pending_project_update_candidates_without_mutation(
+    monkeypatch,
+    core_surface,
+    classifier: str,
+    action: str,
+) -> None:
+    store = FakeVNextMCPStore()
+    artifact_id, memory_id = _seed_pending_project_update_mcp_candidate(
+        store,
+        classifier=classifier,
+    )
+    _patch_vnext_store(monkeypatch, store)
+    before = _pending_project_update_mcp_state(
+        store,
+        artifact_id=artifact_id,
+        memory_id=memory_id,
+    )
+
+    with pytest.raises(MCPToolError, match=PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_memory_manage",
+            arguments={
+                "action": action,
+                "memory_id": memory_id,
+                "reason": "Coupled candidates must use project review.",
+            },
+        )
+
+    assert (
+        _pending_project_update_mcp_state(
+            store,
+            artifact_id=artifact_id,
+            memory_id=memory_id,
+        )
+        == before
+    )
+
+
+@pytest.mark.parametrize("classifier", ["workflow", "memory-key"])
+@pytest.mark.parametrize(
+    ("tool_name", "extra_arguments"),
+    [
+        pytest.param(
+            "alice_vnext_correct_memory",
+            {"canonical_text": "Do not correct a coupled candidate."},
+            id="correct",
+        ),
+        pytest.param("alice_vnext_forget_memory", {}, id="forget"),
+        pytest.param("alice_vnext_undo_memory", {}, id="undo"),
+    ],
+)
+def test_legacy_mcp_memory_mutations_reject_pending_project_update_candidates_without_mutation(
+    monkeypatch,
+    legacy_tools_enabled,
+    classifier: str,
+    tool_name: str,
+    extra_arguments: dict[str, object],
+) -> None:
+    store = FakeVNextMCPStore()
+    artifact_id, memory_id = _seed_pending_project_update_mcp_candidate(
+        store,
+        classifier=classifier,
+    )
+    _patch_vnext_store(monkeypatch, store)
+    before = _pending_project_update_mcp_state(
+        store,
+        artifact_id=artifact_id,
+        memory_id=memory_id,
+    )
+
+    with pytest.raises(MCPToolError, match=PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE):
+        call_mcp_tool(
+            _mcp_context(),
+            name=tool_name,
+            arguments={
+                "memory_id": memory_id,
+                "reason": "Coupled candidates must use project review.",
+                **extra_arguments,
+            },
+        )
+
+    assert (
+        _pending_project_update_mcp_state(
+            store,
+            artifact_id=artifact_id,
+            memory_id=memory_id,
+        )
+        == before
+    )
 
 
 def test_vnext_artifact_get_authorizes_persisted_scope_and_sensitivity(monkeypatch, legacy_tools_enabled) -> None:
@@ -2994,9 +4074,7 @@ def test_dedicated_mcp_project_review_schema_attributes_payload_agent(monkeypatc
     assert accepted_event["trace_id"] == "review-trace-1"
 
 
-def test_generic_memory_rejection_cannot_be_resurrected_by_project_artifact_review(
-    monkeypatch, legacy_tools_enabled
-) -> None:
+def test_generic_memory_rejection_is_blocked_before_project_artifact_review(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
     artifact = mcp_tools_module.VNextProjectService(store).generate_project_update_candidate(
         mcp_tools_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
@@ -3010,32 +4088,32 @@ def test_generic_memory_rejection_cannot_be_resurrected_by_project_artifact_revi
     candidate_id = str(uuid4())
     candidate["id"] = candidate_id
     artifact_metadata["candidate_memory_id"] = candidate_id
-    original_project_state = str(store.projects["project-1"]["current_state"])
+    expected_project_state = str(artifact_metadata["suggested_current_state"])
     _patch_vnext_store(monkeypatch, store)
     context = _mcp_context()
 
-    rejected = call_mcp_tool(
-        context,
-        name="alice_memory_correct",
-        arguments={
-            "action": "reject",
-            "review_item_id": candidate_id,
-            "reason": "Reject the candidate through the generic memory lifecycle.",
-        },
-    )
-    with pytest.raises(MCPToolError, match="not pending review"):
+    with pytest.raises(MCPToolError, match=PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE):
         call_mcp_tool(
             context,
-            name="alice_vnext_artifact_review",
-            arguments={"artifact_id": artifact_id, "action": "accept"},
+            name="alice_memory_correct",
+            arguments={
+                "action": "reject",
+                "review_item_id": candidate_id,
+                "reason": "Reject the candidate through the generic memory lifecycle.",
+            },
         )
+    accepted = call_mcp_tool(
+        context,
+        name="alice_vnext_artifact_review",
+        arguments={"artifact_id": artifact_id, "action": "accept"},
+    )
 
-    assert rejected["memory"]["status"] == "rejected"
-    retired_candidate = store.get_memory(candidate_id)
-    assert retired_candidate is not None
-    assert retired_candidate["status"] == "rejected"
-    assert store.artifacts[artifact_id]["status"] == "needs_review"
-    assert store.projects["project-1"]["current_state"] == original_project_state
+    assert accepted["status"] == "accepted"
+    reviewed_candidate = store.get_memory(candidate_id)
+    assert reviewed_candidate is not None
+    assert reviewed_candidate["status"] == "active"
+    assert store.artifacts[artifact_id]["status"] == "accepted"
+    assert store.projects["project-1"]["current_state"] == expected_project_state
 
 
 class FakeEmbeddingProvider:
@@ -4418,6 +5496,61 @@ def test_alice_memory_manage_undo_and_forget_keep_the_audit_trail(
     assert any(event["event_type"] == "agent.memory_forgotten" for event in store.events)
 
 
+def test_alice_memory_manage_redact_is_positive_and_strictly_idempotent(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory = store.create_memory(
+        {
+            "memory_key": "private.mcp.redaction",
+            "value": {"text": "MCP secret"},
+            "status": "active",
+            "source_event_ids": [],
+            "memory_type": "fact",
+            "confidence": 0.9,
+            "title": "MCP secret",
+            "canonical_text": "MCP secret",
+            "summary": "MCP secret",
+            "trust_reason": "operator supplied",
+            "domain": "personal",
+            "sensitivity": "private",
+            "metadata_json": {},
+            "commit_digest": "digest",
+            "confirmation_id": None,
+            "deleted_at": None,
+        }
+    )
+    arguments = {
+        "action": "redact",
+        "memory_id": str(memory["id"]),
+        "reason": "Operator erasure",
+    }
+
+    first = call_mcp_tool(_mcp_context(), name="alice_memory_manage", arguments=arguments)
+    assert first["status"] == "redacted"
+    assert first["forgotten_first"] is True
+    assert first["idempotent_replay"] is False
+    frozen = deepcopy(
+        (store.memories, store.artifacts, store.quality_ratings, store.provenance_links, store.revisions, store.events)
+    )
+
+    second = call_mcp_tool(_mcp_context(), name="alice_memory_manage", arguments=arguments)
+    assert second["status"] == "redacted"
+    assert second["forgotten_first"] is False
+    assert second["idempotent_replay"] is True
+    assert second["redacted_revisions"] == 0
+    assert second["redacted_events"] == 0
+    assert (
+        store.memories,
+        store.artifacts,
+        store.quality_ratings,
+        store.provenance_links,
+        store.revisions,
+        store.events,
+    ) == frozen
+
+
 def test_alice_memory_manage_undo_links_the_replacing_memory(monkeypatch, core_surface, no_embedding_provider) -> None:
     store = FakeVNextMCPStore()
     _patch_vnext_store(monkeypatch, store)
@@ -4517,6 +5650,19 @@ def test_new_core_tool_schemas_reuse_canonical_enums(core_surface) -> None:
         "redact",
     ]
     assert "valid_to" in manage_schema["properties"]
+    manage_description = tools["alice_memory_manage"]["description"]
+    action_description = manage_schema["properties"]["action"]["description"]
+    assert "governed memory-lifecycle copies" in manage_description
+    assert "source and source-chunk evidence is retained" in manage_description
+    assert "content everywhere" not in manage_description
+    assert "governed memory row, revisions, matching event payloads" in action_description
+    assert "Alice source/source-chunk evidence" in action_description
+    reason_description = manage_schema["properties"]["reason"]["description"]
+    assert "expire, unexpire, and accept_consolidation" in reason_description
+    assert "the required reason is stored in the audit trail" in reason_description
+    assert "required for authorization and lifecycle intent" in reason_description
+    assert "intentionally not retained after successful true redaction" in reason_description
+    assert "Why this change is being made. Stored in the audit trail." not in reason_description
 
     from alicebot_api.vnext_retrieval import BUDGET_STRATEGIES, CONTEXT_DEPTHS
 
@@ -6017,7 +7163,12 @@ def test_mcp_server_tools_call_success_and_error_paths(monkeypatch) -> None:
     )
     assert error_response is not None
     assert error_response["result"]["isError"] is True
-    assert error_response["result"]["content"][0]["text"] == "invalid input"
+    assert json.loads(error_response["result"]["content"][0]["text"]) == {
+        "error": {
+            "code": "tool_request_failed",
+            "message": "The tool request could not be processed",
+        }
+    }
 
     def raise_unexpected_error(*_args, **_kwargs):
         raise RuntimeError("database connection dropped")
@@ -6033,7 +7184,12 @@ def test_mcp_server_tools_call_success_and_error_paths(monkeypatch) -> None:
     )
     assert unexpected_response is not None
     assert unexpected_response["result"]["isError"] is True
-    assert "Tool execution failed unexpectedly" in unexpected_response["result"]["content"][0]["text"]
+    assert json.loads(unexpected_response["result"]["content"][0]["text"]) == {
+        "error": {
+            "code": "tool_execution_failed",
+            "message": "The tool could not be executed",
+        }
+    }
 
 
 class FakeAgentKeyStore:

@@ -104,6 +104,334 @@ def test_control_doc_truth_passes_with_required_markers() -> None:
     assert issues == []
 
 
+def test_phase2_handoff_reports_are_unignored_without_weakening_generic_report_policy() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    handoff_prefix = "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep"
+
+    def is_ignored(relative_path: str) -> bool:
+        result = subprocess.run(
+            (
+                "git",
+                "-C",
+                str(repo_root),
+                "check-ignore",
+                "--no-index",
+                "--quiet",
+                relative_path,
+            ),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode in {0, 1}, result.stderr
+        return result.returncode == 0
+
+    for filename in ("BUILD_REPORT.md", "REVIEW_REPORT.md"):
+        assert not is_ignored(f"{handoff_prefix}/{filename}")
+        assert is_ignored(filename)
+
+
+def test_phase2_dependency_handoff_acknowledges_audit_tool_semver_delta() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    handoff_root = repo_root / "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep"
+    readme = (handoff_root / "README.md").read_text(encoding="utf-8")
+    fix_matrix = (handoff_root / "FIX_MATRIX.md").read_text(encoding="utf-8")
+    engineer_handoff = (handoff_root / "ENGINEER_HANDOFF.md").read_text(encoding="utf-8")
+
+    assert "`semver@7.8.0`" in readme
+    assert "`semver@7.8.0`" in fix_matrix
+    assert "`semver@7.8.0`" in engineer_handoff
+    assert "c4cd48f582508459ca4927539bd5ae7c6976aa99a12201f588bf6a81669d86a3" in readme
+    assert "final lockfile hash\n  is recorded" not in readme
+    assert "Web dependency versions remain unchanged" not in fix_matrix
+    assert "unchanged web graph" not in engineer_handoff
+
+
+def test_active_vnext_status_records_green_builder_boundary() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    vnext_readme = (repo_root / "docs/vnext/README.md").read_text(encoding="utf-8")
+    normalized = " ".join(vnext_readme.replace("-\n", "-").split())
+
+    assert "bounded local builder matrix was green at package-input freeze" in normalized
+    assert "final package reproduction" in normalized
+    assert "twice-reproduced superseding receipt" in normalized
+    assert "Exact-SHA external" in normalized
+    assert "verification and independent review remain pending" not in normalized
+
+
+def test_phase2_handoff_describes_event_union_and_memory_query_legs_exactly() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    handoff_root = repo_root / "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep"
+    fix_matrix = (handoff_root / "FIX_MATRIX.md").read_text(encoding="utf-8")
+    surface_inventory = (handoff_root / "SURFACE_INVENTORY.md").read_text(encoding="utf-8")
+    engineer_handoff = (handoff_root / "ENGINEER_HANDOFF.md").read_text(encoding="utf-8")
+    normalized_surface = " ".join(surface_inventory.split())
+
+    assert "`UNION ALL`" not in fix_matrix
+    assert "`UNION ALL`" not in surface_inventory
+    assert "deduplicate identical full event rows before stable ordering" in fix_matrix
+    assert "deduplicate identical full event rows before stable" in normalized_surface
+    assert "`list_memories(query=...)`" in surface_inventory
+    assert "`list_resume_memory_events(query=...)`" in surface_inventory
+    assert "`list_memories(query=...)`" in engineer_handoff
+    assert "`list_resume_memory_events(query=...)`" in engineer_handoff
+    assert "non-FTS `search_memories` path" not in surface_inventory
+
+
+def test_phase2_readme_anchors_codeql_baseline_to_the_inventory() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    readme = (
+        repo_root / "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep/README.md"
+    ).read_text(encoding="utf-8")
+
+    assert "242-alert published-base CodeQL" in readme
+    assert "described in `SURFACE_INVENTORY.md`" in readme
+    assert "CodeQL count above" not in readme
+
+
+def test_phase2_included_handoff_docs_keep_final_report_status_temporally_true() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    handoff_root = repo_root / "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep"
+    documents = [
+        (handoff_root / filename).read_text(encoding="utf-8")
+        for filename in ("README.md", "SURFACE_INVENTORY.md", "ENGINEER_HANDOFF.md")
+    ]
+
+    assert all("At package-input freeze" in document for document in documents)
+    assert all("`BUILD_REPORT.md`" in document for document in documents)
+    assert all("`REVIEW_REPORT.md`" in document for document in documents)
+    assert all("were still pending" in document for document in documents)
+    assert "future reviewer report" not in documents[1]
+    assert "final package/receipt/review pending" not in documents[1]
+
+
+def test_phase2_engineer_handoff_checks_untracked_candidate_whitespace_safely() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    engineer_handoff = (
+        repo_root / "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep/ENGINEER_HANDOFF.md"
+    ).read_text(encoding="utf-8")
+
+    assert "git ls-files --others --exclude-standard -z" in engineer_handoff
+    assert 'read -r -d \'\' candidate_path' in engineer_handoff
+    assert 'git diff --no-index --check /dev/null "$candidate_path"' in engineer_handoff
+    assert 'test "$untracked_whitespace_failed" -eq 0' in engineer_handoff
+    assert "read -r -d '' path" not in engineer_handoff
+
+
+def test_phase2_docs_scope_ascii_query_parity_and_public_error_vocabularies_exactly() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    relative_paths = (
+        "CHANGELOG.md",
+        "CURRENT_STATE.md",
+        ".ai/handoff/CURRENT_STATE.md",
+        ".ai/active/SPRINT_PACKET.md",
+        "docs/alpha/mcp-tools.md",
+        "docs/release/v0.11.1-release-notes.md",
+        "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep/README.md",
+        "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep/FIX_MATRIX.md",
+        "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep/SURFACE_INVENTORY.md",
+        "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep/ENGINEER_HANDOFF.md",
+    )
+    documents = {
+        relative_path: (repo_root / relative_path).read_text(encoding="utf-8")
+        for relative_path in relative_paths
+    }
+
+    for document in documents.values():
+        assert "`list_memories(query=...)`" in document
+        assert "`list_resume_memory_events(query=...)`" in document
+    for relative_path in relative_paths:
+        if relative_path != ".ai/active/SPRINT_PACKET.md":
+            assert "alice_recall" in documents[relative_path]
+    release_notes = documents["docs/release/v0.11.1-release-notes.md"]
+    normalized_release_notes = " ".join(release_notes.split())
+    assert "stable adapter-specific public vocabularies" in normalized_release_notes
+    assert "same static\n  failure vocabulary" not in release_notes
+    false_parity_claims = (
+        "Memory search now uses the same ASCII",
+        "Memory and open-loop queries now share ASCII",
+        "Aligns memory and open-loop text search",
+        "literal-substring memory-search contract",
+    )
+    assert all(claim not in document for document in documents.values() for claim in false_parity_claims)
+
+
+def test_phase2_active_docs_time_qualify_package_and_review_status() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    relative_paths = (
+        "README.md",
+        "ARCHITECTURE.md",
+        "ROADMAP.md",
+        "CURRENT_STATE.md",
+        ".ai/handoff/CURRENT_STATE.md",
+        "PRODUCT_BRIEF.md",
+        ".ai/active/SPRINT_PACKET.md",
+        "docs/vnext/README.md",
+        "docs/release/v0.11.1-release-notes.md",
+    )
+    for relative_path in relative_paths:
+        document = (repo_root / relative_path).read_text(encoding="utf-8")
+        normalized = " ".join(document.replace("-\n", "-").split())
+        assert "package-input freeze" in normalized
+        assert "were still pending" in normalized
+        assert "Exact-SHA external" in normalized
+        assert "release gates remain pending" in normalized or "gates remain pending" in normalized
+
+    for relative_path in (
+        "CURRENT_STATE.md",
+        ".ai/handoff/CURRENT_STATE.md",
+        "docs/release/v0.11.1-release-notes.md",
+        "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep/README.md",
+    ):
+        document = (repo_root / relative_path).read_text(encoding="utf-8")
+        assert "3,547" in document
+        assert "3,533" not in document
+
+
+def test_memory_operations_and_product_docs_do_not_overclaim_audit_provenance() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    protocol = (repo_root / "docs/memory-operations-protocol.md").read_text(encoding="utf-8")
+    product = (repo_root / "PRODUCT_BRIEF.md").read_text(encoding="utf-8")
+    readme = (repo_root / "README.md").read_text(encoding="utf-8")
+
+    assert "Mutating verbs append audit evidence" in protocol
+    assert "Read-only verbs\ndo not append" in protocol
+    assert "exact authorized true redaction is the narrow exception" in protocol
+    assert "explicit commit may legitimately have no source reference" in protocol
+    assert "Every verb below appends" not in protocol
+    assert "source-backed memories trace to source evidence where" in product
+    assert "Explicit commits may legitimately have no source reference" in product
+    assert "every memory traces back to source evidence" not in product
+    assert "source-backed answers trace to the evidence that was supplied" in readme
+    assert "when\n  evidence was supplied, provenance links" in readme
+    assert "Explicit commits may legitimately have no source reference" in readme
+    assert "every answer carries explainable provenance" not in readme
+    assert "every memory can explain which sources" not in readme
+
+
+def test_phase2_option_a_docs_pin_exact_scrub_and_retention_contract() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    handoff_root = repo_root / "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep"
+    documents = {
+        "handoff README": (handoff_root / "README.md").read_text(encoding="utf-8"),
+        "surface inventory": (handoff_root / "SURFACE_INVENTORY.md").read_text(encoding="utf-8"),
+        "fix matrix": (handoff_root / "FIX_MATRIX.md").read_text(encoding="utf-8"),
+        "engineer handoff": (handoff_root / "ENGINEER_HANDOFF.md").read_text(encoding="utf-8"),
+        "operations protocol": (repo_root / "docs/memory-operations-protocol.md").read_text(encoding="utf-8"),
+    }
+
+    for label, document in documents.items():
+        normalized = " ".join(document.replace("-\n", "-").split())
+        assert "`[REDACTED]`" in normalized, label
+        assert '`{"redacted":true}`' in normalized, label
+        assert "`commit_digest`" in normalized, label
+        assert "`confirmation_id`" in normalized, label
+        assert "`confirmation_status`" in normalized, label
+        assert "`last_confirmed_at`" in normalized, label
+        assert "verbosity" in normalized, label
+        assert "null" in normalized.casefold(), label
+
+    detailed = documents["surface inventory"] + documents["operations protocol"]
+    for retained_field in (
+        "memory_type",
+        "domain",
+        "sensitivity",
+        "confidence",
+        "salience",
+        "trust",
+        "promotion",
+        "evidence",
+        "extracted-by-model",
+        "validity",
+        "seen",
+        "review",
+        "usefulness",
+        "accuracy",
+        "source_grounding",
+        "novel_connections",
+        "actionability",
+        "hallucination_risk",
+    ):
+        assert retained_field in detailed
+    surface = documents["surface inventory"]
+    assert "commit/confirmation data" not in surface
+    assert "numeric accuracy/usefulness scores" not in surface
+
+
+def test_phase2_error_docs_scope_dynamic_diagnostic_claims_to_migrated_carriers() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    relative_paths = (
+        "CURRENT_STATE.md",
+        ".ai/handoff/CURRENT_STATE.md",
+        "CHANGELOG.md",
+        "docs/release/v0.11.1-release-notes.md",
+        "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep/README.md",
+        "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep/FIX_MATRIX.md",
+    )
+
+    for relative_path in relative_paths:
+        document = (repo_root / relative_path).read_text(encoding="utf-8")
+        normalized = " ".join(document.replace("-\n", "-").split())
+        for migrated_surface in (
+            "provider",
+            "response",
+            "scheduler",
+            "evaluation",
+            "doctor",
+            "connector",
+        ):
+            assert migrated_surface in normalized, relative_path
+        assert "`proxy_execution.py`" in normalized, relative_path
+        assert "reasons remain dynamic" in normalized, relative_path
+        for stale_claim in (
+            "persisted diagnostic paths",
+            "persisted failure records",
+            "stored diagnostic failure paths",
+        ):
+            assert stale_claim not in normalized, relative_path
+
+
+def test_cli_docs_separate_stderr_boundary_errors_from_structured_failure_reports() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    cli_docs = (repo_root / "docs/integrations/cli.md").read_text(encoding="utf-8")
+
+    assert "argument, boundary-validation,\n  and unhandled execution failures to stderr" in cli_docs
+    for failure_name in ("EvalGateFailure", "EmbeddingBackfillFailure", "PartialCommandFailure"):
+        assert failure_name in cli_docs
+    assert "structured failure report on stdout" in cli_docs
+    assert "return nonzero" in cli_docs
+    assert "write failures to stderr" not in cli_docs
+
+
+def test_phase2_post_freeze_docs_point_to_final_reports_and_external_release_work() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    release_notes = (repo_root / "docs/release/v0.11.1-release-notes.md").read_text(encoding="utf-8")
+    roadmap = (repo_root / "ROADMAP.md").read_text(encoding="utf-8")
+    fix_matrix = (
+        repo_root / "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep/FIX_MATRIX.md"
+    ).read_text(encoding="utf-8")
+
+    assert "At package-input freeze, the candidate was uncommitted" in release_notes
+    assert "`BUILD_REPORT.md`" in release_notes
+    assert "`REVIEW_REPORT.md`" in release_notes
+    assert "still follow this\n  documentation freeze" not in release_notes
+    assert "**Verify and publish the completed v0.11.1 handoff.**" in roadmap
+    assert "**Finalize the v0.11.1 debt-sweep carrier.**" not in roadmap
+    assert "final `BUILD_REPORT.md`" in fix_matrix
+    assert "reviewer-authored `REVIEW_REPORT.md`" in fix_matrix
+    assert "After reviewer approval, the only remaining gates" in fix_matrix
+
+
+def test_release_notes_pin_manual_only_publish_trigger_and_scheduler_once() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    release_notes = (repo_root / "docs/release/v0.11.1-release-notes.md").read_text(encoding="utf-8")
+
+    assert "has no `release:` trigger" in release_notes
+    assert "manual `workflow_dispatch` only" in release_notes
+    assert "`--once` to its child before spawn" in release_notes
+    assert "tests cover the release trigger" not in release_notes
+
+
 def test_release_gate_requires_fresh_isolated_artifact_directories() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     releasing = (repo_root / "RELEASING.md").read_text(encoding="utf-8")
@@ -236,12 +564,12 @@ def test_control_doc_truth_requires_repair_batch_history_marker(tmp_path: Path) 
         ("Repair Batch 16 is the current bounded correction.", "stale live-repair ledger claim"),
         ("The live repair ledger governs this sprint.", "stale live-repair ledger claim"),
         ("Mandatory repair pass is active.", "stale live-repair ledger claim"),
-        ("Phase 2 is\nactive and authorized.", "Phase 2 active-work claim"),
+        ("Phase 3 is\nactive and authorized.", "Phase 3 active-work claim"),
         ("Alice executes OCR and transcription.", "Alice OCR/transcription execution claim"),
         ("Transcription is executed by Alice.", "Alice OCR/transcription execution claim"),
     ),
 )
-def test_active_sprint_packet_rejects_stale_or_false_scope_claims(
+def test_active_sprint_packet_rejects_stale_or_future_scope_claims(
     tmp_path: Path,
     stale_claim: str,
     issue_label: str,
@@ -905,11 +1233,38 @@ def test_context_tree_docs_match_five_resource_groups_plus_events_and_legacy_bou
     assert all(marker not in text for text in (changelog, integration, *handoff_docs) for marker in false_markers)
 
 
-def test_mcp_resume_docs_limit_ascii_matching_to_open_loop_surfaces() -> None:
+def test_mcp_resume_docs_state_shared_ascii_literal_memory_and_open_loop_contract() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     mcp_docs = (repo_root / "docs/alpha/mcp-tools.md").read_text(encoding="utf-8")
+    normalized = " ".join(mcp_docs.split())
 
-    assert "root or nested `next_action` metadata participates only when its" in mcp_docs
-    assert "JSON value is a string" in mcp_docs
-    assert "For those open-loop row fields and loop-event string leaves only" in mcp_docs
-    assert "memory search retains its memory-store matching contract" in mcp_docs
+    assert "root or nested `next_action` metadata participates only when its" in normalized
+    assert "JSON value is a string" in normalized
+    assert "Memory title/canonical-text/summary fields selected by" in normalized
+    assert "`list_memories(query=...)` and `list_resume_memory_events(query=...)`" in normalized
+    assert "all use the same ASCII case-insensitive literal" in normalized
+    assert "memory search retains its memory-store matching contract" not in mcp_docs
+
+
+def test_redaction_docs_do_not_overclaim_source_evidence_erasure() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    documents = [
+        (repo_root / relative_path).read_text(encoding="utf-8")
+        for relative_path in (
+            "docs/memory-operations-protocol.md",
+            "docs/alpha/mcp-tools.md",
+            "docs/release/v0.11.1-release-notes.md",
+            "CURRENT_STATE.md",
+            ".ai/handoff/CURRENT_STATE.md",
+        )
+    ]
+
+    assert all("source/source-chunk evidence" in document for document in documents)
+    assert all("separate source hygiene" in document for document in documents)
+    false_erasure_claims = (
+        "content everywhere",
+        "all persisted content",
+        "erases the persisted evidence content",
+        "scrubs Alice's persisted copies",
+    )
+    assert all(claim not in document for document in documents for claim in false_erasure_claims)

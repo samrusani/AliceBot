@@ -125,7 +125,9 @@ def test_list_task_steps_endpoint_maps_task_not_found_to_404(monkeypatch) -> Non
     response = main_module.list_task_steps(task_id, user_id)
 
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": f"task {task_id} was not found"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
 
 def test_get_task_step_endpoint_maps_not_found_to_404(monkeypatch) -> None:
@@ -147,7 +149,9 @@ def test_get_task_step_endpoint_maps_not_found_to_404(monkeypatch) -> None:
     response = main_module.get_task_step(task_step_id, user_id)
 
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": f"task step {task_step_id} was not found"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
 
 def test_create_next_task_step_endpoint_maps_sequence_conflict_to_409(monkeypatch) -> None:
@@ -188,7 +192,9 @@ def test_create_next_task_step_endpoint_maps_sequence_conflict_to_409(monkeypatc
     )
 
     assert response.status_code == 409
-    assert json.loads(response.body) == {"detail": f"task {task_id} latest step blocked append"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
+    }
 
 
 def test_transition_task_step_endpoint_maps_transition_conflict_to_409(monkeypatch) -> None:
@@ -221,5 +227,5 @@ def test_transition_task_step_endpoint_maps_transition_conflict_to_409(monkeypat
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": f"task step {task_step_id} is created and cannot transition"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }

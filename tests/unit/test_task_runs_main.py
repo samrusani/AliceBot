@@ -89,7 +89,9 @@ def test_create_task_run_endpoint_maps_not_found_and_validation_errors(monkeypat
         main_module.CreateTaskRunRequest(user_id=user_id, max_ticks=1, checkpoint={}),
     )
     assert not_found_response.status_code == 404
-    assert json.loads(not_found_response.body) == {"detail": f"task {task_id} was not found"}
+    assert json.loads(not_found_response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
     monkeypatch.setattr(
         main_module,
@@ -101,7 +103,9 @@ def test_create_task_run_endpoint_maps_not_found_and_validation_errors(monkeypat
         main_module.CreateTaskRunRequest(user_id=user_id, max_ticks=1, checkpoint={"cursor": "x"}),
     )
     assert validation_response.status_code == 400
-    assert json.loads(validation_response.body) == {"detail": "checkpoint.cursor must be an integer"}
+    assert json.loads(validation_response.body) == {
+        "detail": {"code": "invalid_request", "message": "The request is invalid"}
+    }
 
 
 def test_list_and_get_task_runs_endpoints_return_payload(monkeypatch) -> None:
@@ -189,7 +193,9 @@ def test_get_task_run_endpoint_maps_missing_record_to_404(monkeypatch) -> None:
     response = main_module.get_task_run(task_run_id, user_id)
 
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": f"task run {task_run_id} was not found"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
 
 def test_task_run_tick_pause_resume_cancel_endpoints_map_conflicts(monkeypatch) -> None:
@@ -217,9 +223,16 @@ def test_task_run_tick_pause_resume_cancel_endpoints_map_conflicts(monkeypatch) 
     resume_response = main_module.resume_task_run(task_run_id, request)
     cancel_response = main_module.cancel_task_run(task_run_id, request)
 
-    expected = {"detail": f"task run {task_run_id} is completed and cannot be resumed"}
+    expected = {
+        "detail": {
+            "code": "conflict",
+            "message": "The request conflicts with the current resource state",
+        }
+    }
     assert tick_response.status_code == 409
-    assert json.loads(tick_response.body) == expected
+    assert json.loads(tick_response.body) == {
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
+    }
     assert pause_response.status_code == 409
     assert json.loads(pause_response.body) == expected
     assert resume_response.status_code == 409

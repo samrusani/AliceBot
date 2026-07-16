@@ -57,11 +57,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -78,7 +74,9 @@ def seed_review_memories(database_url: str) -> dict[str, str]:
             store.append_event(thread["id"], session["id"], "message.user", {"text": "likes salty snacks"})["id"],
             store.append_event(thread["id"], session["id"], "message.user", {"text": "reads science fiction"})["id"],
             store.append_event(thread["id"], session["id"], "message.user", {"text": "enjoys hiking"})["id"],
-            store.append_event(thread["id"], session["id"], "message.user", {"text": "forget the snack preference"})["id"],
+            store.append_event(thread["id"], session["id"], "message.user", {"text": "forget the snack preference"})[
+                "id"
+            ],
             store.append_event(thread["id"], session["id"], "message.user", {"text": "actually likes oat milk"})["id"],
         ]
 
@@ -599,9 +597,7 @@ def test_memory_admit_endpoint_rejects_mixed_profile_source_events(
     )
 
     assert status_code == 400
-    assert payload == {
-        "detail": "source_event_ids must all belong to threads with the same agent_profile_id"
-    }
+    assert payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_memory_admit_endpoint_rejects_explicit_agent_profile_mismatch(
@@ -640,9 +636,7 @@ def test_memory_admit_endpoint_rejects_explicit_agent_profile_mismatch(
     )
 
     assert status_code == 400
-    assert payload == {
-        "detail": "agent_profile_id must match the profile resolved from source_event_ids"
-    }
+    assert payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_memory_admit_endpoint_rejects_unknown_agent_profile_id(
@@ -681,9 +675,7 @@ def test_memory_admit_endpoint_rejects_unknown_agent_profile_id(
     )
 
     assert status_code == 400
-    assert payload == {
-        "detail": "agent_profile_id must reference an existing profile: unknown_profile"
-    }
+    assert payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_memory_review_endpoints_enforce_per_user_isolation_and_not_found_behavior(
@@ -730,13 +722,9 @@ def test_memory_review_endpoints_enforce_per_user_isolation_and_not_found_behavi
         },
     }
     assert memory_status == 404
-    assert memory_payload == {
-        "detail": f"memory {seeded['coffee_memory_id']} was not found",
-    }
+    assert memory_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert revisions_status == 404
-    assert revisions_payload == {
-        "detail": f"memory {seeded['coffee_memory_id']} was not found",
-    }
+    assert revisions_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
 
 
 def test_memory_review_queue_endpoint_returns_only_active_unlabeled_memories_in_deterministic_order(

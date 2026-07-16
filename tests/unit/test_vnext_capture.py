@@ -414,7 +414,9 @@ def test_import_markdown_folder_logs_failed_imports_and_continues(tmp_path: Path
     assert len(store.sources) == 1
     failure_events = [event for event in store.events if event["event_type"] == "source.import_failed"]
     assert len(failure_events) == 1
-    assert failure_events[0]["payload_json"]["error_type"] == "UnicodeDecodeError"
+    assert failure_events[0]["payload_json"]["error_code"] == "source_import_failed"
+    assert failure_events[0]["payload_json"]["error_message"] == "Source could not be imported"
+    assert "UnicodeDecodeError" not in str(failure_events[0]["payload_json"])
 
 
 def test_import_chatgpt_export_preserves_roles_without_duplicating_raw_json(tmp_path: Path) -> None:
@@ -870,7 +872,9 @@ def test_entity_extraction_failure_never_fails_capture() -> None:
     failures = [event for event in store.list_events() if event.get("event_type") == "entity.extraction_failed"]
     assert len(failures) == 1
     assert failures[0]["target_id"] == result.source_id
-    assert failures[0]["payload_json"]["error_type"] == "RuntimeError"
+    assert failures[0]["payload_json"]["error_code"] == "entity_extraction_failed"
+    assert failures[0]["payload_json"]["error_message"] == "Entity extraction failed"
+    assert "entity lookup exploded" not in str(failures[0]["payload_json"])
     # No source.import_failed was logged: the capture itself succeeded.
     assert not [event for event in store.list_events() if event.get("event_type") == "source.import_failed"]
 

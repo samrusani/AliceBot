@@ -55,11 +55,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -200,7 +196,7 @@ def test_task_workspace_endpoints_provision_read_isolate_and_reject_duplicates(
 
     assert duplicate_status == 409
     assert duplicate_payload == {
-        "detail": f"task {owner['task_id']} already has active workspace {create_payload['workspace']['id']}"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
     assert isolated_list_status == 200
@@ -211,8 +207,10 @@ def test_task_workspace_endpoints_provision_read_isolate_and_reject_duplicates(
 
     assert isolated_detail_status == 404
     assert isolated_detail_payload == {
-        "detail": f"task workspace {create_payload['workspace']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
     assert isolated_create_status == 404
-    assert isolated_create_payload == {"detail": f"task {owner['task_id']} was not found"}
+    assert isolated_create_payload == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }

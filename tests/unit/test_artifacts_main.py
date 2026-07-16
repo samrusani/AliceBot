@@ -64,7 +64,9 @@ def test_get_task_artifact_endpoint_maps_not_found_to_404(monkeypatch) -> None:
     response = main_module.get_task_artifact(task_artifact_id, user_id)
 
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": f"task artifact {task_artifact_id} was not found"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
 
 def test_list_task_artifact_chunks_endpoint_returns_payload(monkeypatch) -> None:
@@ -194,7 +196,9 @@ def test_retrieve_task_artifact_chunks_endpoint_maps_task_not_found_to_404(monke
     )
 
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": f"task {task_id} was not found"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
 
 def test_retrieve_task_artifact_chunks_endpoint_maps_validation_to_400(monkeypatch) -> None:
@@ -207,9 +211,7 @@ def test_retrieve_task_artifact_chunks_endpoint_maps_validation_to_400(monkeypat
         yield object()
 
     def fake_retrieve_task_scoped_artifact_chunk_records(*_args, **_kwargs):
-        raise TaskArtifactChunkRetrievalValidationError(
-            "artifact chunk retrieval query must include at least one word"
-        )
+        raise TaskArtifactChunkRetrievalValidationError("artifact chunk retrieval query must include at least one word")
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
@@ -225,9 +227,7 @@ def test_retrieve_task_artifact_chunks_endpoint_maps_validation_to_400(monkeypat
     )
 
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": "artifact chunk retrieval query must include at least one word"
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_retrieve_semantic_task_artifact_chunks_endpoint_returns_payload(monkeypatch) -> None:
@@ -320,12 +320,7 @@ def test_retrieve_semantic_task_artifact_chunks_endpoint_maps_validation_to_400(
     )
 
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": (
-            "embedding_config_id must reference an existing embedding config owned by the user: "
-            f"{config_id}"
-        )
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_retrieve_semantic_artifact_chunk_endpoint_maps_not_found_to_404(monkeypatch) -> None:
@@ -361,7 +356,7 @@ def test_retrieve_semantic_artifact_chunk_endpoint_maps_not_found_to_404(monkeyp
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
-        "detail": f"task artifact {task_artifact_id} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -392,7 +387,7 @@ def test_retrieve_artifact_chunk_endpoint_maps_not_found_to_404(monkeypatch) -> 
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
-        "detail": f"task artifact {task_artifact_id} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -421,7 +416,9 @@ def test_register_task_artifact_endpoint_maps_workspace_not_found_to_404(monkeyp
     )
 
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": f"task workspace {task_workspace_id} was not found"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
 
 def test_register_task_artifact_endpoint_maps_validation_to_400(monkeypatch) -> None:
@@ -449,9 +446,7 @@ def test_register_task_artifact_endpoint_maps_validation_to_400(monkeypatch) -> 
     )
 
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": "artifact path /tmp/escape.txt escapes workspace root /tmp/workspace"
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_register_task_artifact_endpoint_maps_duplicate_to_409(monkeypatch) -> None:
@@ -482,7 +477,7 @@ def test_register_task_artifact_endpoint_maps_duplicate_to_409(monkeypatch) -> N
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": f"artifact docs/spec.txt is already registered for task workspace {task_workspace_id}"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
 
@@ -513,14 +508,7 @@ def test_ingest_task_artifact_endpoint_maps_validation_to_400(monkeypatch) -> No
     )
 
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": (
-            "artifact docs/spec.bin has unsupported media type application/octet-stream; "
-            "supported types: text/plain, text/markdown, application/pdf, "
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document, "
-            "message/rfc822"
-        )
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_ingest_task_artifact_endpoint_maps_not_found_to_404(monkeypatch) -> None:
@@ -545,4 +533,6 @@ def test_ingest_task_artifact_endpoint_maps_not_found_to_404(monkeypatch) -> Non
     )
 
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": f"task artifact {task_artifact_id} was not found"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }

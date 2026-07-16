@@ -73,11 +73,7 @@ class TraceStoreStub:
         return event
 
     def list_trace_reviews(self) -> list[dict[str, object]]:
-        visible_traces = [
-            trace
-            for trace in self.traces
-            if trace["user_id"] == self.current_user_id
-        ]
+        visible_traces = [trace for trace in self.traces if trace["user_id"] == self.current_user_id]
         rows = []
         for trace in visible_traces:
             rows.append(
@@ -87,8 +83,7 @@ class TraceStoreStub:
                         [
                             event
                             for event in self.trace_events
-                            if event["user_id"] == self.current_user_id
-                            and event["trace_id"] == trace["id"]
+                            if event["user_id"] == self.current_user_id and event["trace_id"] == trace["id"]
                         ]
                     ),
                 }
@@ -364,7 +359,9 @@ def test_get_trace_endpoint_maps_not_found_to_404(monkeypatch) -> None:
     response = main_module.get_trace(trace_id, user_id)
 
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": f"trace {trace_id} was not found"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
 
 def test_list_trace_events_endpoint_returns_payload_and_maps_not_found(monkeypatch) -> None:
@@ -412,7 +409,9 @@ def test_list_trace_events_endpoint_returns_payload_and_maps_not_found(monkeypat
         },
     }
     assert not_found_response.status_code == 404
-    assert json.loads(not_found_response.body) == {"detail": f"trace {trace_id} was not found"}
+    assert json.loads(not_found_response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
     assert captured["database_url"] == "postgresql://app"
     assert captured["current_user_id"] == user_id
     assert captured["store_type"] == "ContinuityStore"

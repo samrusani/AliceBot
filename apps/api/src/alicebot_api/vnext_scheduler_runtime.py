@@ -7,6 +7,7 @@ from collections.abc import Iterator
 import fcntl
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import signal
@@ -26,6 +27,8 @@ from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_scheduler import (
     SchedulerRunRequest,
+    SCHEDULER_WORKFLOW_ERROR_CODE,
+    SCHEDULER_WORKFLOW_ERROR_MESSAGE,
     SchedulerWorkflowPlan,
     VNextSchedulerService,
     VNextSchedulerValidationError,
@@ -39,6 +42,13 @@ DEFAULT_STATUS_FILE = DEFAULT_RUNTIME_DIR / "scheduler-status.json"
 DEFAULT_LOG_FILE = DEFAULT_RUNTIME_DIR / "scheduler.log"
 INSTANCE_TOKEN_ENV = "ALICEBOT_SCHEDULER_INSTANCE_TOKEN"
 DEFAULT_CLAIM_LEASE_SECONDS = 900.0
+SCHEDULER_CLAIM_LOST_ERROR_CODE = "scheduler_claim_lost"
+SCHEDULER_CLAIM_LOST_ERROR_MESSAGE = "Scheduler claim was lost before completion"
+SCHEDULER_CLAIM_SUPERSEDED_ERROR_CODE = "scheduler_claim_superseded"
+SCHEDULER_CLAIM_SUPERSEDED_ERROR_MESSAGE = "Scheduler claim was superseded before completion"
+SCHEDULER_SCAN_ERROR_CODE = "scheduler_scan_failed"
+SCHEDULER_SCAN_ERROR_MESSAGE = "Scheduler scan failed"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -492,6 +502,11 @@ def run_due_workflows_durable(
                         run=run,
                     )
             except Exception as exc:  # noqa: BLE001 - persisted as a failed scheduler run
+                logger.exception(
+                    "claimed scheduler workflow failed run_id=%s error_code=%s",
+                    run_id,
+                    SCHEDULER_WORKFLOW_ERROR_CODE,
+                )
                 error = exc
 
         run_metadata_value = run.get("metadata_json")
@@ -549,19 +564,26 @@ def run_due_workflows_durable(
                             },
                         )
             except Exception as exc:  # noqa: BLE001 - publication transaction rolled back
+                logger.exception(
+                    "scheduler publication failed run_id=%s error_code=%s",
+                    run_id,
+                    SCHEDULER_WORKFLOW_ERROR_CODE,
+                )
                 error = exc
                 artifact = None
                 artifact_id = None
                 finalized = None
 
         status = "succeeded" if finalized is not None else "failed"
-        error_message = (
-            "scheduler claim fence was lost during external work"
-            if fence_lost.is_set()
-            else str(error)
-            if error is not None
-            else "scheduler claim was superseded before finalize"
-        )
+        if fence_lost.is_set():
+            error_code = SCHEDULER_CLAIM_LOST_ERROR_CODE
+            error_message = SCHEDULER_CLAIM_LOST_ERROR_MESSAGE
+        elif error is not None:
+            error_code = SCHEDULER_WORKFLOW_ERROR_CODE
+            error_message = SCHEDULER_WORKFLOW_ERROR_MESSAGE
+        else:
+            error_code = SCHEDULER_CLAIM_SUPERSEDED_ERROR_CODE
+            error_message = SCHEDULER_CLAIM_SUPERSEDED_ERROR_MESSAGE
         if finalized is None:
             with user_connection(database_url, user_id) as conn:
                 failure_store = PostgresVNextStore(conn)
@@ -581,7 +603,7 @@ def run_due_workflows_durable(
                     next_run_at=next_run_at,
                     metadata_json={
                         **run_metadata,
-                        **({"error_type": type(error).__name__} if error is not None else {}),
+                        "error_code": error_code,
                         "staged_side_effects_published": False,
                     },
                     actor_type=triggered_by,
@@ -591,6 +613,7 @@ def run_due_workflows_durable(
                     **run,
                     "status": "failed",
                     "error_message": error_message,
+                    "metadata_json": {**run_metadata, "error_code": error_code},
                     "fence_lost": True,
                 }
             artifact = None
@@ -903,6 +926,8 @@ def run_foreground_daemon(
         "mode": "foreground",
         "last_due_scan": None,
         "last_error": None,
+        "last_error_code": None,
+        "last_error_type": None,
         "exit_code": 0,
     }
     try:
@@ -928,17 +953,23 @@ def run_foreground_daemon(
                     "last_due_scan": result,
                     "last_due_scan_at": result.get("checked_at"),
                     "last_due_count": result.get("due_count", 0),
-                    "last_error": (f"{failed_count} scheduled workflow(s) failed" if failed_count else None),
+                    "last_error": SCHEDULER_WORKFLOW_ERROR_MESSAGE if failed_count else None,
+                    "last_error_code": SCHEDULER_WORKFLOW_ERROR_CODE if failed_count else None,
                     "last_error_type": None,
                     "exit_code": 1 if failed_count else 0,
                 }
-            except Exception as exc:  # pragma: no cover - exercised through CLI smoke paths
+            except Exception:  # pragma: no cover - exercised through CLI smoke paths
+                logger.exception(
+                    "scheduler scan failed error_code=%s",
+                    SCHEDULER_SCAN_ERROR_CODE,
+                )
                 last_payload = {
                     **last_payload,
                     "running": True,
                     "last_heartbeat_at": _now_iso(),
-                    "last_error": str(exc),
-                    "last_error_type": type(exc).__name__,
+                    "last_error": SCHEDULER_SCAN_ERROR_MESSAGE,
+                    "last_error_code": SCHEDULER_SCAN_ERROR_CODE,
+                    "last_error_type": None,
                     "exit_code": 1,
                 }
             _write_json(config.status_file, last_payload)

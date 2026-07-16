@@ -1,7 +1,11 @@
 # Releasing Alice
 
-`v0.11.0` is the latest published release.
-Preparing it does not authorize a tag, PyPI upload, or GitHub Release.
+`v0.11.1` is the current uncommitted release-hardening candidate.
+
+`v0.11.0` is the latest published release and remains the checksum/install
+baseline.
+Preparing candidate documents does not authorize a tag, PyPI upload, or GitHub
+Release.
 
 ## One Release Identity
 
@@ -203,6 +207,16 @@ tests, and bundle budgets. It also builds both distributions, runs Twine, and
 tests the installed wheel/sdist across all four public entrypoints. It first
 fetches `origin/main`, and writes `$DIST_DIR/SHA256SUMS` only after both
 artifacts pass.
+
+Web dependency auditing deliberately remains on
+`apps/web/scripts/npm-advisory-audit.mjs` while the reproducible web toolchain
+is pinned to Node 20 and pnpm 10.23.0. pnpm 11 now uses npm's bulk advisory
+endpoint, as recorded in the [pnpm 11 audit migration](https://github.com/orgs/pnpm/discussions/11377),
+but upgrading the package-manager major is a separate compatibility carrier.
+The repository wrapper already calls that bulk endpoint directly and fails
+closed when dependency enumeration, the endpoint, or response parsing fails;
+do not replace it with `pnpm audit` until that toolchain upgrade passes the
+complete web matrix and bundle budgets.
 
 The release regression surface also treats every advertised MCP JSON Schema
 keyword as an executable pre-handler contract. RFC 3339 full dates must be

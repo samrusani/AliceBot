@@ -322,9 +322,7 @@ def test_openapi_has_concrete_success_contracts_and_accurate_statuses() -> None:
 
     exact_keys = set(main_module._OPENAPI_EXACT_RESPONSE_CONTRACTS) & set(operations_by_key)
     operation_registry = {
-        key: value
-        for key, value in main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS.items()
-        if key in operations_by_key
+        key: value for key, value in main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS.items() if key in operations_by_key
     }
     polymorphic_operations = {
         key: value
@@ -538,6 +536,7 @@ def test_openapi_direct_service_envelopes_do_not_publish_fabricated_wrappers() -
             "status",
             "task_id",
             "artifact_id",
+            "error_code",
             "error_message",
         },
         ("POST", "/v0/vnext/connectors/telegram/sync"): {
@@ -550,6 +549,7 @@ def test_openapi_direct_service_envelopes_do_not_publish_fabricated_wrappers() -
             "failed_count",
             "previous_cursor",
             "sync_cursor",
+            "error_code",
             "source_ids",
             "failed_external_ids",
             "errors",
@@ -748,6 +748,20 @@ def test_openapi_audit_samples_accept_actual_service_payloads_and_reject_phantom
         assert set(payload) == set(_openapi_object_properties(response_schema)), operation_key
         assert _openapi_schema_accepts(payload, response_schema), operation_key
         assert not _openapi_schema_accepts({**payload, "phantom_wrapper": {}}, response_schema), operation_key
+
+    queue_schema = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[("POST", "/v0/vnext/queue/process-next")][1]
+    assert "error_code" in _openapi_required_fields(queue_schema)
+    assert queue_schema["additionalProperties"] is False
+
+    for operation_key in {
+        ("POST", "/v0/vnext/connectors/{connector_name}/sync"),
+        ("POST", "/v0/vnext/connectors/telegram/sync"),
+        ("POST", "/v0/vnext/connectors/local-folder/sync"),
+        ("POST", "/v0/vnext/connectors/browser-clipper/capture"),
+    }:
+        connector_schema = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[operation_key][1]
+        assert "error_code" in _openapi_required_fields(connector_schema), operation_key
+        assert connector_schema["additionalProperties"] is False, operation_key
 
 
 def test_scheduler_status_endpoint_payload_matches_its_generated_openapi_contract(
@@ -999,10 +1013,13 @@ def test_build_healthcheck_payload_keeps_boundary_statuses_consistent() -> None:
             "object_storage": {"status": "not_checked"},
         },
     }
-    assert "endpoint_url" not in main_module.build_healthcheck_payload(
-        settings,
-        database_ok=True,
-    )["services"]["object_storage"]
+    assert (
+        "endpoint_url"
+        not in main_module.build_healthcheck_payload(
+            settings,
+            database_ok=True,
+        )["services"]["object_storage"]
+    )
     assert main_module.build_healthcheck_payload(settings, database_ok=False)["services"]["database"] == {
         "status": "unreachable"
     }
@@ -1604,7 +1621,7 @@ def test_compile_context_returns_not_found_when_scope_row_is_missing(monkeypatch
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
-        "detail": "get_thread did not return a row from the database",
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -1884,7 +1901,7 @@ def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_erro
 
     assert error_response.status_code == 400
     assert json.loads(error_response.body) == {
-        "detail": "embedding_config_id must reference an existing embedding config owned by the user"
+        "detail": {"code": "invalid_request", "message": "The request is invalid"}
     }
 
     monkeypatch.setattr(
@@ -1915,7 +1932,7 @@ def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_erro
 
     assert semantic_artifact_error_response.status_code == 400
     assert json.loads(semantic_artifact_error_response.body) == {
-        "detail": "query_vector length must match embedding config dimensions (3): 2"
+        "detail": {"code": "invalid_request", "message": "The request is invalid"}
     }
 
 
@@ -2410,9 +2427,7 @@ def test_admit_memory_returns_bad_request_when_source_validation_fails(monkeypat
     )
 
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": "source_event_ids must all reference existing events owned by the user",
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_extract_explicit_preferences_returns_payload(monkeypatch) -> None:
@@ -2629,9 +2644,7 @@ def test_extract_explicit_preferences_returns_bad_request_when_source_event_is_i
     )
 
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": "source_event_id must reference an existing message.user event owned by the user",
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_extract_explicit_commitments_returns_payload(monkeypatch) -> None:
@@ -2804,9 +2817,7 @@ def test_extract_explicit_commitments_returns_bad_request_when_source_event_is_i
     )
 
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": "source_event_id must reference an existing message.user event owned by the user",
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_capture_explicit_signals_returns_payload(monkeypatch) -> None:
@@ -2950,9 +2961,7 @@ def test_capture_explicit_signals_returns_bad_request_when_source_event_is_inval
     )
 
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": "source_event_id must reference an existing message.user event owned by the user",
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_list_memories_returns_review_payload(monkeypatch) -> None:
@@ -3114,7 +3123,9 @@ def test_open_loop_routes_return_payload_and_errors(monkeypatch) -> None:
     )
     not_found_response = main_module.get_open_loop(open_loop_id=open_loop_id, user_id=user_id)
     assert not_found_response.status_code == 404
-    assert json.loads(not_found_response.body) == {"detail": "open loop hidden"}
+    assert json.loads(not_found_response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
 
 def test_open_loop_mutation_routes_handle_create_and_status_validation(monkeypatch) -> None:
@@ -3202,7 +3213,9 @@ def test_open_loop_mutation_routes_handle_create_and_status_validation(monkeypat
         request=main_module.UpdateOpenLoopStatusRequest(user_id=user_id, status="invalid"),
     )
     assert bad_status_response.status_code == 400
-    assert json.loads(bad_status_response.body) == {"detail": "status invalid"}
+    assert json.loads(bad_status_response.body) == {
+        "detail": {"code": "invalid_request", "message": "The request is invalid"}
+    }
 
 
 def test_get_memory_returns_not_found_when_memory_is_inaccessible(monkeypatch) -> None:
@@ -3226,7 +3239,7 @@ def test_get_memory_returns_not_found_when_memory_is_inaccessible(monkeypatch) -
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
-        "detail": f"memory {memory_id} was not found",
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -3977,7 +3990,9 @@ def test_create_memory_review_label_returns_not_found_for_inaccessible_memory(mo
     )
 
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": "memory missing"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
 
 def test_list_memory_review_labels_returns_deterministic_items_and_summary(monkeypatch) -> None:
@@ -4092,7 +4107,9 @@ def test_list_memory_review_labels_returns_not_found_for_inaccessible_memory(mon
     response = main_module.list_memory_review_labels(uuid4(), uuid4())
 
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": "memory hidden"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
 
 def test_create_embedding_config_returns_created_payload(monkeypatch) -> None:
@@ -4190,12 +4207,7 @@ def test_create_embedding_config_returns_bad_request_for_validation_failure(monk
     )
 
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": (
-            "embedding config already exists for provider/model/version under the user scope: "
-            "openai/text-embedding-3-large/2026-03-12"
-        )
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_upsert_memory_embedding_routes_success_and_validation_errors(monkeypatch) -> None:
@@ -4269,7 +4281,7 @@ def test_upsert_memory_embedding_routes_success_and_validation_errors(monkeypatc
 
     assert error_response.status_code == 400
     assert json.loads(error_response.body) == {
-        "detail": "embedding_config_id must reference an existing embedding config owned by the user"
+        "detail": {"code": "invalid_request", "message": "The request is invalid"}
     }
 
 
@@ -4362,7 +4374,7 @@ def test_retrieve_semantic_memories_routes_success_and_validation_errors(monkeyp
 
     assert error_response.status_code == 400
     assert json.loads(error_response.body) == {
-        "detail": "embedding_config_id must reference an existing embedding config owned by the user"
+        "detail": {"code": "invalid_request", "message": "The request is invalid"}
     }
 
 
@@ -4438,7 +4450,9 @@ def test_memory_embedding_read_routes_return_payload_and_not_found(monkeypatch) 
     )
 
     assert not_found_response.status_code == 404
-    assert json.loads(not_found_response.body) == {"detail": f"memory embedding {embedding_id} was not found"}
+    assert json.loads(not_found_response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
 
 def test_task_artifact_chunk_embedding_routes_success_and_validation_errors(monkeypatch) -> None:
@@ -4518,7 +4532,7 @@ def test_task_artifact_chunk_embedding_routes_success_and_validation_errors(monk
 
     assert error_response.status_code == 400
     assert json.loads(error_response.body) == {
-        "detail": "task_artifact_chunk_id must reference an existing task artifact chunk owned by the user"
+        "detail": {"code": "invalid_request", "message": "The request is invalid"}
     }
 
 
@@ -4640,12 +4654,16 @@ def test_task_artifact_chunk_embedding_read_routes_return_payload_and_not_found(
     )
 
     assert missing_artifact_response.status_code == 404
-    assert json.loads(missing_artifact_response.body) == {"detail": f"task artifact {artifact_id} was not found"}
+    assert json.loads(missing_artifact_response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
     assert missing_chunk_response.status_code == 404
-    assert json.loads(missing_chunk_response.body) == {"detail": f"task artifact chunk {chunk_id} was not found"}
+    assert json.loads(missing_chunk_response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
     assert missing_detail_response.status_code == 404
     assert json.loads(missing_detail_response.body) == {
-        "detail": f"task artifact chunk embedding {embedding_id} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -4731,9 +4749,7 @@ def test_create_entity_returns_bad_request_when_source_memory_validation_fails(m
     )
 
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": "source_memory_ids must all reference existing memories owned by the user",
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_create_entity_edge_returns_created_payload(monkeypatch) -> None:
@@ -4830,9 +4846,7 @@ def test_create_entity_edge_returns_bad_request_for_validation_failure(monkeypat
     )
 
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": "valid_to must be greater than or equal to valid_from",
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_list_entities_returns_deterministic_payload(monkeypatch) -> None:
@@ -4979,7 +4993,7 @@ def test_list_entity_edges_returns_not_found_for_inaccessible_entity(monkeypatch
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
-        "detail": f"entity {entity_id} was not found",
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -5050,7 +5064,7 @@ def test_get_entity_returns_not_found_for_inaccessible_entity(monkeypatch) -> No
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
-        "detail": f"entity {entity_id} was not found",
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 

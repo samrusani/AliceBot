@@ -37,3 +37,35 @@ def test_integration_runners_enable_legacy_surfaces_without_changing_unit_postur
         if "-m pytest tests/unit" in line
     )
     assert "ALICE_LEGACY_SURFACES" not in unit_command
+
+
+def test_postgres_matrix_has_a_required_flag_off_default_surface_row() -> None:
+    workflow = _read(".github/workflows/tests.yml")
+    integration_job = workflow.split("  python-integration:", 1)[1].split(
+        "\n  web:", 1
+    )[0]
+
+    assert "name: ${{ matrix.integration_check }}" in integration_job
+    assert (
+        'integration_check: ["Integration tests (Postgres + pgvector, role separation)", '
+        '"Default surface integration smoke (Postgres)"]'
+    ) in integration_job
+    assert (
+        "if: matrix.integration_check == "
+        "'Integration tests (Postgres + pgvector, role separation)'"
+    ) in integration_job
+    assert (
+        "if: matrix.integration_check == "
+        "'Default surface integration smoke (Postgres)'"
+    ) in integration_job
+    assert "CREATE ROLE alicebot_app LOGIN PASSWORD 'ci'" in integration_job
+    assert "DATABASE_URL: postgresql://alicebot_app:ci@localhost:5432/alicebot" in integration_job
+    assert "DATABASE_ADMIN_URL: postgresql://alicebot_admin:ci@localhost:5432/alicebot" in integration_job
+    assert (
+        "unset ALICE_LEGACY_SURFACES ALICE_MCP_LEGACY_TOOLS ALICE_AGENT_API_KEY"
+    ) in integration_job
+    assert (
+        "./.venv/bin/python -m pytest "
+        "tests/integration/test_default_surface_integration.py -q -p no:cacheprovider"
+    ) in integration_job
+    assert "ALICE_LEGACY_SURFACES:" not in integration_job.split("    steps:", 1)[0]

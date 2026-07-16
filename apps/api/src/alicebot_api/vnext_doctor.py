@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import logging
 import os
 from pathlib import Path
 import re
@@ -13,6 +14,8 @@ from alicebot_api.vnext_connectors import CORE_SETTINGS_CONNECTORS, VNextConnect
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_scheduler_runtime import daemon_status
 from alicebot_api.vnext_secrets import SecretProvider, default_secret_provider
+
+logger = logging.getLogger(__name__)
 
 LOCAL_VNEXT_FRONTEND_ORIGINS = ("http://127.0.0.1:3000", "http://localhost:3000")
 LOCAL_VNEXT_CORS_RECOMMENDED_FIX = (
@@ -171,6 +174,10 @@ class VNextDoctorService:
             settings = self.store.list_connector_settings()
             states = self.store.list_connector_states()
         except Exception as exc:
+            logger.error(
+                "Connector settings/state storage is unavailable",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
             settings = []
             states = []
             checks.append(
@@ -178,7 +185,7 @@ class VNextDoctorService:
                     name="connector_storage",
                     status="fail",
                     severity="blocking",
-                    message=f"Connector settings/state storage is unavailable: {type(exc).__name__}.",
+                    message="Connector settings/state storage is unavailable.",
                     recommended_fix="./scripts/migrate.sh",
                 )
             )

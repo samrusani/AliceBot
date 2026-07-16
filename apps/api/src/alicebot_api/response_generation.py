@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 from typing import Any, TypedDict
 from typing import Literal, cast
 from urllib.error import HTTPError, URLError
@@ -11,12 +11,10 @@ from urllib.request import Request, urlopen
 from uuid import UUID
 
 from alicebot_api.compiler import compile_and_persist_trace
-from alicebot_api.config import Settings
 from alicebot_api.contracts import (
     AssistantResponseEventPayload,
     CompiledContextPack,
     ContextCompilerLimits,
-    DEFAULT_AGENT_PROFILE_ID,
     GenerateResponseSuccess,
     ModelInvocationRequest,
     ModelInvocationResponse,
@@ -31,11 +29,17 @@ from alicebot_api.contracts import (
     TRACE_KIND_RESPONSE_GENERATE,
     TraceEventRecord,
 )
-from alicebot_api.store import ContinuityStore, JsonObject, ThreadRow
+from alicebot_api.store import ContinuityStore, JsonObject
 
 PROMPT_TRACE_EVENT_KIND = "response.prompt.assembled"
 MODEL_COMPLETED_TRACE_EVENT_KIND = "response.model.completed"
 MODEL_FAILED_TRACE_EVENT_KIND = "response.model.failed"
+RESPONSE_FAILURE_MESSAGES = {
+    "upstream_failure": "An upstream service failed",
+    "conflict": "The request conflicts with the current resource state",
+}
+ResponseFailureCode = Literal["upstream_failure", "conflict"]
+logger = logging.getLogger(__name__)
 SYSTEM_INSTRUCTION = (
     "You are AliceBot. Reply to the latest user message using the provided durable context. "
     "If the context is insufficient, say so briefly instead of inventing facts."
@@ -60,6 +64,7 @@ class ResponseGenerationConflictError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ResponseFailure:
+    error_code: ResponseFailureCode
     detail: str
     trace: ResponseTraceSummary
 
@@ -75,7 +80,6 @@ class PreparedResponseGeneration:
     compiled_trace_event_count: int
     prompt: PromptAssemblyResult
     model_request: ModelInvocationRequest
-    agent_profile_id: str
     user_event_id: UUID
     user_event_sequence_no: int
 
@@ -123,22 +127,25 @@ def _deterministic_json(value: JsonObject | list[object]) -> str:
 
 
 def _context_section_payload(context_pack: CompiledContextPack) -> JsonObject:
-    return cast(JsonObject, {
-        "compiler_version": context_pack["compiler_version"],
-        "scope": context_pack["scope"],
-        "limits": context_pack["limits"],
-        "user": context_pack["user"],
-        "thread": context_pack["thread"],
-        "sessions": context_pack["sessions"],
-        "memories": context_pack["memories"],
-        "memory_summary": context_pack["memory_summary"],
-        "artifact_chunks": context_pack["artifact_chunks"],
-        "artifact_chunk_summary": context_pack["artifact_chunk_summary"],
-        "entities": context_pack["entities"],
-        "entity_summary": context_pack["entity_summary"],
-        "entity_edges": context_pack["entity_edges"],
-        "entity_edge_summary": context_pack["entity_edge_summary"],
-    })
+    return cast(
+        JsonObject,
+        {
+            "compiler_version": context_pack["compiler_version"],
+            "scope": context_pack["scope"],
+            "limits": context_pack["limits"],
+            "user": context_pack["user"],
+            "thread": context_pack["thread"],
+            "sessions": context_pack["sessions"],
+            "memories": context_pack["memories"],
+            "memory_summary": context_pack["memory_summary"],
+            "artifact_chunks": context_pack["artifact_chunks"],
+            "artifact_chunk_summary": context_pack["artifact_chunk_summary"],
+            "entities": context_pack["entities"],
+            "entity_summary": context_pack["entity_summary"],
+            "entity_edges": context_pack["entity_edges"],
+            "entity_edge_summary": context_pack["entity_edge_summary"],
+        },
+    )
 
 
 def assemble_prompt(
@@ -155,14 +162,10 @@ def assemble_prompt(
         ),
         PromptSection(
             name="conversation",
-            content=_deterministic_json(
-                cast(JsonObject, {"events": request.context_pack["events"]})
-            ),
+            content=_deterministic_json(cast(JsonObject, {"events": request.context_pack["events"]})),
         ),
     )
-    prompt_text = "\n\n".join(
-        f"[{section.name.upper()}]\n{section.content}" for section in sections
-    )
+    prompt_text = "\n\n".join(f"[{section.name.upper()}]\n{section.content}" for section in sections)
     prompt_sha256 = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
     trace_payload: PromptAssemblyTracePayload = {
         "version": PROMPT_ASSEMBLY_VERSION_V0,
@@ -305,6 +308,7 @@ def _build_model_http_request(
 def _model_failure_trace_payload(
     *,
     request: ModelInvocationRequest,
+    error_code: ResponseFailureCode,
     error_message: str,
 ) -> JsonObject:
     return {
@@ -320,6 +324,7 @@ def _model_failure_trace_payload(
             "output_tokens": None,
             "total_tokens": None,
         },
+        "error_code": error_code,
         "error_message": error_message,
     }
 
@@ -376,9 +381,7 @@ def invoke_openai_compatible_model(
     except TimeoutError as exc:
         raise ModelProviderUnavailableError("model provider request timed out") from exc
     except URLError as exc:
-        raise ModelProviderUnavailableError(
-            f"model provider request failed: {exc.reason}"
-        ) from exc
+        raise ModelProviderUnavailableError(f"model provider request failed: {exc.reason}") from exc
 
     response_payload = _parse_openai_response_payload(raw_payload)
     output_text = _extract_output_text(response_payload)
@@ -392,21 +395,6 @@ def invoke_openai_compatible_model(
         finish_reason=finish_reason,
         output_text=output_text,
         usage=_parse_usage(response_payload),
-    )
-
-
-def invoke_model(
-    *,
-    settings: Settings,
-    request: ModelInvocationRequest,
-) -> ModelInvocationResponse:
-    return invoke_openai_compatible_model(
-        transport=OpenAICompatibleTransportConfig(
-            base_url=settings.model_base_url,
-            api_key=settings.model_api_key,
-            timeout_seconds=settings.model_timeout_seconds,
-        ),
-        request=request,
     )
 
 
@@ -464,47 +452,21 @@ def _create_response_trace(
     }
 
 
-def resolve_thread_model_runtime(
-    *,
-    store: ContinuityStore,
-    thread: ThreadRow,
-    settings: Settings,
-) -> tuple[str, str]:
-    agent_profile_id = str(thread.get("agent_profile_id", DEFAULT_AGENT_PROFILE_ID))
-    profile = store.get_agent_profile_optional(agent_profile_id)
-
-    if profile is None:
-        return settings.model_provider, settings.model_name
-
-    profile_provider = profile.get("model_provider")
-    profile_model = profile.get("model_name")
-    if (
-        isinstance(profile_provider, str)
-        and profile_provider
-        and isinstance(profile_model, str)
-        and profile_model
-    ):
-        return profile_provider, profile_model
-
-    return settings.model_provider, settings.model_name
-
-
 def prepare_response_generation(
     *,
     store: ContinuityStore,
-    settings: Settings,
     user_id: UUID,
     thread_id: UUID,
     message_text: str,
     limits: ContextCompilerLimits,
-    runtime_override: tuple[str, str] | None = None,
+    runtime_override: tuple[str, str],
     system_instruction: str = SYSTEM_INSTRUCTION,
     developer_instruction: str = DEVELOPER_INSTRUCTION,
 ) -> PreparedResponseGeneration:
     """Persist the user turn and compile a provider-ready immutable request."""
 
     store.get_user(user_id)
-    thread = store.get_thread(thread_id)
+    store.get_thread(thread_id)
 
     user_event = store.append_event(
         thread_id,
@@ -526,14 +488,7 @@ def prepare_response_generation(
         ),
         compile_trace_id=compiled_trace.trace_id,
     )
-    if runtime_override is None:
-        model_provider, model_name = resolve_thread_model_runtime(
-            store=store,
-            thread=thread,
-            settings=settings,
-        )
-    else:
-        model_provider, model_name = runtime_override
+    model_provider, model_name = runtime_override
     model_request = ModelInvocationRequest(
         provider=model_provider,  # type: ignore[arg-type]
         model=model_name,
@@ -547,23 +502,9 @@ def prepare_response_generation(
         compiled_trace_event_count=compiled_trace.trace_event_count,
         prompt=prompt,
         model_request=model_request,
-        agent_profile_id=str(thread.get("agent_profile_id", DEFAULT_AGENT_PROFILE_ID)),
         user_event_id=user_event["id"],
         user_event_sequence_no=user_event["sequence_no"],
     )
-
-
-def invoke_prepared_response(
-    prepared: PreparedResponseGeneration,
-    *,
-    settings: Settings,
-    model_invoker: Callable[[ModelInvocationRequest], ModelInvocationResponse] | None = None,
-) -> ModelInvocationResponse:
-    """Invoke the configured provider without requiring a persistence handle."""
-
-    if model_invoker is None:
-        return invoke_model(settings=settings, request=prepared.model_request)
-    return model_invoker(prepared.model_request)
 
 
 def fail_response_generation(
@@ -571,8 +512,17 @@ def fail_response_generation(
     store: ContinuityStore,
     prepared: PreparedResponseGeneration,
     error: ModelInvocationError,
+    error_code: ResponseFailureCode = "upstream_failure",
 ) -> ResponseFailure:
     """Persist the failure trace after an out-of-transaction provider error."""
+
+    public_message = RESPONSE_FAILURE_MESSAGES[error_code]
+    logger.error(
+        "response generation failed with public error code=%s",
+        error_code,
+        exc_info=(type(error), error, error.__traceback__),
+        extra={"public_error_code": error_code},
+    )
 
     prompt_trace_event = TraceEventRecord(
         kind=PROMPT_TRACE_EVENT_KIND,
@@ -594,13 +544,14 @@ def fail_response_generation(
                     JsonObject,
                     _model_failure_trace_payload(
                         request=prepared.model_request,
-                        error_message=str(error),
+                        error_code=error_code,
+                        error_message=public_message,
                     ),
                 ),
             ),
         ],
     )
-    return ResponseFailure(detail=str(error), trace=trace)
+    return ResponseFailure(error_code=error_code, detail=public_message, trace=trace)
 
 
 def complete_response_generation(
@@ -657,49 +608,3 @@ def complete_response_generation(
         },
         "trace": trace,
     }
-
-
-def generate_response(
-    *,
-    store: ContinuityStore,
-    settings: Settings,
-    user_id: UUID,
-    thread_id: UUID,
-    message_text: str,
-    limits: ContextCompilerLimits,
-    runtime_override: tuple[str, str] | None = None,
-    model_invoker: Callable[[ModelInvocationRequest], ModelInvocationResponse] | None = None,
-    system_instruction: str = SYSTEM_INSTRUCTION,
-    developer_instruction: str = DEVELOPER_INSTRUCTION,
-) -> GenerateResponseSuccess | ResponseFailure:
-    """Compatibility orchestration for callers that already own one store."""
-
-    prepared = prepare_response_generation(
-        store=store,
-        settings=settings,
-        user_id=user_id,
-        thread_id=thread_id,
-        message_text=message_text,
-        limits=limits,
-        runtime_override=runtime_override,
-        system_instruction=system_instruction,
-        developer_instruction=developer_instruction,
-    )
-
-    try:
-        model_response = invoke_prepared_response(
-            prepared,
-            settings=settings,
-            model_invoker=model_invoker,
-        )
-    except ModelInvocationError as exc:
-        return fail_response_generation(
-            store=store,
-            prepared=prepared,
-            error=exc,
-        )
-    return complete_response_generation(
-        store=store,
-        prepared=prepared,
-        model_response=model_response,
-    )

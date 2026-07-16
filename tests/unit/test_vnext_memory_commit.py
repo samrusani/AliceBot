@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import sqlite3
 from uuid import uuid4
 
@@ -18,6 +19,10 @@ from alicebot_api.vnext_memory_commit import (
     evaluate_memory_commit_policy,
 )
 from alicebot_api.vnext_memory_version import memory_version_snapshot
+from alicebot_api.vnext_project_update_guard import (
+    PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE,
+    is_pending_project_update_memory,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -987,7 +992,9 @@ def test_entity_linking_failure_never_fails_the_commit() -> None:
     failures = [event for event in store.list_events() if event.get("event_type") == "entity.extraction_failed"]
     assert len(failures) == 1
     assert failures[0]["payload_json"]["stage"] == "commit"
-    assert failures[0]["payload_json"]["error_type"] == "RuntimeError"
+    assert failures[0]["payload_json"]["error_code"] == "entity_linking_failed"
+    assert failures[0]["payload_json"]["error_message"] == "Memory entity linking failed"
+    assert "entity lookup exploded" not in str(failures[0]["payload_json"])
 
 
 def test_stores_without_the_entity_surface_commit_without_linking() -> None:
@@ -1270,6 +1277,87 @@ def _seed_row(
         }
     )
     return str(row["id"])
+
+
+@pytest.mark.parametrize("operation", ["correct", "forget", "undo"])
+@pytest.mark.parametrize("marker", ["workflow", "memory_key"])
+def test_generic_lifecycle_mutations_cannot_strand_pending_project_update_candidate(
+    operation: str,
+    marker: str,
+) -> None:
+    store = TargetedLookupStore()
+    metadata: dict[str, object] = {"candidate": True}
+    if marker == "workflow":
+        metadata["workflow"] = "project_auto_update"
+    memory_id = _seed_row(
+        store,
+        title="Pending project update",
+        text="Proposed project state.",
+        status="candidate",
+        metadata=metadata,
+    )
+    if marker == "memory_key":
+        store.memories[memory_id]["memory_key"] = "  project_update.alice.digest  "
+    service = VNextMemoryCommitService(store)
+    state_before = deepcopy((store.memories, store.revisions, store.events))
+
+    with pytest.raises(
+        VNextMemoryCommitValidationError,
+        match=f"^{PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE}$",
+    ):
+        if operation == "correct":
+            service.correct(
+                identity=None,
+                memory_id=memory_id,
+                canonical_text="Generic correction must not apply.",
+            )
+        elif operation == "forget":
+            service.forget(identity=None, memory_id=memory_id, reason="Generic forget must not apply.")
+        else:
+            service.undo(identity=None, memory_id=memory_id, reason="Generic undo must not apply.")
+
+    assert (store.memories, store.revisions, store.events) == state_before
+
+
+@pytest.mark.parametrize(
+    ("memory", "expected"),
+    [
+        ({"memory_key": "ordinary.key", "metadata_json": {}}, False),
+        ({"memory_key": "project_update.alice.digest", "metadata_json": {}}, True),
+        ({"memory_key": "ordinary.key", "metadata_json": {"workflow": "project_auto_update"}}, True),
+        (
+            {
+                "memory_key": "project_update.alice.digest",
+                "metadata_json": {"candidate": False},
+            },
+            False,
+        ),
+    ],
+)
+def test_pending_project_update_guard_requires_exact_terminal_candidate_marker(
+    memory: dict[str, object],
+    expected: bool,
+) -> None:
+    assert is_pending_project_update_memory(memory) is expected
+
+
+def test_terminal_project_update_memory_can_use_generic_correction() -> None:
+    store = TargetedLookupStore()
+    memory_id = _seed_row(
+        store,
+        title="Reviewed project update",
+        text="Accepted project state.",
+        metadata={"workflow": "project_auto_update", "candidate": False},
+    )
+
+    result = VNextMemoryCommitService(store).correct(
+        identity=None,
+        memory_id=memory_id,
+        canonical_text="Later correction after project review.",
+    )
+
+    assert result["status"] == "committed"
+    assert store.memories[memory_id]["canonical_text"] == "Later correction after project review."
 
 
 def _seed_consolidation_candidate(

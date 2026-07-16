@@ -28,6 +28,7 @@ class InMemoryVNextProjectStore:
         self.cleared_embedding_ids: list[str] = []
         self.fact_key_updates: list[tuple[str, str | None]] = []
         self.artifact_lock_calls: list[str] = []
+        self.project_update_event_lookup_calls: list[tuple[str, str]] = []
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
@@ -45,6 +46,34 @@ class InMemoryVNextProjectStore:
             if (target_type is None or event.get("target_type") == target_type)
             and (target_id is None or event.get("target_id") == target_id)
         ]
+
+    def list_project_update_events(
+        self,
+        *,
+        artifact_id: str,
+        candidate_memory_id: str,
+    ) -> list[dict[str, object]]:
+        self.project_update_event_lookup_calls.append((artifact_id, candidate_memory_id))
+        event_types = {
+            "project.update_candidate_created",
+            "project.update_candidate_accepted",
+            "project.update_candidate_rejected",
+        }
+        rows: list[dict[str, object]] = []
+        for event in self.events:
+            if event.get("event_type") not in event_types:
+                continue
+            payload_value = event.get("payload_json")
+            payload = payload_value if isinstance(payload_value, dict) else {}
+            if (
+                (event.get("target_type") == "artifact" and str(event.get("target_id") or "") == artifact_id)
+                or (event.get("target_type") == "memory" and str(event.get("target_id") or "") == candidate_memory_id)
+                or str(payload.get("artifact_id") or "") == artifact_id
+                or str(payload.get("candidate_memory_id") or "") == candidate_memory_id
+                or str(payload.get("memory_id") or "") == candidate_memory_id
+            ):
+                rows.append(event)
+        return rows
 
     def create_artifact(self, artifact: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**artifact, "id": f"artifact-{len(self.artifacts) + 1}"}
@@ -878,6 +907,44 @@ def test_rejecting_project_update_logs_rejection_without_updating_project() -> N
         service.review_project_update(artifact_id=str(artifact["id"]), action="accept")
 
 
+@pytest.mark.parametrize("memory_key", [None, "", " \t\n"])
+def test_rejecting_project_update_requires_memory_key_before_any_mutation(memory_key: object) -> None:
+    store = _seed_store()
+    service = VNextProjectService(store)
+    artifact = service.generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    artifact_metadata = artifact["metadata_json"]
+    assert isinstance(artifact_metadata, dict)
+    candidate_memory_id = str(artifact_metadata["candidate_memory_id"])
+    store.memories[candidate_memory_id]["memory_key"] = memory_key
+    state_before = deepcopy((store.projects, store.memories, store.artifacts, store.revisions, store.events))
+
+    with pytest.raises(VNextProjectValidationError, match="^candidate memory is missing memory_key$"):
+        service.review_project_update(artifact_id=str(artifact["id"]), action="reject")
+
+    assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before
+
+
+@pytest.mark.parametrize("action", ["accept", "reject"])
+def test_terminal_project_update_replay_uses_one_coupled_event_lookup(action: str) -> None:
+    store = _seed_store()
+    service = VNextProjectService(store)
+    artifact = service.generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    terminal = service.review_project_update(artifact_id=str(artifact["id"]), action=action)
+    metadata = terminal["metadata_json"]
+    assert isinstance(metadata, dict)
+    artifact_id = str(terminal["id"])
+    candidate_memory_id = str(metadata["candidate_memory_id"])
+    assert store.project_update_event_lookup_calls == []
+
+    assert service.review_project_update(artifact_id=artifact_id, action=action) == terminal
+
+    assert store.project_update_event_lookup_calls == [(artifact_id, candidate_memory_id)]
+
+
 @pytest.mark.parametrize(
     ("forced_status", "retry_action"),
     [("accepted", "accept"), ("rejected", "reject")],
@@ -1110,6 +1177,26 @@ def _redact_project_update_terminal_evidence(
     metadata = terminal["metadata_json"]
     assert isinstance(metadata, dict)
     candidate_memory_id = str(metadata["candidate_memory_id"])
+    artifact_id = str(terminal["id"])
+    project_id = str(metadata["project_id"])
+    review_action = str(metadata["review_action"])
+    terminal.update(
+        {
+            "title": "[REDACTED]",
+            "content_markdown": "[REDACTED]",
+            "prompt_hash": None,
+            "model_info_json": {"redacted": True},
+            "metadata_json": {
+                "redacted": True,
+                "redacted_at": "2026-07-16T00:00:00Z",
+                "workflow": "project_auto_update",
+                "project_id": project_id,
+                "project_scope": [project_id],
+                "candidate_memory_id": candidate_memory_id,
+                "review_action": review_action,
+            },
+        }
+    )
     for revision in store.revisions:
         if (
             str(revision.get("memory_id") or "") == candidate_memory_id
@@ -1117,6 +1204,11 @@ def _redact_project_update_terminal_evidence(
         ):
             revision.update(
                 {
+                    "memory_key": f"redacted.{candidate_memory_id}",
+                    "source_event_ids": [],
+                    "previous_value": None if revision.get("previous_value") is None else {"redacted": True},
+                    "new_value": None if revision.get("new_value") is None else {"redacted": True},
+                    "candidate": {"redacted": True},
                     "metadata_json": {"redacted": True},
                     "text_before": "[REDACTED]",
                     "text_after": "[REDACTED]",
@@ -1131,6 +1223,8 @@ def _redact_project_update_terminal_evidence(
             str(payload.get("candidate_memory_id") or "") != candidate_memory_id
             and str(payload.get("memory_id") or "") != candidate_memory_id
             and not (event.get("target_type") == "memory" and str(event.get("target_id") or "") == candidate_memory_id)
+            and not (event.get("target_type") == "artifact" and str(event.get("target_id") or "") == artifact_id)
+            and str(payload.get("artifact_id") or "") != artifact_id
         ):
             continue
         event["payload_json"] = {

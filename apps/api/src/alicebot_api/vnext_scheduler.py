@@ -7,6 +7,7 @@ from datetime import UTC, datetime, time, timedelta, tzinfo
 import hashlib
 from inspect import Parameter, signature
 import json
+import logging
 from typing import Protocol, TypedDict, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -56,6 +57,9 @@ PRIMARY_WORKFLOWS = ("daily_brief", "weekly_synthesis")
 DAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 # Workflow types whose default cadence is daily.
 DAILY_WORKFLOWS = ("daily_brief", "staleness_sweep")
+SCHEDULER_WORKFLOW_ERROR_CODE = "scheduler_workflow_failed"
+SCHEDULER_WORKFLOW_ERROR_MESSAGE = "Scheduler workflow execution failed"
+logger = logging.getLogger(__name__)
 
 DEFAULT_STALENESS_WINDOW_DAYS = 180
 DEFAULT_STALENESS_MEMORY_LIMIT = 500
@@ -1115,14 +1119,21 @@ class VNextSchedulerService:
         """Record failure after a staged plan was discarded or rolled back."""
 
         run_id = str(run["id"])
+        logger.error(
+            "scheduler workflow failed workflow_type=%s run_id=%s error_code=%s",
+            request.workflow_type,
+            run_id,
+            SCHEDULER_WORKFLOW_ERROR_CODE,
+            exc_info=(type(error), error, error.__traceback__),
+        )
         run_metadata_value = run.get("metadata_json")
         run_metadata: JsonObject = dict(run_metadata_value) if isinstance(run_metadata_value, dict) else {}
         updated_run = self.store.update_scheduler_run(
             run_id=run_id,
             patch={
                 "status": "failed",
-                "error_message": str(error),
-                "metadata_json": {**run_metadata, "error_type": type(error).__name__},
+                "error_message": SCHEDULER_WORKFLOW_ERROR_MESSAGE,
+                "metadata_json": {**run_metadata, "error_code": SCHEDULER_WORKFLOW_ERROR_CODE},
             },
             actor_type=request.triggered_by,
         )
@@ -1132,7 +1143,7 @@ class VNextSchedulerService:
                 "last_run_id": run_id,
                 "last_run_at": updated_run.get("finished_at"),
                 "last_result": "failed",
-                "last_error": str(error),
+                "last_error": SCHEDULER_WORKFLOW_ERROR_MESSAGE,
                 "next_run_at": self._next_run_after(workflow),
             },
             actor_type=request.triggered_by,

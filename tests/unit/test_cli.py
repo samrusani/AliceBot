@@ -15,7 +15,12 @@ from alicebot_api.config import Settings
 from alicebot_api.contracts import ContinuityRecallResponse
 from alicebot_api.vnext_embeddings import VNextEmbeddingProviderError
 from alicebot_api.vnext_event_log import build_event_log_record
-from alicebot_api.vnext_projects import PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE
+
+
+def _assert_cli_error(stderr: str, *, code: str, message: str) -> None:
+    records = [json.loads(line) for line in stderr.splitlines() if line.startswith("{")]
+    assert records == [{"error": {"code": code, "message": message}}]
+    assert "Traceback" not in stderr
 
 
 def _nested_subcommand_parser(
@@ -352,6 +357,27 @@ def test_new_memory_lifecycle_subcommands_require_a_reason() -> None:
             parser.parse_args(["vnext", "memories", subcommand, "memory-1"])
 
 
+def test_memory_redact_help_is_truthful_about_reason_retention() -> None:
+    parser = cli_module.build_parser()
+    memories_parser = _nested_subcommand_parser(parser, "vnext", "memories")
+    redact_parser = _nested_subcommand_parser(
+        parser,
+        "vnext",
+        "memories",
+        "redact",
+    )
+    rendered_help = " ".join(
+        f"{memories_parser.format_help()} {redact_parser.format_help()}".split()
+    )
+
+    assert "governed memory-lifecycle copies" in rendered_help
+    assert "Alice source/source-chunk evidence is retained" in rendered_help
+    assert "content everywhere" not in rendered_help
+    assert "Required for authorization and lifecycle intent" in rendered_help
+    assert "intentionally not retained after successful true redaction" in rendered_help
+    assert "Redaction reason. Stored in the audit trail." not in rendered_help
+
+
 def test_parser_preserves_explicit_vnext_sensitivity_filter() -> None:
     parser = cli_module.build_parser()
     explicit = parser.parse_args(["context-pack", "coffee", "--sensitivity-allowed", "public"])
@@ -370,6 +396,7 @@ class FakeVNextCliStore:
         self.memories: list[dict[str, object]] = []
         self.open_loops: list[dict[str, object]] = []
         self.events: list[dict[str, object]] = []
+        self.provenance_links: list[dict[str, object]] = []
         self.source_by_hash: dict[str, dict[str, object]] = {}
         self.tasks: list[dict[str, object]] = []
         self.artifacts: dict[str, dict[str, object]] = {}
@@ -455,6 +482,158 @@ class FakeVNextCliStore:
         """Mirror the production locking read for single-threaded CLI tests."""
 
         return self.get_memory(memory_id)
+
+    def get_memory_for_redaction(self, memory_id: str) -> dict[str, object] | None:
+        return self.get_memory(memory_id)
+
+    def lock_project_update_artifacts_for_redaction(self, memory_id: str) -> list[dict[str, object]]:
+        return sorted(
+            [
+                artifact
+                for artifact in self.artifacts.values()
+                if isinstance(artifact.get("metadata_json"), dict)
+                and artifact["metadata_json"].get("candidate_memory_id") == memory_id
+            ],
+            key=lambda artifact: str(artifact.get("id") or ""),
+        )
+
+    def redact_memory_bundle(
+        self,
+        *,
+        memory_id: str,
+        project_update_artifacts: list[dict[str, object]],
+        actor_type: str = "user",
+    ) -> dict[str, object]:
+        memory = self.get_memory(memory_id)
+        assert memory is not None, memory_id
+        metadata = memory.get("metadata_json")
+        redacted_at = (
+            str(metadata.get("redacted_at") or "now") if isinstance(metadata, dict) else "now"
+        )
+        structural = {
+            key: metadata[key]
+            for key in (
+                "project_id",
+                "project_scope",
+                "superseded_by",
+                "supersedes",
+                "run_id",
+                "agent_id",
+                "created_by_agent_id",
+            )
+            if isinstance(metadata, dict) and key in metadata
+        }
+        desired_memory = {
+            "memory_key": f"redacted.{memory_id}",
+            "title": None if memory.get("title") is None else "[REDACTED]",
+            "canonical_text": "[REDACTED]",
+            "summary": None if memory.get("summary") is None else "[REDACTED]",
+            "trust_reason": None if memory.get("trust_reason") is None else "[REDACTED]",
+            "value": {"redacted": True},
+            "source_event_ids": [],
+            "metadata_json": {**structural, "redacted": True, "redacted_at": redacted_at},
+            "commit_digest": None,
+            "confirmation_id": None,
+            "embedding_vector": None,
+            "fact_keys": None,
+            "status": "archived",
+            "deleted_at": memory.get("deleted_at") or "now",
+        }
+        memory_changed = any(memory.get(key) != value for key, value in desired_memory.items())
+        memory.update(desired_memory)
+
+        redacted_revisions = 0
+        for revision in self.revisions:
+            if str(revision.get("memory_id")) != memory_id:
+                continue
+            desired_revision = {
+                "memory_key": f"redacted.{memory_id}",
+                "previous_value": None if revision.get("previous_value") is None else {"redacted": True},
+                "new_value": None if revision.get("new_value") is None else {"redacted": True},
+                "source_event_ids": [],
+                "candidate": {"redacted": True},
+                "text_before": None if revision.get("text_before") is None else "[REDACTED]",
+                "text_after": "[REDACTED]",
+                "reason": None if revision.get("reason") is None else "[REDACTED]",
+                "metadata_json": {"redacted": True},
+            }
+            if any(revision.get(key) != value for key, value in desired_revision.items()):
+                revision.update(desired_revision)
+                redacted_revisions += 1
+
+        coupled_artifact_ids = [str(artifact["id"]) for artifact in project_update_artifacts]
+        changed_artifact_ids: list[str] = []
+        for artifact in project_update_artifacts:
+            artifact_id = str(artifact["id"])
+            old_metadata = artifact.get("metadata_json")
+            assert isinstance(old_metadata, dict)
+            desired_artifact = {
+                "title": "[REDACTED]",
+                "content_markdown": "[REDACTED]",
+                "prompt_hash": None,
+                "model_info_json": {"redacted": True},
+                "metadata_json": {
+                    "redacted": True,
+                    "redacted_at": redacted_at,
+                    "workflow": "project_auto_update",
+                    "project_id": old_metadata["project_id"],
+                    "project_scope": [old_metadata["project_id"]],
+                    "candidate_memory_id": memory_id,
+                    "review_action": old_metadata["review_action"],
+                },
+            }
+            if any(artifact.get(key) != value for key, value in desired_artifact.items()):
+                artifact.update(desired_artifact)
+                changed_artifact_ids.append(artifact_id)
+
+        redacted_events = 0
+        for event in self.events:
+            payload = event.get("payload_json")
+            coupled = str(event.get("target_id")) in {memory_id, *coupled_artifact_ids} or (
+                isinstance(payload, dict)
+                and any(
+                    str(payload.get(key)) in {memory_id, *coupled_artifact_ids}
+                    for key in ("memory_id", "candidate_memory_id", "artifact_id")
+                )
+            )
+            if not coupled:
+                continue
+            desired_payload = {
+                "redacted": True,
+                "memory_id": memory_id,
+                "event_type": event.get("event_type"),
+            }
+            if event.get("payload_json") != desired_payload or event.get("integrity_hash") is not None:
+                event["payload_json"] = desired_payload
+                event["integrity_hash"] = None
+                redacted_events += 1
+
+        changed = bool(memory_changed or changed_artifact_ids or redacted_revisions or redacted_events)
+        if changed:
+            self.append_event(
+                {
+                    "event_type": "memory.redacted",
+                    "actor_type": actor_type,
+                    "target_type": "memory",
+                    "target_id": memory_id,
+                    "payload_json": {
+                        "redacted": True,
+                        "memory_id": memory_id,
+                        "event_type": "memory.redacted",
+                    },
+                    "integrity_hash": None,
+                }
+            )
+        return {
+            "memory": memory,
+            "redacted_revisions": redacted_revisions,
+            "redacted_events": redacted_events,
+            "redacted_artifacts": len(changed_artifact_ids),
+            "redacted_artifact_ids": changed_artifact_ids,
+            "redacted_quality_ratings": 0,
+            "redacted_provenance_links": 0,
+            "idempotent_replay": not changed,
+        }
 
     def get_memory(self, memory_id: str) -> dict[str, object] | None:
         return next(
@@ -644,6 +823,36 @@ class FakeVNextCliStore:
         ]
         rows = list(reversed(rows))
         return rows[:limit] if limit is not None else rows
+
+    def list_project_update_events(
+        self,
+        *,
+        artifact_id: str,
+        candidate_memory_id: str,
+    ) -> list[dict[str, object]]:
+        event_types = {
+            "project.update_candidate_created",
+            "project.update_candidate_accepted",
+            "project.update_candidate_rejected",
+        }
+        rows: list[dict[str, object]] = []
+        for event in self.events:
+            if event.get("event_type") not in event_types:
+                continue
+            payload_value = event.get("payload_json")
+            payload = payload_value if isinstance(payload_value, dict) else {}
+            if (
+                (event.get("target_type") == "artifact" and str(event.get("target_id") or "") == artifact_id)
+                or (
+                    event.get("target_type") == "memory"
+                    and str(event.get("target_id") or "") == candidate_memory_id
+                )
+                or str(payload.get("artifact_id") or "") == artifact_id
+                or str(payload.get("candidate_memory_id") or "") == candidate_memory_id
+                or str(payload.get("memory_id") or "") == candidate_memory_id
+            ):
+                rows.append(event)
+        return rows
 
     def list_agent_events(self, *, agent_id: str | None = None, limit: int = 50) -> list[dict[str, object]]:
         rows = [
@@ -1009,7 +1218,11 @@ def test_agent_keys_cli_revoke_rejects_unknown_and_already_revoked_keys(monkeypa
 
     exit_code = cli_module.main(["agent", "keys", "revoke", "alice_sk_none"])
     assert exit_code == 1
-    assert "no agent API key matches" in capsys.readouterr().err
+    _assert_cli_error(
+        capsys.readouterr().err,
+        code="invalid_request",
+        message="The command request is invalid",
+    )
 
     ctx = cli_module.CLIContext(
         settings=Settings(database_url="postgresql://db"),
@@ -1025,7 +1238,11 @@ def test_agent_keys_cli_revoke_rejects_unknown_and_already_revoked_keys(monkeypa
 
     exit_code = cli_module.main(["agent", "keys", "revoke", prefix])
     assert exit_code == 1
-    assert "already revoked" in capsys.readouterr().err
+    _assert_cli_error(
+        capsys.readouterr().err,
+        code="invalid_request",
+        message="The command request is invalid",
+    )
 
 
 def _stub_eval_report(status: str) -> dict[str, object]:
@@ -2041,8 +2258,11 @@ def test_main_normalizes_expected_runtime_errors_without_traceback(monkeypatch, 
     captured = capsys.readouterr()
     assert exit_code == 1
     assert captured.out == ""
-    assert captured.err == "error: expected command failure\n"
-    assert "Traceback" not in captured.err
+    _assert_cli_error(
+        captured.err,
+        code="command_failed",
+        message="The command could not be completed",
+    )
 
 
 @pytest.mark.parametrize(
@@ -2192,6 +2412,58 @@ def test_memory_consolidation_defers_embedding_until_primary_transaction_closes(
 
     assert payload["memory"]["status"] == "active"
     assert calls == ["accept", "embedding"]
+
+
+def test_cli_memory_redact_is_positive_and_strictly_idempotent(monkeypatch) -> None:
+    store = FakeVNextCliStore()
+    memory = store.create_memory(
+        {
+            "memory_key": "private.cli.redaction",
+            "value": {"text": "CLI secret"},
+            "status": "active",
+            "source_event_ids": [],
+            "memory_type": "fact",
+            "confidence": 0.9,
+            "title": "CLI secret",
+            "canonical_text": "CLI secret",
+            "summary": "CLI secret",
+            "trust_reason": "operator supplied",
+            "domain": "personal",
+            "sensitivity": "private",
+            "metadata_json": {},
+            "commit_digest": "digest",
+            "confirmation_id": None,
+            "deleted_at": None,
+        }
+    )
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        yield store
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    context = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    args = cli_module.build_parser().parse_args(
+        ["vnext", "memories", "redact", str(memory["id"]), "--reason", "Operator erasure"]
+    )
+
+    first = json.loads(cli_module._run_vnext_memory_redact(context, args))
+    assert first["status"] == "redacted"
+    assert first["forgotten_first"] is True
+    assert first["idempotent_replay"] is False
+    frozen = deepcopy((store.memories, store.artifacts, store.revisions, store.events))
+
+    second = json.loads(cli_module._run_vnext_memory_redact(context, args))
+    assert second["status"] == "redacted"
+    assert second["forgotten_first"] is False
+    assert second["idempotent_replay"] is True
+    assert second["redacted_revisions"] == 0
+    assert second["redacted_events"] == 0
+    assert (store.memories, store.artifacts, store.revisions, store.events) == frozen
 
 
 def test_project_review_defers_embedding_until_primary_transaction_closes(monkeypatch) -> None:
@@ -2351,6 +2623,54 @@ def _install_cli_project_update_store(monkeypatch, store: FakeVNextCliStore) -> 
         ),
     )
     monkeypatch.setattr(cli_module, "_persist_deferred_embedding_inputs", lambda *_args, **_kwargs: None)
+
+
+@pytest.mark.parametrize("marker", ["workflow", "memory_key"])
+@pytest.mark.parametrize("operation", ["correct", "forget", "undo", "redact"])
+def test_cli_generic_memory_mutations_cannot_strand_pending_project_update_candidate(
+    monkeypatch,
+    capsys,
+    marker: str,
+    operation: str,
+) -> None:
+    store, artifact = _cli_project_update_review_fixture()
+    metadata = artifact["metadata_json"]
+    assert isinstance(metadata, dict)
+    candidate_memory_id = str(metadata["candidate_memory_id"])
+    candidate = store.get_memory(candidate_memory_id)
+    assert candidate is not None
+    candidate_metadata = candidate["metadata_json"]
+    assert isinstance(candidate_metadata, dict)
+    if marker == "workflow":
+        candidate["memory_key"] = "ordinary.pending.candidate"
+    else:
+        candidate_metadata.pop("workflow", None)
+        candidate["memory_key"] = "  project_update.alice.digest  "
+    _install_cli_project_update_store(monkeypatch, store)
+    state_before = deepcopy((store.projects, store.memories, store.artifacts, store.revisions))
+    event_types_before = [event.get("event_type") for event in store.events]
+
+    argv = ["vnext", "memories", operation]
+    if operation == "undo":
+        argv.extend(["--memory-id", candidate_memory_id, "--reason", "Generic undo must not apply."])
+    else:
+        argv.append(candidate_memory_id)
+        if operation == "correct":
+            argv.extend(["--text", "Generic correction must not apply."])
+        argv.extend(["--reason", f"Generic {operation} must not apply."])
+
+    exit_code = cli_module.main(argv)
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    _assert_cli_error(
+        captured.err,
+        code="invalid_request",
+        message="The command request is invalid",
+    )
+    assert (store.projects, store.memories, store.artifacts, store.revisions) == state_before
+    assert [event.get("event_type") for event in store.events] == event_types_before
 
 
 def _apply_supported_cli_memory_lifecycle(
@@ -2515,7 +2835,11 @@ def test_cli_project_update_review_rejects_forced_terminal_status_without_mutati
     captured = capsys.readouterr()
     assert exit_code == 1
     assert captured.out == ""
-    assert captured.err.strip() == f"error: {PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE}"
+    _assert_cli_error(
+        captured.err,
+        code="invalid_request",
+        message="The command request is invalid",
+    )
     assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before
 
 
@@ -2539,7 +2863,11 @@ def test_cli_project_update_review_rejects_terminal_clone_after_true_redaction_w
     captured = capsys.readouterr()
     assert exit_code == 1
     assert captured.out == ""
-    assert captured.err.strip() == f"error: {PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE}"
+    _assert_cli_error(
+        captured.err,
+        code="invalid_request",
+        message="The command request is invalid",
+    )
     assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
 
 
@@ -2597,7 +2925,11 @@ def test_cli_project_update_terminal_replay_rejects_every_coupled_competing_deci
     captured = capsys.readouterr()
     assert exit_code == 1
     assert captured.out == ""
-    assert captured.err.strip() == f"error: {PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE}"
+    _assert_cli_error(
+        captured.err,
+        code="invalid_request",
+        message="The command request is invalid",
+    )
     assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
 
 
@@ -2664,9 +2996,12 @@ def test_generic_telegram_ingest_fails_before_reading_payload(monkeypatch, capsy
     captured = capsys.readouterr()
     assert exit_code == 1
     assert captured.out == ""
-    assert "chat allowlist enforcement cannot be bypassed" in captured.err
+    _assert_cli_error(
+        captured.err,
+        code="invalid_request",
+        message="The command request is invalid",
+    )
     assert "missing.json" not in captured.err
-    assert "Traceback" not in captured.err
 
 
 def test_main_returns_error_for_non_object_json_on_review_apply(monkeypatch, capsys) -> None:
@@ -2691,7 +3026,11 @@ def test_main_returns_error_for_non_object_json_on_review_apply(monkeypatch, cap
     captured = capsys.readouterr()
     assert exit_code == 1
     assert captured.out == ""
-    assert "error: --body-json must be a JSON object" in captured.err
+    _assert_cli_error(
+        captured.err,
+        code="invalid_request",
+        message="The command request is invalid",
+    )
 
 
 def test_recall_formatting_is_deterministic() -> None:
@@ -3124,9 +3463,11 @@ def test_backfill_embeddings_cli_exits_nonzero_when_provider_unconfigured(monkey
 
     captured = capsys.readouterr()
     assert exit_code == 1
-    assert "ALICE_EMBEDDINGS_BASE_URL" in captured.err
-    assert "ALICE_EMBEDDINGS_MODEL" in captured.err
-    assert "ALICE_EMBEDDINGS_API_KEY" in captured.err
+    _assert_cli_error(
+        captured.err,
+        code="invalid_request",
+        message="The command request is invalid",
+    )
 
 
 def test_backfill_embeddings_cli_embeds_missing_memories_in_batches(monkeypatch) -> None:
@@ -3260,7 +3601,11 @@ def test_backfill_embeddings_cli_exits_nonzero_when_any_batch_fails(monkeypatch,
     captured = capsys.readouterr()
     assert exit_code == 1
     assert json.loads(captured.out)["failed"] == 1
-    assert "embedding batch failed" in captured.err
+    _assert_cli_error(
+        captured.err,
+        code="embedding_batch_failed",
+        message="An embedding batch failed",
+    )
 
 
 def test_main_rejects_sqlite_database_url_with_onramp_pointer(monkeypatch, capsys) -> None:
@@ -3275,9 +3620,11 @@ def test_main_rejects_sqlite_database_url_with_onramp_pointer(monkeypatch, capsy
     captured = capsys.readouterr()
     assert exit_code == 1
     assert captured.out == ""
-    assert "requires a Postgres DATABASE_URL" in captured.err
-    assert "alice-memory" in captured.err
-    assert "Traceback" not in captured.err
+    _assert_cli_error(
+        captured.err,
+        code="invalid_request",
+        message="The command request is invalid",
+    )
 
 
 def test_main_rejects_non_uuid_user_id_without_traceback(monkeypatch, capsys) -> None:
@@ -3292,8 +3639,11 @@ def test_main_rejects_non_uuid_user_id_without_traceback(monkeypatch, capsys) ->
     captured = capsys.readouterr()
     assert exit_code == 1
     assert captured.out == ""
-    assert "error: --user-id must be a UUID, got: not-a-uuid" in captured.err
-    assert "Traceback" not in captured.err
+    _assert_cli_error(
+        captured.err,
+        code="invalid_request",
+        message="The command request is invalid",
+    )
 
 
 def test_version_flag_reports_distribution_version(capsys) -> None:

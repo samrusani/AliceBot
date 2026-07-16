@@ -58,28 +58,22 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
 def _build_rfc822_email_bytes(*, subject: str, plain_body: str) -> bytes:
-    return (
-        "\r\n".join(
-            [
-                "From: Alice <alice@example.com>",
-                "To: Bob <bob@example.com>",
-                f"Subject: {subject}",
-                'Content-Type: text/plain; charset="utf-8"',
-                "Content-Transfer-Encoding: 8bit",
-                "",
-                plain_body,
-            ]
-        ).encode("utf-8")
-    )
+    return "\r\n".join(
+        [
+            "From: Alice <alice@example.com>",
+            "To: Bob <bob@example.com>",
+            f"Subject: {subject}",
+            'Content-Type: text/plain; charset="utf-8"',
+            "Content-Transfer-Encoding: 8bit",
+            "",
+            plain_body,
+        ]
+    ).encode("utf-8")
 
 
 def _build_gmail_secret_manager_url(root: Path) -> str:
@@ -251,7 +245,9 @@ def test_gmail_account_endpoints_connect_list_detail_and_isolate(
     assert detail_status == 200
     assert detail_payload == {"account": create_payload["account"]}
     assert duplicate_status == 409
-    assert duplicate_payload == {"detail": "gmail account acct-owner-001 is already connected"}
+    assert duplicate_payload == {
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
+    }
     assert isolated_list_status == 200
     assert isolated_list_payload == {
         "items": [],
@@ -259,7 +255,7 @@ def test_gmail_account_endpoints_connect_list_detail_and_isolate(
     }
     assert isolated_detail_status == 404
     assert isolated_detail_payload == {
-        "detail": f"gmail account {create_payload['account']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
     assert '"access_token":' not in json.dumps(create_payload)
     assert '"access_token":' not in json.dumps(list_payload)
@@ -381,9 +377,7 @@ def test_gmail_message_ingestion_endpoint_persists_artifact_and_chunks(
         },
     }
     assert ingest_payload["summary"]["total_count"] >= 1
-    artifact_file = (
-        Path(workspace_payload["workspace"]["local_path"]) / "gmail" / "acct-owner-001" / "msg-001.eml"
-    )
+    artifact_file = Path(workspace_payload["workspace"]["local_path"]) / "gmail" / "acct-owner-001" / "msg-001.eml"
     assert artifact_file.read_bytes() == raw_bytes
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
@@ -706,10 +700,7 @@ def test_gmail_message_ingestion_endpoint_fails_deterministically_when_rotated_c
 
     assert ingest_status == 409
     assert ingest_payload == {
-        "detail": (
-            f"gmail account {account_payload['account']['id']} renewed protected credentials "
-            "could not be persisted"
-        )
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
     artifact_file = (
         Path(workspace_payload["workspace"]["local_path"]) / "gmail" / "acct-owner-rotated-001" / "msg-001.eml"
@@ -799,9 +790,7 @@ def test_gmail_message_ingestion_endpoint_rejects_cross_user_workspace_access(
     )
 
     assert ingest_status == 404
-    assert ingest_payload == {
-        "detail": f"task workspace {owner_workspace_payload['workspace']['id']} was not found"
-    }
+    assert ingest_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
 
 
 def test_gmail_message_ingestion_endpoint_rejects_missing_protected_credentials_without_side_effects(
@@ -857,13 +846,9 @@ def test_gmail_message_ingestion_endpoint_rejects_missing_protected_credentials_
 
     assert ingest_status == 409
     assert ingest_payload == {
-        "detail": (
-            f"gmail account {account_payload['account']['id']} is missing protected credentials"
-        )
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
-    artifact_file = (
-        Path(workspace_payload["workspace"]["local_path"]) / "gmail" / "acct-owner-001" / "msg-001.eml"
-    )
+    artifact_file = Path(workspace_payload["workspace"]["local_path"]) / "gmail" / "acct-owner-001" / "msg-001.eml"
     assert not artifact_file.exists()
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
@@ -892,9 +877,7 @@ def test_gmail_message_ingestion_endpoint_rejects_missing_external_secret_withou
     monkeypatch.setattr(
         gmail_module,
         "fetch_gmail_message_raw_bytes",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("fetch_gmail_message_raw_bytes should not be called")
-        ),
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("fetch_gmail_message_raw_bytes should not be called")),
     )
 
     _, account_payload = _connect_gmail_account(
@@ -935,15 +918,10 @@ def test_gmail_message_ingestion_endpoint_rejects_missing_external_secret_withou
 
     assert ingest_status == 409
     assert ingest_payload == {
-        "detail": (
-            f"gmail account {account_payload['account']['id']} is missing protected credentials"
-        )
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
     artifact_file = (
-        Path(workspace_payload["workspace"]["local_path"])
-        / "gmail"
-        / "acct-owner-secret-missing-001"
-        / "msg-001.eml"
+        Path(workspace_payload["workspace"]["local_path"]) / "gmail" / "acct-owner-secret-missing-001" / "msg-001.eml"
     )
     assert not artifact_file.exists()
 
@@ -996,9 +974,7 @@ def test_gmail_message_ingestion_endpoint_rejects_invalid_refresh_credentials_wi
     monkeypatch.setattr(
         gmail_module,
         "fetch_gmail_message_raw_bytes",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("fetch_gmail_message_raw_bytes should not be called")
-        ),
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("fetch_gmail_message_raw_bytes should not be called")),
     )
 
     ingest_status, ingest_payload = invoke_request(
@@ -1012,9 +988,7 @@ def test_gmail_message_ingestion_endpoint_rejects_invalid_refresh_credentials_wi
 
     assert ingest_status == 409
     assert ingest_payload == {
-        "detail": (
-            f"gmail account {account_payload['account']['id']} refresh credentials were rejected"
-        )
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
     artifact_file = (
         Path(workspace_payload["workspace"]["local_path"]) / "gmail" / "acct-owner-refresh-001" / "msg-001.eml"
@@ -1086,17 +1060,12 @@ def test_gmail_message_ingestion_endpoint_rejects_sanitized_path_collisions_with
         },
     )
 
-    artifact_file = (
-        Path(workspace_payload["workspace"]["local_path"]) / "gmail" / "acct-owner-001" / "msg_001.eml"
-    )
+    artifact_file = Path(workspace_payload["workspace"]["local_path"]) / "gmail" / "acct-owner-001" / "msg_001.eml"
 
     assert first_ingest_status == 200
     assert second_ingest_status == 409
     assert second_ingest_payload == {
-        "detail": (
-            "artifact gmail/acct-owner-001/msg_001.eml is already registered for task workspace "
-            f"{workspace_payload['workspace']['id']}"
-        )
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
     assert artifact_file.read_bytes() == first_bytes
     assert first_ingest_payload["artifact"]["relative_path"] == "gmail/acct-owner-001/msg_001.eml"
@@ -1165,11 +1134,9 @@ def test_gmail_message_ingestion_endpoint_rejects_missing_and_unsupported_messag
     )
 
     assert missing_status == 404
-    assert missing_payload == {"detail": "gmail message msg-missing was not found"}
+    assert missing_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert unsupported_status == 400
-    assert unsupported_payload == {
-        "detail": "gmail message msg-unsupported is not a supported RFC822 email"
-    }
+    assert unsupported_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         store = ContinuityStore(conn)

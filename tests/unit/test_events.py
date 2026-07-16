@@ -378,12 +378,12 @@ def test_thread_review_endpoints_preserve_shape_order_and_user_isolation(
     assert intruder_detail_response.status_code == 404
     assert intruder_sessions_response.status_code == 404
     assert intruder_events_response.status_code == 404
-    assert json.loads(intruder_detail_response.body) == {
-        "detail": f"thread {second_thread['id']} was not found"
+    not_found_payload = {
+        "detail": {
+            "code": "not_found",
+            "message": "The requested resource was not found",
+        }
     }
-    assert json.loads(intruder_sessions_response.body) == {
-        "detail": f"thread {second_thread['id']} was not found"
-    }
-    assert json.loads(intruder_events_response.body) == {
-        "detail": f"thread {second_thread['id']} was not found"
-    }
+    assert json.loads(intruder_detail_response.body) == not_found_payload
+    assert json.loads(intruder_sessions_response.body) == not_found_payload
+    assert json.loads(intruder_events_response.body) == not_found_payload

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from pathlib import Path
 import sys
@@ -30,6 +31,22 @@ REQUIRED_HERMES_TOOL_NAMES = (
     "mcp_alice_core_alice_review_queue",
     "mcp_alice_core_alice_review_apply",
 )
+_TOOL_NOT_FOUND_CODE = "tool_not_found"
+_TOOL_NOT_FOUND_MESSAGE = "The requested tool is not available"
+_TOOL_REQUEST_FAILED_CODE = "tool_request_failed"
+_TOOL_REQUEST_FAILED_MESSAGE = "The tool request could not be processed"
+_TOOL_EXECUTION_FAILED_CODE = "tool_execution_failed"
+_TOOL_EXECUTION_FAILED_MESSAGE = "The tool could not be executed"
+
+logger = logging.getLogger(__name__)
+
+
+def _stable_error_json(*, code: str, message: str) -> str:
+    return json.dumps(
+        {"error": {"code": code, "message": message}},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -60,8 +77,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _dispatch_mcp_tool(registry, *, tool_name: str, arguments: dict[str, object]) -> dict[str, object]:
     payload = json.loads(registry.dispatch(tool_name, arguments))
-    if "error" in payload:
-        raise RuntimeError(f"{tool_name} returned error: {payload['error']}")
+    error = payload.get("error")
+    if isinstance(error, dict):
+        code = error.get("code")
+        stable_code = str(code) if isinstance(code, str) else _TOOL_EXECUTION_FAILED_CODE
+        raise RuntimeError(f"{tool_name} failed with error code {stable_code}")
     result = payload.get("result")
     if not isinstance(result, dict):
         raise RuntimeError(f"{tool_name} returned unexpected payload: {payload}")
@@ -75,12 +95,31 @@ def _build_local_mcp_compat_runtime():
         def dispatch(self, tool_name: str, arguments: dict[str, object]) -> str:
             route = routes.get(tool_name)
             if route is None:
-                return json.dumps({"error": f"unknown tool: {tool_name}"}, separators=(",", ":"), sort_keys=True)
+                return _stable_error_json(
+                    code=_TOOL_NOT_FOUND_CODE,
+                    message=_TOOL_NOT_FOUND_MESSAGE,
+                )
             context, raw_tool_name = route
             try:
                 result = call_mcp_tool(context, name=raw_tool_name, arguments=arguments)
-            except (MCPToolError, MCPToolNotFoundError, ValueError, TypeError) as exc:
-                return json.dumps({"error": str(exc)}, separators=(",", ":"), sort_keys=True)
+            except MCPToolNotFoundError:
+                logger.info("Hermes compatibility tool was not found", exc_info=True)
+                return _stable_error_json(
+                    code=_TOOL_NOT_FOUND_CODE,
+                    message=_TOOL_NOT_FOUND_MESSAGE,
+                )
+            except (MCPToolError, ValueError, TypeError):
+                logger.warning("Hermes compatibility tool request failed", exc_info=True)
+                return _stable_error_json(
+                    code=_TOOL_REQUEST_FAILED_CODE,
+                    message=_TOOL_REQUEST_FAILED_MESSAGE,
+                )
+            except Exception:
+                logger.exception("Hermes compatibility tool execution failed")
+                return _stable_error_json(
+                    code=_TOOL_EXECUTION_FAILED_CODE,
+                    message=_TOOL_EXECUTION_FAILED_MESSAGE,
+                )
             return json.dumps({"result": result}, separators=(",", ":"), sort_keys=True)
 
     registry = _Registry()

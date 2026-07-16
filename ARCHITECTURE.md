@@ -2,6 +2,12 @@
 
 ## Scope Boundary
 
+- **Candidate boundary:** `v0.11.1` is the current uncommitted Phase 2
+  release-hardening candidate. At package-input freeze, its bounded local
+  builder matrix was green while final package reproduction, a superseding
+  receipt, and independent review were still pending. Exact-SHA external
+  release gates remain pending.
+
 - **Published boundary:** `v0.11.0` is the latest published release. It is
   tagged and immutable, with artifact digests in
   `docs/release/v0.11.0-checksums.txt`.
@@ -144,6 +150,15 @@ destructive table-drop migration.
    the documented lifecycle rules.
 4. Revisions and events preserve the admissible explanation chain.
 
+For a terminal project update, authorized true redaction also scrubs the
+persisted generated artifact, free-text quality feedback, provenance quotes,
+revision, and decision-event copies to exact content-free skeletons. Numeric
+quality ratings retain their structural audit value. Redaction does not undo an
+accepted update already applied to `projects.current_state`. Memory redaction
+intentionally leaves source and source-chunk evidence unchanged because either
+may support other memories; it also cannot retroactively erase upstream source
+systems, exports, or backups.
+
 ### Recall and resume
 
 1. Scope, status, sensitivity, time, person, and project constraints are
@@ -190,6 +205,9 @@ usage justifies a separately reviewed boundary.
 
 - Fail-on-old inventory tests cover HTTP, MCP, CLI, scheduler, web, PostgreSQL,
   and SQLite surface disposition.
+- A required real-PostgreSQL smoke boots with legacy and agent-key mount flags
+  absent, then exercises the default bootstrap, capture, recall, resume,
+  context-pack, and review round trip.
 - Default-mode tests prove removed and compatibility routes/tools are absent;
   explicit compatibility-mode tests prove only the documented surviving subset
   mounts.
@@ -202,10 +220,15 @@ usage justifies a separately reviewed boundary.
 
 ## Current Architectural Posture
 
-- `v0.10.4` is the prior published release; later changes were
-  not part of its immutable artifacts.
-- `v0.11.0` reconciles runtime and product
+- `v0.11.1` is the current uncommitted Phase 2 candidate. At package-input
+  freeze, the bounded local builder matrix was green while final packages, a
+  superseding receipt, and independent review were still pending. Exact-SHA
+  external release gates remain pending.
+
+- `v0.11.0` is the latest published release and reconciles runtime and product
   identity around the agent interface plus retrieval/memory quality.
+- `v0.10.4` is the prior published release; later changes were not part of its
+  immutable artifacts.
 - The default deployment is local-first and single-workspace. A future hosted
   offering is a clean-sheet roadmap decision, not dormant product code.
 - Release and review evidence for prior repair batches lives under

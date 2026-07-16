@@ -53,6 +53,11 @@ class ExecutionBudgetLifecycleError(RuntimeError):
     """Raised when an execution budget lifecycle transition is invalid."""
 
 
+EXECUTION_BUDGET_LIFECYCLE_REJECTION_REASON = (
+    "The request conflicts with the current resource state"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionBudgetDecision:
     record: ExecutionBudgetDecisionRecord
@@ -466,7 +471,7 @@ def deactivate_execution_budget_record(
             previous_status=cast(ExecutionBudgetStatus, row["status"]),
             replacement_max_completed_executions=None,
             replacement_rolling_window_seconds=None,
-            rejection_reason=str(error),
+            rejection_reason=EXECUTION_BUDGET_LIFECYCLE_REJECTION_REASON,
             active_budget_id=None,
         )
         raise error
@@ -534,7 +539,7 @@ def supersede_execution_budget_record(
             previous_status=cast(ExecutionBudgetStatus, current["status"]),
             replacement_max_completed_executions=request.max_completed_executions,
             replacement_rolling_window_seconds=current["rolling_window_seconds"],
-            rejection_reason=str(transition_error),
+            rejection_reason=EXECUTION_BUDGET_LIFECYCLE_REJECTION_REASON,
             active_budget_id=cast(UUID, current["id"]) if cast(str, current["status"]) == "active" else None,
         )
         raise transition_error
@@ -559,7 +564,7 @@ def supersede_execution_budget_record(
             previous_status="active",
             replacement_max_completed_executions=request.max_completed_executions,
             replacement_rolling_window_seconds=current["rolling_window_seconds"],
-            rejection_reason=str(scope_error),
+            rejection_reason=EXECUTION_BUDGET_LIFECYCLE_REJECTION_REASON,
             active_budget_id=cast(UUID, current["id"]),
         )
         raise scope_error
@@ -613,7 +618,7 @@ def supersede_execution_budget_record(
             previous_status=cast(ExecutionBudgetStatus, current["status"]),
             replacement_max_completed_executions=request.max_completed_executions,
             replacement_rolling_window_seconds=current["rolling_window_seconds"],
-            rejection_reason=str(lifecycle_error),
+            rejection_reason=EXECUTION_BUDGET_LIFECYCLE_REJECTION_REASON,
             active_budget_id=(
                 cast(UUID, current_state["id"])
                 if cast(str, current_state["status"]) == "active"

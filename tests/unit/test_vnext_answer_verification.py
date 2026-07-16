@@ -21,6 +21,7 @@ from pathlib import Path
 
 import alicebot_api
 from alicebot_api.vnext_answer_verification import (
+    ANSWER_VERIFICATION_ERROR_CODE,
     ANSWER_VERIFIER_TEMPLATE_SHA256,
     WITHHELD_ANSWER_TEXT,
     apply_answer_grounding_gate,
@@ -205,26 +206,29 @@ def test_verify_accepts_a_bare_callable() -> None:
     assert len(prompts) == 1
 
 
-def test_provider_error_fails_open_and_is_recorded() -> None:
+def test_provider_error_fails_open_with_stable_code_and_no_exception_text() -> None:
+    sentinel = "UNIQUE_ANSWER_VERIFIER_EXCEPTION_SENTINEL"
+
     class _Boom:
         provider = "boom"
         model = "boom-1"
 
         def chat(self, *, prompt: str, temperature: float) -> str:
-            raise RuntimeError("no endpoint configured")
+            raise RuntimeError(sentinel)
 
     verdict = verify_answer_grounding("Yes.", _PACK, _Boom())
 
     assert verdict.grounded is True
     assert verdict.gate_should_withhold is False
-    assert verdict.error == "RuntimeError: no endpoint configured"
+    assert verdict.error == ANSWER_VERIFICATION_ERROR_CODE
+    assert sentinel not in str(verdict.to_record())
     assert verdict.raw_response is None
 
 
 def test_invalid_chat_config_fails_open_with_a_type_error_recorded() -> None:
     verdict = verify_answer_grounding("Yes.", _PACK, object())
     assert verdict.grounded is True
-    assert verdict.error is not None and verdict.error.startswith("TypeError:")
+    assert verdict.error == ANSWER_VERIFICATION_ERROR_CODE
 
 
 def test_verdict_record_discloses_template_fingerprint_and_model() -> None:

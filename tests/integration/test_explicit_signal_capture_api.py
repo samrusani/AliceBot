@@ -56,11 +56,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -299,13 +295,9 @@ def test_capture_explicit_signals_endpoint_rejects_invalid_source_event_and_user
     )
 
     assert assistant_status == 400
-    assert assistant_payload == {
-        "detail": "source_event_id must reference an existing message.user event owned by the user"
-    }
+    assert assistant_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
     assert intruder_status == 400
-    assert intruder_payload == {
-        "detail": "source_event_id must reference an existing message.user event owned by the user"
-    }
+    assert intruder_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
     with user_connection(migrated_database_urls["app"], intruder_id) as conn:
         store = ContinuityStore(conn)

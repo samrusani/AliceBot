@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 import anyio
+import psycopg
 import pytest
 
 import alicebot_api.main as main_module
@@ -15,6 +16,7 @@ from alicebot_api.db import user_connection
 from alicebot_api.mcp_tools import redact_memory_flow
 from alicebot_api.store import ContinuityStore
 from alicebot_api.vnext_agent_keys import create_agent_key
+from alicebot_api.vnext_dogfooding import VNextDogfoodingService
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_projects import (
     PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE,
@@ -79,6 +81,684 @@ def seed_user(database_url: str, *, email: str) -> UUID:
     with user_connection(database_url, user_id) as conn:
         ContinuityStore(conn).create_user(user_id, email, email.split("@", 1)[0].title())
     return user_id
+
+
+def assert_app_sql_rejected(
+    conn: Any,
+    statement: str,
+    params: tuple[object, ...],
+    *,
+    match: str,
+    redaction_mode: bool = False,
+) -> None:
+    """Probe one trigger without poisoning the surrounding test transaction."""
+
+    with conn.cursor() as cur:
+        cur.execute("SAVEPOINT project_update_redaction_guard_probe")
+        try:
+            if redaction_mode:
+                cur.execute("SELECT set_config('app.redaction_in_progress', 'on', false)")
+            with pytest.raises(psycopg.errors.RaiseException, match=match):
+                cur.execute(statement, params)
+        finally:
+            cur.execute("ROLLBACK TO SAVEPOINT project_update_redaction_guard_probe")
+            cur.execute("RELEASE SAVEPOINT project_update_redaction_guard_probe")
+
+
+def test_true_redaction_event_guard_rejects_fabricated_memory_linkage(
+    migrated_database_urls,
+) -> None:
+    """The privileged marker shape must stay coupled to the original event."""
+
+    user_id = seed_user(
+        migrated_database_urls["app"],
+        email=f"redaction-event-linkage-{uuid4().hex[:12]}@example.com",
+    )
+    real_memory_id = str(uuid4())
+    unrelated_memory_id = str(uuid4())
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = PostgresVNextStore(conn)
+        event = append_event(
+            store,
+            event_type="memory.updated",
+            actor_type="user",
+            target_type="memory",
+            target_id=real_memory_id,
+            payload={"memory_id": real_memory_id, "secret": "must-not-authorize-fabrication"},
+        )
+        with conn.cursor() as cur:
+            cur.execute("SAVEPOINT fabricated_event_linkage")
+            try:
+                cur.execute("SELECT set_config('app.redaction_in_progress', 'on', false)")
+                with pytest.raises(psycopg.errors.RaiseException, match="event_log is append-only"):
+                    cur.execute(
+                        """
+                        UPDATE event_log
+                        SET payload_json = jsonb_build_object(
+                              'redacted', true,
+                              'memory_id', %s::text,
+                              'event_type', event_type
+                            ),
+                            integrity_hash = NULL
+                        WHERE id = %s::uuid
+                        """,
+                        (unrelated_memory_id, str(event["id"])),
+                    )
+            finally:
+                cur.execute("ROLLBACK TO SAVEPOINT fabricated_event_linkage")
+                cur.execute("RELEASE SAVEPOINT fabricated_event_linkage")
+
+
+def test_project_update_artifact_redaction_guard_rejects_self_minted_markers_without_false_positives(
+    migrated_database_urls,
+) -> None:
+    user_id = seed_user(
+        migrated_database_urls["app"],
+        email=f"redaction-artifact-classifier-{uuid4().hex[:12]}@example.com",
+    )
+    project_id = str(uuid4())
+    memory_id = str(uuid4())
+    canonical_metadata = {
+        "redacted": True,
+        "redacted_at": "2026-07-16T00:00:00Z",
+        "workflow": "project_auto_update",
+        "project_id": project_id,
+        "project_scope": [project_id],
+        "candidate_memory_id": memory_id,
+        "review_action": "accept",
+    }
+    canonical_insert = """
+        INSERT INTO generated_artifacts (
+          id, user_id, artifact_type, title, content_markdown, status,
+          domain, sensitivity, generated_by, prompt_hash,
+          model_info_json, metadata_json
+        ) VALUES (
+          %s::uuid, %s::uuid, 'project_update', '[REDACTED]',
+          '[REDACTED]', 'accepted', 'project', 'private', 'system', NULL,
+          '{"redacted": true}'::jsonb, %s::jsonb
+        )
+    """
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = PostgresVNextStore(conn)
+        for redaction_mode in (False, True):
+            assert_app_sql_rejected(
+                conn,
+                canonical_insert,
+                (str(uuid4()), str(user_id), json.dumps(canonical_metadata)),
+                match="redacted project-update artifacts cannot be inserted",
+                redaction_mode=redaction_mode,
+            )
+
+        # The canonical classifier must not freeze a non-project artifact that
+        # happens to use every marker field, nor a project artifact with only a
+        # partial marker. Ratings and quoted provenance remain legal controls.
+        controls = (
+            store.create_artifact(
+                {
+                    "artifact_type": "daily_brief",
+                    "title": "[REDACTED]",
+                    "content_markdown": "[REDACTED]",
+                    "status": "accepted",
+                    "domain": "project",
+                    "sensitivity": "private",
+                    "generated_by": "system",
+                    "prompt_hash": None,
+                    "model_info_json": {"redacted": True},
+                    "metadata_json": canonical_metadata,
+                }
+            ),
+            store.create_artifact(
+                {
+                    "artifact_type": "project_update",
+                    "title": "[REDACTED]",
+                    "content_markdown": "[REDACTED]",
+                    "status": "accepted",
+                    "domain": "project",
+                    "sensitivity": "private",
+                    "generated_by": "system",
+                    "prompt_hash": "partial-marker-is-not-authoritative",
+                    "model_info_json": {"redacted": True},
+                    "metadata_json": canonical_metadata,
+                }
+            ),
+        )
+        for index, control in enumerate(controls, start=1):
+            control_id = str(control["id"])
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE generated_artifacts SET title = %s WHERE id = %s::uuid",
+                    (f"Ordinary mutable control {index}", control_id),
+                )
+                assert cur.rowcount == 1
+            rating = store.create_artifact_quality_rating(
+                {
+                    "artifact_id": control_id,
+                    "usefulness": 4,
+                    "verbosity": "right_sized",
+                    "comments": f"Allowed control rating {index}",
+                }
+            )
+            provenance = store.create_provenance_link(
+                {
+                    "target_type": "artifact",
+                    "target_id": control_id,
+                    "quote": f"Allowed control quote {index}",
+                    "evidence_role": "supports",
+                }
+            )
+            assert str(rating["artifact_id"]) == control_id
+            assert str(provenance["target_id"]) == control_id
+            assert store.get_artifact(control_id)["title"] == f"Ordinary mutable control {index}"
+
+
+@pytest.mark.parametrize(
+    ("action", "terminal_status"),
+    [
+        ("accept", "accepted"),
+        ("edit", "accepted"),
+        ("reject", "rejected"),
+    ],
+)
+def test_project_update_true_redaction_scrubs_the_role_separated_coupled_graph(
+    migrated_database_urls,
+    action: str,
+    terminal_status: str,
+) -> None:
+    sentinel = f"OPTION-A-{action.upper()}-{uuid4().hex}"
+    user_id = seed_user(
+        migrated_database_urls["app"],
+        email=f"option-a-{action}-{uuid4().hex[:12]}@example.com",
+    )
+    other_user_id = seed_user(
+        migrated_database_urls["app"],
+        email=f"option-a-other-{action}-{uuid4().hex[:12]}@example.com",
+    )
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = PostgresVNextStore(conn)
+        project = store.create_project(
+            {
+                "name": f"Option A {action} {sentinel}",
+                "slug": f"option-a-{action}-{uuid4().hex[:12]}",
+                "status": "active",
+                "current_state": "Initial project state remains until an accepted review.",
+                "domain": "project",
+                "sensitivity": "private",
+            }
+        )
+        project_id = str(project["id"])
+        store.create_source(
+            {
+                "source_type": "manual_text",
+                "title": f"Source {sentinel}",
+                "content_hash": f"sha256:{uuid4().hex}",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {
+                    "project_scope": [project_id],
+                    "raw_text": f"Decision: apply the reviewed project state {sentinel}.",
+                },
+            }
+        )
+        service = VNextProjectService(store)
+        candidate = service.generate_project_update_candidate(
+            ProjectAutomationRequest(
+                project_id=project_id,
+                domains=("project",),
+                metadata_json={"redaction_test_secret": sentinel},
+            )
+        )
+        artifact_id = str(candidate["id"])
+        candidate_metadata = candidate["metadata_json"]
+        assert isinstance(candidate_metadata, dict)
+        memory_id = str(candidate_metadata["candidate_memory_id"])
+
+        # Deterministic generation has no model payload. Seed those two
+        # content-bearing columns while the artifact is still pending so the
+        # true-redaction proof exercises them too.
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE generated_artifacts
+                SET prompt_hash = %s,
+                    model_info_json = %s::jsonb
+                WHERE id = %s::uuid
+                """,
+                (f"prompt-{sentinel}", json.dumps({"provider_secret": sentinel}), artifact_id),
+            )
+            assert cur.rowcount == 1
+
+        edited_state = f"Edited applied state {sentinel}" if action == "edit" else None
+        reviewed = service.review_project_update(
+            artifact_id=artifact_id,
+            action=action,
+            edited_current_state=edited_state,
+            actor_type="user",
+            actor_id="reviewer-1",
+        )
+        assert reviewed["status"] == terminal_status
+        expected_project_state = str(store.get_project(project_id)["current_state"])
+        if action in {"accept", "edit"}:
+            assert sentinel in expected_project_state
+        else:
+            assert expected_project_state == "Initial project state remains until an accepted review."
+
+        rating = store.create_artifact_quality_rating(
+            {
+                "artifact_id": artifact_id,
+                "reviewer_id": "reviewer-1",
+                "usefulness": 5,
+                "accuracy": 4,
+                "source_grounding": 3,
+                "novel_connections": 2,
+                "actionability": 5,
+                "hallucination_risk": 1,
+                "verbosity": "right_sized",
+                "missed_context": f"Missed context {sentinel}",
+                "comments": f"Rating comments {sentinel}",
+                "metadata_json": {"private_note": sentinel},
+            }
+        )
+        rating_id = str(rating["id"])
+        memory_provenance = store.create_provenance_link(
+            {
+                "target_type": "memory",
+                "target_id": memory_id,
+                "quote": f"Memory quote {sentinel}",
+                "evidence_role": "supports",
+                "confidence": 0.81,
+            }
+        )
+        artifact_provenance = store.create_provenance_link(
+            {
+                "target_type": "artifact",
+                "target_id": artifact_id,
+                "quote": f"Artifact quote {sentinel}",
+                "evidence_role": "supports",
+                "confidence": 0.82,
+            }
+        )
+        feedback = VNextDogfoodingService(store).record_insight_feedback(
+            artifact_id=artifact_id,
+            useful_insight="yes",
+            surfaced_missed="yes",
+            comments=f"Feedback comments {sentinel}",
+            actor_type="user",
+            actor_id="reviewer-1",
+        )
+
+        artifact_before = store.get_artifact(artifact_id)
+        memory_before = store.get_memory_for_redaction(memory_id)
+        assert artifact_before is not None and sentinel in json.dumps(artifact_before, default=str)
+        assert memory_before is not None and sentinel in json.dumps(memory_before, default=str)
+        assert sentinel in json.dumps(rating, default=str)
+        assert sentinel in json.dumps(memory_provenance, default=str)
+        assert sentinel in json.dumps(artifact_provenance, default=str)
+        assert sentinel in json.dumps(feedback, default=str)
+
+        # A normal app-role UPDATE must not be able to self-mint the exact
+        # authoritative marker.  This is the complete classifier shape in one
+        # flag-off statement, not merely a partial/malformed conversion.
+        forged_redacted_at = "2026-07-16T00:00:00Z"
+        forged_metadata = {
+            "redacted": True,
+            "redacted_at": forged_redacted_at,
+            "workflow": "project_auto_update",
+            "project_id": project_id,
+            "project_scope": [project_id],
+            "candidate_memory_id": memory_id,
+            "review_action": action,
+        }
+        assert_app_sql_rejected(
+            conn,
+            """
+            UPDATE generated_artifacts
+            SET title = '[REDACTED]',
+                content_markdown = '[REDACTED]',
+                prompt_hash = NULL,
+                model_info_json = '{"redacted": true}'::jsonb,
+                metadata_json = %s::jsonb
+            WHERE id = %s::uuid
+            """,
+            (json.dumps(forged_metadata), artifact_id),
+            match="project-update artifact redaction requires authorized redaction mode",
+        )
+        assert store.get_artifact(artifact_id) == artifact_before
+
+        review_revision = next(
+            revision
+            for revision in store.list_revisions(memory_id)
+            if revision["action"] == "project_update_review"
+        )
+
+        # Ordinary writes to append-only/coupled evidence remain rejected.
+        assert_app_sql_rejected(
+            conn,
+            "UPDATE artifact_quality_ratings SET comments = %s WHERE id = %s::uuid",
+            ("tamper", rating_id),
+            match="artifact quality ratings are immutable outside true redaction",
+        )
+        assert_app_sql_rejected(
+            conn,
+            "UPDATE provenance_links SET quote = %s WHERE id = %s::uuid",
+            ("tamper", str(memory_provenance["id"])),
+            match="provenance links are immutable outside true redaction",
+        )
+        assert_app_sql_rejected(
+            conn,
+            "UPDATE memory_revisions SET reason = %s WHERE id = %s::uuid",
+            ("tamper", str(review_revision["id"])),
+            match="memory revisions are append-only",
+        )
+        assert_app_sql_rejected(
+            conn,
+            "UPDATE event_log SET payload_json = payload_json || %s::jsonb WHERE id = %s::uuid",
+            (json.dumps({"tampered": True}), str(feedback["id"])),
+            match="event_log is append-only",
+        )
+        # Redaction mode itself is not authority to write a partial marker.
+        assert_app_sql_rejected(
+            conn,
+            "UPDATE generated_artifacts SET title = '[REDACTED]' WHERE id = %s::uuid",
+            (artifact_id,),
+            match="invalid project-update artifact redaction shape",
+            redaction_mode=True,
+        )
+
+    # The second tenant cannot observe or mutate any pre-redaction row.
+    with user_connection(migrated_database_urls["app"], other_user_id) as conn:
+        other_store = PostgresVNextStore(conn)
+        assert other_store.get_artifact(artifact_id) is None
+        assert other_store.get_memory_for_redaction(memory_id) is None
+        assert other_store.list_artifact_quality_ratings(artifact_id=artifact_id) == []
+        assert other_store.list_provenance_links(target_type="artifact", target_id=artifact_id) == []
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE generated_artifacts SET title = title WHERE id = %s::uuid",
+                (artifact_id,),
+            )
+            assert cur.rowcount == 0
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = PostgresVNextStore(conn)
+        redacted = redact_memory_flow(
+            store,
+            memory_id=memory_id,
+            reason=f"Erase the coupled Option A graph for {action}.",
+            identity=None,
+        )
+        assert redacted["status"] == "redacted"
+        assert redacted["forgotten_first"] is (action in {"accept", "edit"})
+        assert redacted["redacted_artifacts"] == 1
+        assert redacted["redacted_artifact_ids"] == [artifact_id]
+        assert redacted["redacted_quality_ratings"] == 1
+        assert redacted["redacted_provenance_links"] == 2
+        assert int(redacted["redacted_revisions"]) >= 1
+        assert int(redacted["redacted_events"]) >= 1
+        assert redacted["idempotent_replay"] is False
+
+        artifact_after = store.get_artifact(artifact_id)
+        assert artifact_after is not None
+        artifact_metadata = artifact_after["metadata_json"]
+        assert isinstance(artifact_metadata, dict)
+        first_redacted_at = str(artifact_metadata["redacted_at"])
+        assert artifact_after["title"] == "[REDACTED]"
+        assert artifact_after["content_markdown"] == "[REDACTED]"
+        assert artifact_after["prompt_hash"] is None
+        assert artifact_after["model_info_json"] == {"redacted": True}
+        assert artifact_metadata == {
+            "redacted": True,
+            "redacted_at": first_redacted_at,
+            "workflow": "project_auto_update",
+            "project_id": project_id,
+            "project_scope": [project_id],
+            "candidate_memory_id": memory_id,
+            "review_action": action,
+        }
+        assert artifact_after["status"] == terminal_status
+        assert store.get_project(project_id)["current_state"] == expected_project_state
+
+        memory_after = store.get_memory_for_redaction(memory_id)
+        assert memory_after is not None
+        assert memory_after["memory_key"] == f"redacted.{memory_id}"
+        assert memory_after["canonical_text"] == "[REDACTED]"
+        assert memory_after["title"] in {None, "[REDACTED]"}
+        assert memory_after["summary"] in {None, "[REDACTED]"}
+        assert memory_after["trust_reason"] in {None, "[REDACTED]"}
+        assert memory_after["value"] == {"redacted": True}
+        assert memory_after["source_event_ids"] == []
+        assert memory_after["commit_digest"] is None
+        assert memory_after["confirmation_id"] is None
+        assert memory_after["status"] == "archived"
+        assert memory_after["deleted_at"] is not None
+        memory_metadata = memory_after["metadata_json"]
+        assert isinstance(memory_metadata, dict)
+        assert memory_metadata["redacted"] is True
+        assert memory_metadata["redacted_at"] == first_redacted_at
+        assert memory_metadata["project_id"] == project_id
+        assert memory_metadata["project_scope"] == [project_id]
+        assert set(memory_metadata) <= {
+            "project_id",
+            "project_scope",
+            "superseded_by",
+            "supersedes",
+            "run_id",
+            "agent_id",
+            "created_by_agent_id",
+            "redacted",
+            "redacted_at",
+        }
+
+        ratings_after = store.list_artifact_quality_ratings(artifact_id=artifact_id)
+        assert len(ratings_after) == 1
+        rating_after = ratings_after[0]
+        for retained_field in (
+            "id",
+            "user_id",
+            "artifact_id",
+            "reviewer_id",
+            "usefulness",
+            "accuracy",
+            "source_grounding",
+            "novel_connections",
+            "actionability",
+            "hallucination_risk",
+            "verbosity",
+            "created_at",
+        ):
+            assert rating_after[retained_field] == rating[retained_field]
+        assert rating_after["missed_context"] == "[REDACTED]"
+        assert rating_after["comments"] == "[REDACTED]"
+        assert rating_after["metadata_json"] == {"redacted": True}
+
+        provenance_after = {
+            str(link["id"]): link
+            for link in (
+                *store.list_provenance_links(target_type="memory", target_id=memory_id),
+                *store.list_provenance_links(target_type="artifact", target_id=artifact_id),
+            )
+        }
+        assert set(provenance_after) == {
+            str(memory_provenance["id"]),
+            str(artifact_provenance["id"]),
+        }
+        for before in (memory_provenance, artifact_provenance):
+            after = provenance_after[str(before["id"])]
+            assert after["quote"] == "[REDACTED]"
+            for retained_field in (
+                "id",
+                "user_id",
+                "target_type",
+                "target_id",
+                "source_id",
+                "source_chunk_id",
+                "evidence_role",
+                "confidence",
+                "created_at",
+            ):
+                assert after[retained_field] == before[retained_field]
+
+        revisions_after = store.list_revisions(memory_id)
+        assert revisions_after
+        for revision in revisions_after:
+            assert revision["memory_key"] == f"redacted.{memory_id}"
+            assert revision["source_event_ids"] == []
+            assert revision["candidate"] == {"redacted": True}
+            assert revision["metadata_json"] == {"redacted": True}
+            assert revision["text_after"] == "[REDACTED]"
+            assert revision["text_before"] in {None, "[REDACTED]"}
+            assert revision["reason"] in {None, "[REDACTED]"}
+            assert revision["previous_value"] is None or revision["previous_value"] == {
+                "redacted": True
+            }
+            assert revision["new_value"] is None or revision["new_value"] == {"redacted": True}
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, event_type, payload_json, integrity_hash
+                FROM event_log
+                WHERE (target_type = 'memory' AND target_id = %s)
+                   OR (target_type = 'artifact' AND target_id = %s)
+                   OR payload_memory_id = %s
+                   OR payload_candidate_memory_id = %s
+                   OR payload_artifact_id = %s
+                ORDER BY occurred_at, id
+                """,
+                (memory_id, artifact_id, memory_id, memory_id, artifact_id),
+            )
+            coupled_events_after = cur.fetchall()
+            cur.execute(
+                """
+                SELECT COUNT(*)::bigint AS count
+                FROM event_log
+                WHERE event_type = 'memory.redacted'
+                  AND target_type = 'memory'
+                  AND target_id = %s
+                """,
+                (memory_id,),
+            )
+            receipt_count = int(cur.fetchone()["count"])
+        assert coupled_events_after
+        for event in coupled_events_after:
+            assert event["payload_json"] == {
+                "redacted": True,
+                "memory_id": memory_id,
+                "event_type": event["event_type"],
+            }
+            assert event["integrity_hash"] is None
+        assert receipt_count == 1
+
+        scrubbed_bundle = {
+            "artifact": artifact_after,
+            "memory": memory_after,
+            "ratings": ratings_after,
+            "provenance": provenance_after,
+            "revisions": revisions_after,
+            "events": coupled_events_after,
+        }
+        assert sentinel not in json.dumps(scrubbed_bundle, default=str)
+
+        # Every public app-role insertion path refuses to recreate prose on a
+        # redacted target, and the triggers independently backstop direct SQL.
+        with pytest.raises(ValueError, match="feedback cannot be added to a redacted artifact"):
+            VNextDogfoodingService(store).record_insight_feedback(
+                artifact_id=artifact_id,
+                useful_insight="yes",
+                comments="must fail",
+            )
+        with pytest.raises(ValueError, match="ratings cannot be added to a redacted artifact"):
+            store.create_artifact_quality_rating(
+                {"artifact_id": artifact_id, "usefulness": 5, "comments": "must fail"}
+            )
+        for target_type, target_id in (("memory", memory_id), ("artifact", artifact_id)):
+            with pytest.raises(ValueError, match="quoted provenance cannot be added to a redacted target"):
+                store.create_provenance_link(
+                    {
+                        "target_type": target_type,
+                        "target_id": target_id,
+                        "quote": "must fail",
+                        "evidence_role": "supports",
+                    }
+                )
+
+        assert_app_sql_rejected(
+            conn,
+            """
+            INSERT INTO artifact_quality_ratings (
+              user_id, artifact_id, usefulness, verbosity, comments
+            ) VALUES (%s::uuid, %s::uuid, 5, 'right_sized', 'must fail')
+            """,
+            (str(user_id), artifact_id),
+            match="ratings cannot be added to a redacted artifact",
+        )
+        for target_type, target_id in (("memory", memory_id), ("artifact", artifact_id)):
+            assert_app_sql_rejected(
+                conn,
+                """
+                INSERT INTO provenance_links (
+                  user_id, target_type, target_id, quote, evidence_role, confidence
+                ) VALUES (%s::uuid, %s, %s, 'must fail', 'supports', 0.5)
+                """,
+                (str(user_id), target_type, target_id),
+                match="quoted provenance cannot be added to a redacted target",
+            )
+        assert_app_sql_rejected(
+            conn,
+            "UPDATE generated_artifacts SET title = title WHERE id = %s::uuid",
+            (artifact_id,),
+            match="redacted artifacts are immutable",
+        )
+
+        exact_state_before_replay = {
+            **scrubbed_bundle,
+            "project": store.get_project(project_id),
+            "receipts": receipt_count,
+        }
+        replay = redact_memory_flow(
+            store,
+            memory_id=memory_id,
+            reason="Repeat the same authorized erasure.",
+            identity=None,
+        )
+        assert replay["forgotten_first"] is False
+        assert replay["redacted_artifacts"] == 0
+        assert replay["redacted_artifact_ids"] == []
+        assert replay["redacted_quality_ratings"] == 0
+        assert replay["redacted_provenance_links"] == 0
+        assert replay["redacted_revisions"] == 0
+        assert replay["redacted_events"] == 0
+        assert replay["idempotent_replay"] is True
+        assert store.get_artifact(artifact_id)["metadata_json"]["redacted_at"] == first_redacted_at
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)::bigint AS count
+                FROM event_log
+                WHERE event_type = 'memory.redacted'
+                  AND target_type = 'memory'
+                  AND target_id = %s
+                """,
+                (memory_id,),
+            )
+            replay_receipt_count = int(cur.fetchone()["count"])
+        assert replay_receipt_count == 1
+        assert VNextProjectService(store).review_project_update(
+            artifact_id=artifact_id,
+            action=action,
+            edited_current_state=edited_state,
+            actor_type="user",
+            actor_id="reviewer-1",
+        ) == store.get_artifact(artifact_id)
+        assert store.get_project(project_id) == exact_state_before_replay["project"]
+
+    # The canonical skeleton remains tenant-scoped after redaction too.
+    with user_connection(migrated_database_urls["app"], other_user_id) as conn:
+        other_store = PostgresVNextStore(conn)
+        assert other_store.get_artifact(artifact_id) is None
+        assert other_store.get_memory_for_redaction(memory_id) is None
 
 
 @pytest.mark.parametrize(
@@ -199,7 +879,6 @@ def test_project_update_terminal_replay_survives_authorized_true_redaction(
             "memory_id",
             "sequence_no",
             "action",
-            "memory_key",
             "revision_number",
             "revision_type",
             "actor_type",
@@ -207,6 +886,7 @@ def test_project_update_terminal_replay_survives_authorized_true_redaction(
             "created_at",
         ):
             assert review_revision_after[field] == review_revision_before[field]
+        assert review_revision_after["memory_key"] == f"redacted.{memory_id}"
         assert review_revision_after["metadata_json"] == {"redacted": True}
         assert review_revision_after["text_before"] == "[REDACTED]"
         assert review_revision_after["text_after"] == "[REDACTED]"
@@ -231,18 +911,12 @@ def test_project_update_terminal_replay_survives_authorized_true_redaction(
             "run_id",
         ):
             assert review_event_after[field] == review_event_before[field]
-        if action == "accept":
-            assert review_event_after["payload_json"] == {
-                "redacted": True,
-                "memory_id": memory_id,
-                "event_type": event_type,
-            }
-            assert review_event_after["integrity_hash"] is None
-        else:
-            # The rejection event targets the artifact and never carries the
-            # candidate memory id, so memory redaction legitimately leaves its
-            # already content-free linkage payload intact.
-            assert review_event_after["payload_json"] == review_event_before["payload_json"]
+        assert review_event_after["payload_json"] == {
+            "redacted": True,
+            "memory_id": memory_id,
+            "event_type": event_type,
+        }
+        assert review_event_after["integrity_hash"] is None
 
         creation_events_after = [
             event
@@ -282,7 +956,7 @@ def test_project_update_terminal_replay_survives_authorized_true_redaction(
             }
 
         frozen_state = terminal_state()
-        assert service.review_project_update(artifact_id=artifact_id, action=action) == reviewed
+        assert service.review_project_update(artifact_id=artifact_id, action=action) == frozen_state["artifact"]
         assert terminal_state() == frozen_state
 
         if action == "accept":
