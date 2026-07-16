@@ -54,11 +54,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -214,10 +210,7 @@ def test_continuity_capture_rejects_invalid_signal_and_enforces_user_scope(
     )
     assert intruder_detail_status == 404
     assert intruder_detail_payload == {
-        "detail": (
-            f"continuity capture event {create_payload['capture']['capture_event']['id']} "
-            "was not found"
-        )
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
     intruder_list_status, intruder_list_payload = invoke_request(

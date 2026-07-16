@@ -56,11 +56,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -280,7 +276,7 @@ def test_continuity_recall_api_rejects_invalid_time_window(
     )
 
     assert status == 400
-    assert payload == {"detail": "until must be greater than or equal to since"}
+    assert payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_continuity_recall_debug_api_persists_and_exposes_trace(

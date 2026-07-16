@@ -165,11 +165,16 @@ def test_worker_records_failed_task_with_useful_error() -> None:
 
     assert result.status == "failed"
     assert result.task_id == "task-1"
-    assert result.error_message == "artifact renderer failed"
+    assert result.error_code == "queue_task_processing_failed"
+    assert result.error_message == "Queue task processing failed"
     assert store.tasks[0]["status"] == "failed"
-    assert store.tasks[0]["error_message"] == "artifact renderer failed"
+    assert store.tasks[0]["error_code"] == "queue_task_processing_failed"
+    assert store.tasks[0]["error_message"] == "Queue task processing failed"
     assert store.events[-1]["event_type"] == "queue.task_failed"
-    assert store.events[-1]["payload_json"]["error_type"] == "RuntimeError"
+    assert store.events[-1]["payload_json"]["error_code"] == "queue_task_processing_failed"
+    assert store.events[-1]["payload_json"]["error_message"] == "Queue task processing failed"
+    assert "artifact renderer failed" not in str(result.to_record())
+    assert "artifact renderer failed" not in str(store.events[-1]["payload_json"])
 
 
 def test_artifact_review_actions_map_to_expected_statuses() -> None:

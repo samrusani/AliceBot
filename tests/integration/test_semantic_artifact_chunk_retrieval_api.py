@@ -55,11 +55,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -444,22 +440,19 @@ def test_semantic_artifact_chunk_retrieval_rejects_invalid_config_dimension_mism
     )
 
     assert missing_status == 400
-    assert missing_payload["detail"].startswith(
-        "embedding_config_id must reference an existing embedding config owned by the user"
-    )
+    assert missing_payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
     assert mismatch_status == 400
-    assert mismatch_payload["detail"] == "query_vector length must match embedding config dimensions (3): 2"
+    assert mismatch_payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
     assert cross_user_task_status == 404
-    assert cross_user_task_payload == {"detail": f"task {owner['task_id']} was not found"}
+    assert cross_user_task_payload == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
     assert cross_user_artifact_status == 404
     assert cross_user_artifact_payload == {
-        "detail": f"task artifact {owner_artifact['artifact_id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
     assert cross_user_config_status == 400
-    assert cross_user_config_payload["detail"] == (
-        "embedding_config_id must reference an existing embedding config owned by the user: "
-        f"{intruder_config_id}"
-    )
+    assert cross_user_config_payload["detail"] == ({"code": "invalid_request", "message": "The request is invalid"})
 
 
 def test_semantic_artifact_chunk_retrieval_supports_empty_results_and_per_user_isolation(
@@ -550,9 +543,7 @@ def test_semantic_artifact_chunk_retrieval_supports_empty_results_and_per_user_i
     assert owner_status == 200
     assert [item["id"] for item in owner_payload["items"]] == [str(owner_artifact["chunk_ids"][0])]
     assert intruder_status == 200
-    assert [item["id"] for item in intruder_payload["items"]] == [
-        str(intruder_artifact["chunk_ids"][0])
-    ]
+    assert [item["id"] for item in intruder_payload["items"]] == [str(intruder_artifact["chunk_ids"][0])]
     assert empty_status == 200
     assert empty_payload == {
         "items": [],

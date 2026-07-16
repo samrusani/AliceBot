@@ -725,9 +725,11 @@ def test_scheduler_failure_marks_run_failed_without_raising() -> None:
 
     assert result["artifact"] is None
     assert result["run"]["status"] == "failed"
-    assert result["run"]["error_message"] == "artifact store unavailable"
+    assert result["run"]["error_message"] == "Scheduler workflow execution failed"
+    assert result["run"]["metadata_json"]["error_code"] == "scheduler_workflow_failed"
     assert store.workflows["project_update_scan"]["last_result"] == "failed"
-    assert store.workflows["project_update_scan"]["last_error"] == "artifact store unavailable"
+    assert store.workflows["project_update_scan"]["last_error"] == "Scheduler workflow execution failed"
+    assert "artifact store unavailable" not in str(result)
 
 
 def test_staleness_sweep_is_a_registered_workflow_with_daily_default_schedule() -> None:

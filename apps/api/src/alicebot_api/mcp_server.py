@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 from typing import Any, BinaryIO, Literal
@@ -25,6 +26,20 @@ _DEFAULT_MCP_USER_ID = "00000000-0000-0000-0000-000000000001"
 _TransportMode = Literal["content-length", "json-line"]
 _TRANSPORT_CONTENT_LENGTH: _TransportMode = "content-length"
 _TRANSPORT_JSON_LINE: _TransportMode = "json-line"
+_JSONRPC_PARSE_ERROR_MESSAGE = "Parse error"
+_JSONRPC_INVALID_REQUEST_MESSAGE = "Invalid Request"
+_JSONRPC_INVALID_PARAMS_MESSAGE = "Invalid params"
+_JSONRPC_METHOD_NOT_FOUND_MESSAGE = "Method not found"
+_TOOL_NOT_FOUND_CODE = "tool_not_found"
+_TOOL_NOT_FOUND_MESSAGE = "The requested tool is not available"
+_TOOL_REQUEST_FAILED_CODE = "tool_request_failed"
+_TOOL_REQUEST_FAILED_MESSAGE = "The tool request could not be processed"
+_TOOL_EXECUTION_FAILED_CODE = "tool_execution_failed"
+_TOOL_EXECUTION_FAILED_MESSAGE = "The tool could not be executed"
+_MCP_STARTUP_FAILED_CODE = "mcp_startup_failed"
+_MCP_STARTUP_FAILED_MESSAGE = "The Alice MCP server could not start"
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_uuid(value: str) -> UUID:
@@ -157,6 +172,34 @@ def _response_error(request_id: object, *, code: int, message: str) -> dict[str,
     }
 
 
+def _stable_error_json(*, code: str, message: str) -> str:
+    """Serialize a stable public error object exactly once for MCP text content."""
+
+    return json.dumps(
+        {"error": {"code": code, "message": message}},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _tool_error_result(*, code: str, message: str) -> dict[str, object]:
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": _stable_error_json(code=code, message=message),
+            }
+        ],
+        "isError": True,
+    }
+
+
+def _write_stderr_error(*, code: str, message: str) -> None:
+    """Write the deterministic startup contract without exception internals."""
+
+    print(_stable_error_json(code=code, message=message), file=sys.stderr)
+
+
 class MCPServer:
     def __init__(self, *, context: MCPRuntimeContext, input_stream: BinaryIO, output_stream: BinaryIO) -> None:
         self._context = context
@@ -166,18 +209,30 @@ class MCPServer:
 
     def _handle_request(self, request: dict[str, Any]) -> dict[str, Any] | None:
         if request.get("jsonrpc") != _JSONRPC_VERSION:
-            return _response_error(request.get("id"), code=-32600, message="invalid jsonrpc version")
+            return _response_error(
+                request.get("id"),
+                code=-32600,
+                message=_JSONRPC_INVALID_REQUEST_MESSAGE,
+            )
 
         method = request.get("method")
         if not isinstance(method, str):
-            return _response_error(request.get("id"), code=-32600, message="method must be a string")
+            return _response_error(
+                request.get("id"),
+                code=-32600,
+                message=_JSONRPC_INVALID_REQUEST_MESSAGE,
+            )
 
         request_id = request.get("id")
         params = request.get("params", {})
         if params is None:
             params = {}
         if not isinstance(params, dict):
-            return _response_error(request_id, code=-32602, message="params must be a JSON object")
+            return _response_error(
+                request_id,
+                code=-32602,
+                message=_JSONRPC_INVALID_PARAMS_MESSAGE,
+            )
 
         if method == "notifications/initialized":
             return None
@@ -214,7 +269,11 @@ class MCPServer:
         if method == "tools/call":
             name = params.get("name")
             if not isinstance(name, str):
-                return _response_error(request_id, code=-32602, message="tools/call requires string name")
+                return _response_error(
+                    request_id,
+                    code=-32602,
+                    message=_JSONRPC_INVALID_PARAMS_MESSAGE,
+                )
 
             arguments = params.get("arguments")
             try:
@@ -223,30 +282,32 @@ class MCPServer:
                     name=name,
                     arguments=arguments,
                 )
-            except (MCPToolError, MCPToolNotFoundError) as exc:
+            except MCPToolNotFoundError:
+                logger.info("MCP tool was not found name=%s", name, exc_info=True)
                 return _response_success(
                     request_id,
-                    result={
-                        "content": [{"type": "text", "text": str(exc)}],
-                        "isError": True,
-                    },
+                    result=_tool_error_result(
+                        code=_TOOL_NOT_FOUND_CODE,
+                        message=_TOOL_NOT_FOUND_MESSAGE,
+                    ),
                 )
-            except Exception as exc:
-                print(f"error: MCP tool call failed unexpectedly: {type(exc).__name__}", file=sys.stderr)
+            except MCPToolError:
+                logger.warning("MCP tool request failed name=%s", name, exc_info=True)
                 return _response_success(
                     request_id,
-                    result={
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": (
-                                    "Tool execution failed unexpectedly. "
-                                    f"Check Alice MCP server logs for {type(exc).__name__}."
-                                ),
-                            }
-                        ],
-                        "isError": True,
-                    },
+                    result=_tool_error_result(
+                        code=_TOOL_REQUEST_FAILED_CODE,
+                        message=_TOOL_REQUEST_FAILED_MESSAGE,
+                    ),
+                )
+            except Exception:
+                logger.exception("MCP tool execution failed name=%s", name)
+                return _response_success(
+                    request_id,
+                    result=_tool_error_result(
+                        code=_TOOL_EXECUTION_FAILED_CODE,
+                        message=_TOOL_EXECUTION_FAILED_MESSAGE,
+                    ),
                 )
 
             # Protocol 2024-11-05 clients read tool results from content[].text,
@@ -265,22 +326,36 @@ class MCPServer:
                 },
             )
 
-        return _response_error(request_id, code=-32601, message=f"method not found: {method}")
+        return _response_error(
+            request_id,
+            code=-32601,
+            message=_JSONRPC_METHOD_NOT_FOUND_MESSAGE,
+        )
 
     def run(self) -> int:
         while True:
             try:
                 framed_request = _read_message(self._input_stream)
-            except json.JSONDecodeError as exc:
-                response = _response_error(None, code=-32700, message=f"parse error: {exc.msg}")
+            except json.JSONDecodeError:
+                logger.warning("MCP JSON-RPC parse failed", exc_info=True)
+                response = _response_error(
+                    None,
+                    code=-32700,
+                    message=_JSONRPC_PARSE_ERROR_MESSAGE,
+                )
                 _write_message(
                     self._output_stream,
                     response,
                     transport_mode=self._transport_mode,
                 )
                 continue
-            except ValueError as exc:
-                response = _response_error(None, code=-32600, message=str(exc))
+            except ValueError:
+                logger.warning("MCP JSON-RPC framing was invalid", exc_info=True)
+                response = _response_error(
+                    None,
+                    code=-32600,
+                    message=_JSONRPC_INVALID_REQUEST_MESSAGE,
+                )
                 _write_message(
                     self._output_stream,
                     response,
@@ -332,8 +407,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         context = _build_runtime_context(args)
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    except Exception:
+        _write_stderr_error(
+            code=_MCP_STARTUP_FAILED_CODE,
+            message=_MCP_STARTUP_FAILED_MESSAGE,
+        )
         return 1
 
     server = MCPServer(

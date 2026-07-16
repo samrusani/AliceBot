@@ -86,7 +86,7 @@ def test_connect_calendar_account_endpoint_maps_duplicate_to_409(monkeypatch) ->
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": "calendar account acct-001 is already connected"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
 
@@ -118,7 +118,7 @@ def test_connect_calendar_account_endpoint_maps_validation_and_persistence_error
         )
     )
     assert response.status_code == 400
-    assert json.loads(response.body) == {"detail": "calendar access token must be non-empty"}
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
     monkeypatch.setattr(
         main_module,
@@ -138,7 +138,10 @@ def test_connect_calendar_account_endpoint_maps_validation_and_persistence_error
     )
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": "calendar protected credentials could not be persisted"
+        "detail": {
+            "code": "conflict",
+            "message": "The request conflicts with the current resource state",
+        }
     }
 
 
@@ -165,7 +168,7 @@ def test_get_calendar_account_endpoint_maps_not_found_to_404(monkeypatch) -> Non
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
-        "detail": f"calendar account {calendar_account_id} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -274,38 +277,35 @@ def test_list_calendar_events_endpoint_maps_errors(monkeypatch) -> None:
     response = main_module.list_calendar_events(calendar_account_id, user_id)
     assert response.status_code == 404
     assert json.loads(response.body) == {
-        "detail": f"calendar account {calendar_account_id} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
     monkeypatch.setattr(
         main_module,
         "list_calendar_event_records",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            CalendarCredentialNotFoundError(
-                f"calendar account {calendar_account_id} is missing protected credentials"
-            )
+            CalendarCredentialNotFoundError(f"calendar account {calendar_account_id} is missing protected credentials")
         ),
     )
     response = main_module.list_calendar_events(calendar_account_id, user_id)
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": f"calendar account {calendar_account_id} is missing protected credentials"
+        "detail": {
+            "code": "conflict",
+            "message": "The request conflicts with the current resource state",
+        }
     }
 
     monkeypatch.setattr(
         main_module,
         "list_calendar_event_records",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            CalendarEventListValidationError(
-                "calendar event time_min must be less than or equal to time_max"
-            )
+            CalendarEventListValidationError("calendar event time_min must be less than or equal to time_max")
         ),
     )
     response = main_module.list_calendar_events(calendar_account_id, user_id)
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": "calendar event time_min must be less than or equal to time_max"
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
     monkeypatch.setattr(
         main_module,
@@ -317,7 +317,7 @@ def test_list_calendar_events_endpoint_maps_errors(monkeypatch) -> None:
     response = main_module.list_calendar_events(calendar_account_id, user_id)
     assert response.status_code == 502
     assert json.loads(response.body) == {
-        "detail": "calendar events could not be fetched"
+        "detail": {"code": "upstream_failure", "message": "An upstream service failed"}
     }
 
 
@@ -352,7 +352,7 @@ def test_ingest_calendar_event_endpoint_maps_workspace_not_found_to_404(monkeypa
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
-        "detail": f"task workspace {task_workspace_id} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -385,7 +385,9 @@ def test_ingest_calendar_event_endpoint_maps_upstream_errors(monkeypatch) -> Non
         ),
     )
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": "calendar event evt-missing was not found"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
     monkeypatch.setattr(
         main_module,
@@ -403,17 +405,13 @@ def test_ingest_calendar_event_endpoint_maps_upstream_errors(monkeypatch) -> Non
         ),
     )
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": "calendar event evt-unsupported is not supported for ingestion"
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
     monkeypatch.setattr(
         main_module,
         "ingest_calendar_event_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            CalendarCredentialNotFoundError(
-                f"calendar account {calendar_account_id} is missing protected credentials"
-            )
+            CalendarCredentialNotFoundError(f"calendar account {calendar_account_id} is missing protected credentials")
         ),
     )
     response = main_module.ingest_calendar_event(
@@ -426,16 +424,17 @@ def test_ingest_calendar_event_endpoint_maps_upstream_errors(monkeypatch) -> Non
     )
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": f"calendar account {calendar_account_id} is missing protected credentials"
+        "detail": {
+            "code": "conflict",
+            "message": "The request conflicts with the current resource state",
+        }
     }
 
     monkeypatch.setattr(
         main_module,
         "ingest_calendar_event_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            CalendarCredentialInvalidError(
-                f"calendar account {calendar_account_id} has invalid protected credentials"
-            )
+            CalendarCredentialInvalidError(f"calendar account {calendar_account_id} has invalid protected credentials")
         ),
     )
     response = main_module.ingest_calendar_event(
@@ -448,7 +447,10 @@ def test_ingest_calendar_event_endpoint_maps_upstream_errors(monkeypatch) -> Non
     )
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": f"calendar account {calendar_account_id} has invalid protected credentials"
+        "detail": {
+            "code": "conflict",
+            "message": "The request conflicts with the current resource state",
+        }
     }
 
     monkeypatch.setattr(
@@ -470,7 +472,10 @@ def test_ingest_calendar_event_endpoint_maps_upstream_errors(monkeypatch) -> Non
     )
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": f"calendar account {calendar_account_id} protected credentials could not be persisted"
+        "detail": {
+            "code": "conflict",
+            "message": "The request conflicts with the current resource state",
+        }
     }
 
     monkeypatch.setattr(
@@ -490,5 +495,5 @@ def test_ingest_calendar_event_endpoint_maps_upstream_errors(monkeypatch) -> Non
     )
     assert response.status_code == 502
     assert json.loads(response.body) == {
-        "detail": "calendar event evt-001 could not be fetched"
+        "detail": {"code": "upstream_failure", "message": "An upstream service failed"}
     }

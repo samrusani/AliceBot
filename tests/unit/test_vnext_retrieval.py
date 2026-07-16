@@ -39,6 +39,7 @@ from alicebot_api.vnext_retrieval import (
     TEMPORAL_STAGE_ENABLED,
     TIE_BREAK_CONTENT_STABLE,
     VECTOR_STAGE_DISABLED_NO_PROVIDER,
+    VECTOR_STAGE_DISABLED_QUERY_EMBEDDING_FAILED,
     VECTOR_STAGE_ENABLED,
     VNextRetrievalRequest,
     VNextRetrievalCompletenessError,
@@ -636,7 +637,7 @@ def test_context_pack_degrades_to_fts_when_query_embedding_fails() -> None:
     )
 
     assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-1"]
-    assert pack["trace"]["vector_stage"].startswith("disabled: query embedding failed")
+    assert pack["trace"]["vector_stage"] == VECTOR_STAGE_DISABLED_QUERY_EMBEDDING_FAILED
     assert pack["trace"]["stages"]["vector"]["candidate_count"] == 0
 
 

@@ -12,6 +12,7 @@ from alicebot_api.contracts import (
     ExecutionBudgetSupersedeInput,
 )
 from alicebot_api.execution_budgets import (
+    EXECUTION_BUDGET_LIFECYCLE_REJECTION_REASON,
     ExecutionBudgetLifecycleError,
     ExecutionBudgetNotFoundError,
     ExecutionBudgetValidationError,
@@ -531,8 +532,12 @@ def test_lifecycle_rejects_invalid_transition_and_records_trace() -> None:
         )
 
     assert store.trace_events[-2]["payload"]["current_status"] == "inactive"
-    assert store.trace_events[-2]["payload"]["rejection_reason"] == (
-        f"execution budget {created['execution_budget']['id']} is inactive and cannot be deactivated"
+    assert (
+        store.trace_events[-2]["payload"]["rejection_reason"]
+        == EXECUTION_BUDGET_LIFECYCLE_REJECTION_REASON
+    )
+    assert created["execution_budget"]["id"] not in str(
+        store.trace_events[-2]["payload"]["rejection_reason"]
     )
     assert store.trace_events[-1]["payload"]["outcome"] == "rejected"
 

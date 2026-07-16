@@ -19,7 +19,7 @@ from alicebot_api.vnext_consolidation import (
     VNextConsolidationService,
     VNextConsolidationValidationError,
 )
-from alicebot_api.vnext_embeddings import memory_embedding_text
+from alicebot_api.vnext_embeddings import VNextEmbeddingProviderError, memory_embedding_text
 from alicebot_api.vnext_repositories import JsonObject
 
 
@@ -647,6 +647,46 @@ def test_without_embedding_provider_clustering_is_skipped_review_only() -> None:
     assert _consolidation_candidates(store) == []
     assert "no_embedding_provider_configured" in artifact["metadata_json"]["consolidation"]["skipped"]
     assert "no_embedding_provider_configured" in artifact["content_markdown"]
+
+
+def test_embedding_presence_failure_uses_static_skip_reason() -> None:
+    sentinel = "UNIQUE_CONSOLIDATION_PRESENCE_EXCEPTION_SENTINEL"
+
+    class FailingPresenceStore(FakeConsolidationStore):
+        def list_memory_ids_with_embeddings(self, ids) -> set[str]:
+            raise RuntimeError(sentinel)
+
+    store = FailingPresenceStore()
+    mapping: dict[str, list[float]] = {}
+    _seed_six_memories(store, mapping)
+
+    artifact = VNextConsolidationService(
+        store, embedding_provider=MappedEmbeddingProvider(mapping)
+    ).generate_memory_consolidation(MemoryConsolidationRequest())
+
+    skipped = artifact["metadata_json"]["consolidation"]["skipped"]
+    assert "embedding_presence_read_failed" in skipped
+    assert sentinel not in str(artifact)
+
+
+def test_embedding_provider_failure_uses_static_skip_reason() -> None:
+    sentinel = "UNIQUE_CONSOLIDATION_PROVIDER_EXCEPTION_SENTINEL"
+
+    class FailingProvider(MappedEmbeddingProvider):
+        def embed_batch(self, texts) -> list[list[float]]:
+            raise VNextEmbeddingProviderError(sentinel)
+
+    store = FakeConsolidationStore()
+    mapping: dict[str, list[float]] = {}
+    _seed_six_memories(store, mapping)
+
+    artifact = VNextConsolidationService(
+        store, embedding_provider=FailingProvider(mapping)
+    ).generate_memory_consolidation(MemoryConsolidationRequest())
+
+    skipped = artifact["metadata_json"]["consolidation"]["skipped"]
+    assert "embedding_provider_failed" in skipped
+    assert sentinel not in str(artifact)
 
 
 def test_embedded_rows_are_counted_even_when_the_ann_probe_misses_them() -> None:

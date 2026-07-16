@@ -4,6 +4,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from hashlib import md5, sha256
 import json
+import logging
 import math
 from pathlib import Path
 import re
@@ -37,6 +38,11 @@ from alicebot_api.vnext_repositories import JsonObject
 
 DEFAULT_CHUNK_MAX_CHARS = 2_400
 SUPPORTED_TEXT_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".text"})
+SOURCE_IMPORT_ERROR_CODE = "source_import_failed"
+SOURCE_IMPORT_ERROR_MESSAGE = "Source could not be imported"
+ENTITY_EXTRACTION_ERROR_CODE = "entity_extraction_failed"
+ENTITY_EXTRACTION_ERROR_MESSAGE = "Entity extraction failed"
+logger = logging.getLogger(__name__)
 
 
 class VNextCaptureValidationError(ValueError):
@@ -106,6 +112,7 @@ class BatchImportResult:
     failed_count: int
     source_ids: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
+    error_code: str | None = None
     deferred_embedding_inputs: tuple[DeferredMemoryEmbedding, ...] = ()
 
     def to_record(self) -> JsonObject:
@@ -116,6 +123,7 @@ class BatchImportResult:
             "failed_count": self.failed_count,
             "source_ids": list(self.source_ids),
             "errors": list(self.errors),
+            "error_code": self.error_code,
         }
 
 
@@ -802,14 +810,20 @@ class VNextCaptureService:
         )
 
     def _log_failure(self, *, source_type: str, title: str | None, error: Exception, metadata: JsonObject) -> None:
+        logger.error(
+            "source import failed source_type=%s error_code=%s",
+            source_type,
+            SOURCE_IMPORT_ERROR_CODE,
+            exc_info=(type(error), error, error.__traceback__),
+        )
         self._log_event(
             event_type="source.import_failed",
             target_type="source",
             payload={
                 "source_type": source_type,
                 "title": title,
-                "error_type": type(error).__name__,
-                "error_message": str(error),
+                "error_code": SOURCE_IMPORT_ERROR_CODE,
+                "error_message": SOURCE_IMPORT_ERROR_MESSAGE,
                 "metadata_json": metadata,
             },
         )
@@ -1298,14 +1312,19 @@ class VNextCaptureService:
                         observed_at=observed_at,
                     )
         except Exception as exc:
+            logger.exception(
+                "entity extraction failed source_id=%s error_code=%s",
+                source_id,
+                ENTITY_EXTRACTION_ERROR_CODE,
+            )
             self._log_event(
                 event_type="entity.extraction_failed",
                 target_type="source",
                 target_id=source_id,
                 payload={
                     "stage": "capture",
-                    "error_type": type(exc).__name__,
-                    "error_message": str(exc),
+                    "error_code": ENTITY_EXTRACTION_ERROR_CODE,
+                    "error_message": ENTITY_EXTRACTION_ERROR_MESSAGE,
                 },
             )
 
@@ -1370,7 +1389,7 @@ class VNextCaptureService:
                     source_ids.append(result.source_id)
             except Exception as exc:
                 failed_count += 1
-                errors.append(f"{file_path}: {exc}")
+                errors.append(SOURCE_IMPORT_ERROR_MESSAGE)
                 self._log_failure(
                     source_type="markdown",
                     title=file_path.name,
@@ -1403,6 +1422,7 @@ class VNextCaptureService:
             failed_count=failed_count,
             source_ids=tuple(source_ids),
             errors=tuple(errors),
+            error_code=SOURCE_IMPORT_ERROR_CODE if failed_count else None,
             deferred_embedding_inputs=tuple(deferred_embedding_inputs),
         )
 
@@ -1485,7 +1505,12 @@ class VNextCaptureService:
                 )
             except Exception as exc:
                 failed_count += 1
-                errors.append(f"conversation {transcript.index} ({transcript.external_id}): {exc}")
+                errors.append(SOURCE_IMPORT_ERROR_MESSAGE)
+                logger.exception(
+                    "ChatGPT conversation import failed conversation_index=%d error_code=%s",
+                    transcript.index,
+                    SOURCE_IMPORT_ERROR_CODE,
+                )
                 continue
             deferred_embedding_inputs.extend(result.deferred_embedding_inputs)
             if result.duplicate:
@@ -1520,6 +1545,7 @@ class VNextCaptureService:
             failed_count=failed_count,
             source_ids=tuple(source_ids),
             errors=tuple(errors),
+            error_code=SOURCE_IMPORT_ERROR_CODE if failed_count else None,
             deferred_embedding_inputs=tuple(deferred_embedding_inputs),
         )
 

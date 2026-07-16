@@ -408,6 +408,9 @@ def test_mcp_review_provenance_is_validated_atomically_on_postgres(
 
     client = start_mcp_client(database_url=migrated_database_urls["app"], user_id=user_id)
     try:
+        expected_tool_error = (
+            '{"error":{"code":"tool_request_failed","message":"The tool request could not be processed"}}'
+        )
         for invalid_confidence in (-0.1, 1.5):
             confidence_error = _call_tool_error(
                 client,
@@ -418,8 +421,7 @@ def test_mcp_review_provenance_is_validated_atomically_on_postgres(
                     "confidence": invalid_confidence,
                 },
             )
-            assert "arguments.confidence" in confidence_error
-            assert "confidence must be between 0 and 1" in confidence_error
+            assert confidence_error == expected_tool_error
 
         for invalid_confidence in (-0.1, 1.5):
             replacement_confidence_error = _call_tool_error(
@@ -432,10 +434,7 @@ def test_mcp_review_provenance_is_validated_atomically_on_postgres(
                     "replacement_confidence": invalid_confidence,
                 },
             )
-            assert "arguments.replacement_confidence" in replacement_confidence_error
-            assert "replacement_confidence must be between 0 and 1" in (
-                replacement_confidence_error
-            )
+            assert replacement_confidence_error == expected_tool_error
 
         malformed_body_error = _call_tool_error(
             client,
@@ -446,8 +445,7 @@ def test_mcp_review_provenance_is_validated_atomically_on_postgres(
                 "body": {"text": 7},
             },
         )
-        assert "body.text" in malformed_body_error
-        assert "text must have type string" in malformed_body_error
+        assert malformed_body_error == expected_tool_error
 
         malformed_provenance_error = _call_tool_error(
             client,
@@ -461,8 +459,7 @@ def test_mcp_review_provenance_is_validated_atomically_on_postgres(
                 },
             },
         )
-        assert "provenance.evidence_role" in malformed_provenance_error
-        assert "must be one of" in malformed_provenance_error
+        assert malformed_provenance_error == expected_tool_error
 
         malformed_uuid_error = _call_tool_error(
             client,
@@ -473,8 +470,7 @@ def test_mcp_review_provenance_is_validated_atomically_on_postgres(
                 "provenance": {"source_id": "not-a-uuid"},
             },
         )
-        assert "provenance.source_id" in malformed_uuid_error
-        assert "UUID string" in malformed_uuid_error
+        assert malformed_uuid_error == expected_tool_error
 
         error = _call_tool_error(
             client,
@@ -488,7 +484,7 @@ def test_mcp_review_provenance_is_validated_atomically_on_postgres(
                 },
             },
         )
-        assert "was not found in the current user scope" in error
+        assert error == expected_tool_error
 
         mismatched_chunk_error = _call_tool_error(
             client,
@@ -503,7 +499,7 @@ def test_mcp_review_provenance_is_validated_atomically_on_postgres(
                 },
             },
         )
-        assert "does not belong to source" in mismatched_chunk_error
+        assert mismatched_chunk_error == expected_tool_error
 
         with user_connection(migrated_database_urls["app"], user_id) as conn:
             store = PostgresVNextStore(conn)

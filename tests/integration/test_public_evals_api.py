@@ -58,11 +58,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -156,7 +152,7 @@ def test_public_eval_api_rejects_unknown_suite_key(
     )
 
     assert status == 400
-    assert payload["detail"] == "unknown suite_key values: missing_suite"
+    assert payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
 
 
 def test_public_eval_api_requires_valid_local_identity(
@@ -175,9 +171,7 @@ def test_public_eval_api_requires_valid_local_identity(
     )
 
     assert status == 400
-    assert payload == {
-        "detail": "local identity is required; set ALICEBOT_AUTH_USER_ID or provide X-AliceBot-User-Id"
-    }
+    assert payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
     invalid_status, invalid_payload = invoke_request(
         "GET",
@@ -185,4 +179,4 @@ def test_public_eval_api_requires_valid_local_identity(
         headers=identity_header("not-a-uuid"),
     )
     assert invalid_status == 400
-    assert invalid_payload == {"detail": "X-AliceBot-User-Id must be a valid UUID"}
+    assert invalid_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}

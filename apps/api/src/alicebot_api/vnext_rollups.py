@@ -149,6 +149,7 @@ from datetime import UTC, date, datetime
 from hashlib import sha256
 from inspect import Parameter, signature
 import json
+import logging
 import re
 from typing import Protocol
 
@@ -178,6 +179,8 @@ from alicebot_api.vnext_project_scope import project_scope_identity
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_store import FTS_QUERY_STOPWORDS
 
+
+logger = logging.getLogger(__name__)
 
 ROLLUP_CANDIDATE_KIND = "memory_rollup"
 ROLLUP_PROPOSAL_KIND = "rollup"
@@ -1630,7 +1633,13 @@ def _refine_summary_with_model(
     try:
         raw = provider.chat(prompt=prompt, temperature=temperature)
     except VNextModelIntelligenceError as exc:
-        return None, provenance, f"provider_error: {exc}"
+        logger.warning(
+            "Roll-up summary provider failed error_code=provider_error provider=%s model=%s",
+            provider.provider,
+            provider.model,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return None, provenance, "provider_error"
     try:
         parsed = json.loads(raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```"))
     except json.JSONDecodeError:
@@ -2179,7 +2188,11 @@ class VNextRollupService:
         try:
             embedded_ids = set(list_memory_ids_with_embeddings(selected_ids))
         except Exception as exc:  # noqa: BLE001 - store backends raise driver-specific errors
-            skipped_reasons.append(f"embedding_presence_read_failed: {exc}")
+            logger.warning(
+                "Roll-up embedding-presence read failed error_code=embedding_presence_read_failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            skipped_reasons.append("embedding_presence_read_failed")
             return [], record
         present = [(row, text) for row, text in embeddable if str(row.get("id")) in embedded_ids]
         record["embedded_rows"] = len(present)
@@ -2206,7 +2219,11 @@ class VNextRollupService:
                 for (row, _text), vector in zip(batch, batch_vectors, strict=True):
                     vectors_by_id[str(row.get("id"))] = np.asarray(vector, dtype=np.float32)
         except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
-            skipped_reasons.append(f"embedding_provider_failed: {exc}")
+            logger.warning(
+                "Roll-up embedding provider failed error_code=embedding_provider_failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            skipped_reasons.append("embedding_provider_failed")
             return [], record
         record["provider_embedded_rows"] = len(missing)
         members = [(row, vectors_by_id[str(row.get("id"))]) for row, _text in present]

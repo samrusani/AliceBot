@@ -60,11 +60,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -223,11 +219,7 @@ def test_contradictions_api_detects_surfaces_penalties_and_resolves(
     )
     assert recall_status == 200
     assert recall_payload["items"][0]["id"] == str(clean_object["id"])
-    contradicted_items = [
-        item
-        for item in recall_payload["items"]
-        if item["ordering"]["open_contradiction_count"] == 1
-    ]
+    contradicted_items = [item for item in recall_payload["items"] if item["ordering"]["open_contradiction_count"] == 1]
     assert len(contradicted_items) == 2
     assert {item["ordering"]["contradiction_penalty_score"] for item in contradicted_items} == {2.0}
 
@@ -300,6 +292,4 @@ def test_contradictions_api_requires_local_identity(
     )
 
     assert status == 400
-    assert payload == {
-        "detail": "local identity is required; set ALICEBOT_AUTH_USER_ID or provide X-AliceBot-User-Id"
-    }
+    assert payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}

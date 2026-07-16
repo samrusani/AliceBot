@@ -414,7 +414,7 @@ def test_released_0084_database_upgrades_through_current_head(database_urls):
     with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT version_num FROM alembic_version")
-            assert cur.fetchone()["version_num"] == "20260714_0090"
+            assert cur.fetchone()["version_num"] == "20260716_0092"
 
     # Repeat the additive post-release migrations through their downgrade
     # boundary. The already repaired data remains correct and the second
@@ -2811,3 +2811,606 @@ def test_project_scope_identity_upgrade_matches_python_strip_and_blocks_unicode_
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) AS count FROM sources WHERE deleted_at IS NULL")
             assert cur.fetchone()["count"] == len(raw_texts)
+
+
+def test_source_identity_0091_clears_only_live_whitespace_strings_and_installs_event_indexes(
+    database_urls,
+):
+    config = make_alembic_config(database_urls["admin"])
+    command.upgrade(config, "20260714_0090")
+    user_id = "00000000-0000-0000-0007-000000000001"
+    whitespace_cases = {
+        "ascii": " \t\r\n",
+        "unit_separator_control": "\u001c\u001f",
+        "nbsp": "\u00a0",
+        "nel": "\u0085",
+        "em_space": "\u2003",
+    }
+    source_ids = {
+        name: f"00000000-0000-0000-0007-{index:012d}" for index, name in enumerate(whitespace_cases, start=10)
+    }
+    nonempty_id = "00000000-0000-0000-0007-000000000020"
+    absent_id = "00000000-0000-0000-0007-000000000021"
+    nonstring_id = "00000000-0000-0000-0007-000000000022"
+    deleted_id = "00000000-0000-0000-0007-000000000023"
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (id, email, display_name) VALUES (%s, %s, %s)",
+                (user_id, "source-defensive-0091@example.com", "Source defensive 0091"),
+            )
+            for index, (name, raw_text) in enumerate(whitespace_cases.items(), start=1):
+                cur.execute(
+                    """
+                    INSERT INTO sources (
+                      id, user_id, source_type, content_hash, dedupe_key,
+                      captured_at, domain, sensitivity, metadata_json
+                    ) VALUES (
+                      %s, %s, 'manual_text', %s, %s, %s::timestamptz,
+                      'project', 'private', %s
+                    )
+                    """,
+                    (
+                        source_ids[name],
+                        user_id,
+                        f"sha256:whitespace-{name}",
+                        f"capture-md5:pre-0091-{name}",
+                        f"2026-04-{index:02d}T00:00:00Z",
+                        Jsonb({"raw_text": raw_text}),
+                    ),
+                )
+            controls = (
+                (
+                    nonempty_id,
+                    "sha256:nonempty",
+                    "capture-md5:pre-0091-nonempty",
+                    {"raw_text": "\u00a0Fact: nonempty remains identified.\u2003"},
+                    None,
+                ),
+                (
+                    absent_id,
+                    "sha256:absent-raw-text",
+                    "sha256:absent-raw-text",
+                    {"source": "legacy"},
+                    None,
+                ),
+                (
+                    nonstring_id,
+                    "sha256:nonstring-raw-text",
+                    "sha256:nonstring-raw-text",
+                    {"raw_text": ["not", "text"]},
+                    None,
+                ),
+                (
+                    deleted_id,
+                    "sha256:deleted-whitespace",
+                    "capture-md5:deleted-whitespace",
+                    {"raw_text": "\u00a0"},
+                    "2026-04-12T00:00:00Z",
+                ),
+            )
+            for index, (source_id, content_hash, dedupe_key, metadata, deleted_at) in enumerate(
+                controls,
+                start=10,
+            ):
+                cur.execute(
+                    """
+                    INSERT INTO sources (
+                      id, user_id, source_type, content_hash, dedupe_key,
+                      captured_at, domain, sensitivity, metadata_json, deleted_at
+                    ) VALUES (
+                      %s, %s, 'manual_text', %s, %s, %s::timestamptz,
+                      'project', 'private', %s, %s::timestamptz
+                    )
+                    """,
+                    (
+                        source_id,
+                        user_id,
+                        content_hash,
+                        dedupe_key,
+                        f"2026-04-{index:02d}T00:00:00Z",
+                        Jsonb(metadata),
+                        deleted_at,
+                    ),
+                )
+
+    command.upgrade(config, "head")
+
+    def identity_snapshot() -> dict[str, str | None]:
+        with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id::text AS id, dedupe_key
+                    FROM sources
+                    WHERE user_id = %s
+                    ORDER BY id
+                    """,
+                    (user_id,),
+                )
+                return {row["id"]: row["dedupe_key"] for row in cur.fetchall()}
+
+    expected = {source_id: None for source_id in source_ids.values()}
+    expected.update(
+        {
+            nonempty_id: "capture-md5:pre-0091-nonempty",
+            absent_id: "sha256:absent-raw-text",
+            nonstring_id: "sha256:nonstring-raw-text",
+            deleted_id: "capture-md5:deleted-whitespace",
+        }
+    )
+    assert identity_snapshot() == expected
+
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT indexname, indexdef
+                FROM pg_indexes
+                WHERE schemaname = 'public'
+                  AND indexname LIKE 'event_log_project_update_%'
+                ORDER BY indexname
+                """
+            )
+            definitions = {row["indexname"]: row["indexdef"] for row in cur.fetchall()}
+            cur.execute(
+                """
+                SELECT column_name, data_type, is_nullable, is_generated, generation_expression
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'event_log'
+                  AND column_name IN (
+                    'payload_artifact_id',
+                    'payload_candidate_memory_id',
+                    'payload_memory_id'
+                  )
+                ORDER BY column_name
+                """
+            )
+            linkage_columns = {row["column_name"]: row for row in cur.fetchall()}
+    assert set(definitions) == {
+        "event_log_project_update_artifact_id_idx",
+        "event_log_project_update_candidate_memory_id_idx",
+        "event_log_project_update_memory_id_idx",
+        "event_log_project_update_target_idx",
+    }
+    target_definition = definitions["event_log_project_update_target_idx"]
+    assert "user_id, target_type, target_id, event_type, occurred_at DESC, id DESC" in target_definition
+    for index_name, column_name in (
+        ("event_log_project_update_artifact_id_idx", "payload_artifact_id"),
+        (
+            "event_log_project_update_candidate_memory_id_idx",
+            "payload_candidate_memory_id",
+        ),
+        ("event_log_project_update_memory_id_idx", "payload_memory_id"),
+    ):
+        definition = definitions[index_name]
+        assert f"user_id, event_type, {column_name}, occurred_at DESC, id DESC" in definition
+        assert f"{column_name} IS NOT NULL" in definition
+        assert "USING btree" in definition
+        assert "USING gin" not in definition
+    for definition in definitions.values():
+        for event_type in (
+            "project.update_candidate_created",
+            "project.update_candidate_accepted",
+            "project.update_candidate_rejected",
+        ):
+            assert event_type in definition
+    assert set(linkage_columns) == {
+        "payload_artifact_id",
+        "payload_candidate_memory_id",
+        "payload_memory_id",
+    }
+    for column_name, payload_key in (
+        ("payload_artifact_id", "artifact_id"),
+        ("payload_candidate_memory_id", "candidate_memory_id"),
+        ("payload_memory_id", "memory_id"),
+    ):
+        column = linkage_columns[column_name]
+        assert column["data_type"] == "text"
+        assert column["is_nullable"] == "YES"
+        assert column["is_generated"] == "ALWAYS"
+        expression = str(column["generation_expression"])
+        assert f"jsonb_typeof((payload_json -> '{payload_key}'::text)) = 'string'::text" in expression
+        assert f"payload_json ->> '{payload_key}'::text" in expression
+
+    # Re-crossing the forward boundary is data-idempotent.
+    command.downgrade(config, "20260714_0090")
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'event_log'
+                  AND column_name IN (
+                    'payload_artifact_id',
+                    'payload_candidate_memory_id',
+                    'payload_memory_id'
+                  )
+                """
+            )
+            assert cur.fetchall() == []
+    command.upgrade(config, "head")
+    assert identity_snapshot() == expected
+
+
+def test_0092_backfills_prior_authorized_project_update_redaction(database_urls) -> None:
+    config = make_alembic_config(database_urls["admin"])
+    command.upgrade(config, "20260715_0091")
+    user_id = "00000000-0000-0000-0092-000000000001"
+    memory_id = "00000000-0000-0000-0092-000000000002"
+    artifact_id = "00000000-0000-0000-0092-000000000003"
+    revision_id = "00000000-0000-0000-0092-000000000004"
+    rating_id = "00000000-0000-0000-0092-000000000005"
+    provenance_id = "00000000-0000-0000-0092-000000000006"
+    project_id = "00000000-0000-0000-0092-000000000007"
+    redacted_at = "2026-07-15T23:59:01Z"
+    sentinel = "0092-OLD-REDACTION-SECRET"
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (id, email, display_name) VALUES (%s, %s, %s)",
+                (user_id, "redaction-0092@example.com", "Redaction 0092"),
+            )
+            cur.execute(
+                """
+                INSERT INTO memories (
+                  id, user_id, memory_key, value, status, source_event_ids,
+                  memory_type, title, canonical_text, summary, trust_reason,
+                  domain, sensitivity, metadata_json, commit_digest,
+                  confirmation_id, deleted_at
+                ) VALUES (
+                  %s, %s, %s, '{"redacted":true}'::jsonb, 'archived', %s,
+                  'project_state', '[REDACTED]', '[REDACTED]', '[REDACTED]',
+                  '[REDACTED]', 'project', 'private', %s, %s, %s, now()
+                )
+                """,
+                (
+                    memory_id,
+                    user_id,
+                    f"project_update.{sentinel}",
+                    Jsonb([f"event-{sentinel}"]),
+                    Jsonb(
+                        {
+                            "redacted": True,
+                            "redacted_at": redacted_at,
+                            "project_id": project_id,
+                            "project_scope": [project_id],
+                            "source_refs": [sentinel],
+                            "consolidation_digest": f"digest-{sentinel}",
+                        }
+                    ),
+                    f"commit-{sentinel}",
+                    f"confirmation-{sentinel}",
+                ),
+            )
+            cur.execute(
+                """
+                INSERT INTO memory_revisions (
+                  id, user_id, memory_id, sequence_no, action, memory_key,
+                  previous_value, new_value, source_event_ids, candidate,
+                  revision_number, revision_type, text_before, text_after,
+                  reason, actor_type, metadata_json
+                ) VALUES (
+                  %s, %s, %s, 1, 'project_update_review', %s,
+                  '{"redacted":true}'::jsonb, '{"redacted":true}'::jsonb,
+                  %s, '{"redacted":true}'::jsonb, 1, 'promoted',
+                  '[REDACTED]', '[REDACTED]', '[REDACTED]', 'user',
+                  '{"redacted":true}'::jsonb
+                )
+                """,
+                (
+                    revision_id,
+                    user_id,
+                    memory_id,
+                    f"project_update.{sentinel}",
+                    Jsonb([f"event-{sentinel}"]),
+                ),
+            )
+            cur.execute(
+                """
+                INSERT INTO generated_artifacts (
+                  id, user_id, artifact_type, title, content_markdown, status,
+                  domain, sensitivity, generated_by, prompt_hash,
+                  model_info_json, metadata_json
+                ) VALUES (
+                  %s, %s, 'project_update', %s, %s, 'accepted', 'project',
+                  'private', 'system', %s, %s, %s
+                )
+                """,
+                (
+                    artifact_id,
+                    user_id,
+                    f"Title {sentinel}",
+                    f"Content {sentinel}",
+                    f"prompt-{sentinel}",
+                    Jsonb({"provider": sentinel}),
+                    Jsonb(
+                        {
+                            "workflow": "project_auto_update",
+                            "project_id": project_id,
+                            "project_scope": [project_id],
+                            "candidate_memory_id": memory_id,
+                            "review_action": "accept",
+                            "candidate": False,
+                            "review_status": "accepted",
+                            "automation_digest": f"automation-{sentinel}",
+                            "suggested_current_state": sentinel,
+                            "accepted_current_state": sentinel,
+                        }
+                    ),
+                ),
+            )
+            cur.execute(
+                """
+                INSERT INTO artifact_quality_ratings (
+                  id, user_id, artifact_id, reviewer_id, usefulness, accuracy,
+                  verbosity, missed_context, comments, metadata_json
+                ) VALUES (%s, %s, %s, 'reviewer-1', 5, 4, 'right_sized', %s, %s, %s)
+                """,
+                (rating_id, user_id, artifact_id, sentinel, sentinel, Jsonb({"secret": sentinel})),
+            )
+            cur.execute(
+                """
+                INSERT INTO provenance_links (
+                  id, user_id, target_type, target_id, quote, evidence_role, confidence
+                ) VALUES (%s, %s, 'artifact', %s, %s, 'supports', 0.9)
+                """,
+                (provenance_id, user_id, artifact_id, sentinel),
+            )
+            for index, (event_type, target_type, target_id, payload) in enumerate(
+                (
+                    (
+                        "project.update_candidate_created",
+                        "artifact",
+                        artifact_id,
+                        {"artifact_id": artifact_id, "candidate_memory_id": memory_id, "secret": sentinel},
+                    ),
+                    (
+                        "project.update_candidate_accepted",
+                        "project",
+                        project_id,
+                        {"artifact_id": artifact_id, "candidate_memory_id": memory_id, "action": "accept"},
+                    ),
+                    (
+                        "artifact.insight_feedback_recorded",
+                        "artifact",
+                        artifact_id,
+                        {"artifact_id": artifact_id, "comments": sentinel},
+                    ),
+                    (
+                        "memory.redacted",
+                        "memory",
+                        memory_id,
+                        {"operation": "redact_memory_events", "secret": sentinel},
+                    ),
+                ),
+                start=10,
+            ):
+                cur.execute(
+                    """
+                    INSERT INTO event_log (
+                      id, user_id, event_type, actor_type, target_type,
+                      target_id, payload_json, integrity_hash
+                    ) VALUES (%s, %s, %s, 'user', %s, %s, %s, %s)
+                    """,
+                    (
+                        f"00000000-0000-0000-0092-{index:012d}",
+                        user_id,
+                        event_type,
+                        target_type,
+                        target_id,
+                        Jsonb(payload),
+                        f"hash-{sentinel}-{index}",
+                    ),
+                )
+
+    command.upgrade(config, "head")
+
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT memory_key, source_event_ids, metadata_json,
+                       commit_digest, confirmation_id
+                FROM memories WHERE id = %s
+                """,
+                (memory_id,),
+            )
+            memory = cur.fetchone()
+            assert memory == {
+                "memory_key": f"redacted.{memory_id}",
+                "source_event_ids": [],
+                "metadata_json": {
+                    "project_id": project_id,
+                    "project_scope": [project_id],
+                    "redacted": True,
+                    "redacted_at": redacted_at,
+                },
+                "commit_digest": None,
+                "confirmation_id": None,
+            }
+            cur.execute(
+                """
+                SELECT title, content_markdown, prompt_hash, model_info_json,
+                       status, domain, sensitivity, generated_by, metadata_json
+                FROM generated_artifacts WHERE id = %s
+                """,
+                (artifact_id,),
+            )
+            artifact = cur.fetchone()
+            assert artifact["title"] == artifact["content_markdown"] == "[REDACTED]"
+            assert artifact["prompt_hash"] is None
+            assert artifact["model_info_json"] == {"redacted": True}
+            assert artifact["metadata_json"] == {
+                "redacted": True,
+                "redacted_at": redacted_at,
+                "workflow": "project_auto_update",
+                "project_id": project_id,
+                "project_scope": [project_id],
+                "candidate_memory_id": memory_id,
+                "review_action": "accept",
+            }
+            assert (artifact["status"], artifact["domain"], artifact["sensitivity"], artifact["generated_by"]) == (
+                "accepted",
+                "project",
+                "private",
+                "system",
+            )
+            cur.execute(
+                "SELECT missed_context, comments, metadata_json, usefulness, accuracy FROM artifact_quality_ratings WHERE id = %s",
+                (rating_id,),
+            )
+            assert cur.fetchone() == {
+                "missed_context": "[REDACTED]",
+                "comments": "[REDACTED]",
+                "metadata_json": {"redacted": True},
+                "usefulness": 5,
+                "accuracy": 4,
+            }
+            cur.execute("SELECT quote, evidence_role, confidence FROM provenance_links WHERE id = %s", (provenance_id,))
+            assert cur.fetchone() == {"quote": "[REDACTED]", "evidence_role": "supports", "confidence": 0.9}
+            cur.execute(
+                """
+                SELECT memory_key, source_event_ids, previous_value, new_value,
+                       candidate, text_before, text_after, reason, metadata_json
+                FROM memory_revisions WHERE id = %s
+                """,
+                (revision_id,),
+            )
+            revision = cur.fetchone()
+            assert revision["memory_key"] == f"redacted.{memory_id}"
+            assert revision["source_event_ids"] == []
+            for field in ("previous_value", "new_value", "candidate", "metadata_json"):
+                assert revision[field] == {"redacted": True}
+            assert revision["text_before"] == revision["text_after"] == revision["reason"] == "[REDACTED]"
+            cur.execute(
+                "SELECT event_type, payload_json, integrity_hash FROM event_log WHERE user_id = %s ORDER BY event_type, id",
+                (user_id,),
+            )
+            events = cur.fetchall()
+            assert events
+            for event in events:
+                assert event["payload_json"] == {
+                    "redacted": True,
+                    "memory_id": memory_id,
+                    "event_type": event["event_type"],
+                }
+                assert event["integrity_hash"] is None
+            cur.execute(
+                """
+                SELECT has_table_privilege('alicebot_app', 'provenance_links', 'UPDATE') AS provenance_update,
+                       has_table_privilege('alicebot_app', 'artifact_quality_ratings', 'UPDATE') AS rating_update
+                """
+            )
+            assert cur.fetchone() == {"provenance_update": True, "rating_update": True}
+
+    command.downgrade(config, "20260715_0091")
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT has_table_privilege('alicebot_app', 'event_log', 'UPDATE') AS event_update,
+                       has_table_privilege('alicebot_app', 'memory_revisions', 'UPDATE') AS revision_update,
+                       has_table_privilege('alicebot_app', 'provenance_links', 'UPDATE') AS provenance_update,
+                       has_table_privilege('alicebot_app', 'artifact_quality_ratings', 'UPDATE') AS rating_update
+                """
+            )
+            assert cur.fetchone() == {
+                "event_update": True,
+                "revision_update": True,
+                "provenance_update": False,
+                "rating_update": False,
+            }
+            cur.execute("SELECT content_markdown FROM generated_artifacts WHERE id = %s", (artifact_id,))
+            assert cur.fetchone() == {"content_markdown": "[REDACTED]"}
+    command.upgrade(config, "head")
+    with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT has_table_privilege(
+                         'alicebot_app', 'provenance_links', 'UPDATE'
+                       ) AS provenance_update,
+                       has_table_privilege(
+                         'alicebot_app', 'artifact_quality_ratings', 'UPDATE'
+                       ) AS rating_update,
+                       EXISTS (
+                         SELECT 1
+                         FROM pg_trigger
+                         WHERE tgrelid = 'generated_artifacts'::regclass
+                           AND tgname = 'generated_artifacts_redaction_guard'
+                           AND NOT tgisinternal
+                       ) AS artifact_guard
+                """
+            )
+            assert cur.fetchone() == {
+                "provenance_update": True,
+                "rating_update": True,
+                "artifact_guard": True,
+            }
+            cur.execute(
+                """
+                SELECT pg_get_functiondef(
+                  'app.reject_event_log_mutation()'::regprocedure
+                ) AS definition
+                """
+            )
+            definition = str(cur.fetchone()["definition"])
+            assert "OLD.payload_candidate_memory_id" in definition
+            assert "OLD.payload_artifact_id" in definition
+            assert "artifact.user_id = OLD.user_id" in definition
+
+
+def test_postgres_source_constraints_reject_noncanonical_classifications(database_urls) -> None:
+    config = make_alembic_config(database_urls["admin"])
+    command.upgrade(config, "head")
+    user_id = "00000000-0000-0000-0007-000000000030"
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (id, email, display_name) VALUES (%s, %s, %s)",
+                (user_id, "classification-postgres@example.com", "Classification constraints"),
+            )
+
+            invalid_cases = (
+                ("domain", "", "sources_domain_check"),
+                ("domain", " ", "sources_domain_check"),
+                ("domain", "\u00a0", "sources_domain_check"),
+                ("domain", "prøject", "sources_domain_check"),
+                ("sensitivity", "", "sources_sensitivity_check"),
+                ("sensitivity", " ", "sources_sensitivity_check"),
+                ("sensitivity", "\u0085", "sources_sensitivity_check"),
+                ("sensitivity", "prívate", "sources_sensitivity_check"),
+            )
+            for index, (column, invalid_value, constraint_name) in enumerate(
+                invalid_cases,
+                start=1,
+            ):
+                domain = invalid_value if column == "domain" else "project"
+                sensitivity = invalid_value if column == "sensitivity" else "private"
+                cur.execute("SAVEPOINT invalid_classification")
+                with pytest.raises(psycopg.errors.CheckViolation, match=constraint_name):
+                    cur.execute(
+                        """
+                        INSERT INTO sources (
+                          id, user_id, source_type, content_hash, domain, sensitivity
+                        ) VALUES (%s, %s, 'manual_text', %s, %s, %s)
+                        """,
+                        (
+                            f"00000000-0000-0000-0007-{index + 30:012d}",
+                            user_id,
+                            f"sha256:invalid-classification-{index}",
+                            domain,
+                            sensitivity,
+                        ),
+                    )
+                cur.execute("ROLLBACK TO SAVEPOINT invalid_classification")
+                cur.execute("RELEASE SAVEPOINT invalid_classification")
+
+            cur.execute("SELECT COUNT(*) FROM sources WHERE user_id = %s", (user_id,))
+            assert cur.fetchone()[0] == 0

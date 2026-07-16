@@ -35,6 +35,7 @@ print(json.dumps({
     "count": len(operations),
     "legacy_count": len(operations & LEGACY_HTTP_OPERATION_KEYS),
     "removed_count": len(operations & PERMANENTLY_REMOVED_OPENAPI_OPERATIONS),
+    "runtime_invoke_count": list(operations).count(("POST", "/v1/runtime/invoke")),
 }))
 """
     completed = subprocess.run(
@@ -84,6 +85,7 @@ def test_http_legacy_surface_gate_fails_closed_for_every_non_exact_value(flag_va
         "count": 182,
         "legacy_count": 0,
         "removed_count": 0,
+        "runtime_invoke_count": 1,
     }
 
 
@@ -92,6 +94,7 @@ def test_http_legacy_surface_gate_mounts_exact_inventory_only_for_one() -> None:
         "count": 231,
         "legacy_count": 49,
         "removed_count": 0,
+        "runtime_invoke_count": 1,
     }
 
 

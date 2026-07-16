@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+import re
+import tomllib
 
 import pytest
 
@@ -396,6 +398,7 @@ def test_release_gates_run_normal_cross_module_mypy() -> None:
         "python -m mypy --ignore-missing-imports apps/api/src/alicebot_api "
         "scripts/release_check.py scripts/test_distribution_artifact.py "
         "scripts/normalize_sdist.py scripts/render_release_body.py "
+        "scripts/decode_github_release_body.py "
         "scripts/prepare_mainprotect_update.py "
         "scripts/check_python_coverage.py "
         "scripts/check_control_doc_truth.py scripts/check_github_release_checks.py "
@@ -407,6 +410,75 @@ def test_release_gates_run_normal_cross_module_mypy() -> None:
     assert expected in tests_workflow
     assert expected.replace("python", "$(PYTHON)", 1) in makefile
     assert "Normal cross-module first-party type check" in tests_workflow
+
+
+def test_dev_dependencies_pin_coverage_floor_and_supported_pytest_major() -> None:
+    pyproject = tomllib.loads(_read("pyproject.toml"))
+    dev_dependencies = pyproject["project"]["optional-dependencies"]["dev"]
+
+    assert "coverage>=7.7,<8.0" in dev_dependencies
+    assert "pytest>=8.3,<10.0" in dev_dependencies
+
+
+def test_release_workflow_is_manual_only_and_scheduler_child_preserves_once() -> None:
+    publish = _read(".github/workflows/publish-pypi.yml")
+    trigger_block = publish.split("permissions:", 1)[0]
+    scheduler_runtime = _read("apps/api/src/alicebot_api/vnext_scheduler_runtime.py")
+    background_start = scheduler_runtime.split("def start_background_daemon", 1)[1].split(
+        "def run_foreground_daemon", 1
+    )[0]
+
+    assert "  workflow_dispatch:" in trigger_block
+    assert "\n  release:" not in trigger_block
+    assert 'if config.once:\n        command.append("--once")' in background_start
+    assert background_start.index('command.append("--once")') < background_start.index(
+        "subprocess.Popen("
+    )
+
+
+def test_pnpm10_dependency_audit_decision_is_fail_closed_and_documented() -> None:
+    package = json.loads(_read("apps/web/package.json"))
+    workflow = _read(".github/workflows/tests.yml")
+    audit_script = _read("apps/web/scripts/npm-advisory-audit.mjs")
+    releasing = _read("RELEASING.md")
+
+    assert package["packageManager"] == "pnpm@10.23.0"
+    assert package["devDependencies"]["semver"] == "7.8.0"
+    assert "node-version: \"20\"" in workflow
+    assert "node scripts/npm-advisory-audit.mjs --prod --audit-level=high" in workflow
+    assert "node scripts/npm-advisory-audit.mjs --audit-level=high" in workflow
+    assert "pnpm test:advisory-audit" in workflow
+    assert package["scripts"]["test:advisory-audit"] == (
+        "node --test scripts/npm-advisory-audit.test.mjs"
+    )
+    assert "https://github.com/orgs/pnpm/discussions/11377" in audit_script
+    assert "https://github.com/orgs/pnpm/discussions/11377" in releasing
+    assert "process.exit(2)" in audit_script
+
+
+def test_ci_action_dependency_carrier_uses_exact_atomic_pins() -> None:
+    workflows = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+    )
+    checkout_refs = re.findall(r"actions/checkout@([0-9a-f]+)", workflows)
+    codeql_refs = re.findall(
+        r"github/codeql-action/(?:init|autobuild|analyze)@([0-9a-f]+)",
+        workflows,
+    )
+
+    assert checkout_refs == [
+        "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
+    ] * 16
+    assert codeql_refs == [
+        "99df26d4f13ea111d4ec1a7dddef6063f76b97e9"
+    ] * 3
+    security_workflow = _read(".github/workflows/security-scans.yml")
+    for step in ("init", "autobuild", "analyze"):
+        assert (
+            f"github/codeql-action/{step}@"
+            "99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0"
+        ) in security_workflow
 
 
 def test_python_compatibility_functional_tests_do_not_shadow_installed_wheel() -> None:

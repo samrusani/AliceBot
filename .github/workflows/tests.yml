@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
@@ -97,7 +97,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
@@ -115,6 +115,7 @@ jobs:
           python -m mypy --ignore-missing-imports apps/api/src/alicebot_api
           scripts/release_check.py scripts/test_distribution_artifact.py
           scripts/normalize_sdist.py scripts/render_release_body.py
+          scripts/decode_github_release_body.py
           scripts/prepare_mainprotect_update.py
           scripts/check_python_coverage.py
           scripts/check_control_doc_truth.py scripts/check_github_release_checks.py
@@ -127,7 +128,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
@@ -178,7 +179,7 @@ jobs:
       matrix:
         python-version: ["3.13", "3.14"]
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
@@ -222,9 +223,13 @@ jobs:
             -q
 
   python-integration:
-    name: Integration tests (Postgres + pgvector, role separation)
+    name: ${{ matrix.integration_check }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        integration_check: ["Integration tests (Postgres + pgvector, role separation)", "Default surface integration smoke (Postgres)"]
     services:
       postgres:
         image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
@@ -240,7 +245,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
@@ -262,10 +267,20 @@ jobs:
           "
           test "$(psql -h localhost -U alicebot_admin -d alicebot -Atqc "SELECT split_part(extversion, '.', 1)::int > 0 OR (split_part(extversion, '.', 1)::int = 0 AND split_part(extversion, '.', 2)::int >= 8) FROM pg_extension WHERE extname = 'vector'")" = "t"
       - name: Integration tests
+        if: matrix.integration_check == 'Integration tests (Postgres + pgvector, role separation)'
         env:
           DATABASE_URL: postgresql://alicebot_app:ci@localhost:5432/alicebot
           DATABASE_ADMIN_URL: postgresql://alicebot_admin:ci@localhost:5432/alicebot
         run: ALICE_LEGACY_SURFACES=1 ./.venv/bin/python -m pytest tests/integration -q -p no:cacheprovider
+
+      - name: Default-surface core round-trip
+        if: matrix.integration_check == 'Default surface integration smoke (Postgres)'
+        env:
+          DATABASE_URL: postgresql://alicebot_app:ci@localhost:5432/alicebot
+          DATABASE_ADMIN_URL: postgresql://alicebot_admin:ci@localhost:5432/alicebot
+        run: |
+          unset ALICE_LEGACY_SURFACES ALICE_MCP_LEGACY_TOOLS ALICE_AGENT_API_KEY
+          ./.venv/bin/python -m pytest tests/integration/test_default_surface_integration.py -q -p no:cacheprovider
 
   web:
     name: Web tests, types, accessibility, and budgets
@@ -275,7 +290,7 @@ jobs:
       run:
         working-directory: apps/web
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
           version: 10.23.0
@@ -316,9 +331,12 @@ jobs:
             apps/web/test-results/
           if-no-files-found: ignore
           retention-days: 14
+      - name: Advisory response validator tests
+        run: pnpm test:advisory-audit
       - name: Production dependency audit
-        # npm retired the legacy quick-audit endpoint pnpm calls (HTTP 410);
-        # this script preserves the same gate through the bulk advisory API.
+        # The pinned pnpm 10 audit client uses retired endpoints. Keep the
+        # repository's fail-closed bulk-endpoint wrapper until a deliberate
+        # Node/pnpm major-toolchain upgrade is independently qualified.
         run: node scripts/npm-advisory-audit.mjs --prod --audit-level=high
       - name: Full dependency audit
         run: node scripts/npm-advisory-audit.mjs --audit-level=high

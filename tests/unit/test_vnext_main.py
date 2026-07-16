@@ -112,6 +112,187 @@ class FakeVNextStore:
     def get_memory_for_update(self, memory_id: str) -> dict[str, object] | None:
         return self.get_memory(memory_id)
 
+    def get_memory_for_redaction(self, memory_id: str) -> dict[str, object] | None:
+        return self.get_memory(memory_id)
+
+    def lock_project_update_artifacts_for_redaction(self, memory_id: str) -> list[dict[str, object]]:
+        return sorted(
+            [
+                artifact
+                for artifact in self.artifacts.values()
+                if isinstance(artifact.get("metadata_json"), dict)
+                and artifact["metadata_json"].get("candidate_memory_id") == memory_id
+            ],
+            key=lambda artifact: str(artifact.get("id")),
+        )
+
+    def redact_memory_bundle(
+        self,
+        *,
+        memory_id: str,
+        project_update_artifacts: list[dict[str, object]],
+        actor_type: str = "user",
+    ) -> dict[str, object]:
+        memory = self.get_memory(memory_id)
+        assert memory is not None, memory_id
+        redacted_at = (
+            str(memory.get("metadata_json", {}).get("redacted_at") or "now")
+            if isinstance(memory.get("metadata_json"), dict)
+            else "now"
+        )
+        metadata = memory.get("metadata_json")
+        structural = {
+            key: metadata[key]
+            for key in (
+                "project_id",
+                "project_scope",
+                "superseded_by",
+                "supersedes",
+                "run_id",
+                "agent_id",
+                "created_by_agent_id",
+            )
+            if isinstance(metadata, dict) and key in metadata
+        }
+        desired_memory = {
+            "memory_key": f"redacted.{memory_id}",
+            "title": None if memory.get("title") is None else "[REDACTED]",
+            "canonical_text": "[REDACTED]",
+            "summary": None if memory.get("summary") is None else "[REDACTED]",
+            "trust_reason": None if memory.get("trust_reason") is None else "[REDACTED]",
+            "value": {"redacted": True},
+            "source_event_ids": [],
+            "metadata_json": {**structural, "redacted": True, "redacted_at": redacted_at},
+            "commit_digest": None,
+            "confirmation_id": None,
+            "status": "archived",
+            "deleted_at": memory.get("deleted_at") or "now",
+        }
+        memory_changed = any(memory.get(key) != value for key, value in desired_memory.items())
+        memory.update(desired_memory)
+        redacted_revisions = 0
+        for revision in self.revisions:
+            if str(revision.get("memory_id")) != str(memory_id):
+                continue
+            desired_revision = {
+                "memory_key": f"redacted.{memory_id}",
+                "source_event_ids": [],
+                "previous_value": None if revision.get("previous_value") is None else {"redacted": True},
+                "new_value": None if revision.get("new_value") is None else {"redacted": True},
+                "candidate": {"redacted": True},
+                "text_before": None if revision.get("text_before") is None else "[REDACTED]",
+                "text_after": "[REDACTED]",
+                "reason": None if revision.get("reason") is None else "[REDACTED]",
+                "metadata_json": {"redacted": True},
+            }
+            if any(revision.get(key) != value for key, value in desired_revision.items()):
+                revision.update(desired_revision)
+                redacted_revisions += 1
+        coupled_artifact_ids = [str(artifact["id"]) for artifact in project_update_artifacts]
+        changed_artifact_ids: list[str] = []
+        for artifact in project_update_artifacts:
+            artifact_id = str(artifact["id"])
+            old_metadata = artifact["metadata_json"]
+            assert isinstance(old_metadata, dict)
+            desired_artifact = {
+                "title": "[REDACTED]",
+                "content_markdown": "[REDACTED]",
+                "prompt_hash": None,
+                "model_info_json": {"redacted": True},
+                "metadata_json": {
+                    "redacted": True,
+                    "redacted_at": redacted_at,
+                    "workflow": "project_auto_update",
+                    "project_id": old_metadata["project_id"],
+                    "project_scope": [old_metadata["project_id"]],
+                    "candidate_memory_id": memory_id,
+                    "review_action": old_metadata["review_action"],
+                },
+            }
+            if any(artifact.get(key) != value for key, value in desired_artifact.items()):
+                artifact.update(desired_artifact)
+                changed_artifact_ids.append(artifact_id)
+
+        redacted_quality_ratings = 0
+        for rating in self.quality_ratings:
+            if str(rating.get("artifact_id")) not in coupled_artifact_ids:
+                continue
+            desired_rating = {
+                "missed_context": None if rating.get("missed_context") is None else "[REDACTED]",
+                "comments": None if rating.get("comments") is None else "[REDACTED]",
+                "metadata_json": {"redacted": True},
+            }
+            if any(rating.get(key) != value for key, value in desired_rating.items()):
+                rating.update(desired_rating)
+                redacted_quality_ratings += 1
+
+        redacted_provenance_links = 0
+        for link in self.provenance_links:
+            coupled = (
+                link.get("target_type") == "memory" and str(link.get("target_id")) == memory_id
+            ) or (
+                link.get("target_type") == "artifact"
+                and str(link.get("target_id")) in coupled_artifact_ids
+            )
+            if coupled and link.get("quote") not in {None, "[REDACTED]"}:
+                link["quote"] = "[REDACTED]"
+                redacted_provenance_links += 1
+
+        redacted_events = 0
+        for event in self.events:
+            payload = event.get("payload_json")
+            coupled = str(event.get("target_id")) in {memory_id, *coupled_artifact_ids} or (
+                isinstance(payload, dict)
+                and any(
+                    str(payload.get(key)) in {memory_id, *coupled_artifact_ids}
+                    for key in ("memory_id", "candidate_memory_id", "artifact_id")
+                )
+            )
+            if coupled:
+                desired_payload = {
+                    "redacted": True,
+                    "memory_id": memory_id,
+                    "event_type": event.get("event_type"),
+                }
+                if event.get("payload_json") != desired_payload or event.get("integrity_hash") is not None:
+                    event["payload_json"] = desired_payload
+                    event["integrity_hash"] = None
+                    redacted_events += 1
+
+        changed = bool(
+            memory_changed
+            or changed_artifact_ids
+            or redacted_quality_ratings
+            or redacted_provenance_links
+            or redacted_revisions
+            or redacted_events
+        )
+        if changed:
+            self.append_event(
+                {
+                    "event_type": "memory.redacted",
+                    "actor_type": actor_type,
+                    "target_type": "memory",
+                    "target_id": memory_id,
+                    "payload_json": {
+                        "redacted": True,
+                        "memory_id": memory_id,
+                        "event_type": "memory.redacted",
+                    },
+                    "integrity_hash": None,
+                }
+            )
+        return {
+            "memory": memory,
+            "redacted_revisions": redacted_revisions,
+            "redacted_events": redacted_events,
+            "redacted_artifacts": len(changed_artifact_ids),
+            "redacted_artifact_ids": changed_artifact_ids,
+            "redacted_quality_ratings": redacted_quality_ratings,
+            "redacted_provenance_links": redacted_provenance_links,
+            "idempotent_replay": not changed,
+        }
+
     def redact_memory_content(self, *, memory_id: str, actor_type: str = "user") -> dict[str, object]:
         memory = self.get_memory(memory_id)
         assert memory is not None, memory_id
@@ -471,6 +652,34 @@ class FakeVNextStore:
             and (target_id is None or event.get("target_id") == target_id)
         ]
         return rows[:limit] if limit is not None else rows
+
+    def list_project_update_events(
+        self,
+        *,
+        artifact_id: str,
+        candidate_memory_id: str,
+    ) -> list[dict[str, object]]:
+        event_types = {
+            "project.update_candidate_created",
+            "project.update_candidate_accepted",
+            "project.update_candidate_rejected",
+        }
+        rows: list[dict[str, object]] = []
+        for event in self.events:
+            if event.get("event_type") not in event_types:
+                continue
+            payload_value = event.get("payload_json")
+            payload = payload_value if isinstance(payload_value, dict) else {}
+            linked = (
+                (event.get("target_type") == "artifact" and event.get("target_id") == artifact_id)
+                or (event.get("target_type") == "memory" and event.get("target_id") == candidate_memory_id)
+                or payload.get("artifact_id") == artifact_id
+                or payload.get("candidate_memory_id") == candidate_memory_id
+                or payload.get("memory_id") == candidate_memory_id
+            )
+            if linked:
+                rows.append(event)
+        return rows
 
     def list_events_for_source_trace(
         self,
@@ -2539,7 +2748,7 @@ def test_vnext_agent_endpoint_rejects_keyless_agent_call_when_keys_exist(monkeyp
 
     assert response.status_code == 401
     detail = json.loads(response.body)["detail"]
-    assert "Authorization: Bearer alice_sk_" in detail
+    assert detail == {"code": "authentication_failed", "message": "Authentication failed"}
     assert store.sources == {}
 
 
@@ -2561,7 +2770,10 @@ def test_vnext_memory_commit_rejects_keyless_agent_call_when_keys_exist(monkeypa
     )
 
     assert response.status_code == 401
-    assert "Authorization: Bearer alice_sk_" in json.loads(response.body)["detail"]
+    assert json.loads(response.body)["detail"] == {
+        "code": "authentication_failed",
+        "message": "Authentication failed",
+    }
     assert store.memories == []
 
 
@@ -2733,6 +2945,75 @@ def test_http_review_edit_synchronizes_title_and_summary(monkeypatch) -> None:
     assert memory["canonical_text"] == corrected
     assert memory["title"] == corrected
     assert memory["summary"] == corrected
+
+
+@pytest.mark.parametrize("marker", ["workflow", "stripped_memory_key"])
+def test_generic_http_review_cannot_strand_pending_project_update_candidate(
+    monkeypatch,
+    marker: str,
+) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    memory_id = _seed_active_memory(store, text="Pending project state candidate.")
+    memory = store.get_memory(memory_id)
+    assert memory is not None
+    memory.update(
+        {
+            "status": "candidate",
+            "memory_key": ("general.note" if marker == "workflow" else "  project_update.project-1.current_state  "),
+            "metadata_json": {
+                "candidate": True,
+                **({"workflow": "project_auto_update"} if marker == "workflow" else {}),
+            },
+        }
+    )
+    store.projects["project-1"] = {
+        "id": "project-1",
+        "current_state": "Original state.",
+        "status": "active",
+    }
+    store.artifacts["artifact-1"] = {
+        "id": "artifact-1",
+        "artifact_type": "project_update",
+        "status": "candidate",
+        "metadata_json": {"candidate_memory_id": memory_id, "workflow": "project_auto_update"},
+    }
+    store.revisions.append({"id": "revision-before", "memory_id": memory_id})
+    store.events.append(
+        {
+            "event_type": "project.update_candidate_created",
+            "target_type": "artifact",
+            "target_id": "artifact-1",
+            "payload_json": {"candidate_memory_id": memory_id},
+        }
+    )
+    before = deepcopy(
+        {
+            "project": store.projects["project-1"],
+            "memory": memory,
+            "artifact": store.artifacts["artifact-1"],
+            "revisions": store.revisions,
+            "events": store.events,
+        }
+    )
+
+    response = main_module.review_vnext_memory(
+        main_module.UUID(memory_id),
+        main_module.VNextMemoryReviewRequest(user_id=user_id, action="reject"),
+    )
+
+    assert response.status_code == 409
+    assert json.loads(response.body) == {
+        "detail": "pending project update candidates must be reviewed through the project update workflow"
+    }
+    assert {
+        "project": store.projects["project-1"],
+        "memory": store.get_memory(memory_id),
+        "artifact": store.artifacts["artifact-1"],
+        "revisions": store.revisions,
+        "events": store.events,
+    } == before
 
 
 @pytest.mark.parametrize("action", ["accept", "edit", "promote", "reject"])
@@ -2992,7 +3273,10 @@ def test_generic_http_review_delegates_consolidation_acceptance_and_rejects_stal
         main_module.VNextMemoryReviewRequest(user_id=user_id, action="accept"),
     )
     assert rejected.status_code == 400
-    assert "candidate is stale" in json.loads(rejected.body)["detail"]
+    assert json.loads(rejected.body)["detail"] == {
+        "code": "invalid_request",
+        "message": "The request is invalid",
+    }
     assert store.get_memory(stale_id)["status"] == "candidate"
     assert store.get_memory(fresh_first)["status"] == "active"
     assert store.get_memory(fresh_second)["status"] == "active"
@@ -3012,6 +3296,11 @@ def test_vnext_memory_redact_endpoint_forgets_then_scrubs(monkeypatch) -> None:
     payload = json.loads(response.body)
     assert payload["status"] == "redacted"
     assert payload["forgotten_first"] is True
+    assert payload["idempotent_replay"] is False
+    assert payload["redacted_artifacts"] == 0
+    assert payload["redacted_artifact_ids"] == []
+    assert payload["redacted_quality_ratings"] == 0
+    assert payload["redacted_provenance_links"] == 0
     assert payload["redaction_marker"] == "[REDACTED]"
     memory = store.get_memory(memory_id)
     assert memory["status"] == "archived"
@@ -3021,8 +3310,44 @@ def test_vnext_memory_redact_endpoint_forgets_then_scrubs(monkeypatch) -> None:
     # themselves scrubbed by the events pass — event types are what remain).
     assert any(revision.get("revision_type") == "archived" for revision in store.revisions)
     redaction_trail = [event for event in store.events if event.get("event_type") == "memory.redacted"]
-    assert len(redaction_trail) == 3  # content, revisions, and events operations
-    assert redaction_trail[-1]["payload_json"].get("operation") == "redact_memory_events"
+    assert len(redaction_trail) == 1
+    assert redaction_trail[0]["payload_json"] == {
+        "redacted": True,
+        "memory_id": str(memory_id),
+        "event_type": "memory.redacted",
+    }
+
+    redacted_at = memory["metadata_json"]["redacted_at"]
+    state_after_first = deepcopy(
+        (store.memories, store.artifacts, store.quality_ratings, store.provenance_links, store.revisions, store.events)
+    )
+    replay = main_module.redact_vnext_memory(
+        main_module.VNextMemoryRedactRequest(
+            user_id=user_id,
+            memory_id=memory_id,
+            reason="Repeated erasure request",
+        )
+    )
+
+    assert replay.status_code == 200
+    replay_payload = json.loads(replay.body)
+    assert replay_payload["forgotten_first"] is False
+    assert replay_payload["idempotent_replay"] is True
+    assert replay_payload["redacted_revisions"] == 0
+    assert replay_payload["redacted_events"] == 0
+    assert replay_payload["redacted_artifacts"] == 0
+    assert replay_payload["redacted_artifact_ids"] == []
+    assert replay_payload["redacted_quality_ratings"] == 0
+    assert replay_payload["redacted_provenance_links"] == 0
+    assert store.get_memory(memory_id)["metadata_json"]["redacted_at"] == redacted_at
+    assert (
+        store.memories,
+        store.artifacts,
+        store.quality_ratings,
+        store.provenance_links,
+        store.revisions,
+        store.events,
+    ) == state_after_first
 
     missing = main_module.redact_vnext_memory(
         main_module.VNextMemoryRedactRequest(user_id=user_id, memory_id=uuid4(), reason="Nothing there")
@@ -3070,7 +3395,10 @@ def test_vnext_memory_lifecycle_endpoints_share_agent_key_auth(monkeypatch) -> N
         )
     )
     assert keyless.status_code == 401
-    assert "Authorization: Bearer alice_sk_" in json.loads(keyless.body)["detail"]
+    assert json.loads(keyless.body)["detail"] == {
+        "code": "authentication_failed",
+        "message": "Authentication failed",
+    }
     assert store.get_memory(memory_id)["valid_to"] is None
 
     # With the key, the same call succeeds under the key-bound identity.
@@ -3241,6 +3569,43 @@ def test_dogfooding_dashboard_and_insight_feedback_api(monkeypatch) -> None:
     assert dashboard_response.status_code == 200
     assert dashboard["artifact_quality_rating_count"] == 1
     assert dashboard["insight_feedback"]["useful_yes"] == 1
+
+
+def test_insight_feedback_rejects_exact_redacted_project_update(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    memory_id = str(uuid4())
+    artifact = store.create_artifact(
+        {
+            "artifact_type": "project_update",
+            "title": "[REDACTED]",
+            "content_markdown": "[REDACTED]",
+            "status": "accepted",
+            "domain": "project",
+            "sensitivity": "private",
+            "prompt_hash": None,
+            "model_info_json": {"redacted": True},
+            "metadata_json": {
+                "redacted": True,
+                "redacted_at": "2026-07-16T00:00:00Z",
+                "workflow": "project_auto_update",
+                "project_id": "project-1",
+                "project_scope": ["project-1"],
+                "candidate_memory_id": memory_id,
+                "review_action": "accept",
+            },
+        }
+    )
+    events_before = deepcopy(store.events)
+
+    response = main_module.record_vnext_artifact_insight_feedback(
+        main_module.UUID(str(artifact["id"])),
+        main_module.VNextArtifactInsightFeedbackRequest(user_id=user_id, useful_insight="yes", comments="secret"),
+    )
+
+    assert response.status_code == 400
+    assert store.events == events_before
 
 
 def test_artifact_routes_authorize_persisted_target_scope_and_profile(monkeypatch) -> None:

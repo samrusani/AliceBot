@@ -57,7 +57,9 @@ def test_get_task_workspace_endpoint_maps_not_found_to_404(monkeypatch) -> None:
     response = main_module.get_task_workspace(task_workspace_id, user_id)
 
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": f"task workspace {task_workspace_id} was not found"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
 
 def test_create_task_workspace_endpoint_maps_task_not_found_to_404(monkeypatch) -> None:
@@ -82,7 +84,9 @@ def test_create_task_workspace_endpoint_maps_task_not_found_to_404(monkeypatch) 
     )
 
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": f"task {task_id} was not found"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
 
 def test_create_task_workspace_endpoint_maps_duplicate_to_409(monkeypatch) -> None:
@@ -108,5 +112,5 @@ def test_create_task_workspace_endpoint_maps_duplicate_to_409(monkeypatch) -> No
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": f"task {task_id} already has active workspace workspace-123"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }

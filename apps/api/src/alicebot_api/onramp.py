@@ -47,7 +47,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from contextlib import contextmanager, redirect_stderr
+from io import StringIO
 import json
+import logging
 import marshal
 import os
 import shutil
@@ -56,7 +59,6 @@ import sys
 import tempfile
 import unicodedata
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -87,9 +89,6 @@ from alicebot_api.sqlite_store import (
 )
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_embeddings import (
-    EMBEDDINGS_API_KEY_ENV,
-    EMBEDDINGS_BASE_URL_ENV,
-    EMBEDDINGS_MODEL_ENV,
     EMBEDDING_SIGNATURE_VERSION,
     MAX_EMBEDDINGS_BATCH_SIZE,
     VNextEmbeddingConfigurationError,
@@ -117,6 +116,51 @@ _SQLITE_SIDECAR_SUFFIXES = ("", "-wal", "-shm", "-journal")
 _SQLITE_SNAPSHOT_SUFFIXES = ("", "-wal", "-journal")
 _SQLITE_SNAPSHOT_ATTEMPTS = 3
 _FILE_COPY_CHUNK_SIZE = 1024 * 1024
+
+logger = logging.getLogger(__name__)
+
+_ERROR_CONTRACTS: dict[str, str] = {
+    "invalid_request": "The command request is invalid",
+    "export_source_not_found": "The export database does not exist",
+    "export_path_conflict": "The export output conflicts with the database or a SQLite sidecar",
+    "export_failed": "The export could not be completed",
+    "import_source_not_found": "The import file does not exist",
+    "import_path_conflict": "The import input conflicts with the database or a SQLite sidecar",
+    "import_snapshot_failed": "The import file could not be read into a stable snapshot",
+    "import_validation_failed": "The import file is invalid or incompatible",
+    "restore_failed": "The import was aborted before publication; no records were written",
+    "restore_committed_hardening_failed": (
+        "The restore committed, but database permissions were not hardened; do not retry blindly"
+    ),
+    "restore_committed_summary_failed": (
+        "The restore committed, but summary output failed; do not retry blindly"
+    ),
+    "restore_committed_hardening_and_summary_failed": (
+        "The restore committed, but permission hardening and summary output failed; do not retry blindly"
+    ),
+    "embedding_provider_not_configured": (
+        "The embedding provider is not configured; set ALICE_EMBEDDINGS_BASE_URL and "
+        "ALICE_EMBEDDINGS_MODEL, plus ALICE_EMBEDDINGS_API_KEY when required"
+    ),
+    "embedding_batch_size_invalid": "The embedding batch size is outside the supported range",
+    "embedding_batch_failed": "An embedding batch failed",
+    "alice_memory_failed": "The alice-memory command could not be completed",
+}
+
+
+def _emit_error(code: str) -> None:
+    """Write one compact, stable error record without runtime details."""
+
+    print(
+        json.dumps(
+            {"error": {"code": code, "message": _ERROR_CONTRACTS[code]}},
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
 
 # ``MEMORY_COLUMNS`` intentionally omits provider-specific embeddings and
 # derived fact keys from ordinary store reads. Embeddings remain excluded
@@ -263,10 +307,10 @@ def _fsync_directory(path: Path) -> None:
             pass
 
 
-def _best_effort_stderr(message: str) -> None:
+def _best_effort_stderr(code: str) -> None:
     """Report a post-publication condition without masking committed state."""
     try:
-        print(message, file=sys.stderr, flush=True)
+        _emit_error(code)
     except (OSError, ValueError):
         # The operation is already committed and both output streams may be
         # closed. The distinct return code remains the machine-readable signal.
@@ -1173,16 +1217,12 @@ def _write_export(stream: IO[str], *, db_path: Path, user_id: UUID) -> int:
 def _run_export(args: argparse.Namespace) -> int:
     db_path = resolve_db_path(data_dir=args.data_dir, db=args.db)
     if not db_path.exists():
-        print(f"error: database file does not exist: {db_path}", file=sys.stderr)
+        _emit_error("export_source_not_found")
         return 1
     if args.out is not None:
         requested_out_path = Path(args.out).expanduser()
         if _path_aliases_database_family(requested_out_path, db_path):
-            print(
-                "error: export output aliases the database or SQLite sidecar: "
-                f"{requested_out_path}",
-                file=sys.stderr,
-            )
+            _emit_error("export_path_conflict")
             return 1
         out_path = requested_out_path.resolve()
         temp_path: Path | None = None
@@ -1209,7 +1249,11 @@ def _run_export(args: argparse.Namespace) -> int:
             sqlite3.Error,
             ContinuityStoreInvariantError,
         ) as exc:
-            print(f"error: export failed: {exc}", file=sys.stderr)
+            logger.debug(
+                "SQLite export failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            _emit_error("export_failed")
             return 1
         finally:
             if temp_path is not None:
@@ -1234,7 +1278,11 @@ def _run_export(args: argparse.Namespace) -> int:
             sqlite3.Error,
             ContinuityStoreInvariantError,
         ) as exc:
-            print(f"error: export failed: {exc}", file=sys.stderr)
+            logger.debug(
+                "SQLite stdout export failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            _emit_error("export_failed")
             return 1
     return 0
 
@@ -1691,15 +1739,11 @@ def _immutable_import_copy(source_path: Path) -> Iterator[Path]:
 def _run_import(args: argparse.Namespace) -> int:
     requested_in_path = Path(args.in_path).expanduser()
     if not requested_in_path.exists():
-        print(f"error: import file does not exist: {requested_in_path}", file=sys.stderr)
+        _emit_error("import_source_not_found")
         return 1
     db_path = resolve_db_path(data_dir=args.data_dir, db=args.db)
     if _path_aliases_database_family(requested_in_path, db_path):
-        print(
-            "error: import input aliases the database or SQLite sidecar: "
-            f"{requested_in_path}",
-            file=sys.stderr,
-        )
+        _emit_error("import_path_conflict")
         return 1
     display_path = requested_in_path.resolve()
     try:
@@ -1711,10 +1755,11 @@ def _run_import(args: argparse.Namespace) -> int:
                 db_path=db_path,
             )
     except (_ImportError, OSError) as exc:
-        print(
-            f"error: could not read import file {display_path} into a stable snapshot: {exc}",
-            file=sys.stderr,
+        logger.debug(
+            "SQLite import snapshot failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
         )
+        _emit_error("import_snapshot_failed")
         return 1
 
 
@@ -1728,10 +1773,18 @@ def _run_import_snapshot(
     try:
         validated_import = _validate_import_file(in_path)
     except _ImportError as exc:
-        print(f"error: {display_path}: {exc}", file=sys.stderr)
+        logger.debug(
+            "SQLite import validation failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        _emit_error("import_validation_failed")
         return 1
     except OSError as exc:
-        print(f"error: could not read import file {display_path}: {exc}", file=sys.stderr)
+        logger.debug(
+            "SQLite import read failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        _emit_error("import_snapshot_failed")
         return 1
 
     target_existed = db_path.exists()
@@ -1793,8 +1846,11 @@ def _run_import_snapshot(
             working_path = db_path
             _remove_sqlite_files(staged_path)
     except (_BackupError, _ImportError, OSError, sqlite3.Error) as exc:
-        print(f"error: {display_path}: {exc}", file=sys.stderr)
-        print("error: import aborted; no records were written", file=sys.stderr)
+        logger.debug(
+            "SQLite restore failed before publication",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        _emit_error("restore_failed")
         return 1
     finally:
         if working_path is not None and working_path != db_path:
@@ -1811,9 +1867,9 @@ def _run_import_snapshot(
             _secure_sqlite_files(db_path)
         except OSError as exc:
             hardening_error = exc
-            _best_effort_stderr(
-                "error: restore committed; permissions were not hardened; "
-                f"DO NOT blindly retry; inspect {db_path}: {exc}"
+            logger.debug(
+                "SQLite restore committed but permission hardening failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
             )
     _fsync_directory(db_path.parent)
     summary_error: OSError | ValueError | None = None
@@ -1822,29 +1878,30 @@ def _run_import_snapshot(
         sys.stdout.flush()
     except (OSError, ValueError) as exc:
         summary_error = exc
-        _best_effort_stderr(
-            "error: restore committed; summary output failed; DO NOT blindly retry; "
-            f"inspect {db_path}: {exc}"
+        logger.debug(
+            "SQLite restore committed but summary output failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
         )
-    return 2 if hardening_error is not None or summary_error is not None else 0
+    if hardening_error is not None and summary_error is not None:
+        _best_effort_stderr("restore_committed_hardening_and_summary_failed")
+        return 2
+    if hardening_error is not None:
+        _best_effort_stderr("restore_committed_hardening_failed")
+        return 2
+    if summary_error is not None:
+        _best_effort_stderr("restore_committed_summary_failed")
+        return 2
+    return 0
 
 
 def _run_reindex_embeddings(args: argparse.Namespace) -> int:
     provider = get_embedding_provider()
     if provider is None:
-        print(
-            "error: embedding provider is not configured; set "
-            f"{EMBEDDINGS_BASE_URL_ENV} and {EMBEDDINGS_MODEL_ENV} "
-            f"(and {EMBEDDINGS_API_KEY_ENV} when required)",
-            file=sys.stderr,
-        )
+        _emit_error("embedding_provider_not_configured")
         return 1
     batch_size = args.batch_size
     if batch_size < 1 or batch_size > MAX_EMBEDDINGS_BATCH_SIZE:
-        print(
-            f"error: --batch-size must be between 1 and {MAX_EMBEDDINGS_BATCH_SIZE}",
-            file=sys.stderr,
-        )
+        _emit_error("embedding_batch_size_invalid")
         return 1
 
     db_path = resolve_db_path(data_dir=args.data_dir, db=args.db)
@@ -1886,7 +1943,11 @@ def _run_reindex_embeddings(args: argparse.Namespace) -> int:
             vectors = provider.embed_batch([text for _row, text in embeddable])
         except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
             failed += len(embeddable)
-            print(f"warning: embedding batch failed: {exc}", file=sys.stderr)
+            logger.debug(
+                "SQLite embedding batch failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            _emit_error("embedding_batch_failed")
             continue
         with sqlite_user_connection(db_path, args.user_id) as conn:
             store = SQLiteVNextStore(conn, args.user_id)
@@ -1918,14 +1979,31 @@ def _run_reindex_embeddings(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
-    args = parser.parse_args(_normalized_argv(raw_argv))
-    if args.command == "export":
-        return _run_export(args)
-    if args.command == "import":
-        return _run_import(args)
-    if args.command == "reindex-embeddings":
-        return _run_reindex_embeddings(args)
-    return _run_mcp(args)
+    parser_stderr = StringIO()
+    try:
+        with redirect_stderr(parser_stderr):
+            args = parser.parse_args(_normalized_argv(raw_argv))
+    except SystemExit as exc:
+        if exc.code in (None, 0):
+            raise
+        logger.debug("alice-memory argument parsing failed: %s", parser_stderr.getvalue().strip())
+        _emit_error("invalid_request")
+        return int(exc.code) if isinstance(exc.code, int) else 2
+    try:
+        if args.command == "export":
+            return _run_export(args)
+        if args.command == "import":
+            return _run_import(args)
+        if args.command == "reindex-embeddings":
+            return _run_reindex_embeddings(args)
+        return _run_mcp(args)
+    except Exception as exc:  # pragma: no cover - boundary fail-closed backstop
+        logger.debug(
+            "Unhandled alice-memory command failure",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        _emit_error("alice_memory_failed")
+        return 1
 
 
 __all__ = [

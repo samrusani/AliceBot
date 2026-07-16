@@ -47,6 +47,7 @@ Honesty and safety properties:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Iterable, Mapping, Protocol, Sequence
@@ -67,6 +68,10 @@ MAX_FACT_KEY_LENGTH = 80
 MAX_FACT_KEY_WORDS = 12
 MAX_PROVIDER_KEY_WORDS = 8
 FACT_KEY_SEPARATOR = "; "
+FACT_KEY_DERIVATION_ERROR_CODE = "fact_key_derivation_failed"
+FACT_KEY_DERIVATION_ERROR_MESSAGE = "Memory fact-key derivation failed"
+
+logger = logging.getLogger(__name__)
 
 
 class VNextFactKeyConfigurationError(ValueError):
@@ -662,6 +667,12 @@ def attach_memory_fact_keys(
     try:
         keys = derive_fact_keys(memory, entities=entities, provider=resolved_provider)
     except (VNextFactKeyConfigurationError, VNextFactKeyProviderError) as exc:
+        logger.error(
+            "memory fact-key derivation failed memory_id=%s error_code=%s",
+            memory.get("id"),
+            FACT_KEY_DERIVATION_ERROR_CODE,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
         append_event(
             store,  # type: ignore[arg-type]
             event_type="memory.fact_keys_failed",
@@ -671,8 +682,8 @@ def attach_memory_fact_keys(
             target_id=str(memory.get("id")),
             trace_id=trace_id,
             payload={
-                "error_type": type(exc).__name__,
-                "error_message": str(exc),
+                "error_code": FACT_KEY_DERIVATION_ERROR_CODE,
+                "error_message": FACT_KEY_DERIVATION_ERROR_MESSAGE,
                 "provider": getattr(resolved_provider, "provider", None),
                 "model": getattr(resolved_provider, "model", None),
             },

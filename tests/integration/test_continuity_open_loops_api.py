@@ -56,11 +56,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -362,7 +358,4 @@ def test_open_loop_dashboard_rejects_mixed_naive_and_offset_aware_time_window(
     )
 
     assert status == 400
-    assert (
-        payload["detail"]
-        == "since and until must both include timezone offsets or both omit timezone offsets"
-    )
+    assert payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}

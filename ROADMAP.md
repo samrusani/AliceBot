@@ -3,11 +3,17 @@
 ## Baseline (Not Roadmap Work)
 
 - `v0.11.0` is the latest published release. Its immutable release record is
-  `docs/release/v0.10.4-release-notes.md`, with artifact digests in
+  `docs/release/v0.11.0-release-notes.md`, with artifact digests in
   `docs/release/v0.11.0-checksums.txt`.
-- `v0.11.0` shipped Phase 1, narrowing the default
-  product to Alice's agent interface and retrieval/memory-quality core; it does
-  not authorize publication.
+- `v0.11.0` shipped Phase 1 and narrowed the default product to Alice's agent
+  interface and retrieval/memory-quality core. Its tag and publication are
+  complete and immutable.
+- `v0.11.1` is the current uncommitted Phase 2 release-hardening candidate.
+  At package-input freeze, its bounded local Python, PostgreSQL, SQLite,
+  evaluation, web, and static builder matrix was green while final package
+  reproduction, a superseding receipt, and independent review were still
+  pending. Exact-SHA external release gates remain pending; candidate
+  documentation does not authorize publication.
 - The historical **79.4% (397/500)** LongMemEval_s result is one run from
   2026-07-07 on an older baseline. It is not a repeated estimate or a current-
   candidate measurement.
@@ -17,27 +23,29 @@
 
 ## Next
 
-1. **Finish and verify the v0.11.0 periphery cut.** Prove that the default HTTP,
-   MCP, CLI, scheduler, web, PostgreSQL, and SQLite surfaces match the declared
-   local-first product boundary. Keep the temporary compatibility mount flag
-   fail-closed, documented, and covered by removal-date tests.
-2. **Replicate the current benchmark.** Run LongMemEval_s at least three times
+1. **Verify and publish the completed v0.11.1 handoff.** The release engineer
+   must commit and merge the reviewed carrier through the protected flow, run
+   the required checks and real-provider semantic gate on that exact SHA,
+   verify release identity and artifact checksums, then tag, create the GitHub
+   Release, publish to PyPI, and read back each external result.
+2. **Complete the pre-1.0 structural split after v0.11.1.** In a separate
+   carrier, split the remaining oversized API, store, CLI, and MCP registries
+   along existing domain seams without changing behavior or lowering coverage
+   thresholds.
+3. **Replicate the current benchmark.** Run LongMemEval_s at least three times
    on one pinned, non-development manifest; publish variance, exact provider
    configuration, per-question evidence, and honest abstention trade-offs.
-3. **Improve multi-session synthesis.** Measure and improve aggregation-aware
+4. **Improve multi-session synthesis.** Measure and improve aggregation-aware
    retrieval on a held-out slice instead of repeatedly tuning one development
    set.
-4. **Dogfood the agent interface daily.** Exercise the eleven-tool MCP core and
+5. **Dogfood the agent interface daily.** Exercise the eleven-tool MCP core and
    equivalent HTTP/CLI flows with a live embedding endpoint; measure correction
    quality, review burden, project-scope usability, and end-to-end latency.
-5. **Deepen reference integrations.** Keep examples runnable and CI-smoked
+6. **Deepen reference integrations.** Keep examples runnable and CI-smoked
    against the surviving core surface, without introducing a second runtime or
    reviving deleted chat/provider-control features.
-6. **Scale SQLite vector search.** Extend the documented 20–30k embedding
+7. **Scale SQLite vector search.** Extend the documented 20–30k embedding
    comfort zone while publishing both latency and recall deltas.
-7. **Complete the pre-1.0 structural split.** After the periphery cut, split the
-   remaining oversized API, store, CLI, and MCP registries along existing domain
-   seams without changing behavior or coverage thresholds.
 8. **Build enterprise evidence on the post-cut surface.** Conduct the first
    scoped security review, exercise backup/restore and supported upgrade paths,
    and run one final product-scoped audit before `1.0`.

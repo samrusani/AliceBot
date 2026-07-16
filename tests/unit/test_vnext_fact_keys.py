@@ -438,7 +438,9 @@ def test_attach_falls_back_to_deterministic_and_logs_on_provider_failure() -> No
     event = store.events[0]
     assert event["event_type"] == "memory.fact_keys_failed"
     assert event["payload_json"]["provider"] == "stub"
-    assert event["payload_json"]["error_type"] == "VNextFactKeyProviderError"
+    assert event["payload_json"]["error_code"] == "fact_key_derivation_failed"
+    assert event["payload_json"]["error_message"] == "Memory fact-key derivation failed"
+    assert "endpoint down" not in str(event["payload_json"])
 
 
 def test_attach_writes_empty_marker_when_nothing_derivable() -> None:

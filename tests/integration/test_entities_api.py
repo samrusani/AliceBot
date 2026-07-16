@@ -56,11 +56,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -273,13 +269,9 @@ def test_entity_endpoints_enforce_per_user_isolation_and_not_found_behavior(
         },
     }
     assert detail_status == 404
-    assert detail_payload == {
-        "detail": f"entity {entity['id']} was not found",
-    }
+    assert detail_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert create_status == 400
-    assert create_payload["detail"].startswith(
-        "source_memory_ids must all reference existing memories owned by the user"
-    )
+    assert create_payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
 
 
 def test_create_entity_endpoint_rejects_missing_source_memory_ids(migrated_database_urls, monkeypatch) -> None:
@@ -303,7 +295,4 @@ def test_create_entity_endpoint_rejects_missing_source_memory_ids(migrated_datab
     )
 
     assert status_code == 400
-    assert payload == {
-        "detail": "source_memory_ids must all reference existing memories owned by the user: "
-        f"{missing_memory_id}"
-    }
+    assert payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}

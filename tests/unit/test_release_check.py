@@ -142,6 +142,15 @@ def test_release_metadata_rejects_web_version_drift(tmp_path: Path) -> None:
     assert any("package.json version does not match pyproject.toml" in issue for issue in issues)
 
 
+def test_release_metadata_rejects_missing_configured_readme(tmp_path: Path) -> None:
+    _seed_metadata_tree(tmp_path, python_version="1.2.3", web_version="1.2.3")
+    (tmp_path / "docs" / "pypi-description.md").unlink()
+
+    _metadata, issues = release_check.validate_metadata(tmp_path)
+
+    assert any("pypi-description.md" in issue for issue in issues)
+
+
 def test_release_metadata_rejects_prerelease_version(tmp_path: Path) -> None:
     _seed_metadata_tree(tmp_path, python_version="1.2.3rc1", web_version="1.2.3rc1")
 

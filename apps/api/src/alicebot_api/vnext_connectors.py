@@ -9,6 +9,7 @@ from hashlib import sha256
 import hmac
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import tempfile
@@ -23,6 +24,19 @@ from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_project_scope import resolve_project_scope
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_secrets import SecretProvider, default_secret_provider, redact_secret_fields
+
+
+CONNECTOR_ITEM_IMPORT_ERROR_CODE = "connector_item_import_failed"
+CONNECTOR_ITEM_IMPORT_ERROR_MESSAGE = "Connector item could not be imported"
+CONNECTOR_SYNC_ERROR_CODE = "connector_sync_failed"
+CONNECTOR_SYNC_ERROR_MESSAGE = "Connector synchronization failed"
+logger = logging.getLogger(__name__)
+
+
+def _connector_public_error_message(error_code: str) -> str:
+    if error_code == CONNECTOR_ITEM_IMPORT_ERROR_CODE:
+        return CONNECTOR_ITEM_IMPORT_ERROR_MESSAGE
+    return CONNECTOR_SYNC_ERROR_MESSAGE
 
 
 class VNextConnectorValidationError(ValueError):
@@ -93,6 +107,7 @@ class ConnectorSyncResult:
     failed_count: int
     previous_cursor: str | None
     sync_cursor: str | None
+    error_code: str | None = None
     source_ids: tuple[str, ...] = ()
     failed_external_ids: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
@@ -111,6 +126,7 @@ class ConnectorSyncResult:
             "failed_count": self.failed_count,
             "previous_cursor": self.previous_cursor,
             "sync_cursor": self.sync_cursor,
+            "error_code": self.error_code,
             "source_ids": list(self.source_ids),
             "failed_external_ids": list(self.failed_external_ids),
             "errors": list(self.errors),
@@ -361,14 +377,6 @@ def _optional_iso(value: object) -> str | None:
 
 def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
-
-
-def _redacted_error(error: Exception) -> str:
-    message = str(error)
-    for marker in ("bot", "token", "secret"):
-        if marker in message.casefold():
-            return type(error).__name__
-    return message
 
 
 def _external_id(payload: Mapping[str, object], *, fallback: str) -> str:
@@ -1327,15 +1335,32 @@ class VNextConnectorService:
             if isinstance(processing_time, (int, float)) and not isinstance(processing_time, bool):
                 processing_times.append(float(processing_time))
         last_error = None
+        last_error_code = None
         latest_failure_payload = latest_failure.get("payload_json") if latest_failure is not None else None
         if isinstance(latest_failure_payload, dict):
             errors = latest_failure_payload.get("errors")
-            last_error = str(errors[0]) if isinstance(errors, list) and errors else None
+            last_error_code = _as_optional_text(latest_failure_payload.get("error_code"))
+            if isinstance(errors, list) and errors:
+                last_error_code = last_error_code or CONNECTOR_SYNC_ERROR_CODE
+                last_error = _connector_public_error_message(last_error_code)
         latest_item_failure_payload = (
             latest_item_failure.get("payload_json") if latest_item_failure is not None else None
         )
         if last_error is None and isinstance(latest_item_failure_payload, dict):
-            last_error = _as_optional_text(latest_item_failure_payload.get("error_message"))
+            last_error_code = (
+                _as_optional_text(latest_item_failure_payload.get("error_code"))
+                or CONNECTOR_ITEM_IMPORT_ERROR_CODE
+            )
+            last_error = _connector_public_error_message(last_error_code)
+
+        state_json = state.get("state_json") if state is not None else None
+        state_error_code = (
+            _as_optional_text(state_json.get("last_error_code")) if isinstance(state_json, dict) else None
+        )
+        state_last_error = state.get("last_error") if state is not None else None
+        if state_last_error is not None:
+            state_error_code = state_error_code or CONNECTOR_SYNC_ERROR_CODE
+            state_last_error = _connector_public_error_message(state_error_code)
 
         latest_import_payload = latest_import.get("payload_json") if latest_import is not None else None
         return {
@@ -1364,9 +1389,8 @@ class VNextConnectorService:
             else latest_failure.get("occurred_at")
             if latest_failure is not None
             else None,
-            "last_error": state.get("last_error")
-            if state is not None and state.get("last_error") is not None
-            else last_error,
+            "last_error": state_last_error if state_last_error is not None else last_error,
+            "last_error_code": state_error_code or last_error_code,
             "last_captured_item": latest_import_payload if isinstance(latest_import_payload, dict) else None,
             "items_seen": int(state.get("items_seen", 0)) if state is not None else items_seen,
             "items_captured": int(state.get("items_captured", 0)) if state is not None else items_captured,
@@ -1441,6 +1465,7 @@ class VNextConnectorService:
                     "average_processing_time_ms": round(processing_time_ms, 3),
                     "state_json": {
                         "last_status": result.status,
+                        "last_error_code": result.error_code,
                         "last_source_ids": list(result.source_ids),
                         "last_failed_external_ids": list(result.failed_external_ids),
                     },
@@ -1851,8 +1876,14 @@ class VNextConnectorService:
                 failed_count += 1
                 external_id = _first_text(item, ("external_id", "id", "filename", "path", "url")) or f"item-{index}"
                 failed_external_ids.append(external_id)
-                errors.append(f"{external_id}: {exc}")
+                errors.append(CONNECTOR_ITEM_IMPORT_ERROR_MESSAGE)
                 failure_blocked_cursor_advance = True
+                logger.exception(
+                    "connector item normalization failed connector=%s external_id=%s error_code=%s",
+                    definition.name,
+                    external_id,
+                    CONNECTOR_ITEM_IMPORT_ERROR_CODE,
+                )
                 self._log_event(
                     event_type="connector.item_failed",
                     connector_name=definition.name,
@@ -1860,8 +1891,8 @@ class VNextConnectorService:
                         "connector_name": definition.name,
                         "external_id": external_id,
                         "sync_cursor": None,
-                        "error_type": type(exc).__name__,
-                        "error_message": str(exc),
+                        "error_code": CONNECTOR_ITEM_IMPORT_ERROR_CODE,
+                        "error_message": CONNECTOR_ITEM_IMPORT_ERROR_MESSAGE,
                     },
                 )
 
@@ -1901,8 +1932,14 @@ class VNextConnectorService:
             except Exception as exc:
                 failed_count += 1
                 failed_external_ids.append(normalized_item.external_id)
-                errors.append(f"{normalized_item.external_id}: {exc}")
+                errors.append(CONNECTOR_ITEM_IMPORT_ERROR_MESSAGE)
                 failure_blocked_cursor_advance = True
+                logger.exception(
+                    "connector item capture failed connector=%s external_id=%s error_code=%s",
+                    definition.name,
+                    normalized_item.external_id,
+                    CONNECTOR_ITEM_IMPORT_ERROR_CODE,
+                )
                 self._log_event(
                     event_type="connector.item_failed",
                     connector_name=definition.name,
@@ -1910,8 +1947,8 @@ class VNextConnectorService:
                         "connector_name": definition.name,
                         "external_id": normalized_item.external_id,
                         "sync_cursor": normalized_item.cursor,
-                        "error_type": type(exc).__name__,
-                        "error_message": str(exc),
+                        "error_code": CONNECTOR_ITEM_IMPORT_ERROR_CODE,
+                        "error_message": CONNECTOR_ITEM_IMPORT_ERROR_MESSAGE,
                     },
                 )
                 continue
@@ -1961,6 +1998,7 @@ class VNextConnectorService:
             failed_count=failed_count,
             previous_cursor=previous_cursor,
             sync_cursor=sync_cursor,
+            error_code=CONNECTOR_ITEM_IMPORT_ERROR_CODE if failed_count else None,
             source_ids=tuple(source_ids),
             failed_external_ids=tuple(failed_external_ids),
             errors=tuple(errors),

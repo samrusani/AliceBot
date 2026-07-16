@@ -58,6 +58,21 @@ MEMORY_QUALITY_SUITE_KEYS = (
 )
 
 
+def test_eval_case_failure_evidence_is_static_and_omits_exception_details() -> None:
+    sentinel = "UNIQUE_EVAL_EXCEPTION_SENTINEL"
+
+    record = vnext_evals_module._error_case("case-1", RuntimeError(sentinel))
+
+    assert record["evidence"] == {
+        "error_code": "eval_case_failed",
+        "error_message": "The evaluation case could not be completed",
+    }
+    assert sentinel not in json.dumps(record)
+    source = Path(vnext_evals_module.__file__).read_text(encoding="utf-8")
+    assert '"error_type": type(exc).__name__' not in source
+    assert '"error_message": str(exc)' not in source
+
+
 @pytest.fixture(autouse=True)
 def _clear_eval_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(VNEXT_EVAL_DATABASE_URL_ENV, raising=False)
@@ -632,6 +647,40 @@ def test_seed_retrieval_corpus_writes_active_memories_via_store() -> None:
     assert all(row["canonical_text"] for row in store.created)
 
 
+def test_seed_retrieval_corpus_reports_static_embedding_failure_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = "UNIQUE_EVAL_EMBEDDING_EXCEPTION_SENTINEL"
+
+    class EmbeddingStore(RecordingStore):
+        def update_memory_embedding(self, **update: object) -> dict[str, object]:
+            return {"id": update["memory_id"]}
+
+    class FailingProvider:
+        provider = "configured-test"
+        model = "semantic-v1"
+
+        def embed_batch(self, texts: object) -> list[list[float]]:
+            raise vnext_evals_module.VNextEmbeddingProviderError(sentinel)
+
+    monkeypatch.setattr(vnext_evals_module, "get_embedding_provider", lambda: FailingProvider())
+
+    seeding = seed_retrieval_corpus(
+        EmbeddingStore(),
+        {
+            "memories": [
+                {
+                    "memory_key": "vnext-eval/retrieval/failure-1",
+                    "canonical_text": "Embedding failure report fixture.",
+                }
+            ]
+        },
+    )
+
+    assert seeding["embedding_note"] == vnext_evals_module.EMBEDDING_PROVIDER_FAILED_NOTE
+    assert sentinel not in json.dumps(seeding)
+
+
 def test_seed_retrieval_corpus_persists_complete_signed_vectors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -813,6 +862,29 @@ def test_unsupported_sqlite_url_reports_skipped_not_pass(monkeypatch: pytest.Mon
     assert report["status"] == "skipped"
     assert report["summary"]["executed_suite_count"] == 0
     assert "unsupported sqlite eval URL" in str(report["skipped_suites"][0]["reason"])
+    assert "missing-slash.db" not in json.dumps(report)
+
+
+def test_live_store_skip_reason_is_static_and_omits_connection_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = "UNIQUE_EVAL_CONNECTION_EXCEPTION_SENTINEL"
+    monkeypatch.setenv(VNEXT_EVAL_DATABASE_URL_ENV, "sqlite:///:memory:")
+
+    @contextmanager
+    def unavailable_store(_database_url: str):
+        raise sqlite3.OperationalError(sentinel)
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(vnext_evals_module, "_ephemeral_sqlite_eval_store", unavailable_store)
+
+    result = vnext_evals_module._run_suite_against_live_store(
+        run_with_store=lambda *_args, **_kwargs: {"status": "pass"},
+        skipped=lambda reason: {"status": "skipped", "reason": reason},
+    )
+
+    assert result == {"status": "skipped", "reason": "live store unavailable"}
+    assert sentinel not in json.dumps(result)
 
 
 def test_corpus_and_report_writers_round_trip(tmp_path: Path) -> None:
@@ -987,6 +1059,27 @@ def test_live_decision_recovery_measures_recall_and_filter_state(monkeypatch: py
         assert filter_state["available"] is False
         assert "TODO" in str(filter_state["note"])
         assert "filtered_decision_recall_at_5" not in metrics["target_checks"]
+
+
+def test_decision_recovery_reports_static_incompatible_filter_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = "UNIQUE_EVAL_FILTER_EXCEPTION_SENTINEL"
+
+    def incompatible_filter(*_args: object, **_kwargs: object) -> object:
+        raise TypeError(sentinel)
+
+    monkeypatch.setattr(vnext_evals_module, "filtered_retrieval_fn", incompatible_filter)
+
+    with _live_sqlite_store() as store:
+        suite = run_decision_recovery_eval(store)
+
+    filter_state = suite["metrics"]["memory_types_filter"]
+    assert filter_state == {
+        "available": False,
+        "note": vnext_evals_module.MEMORY_TYPES_FILTER_INCOMPATIBLE_NOTE,
+    }
+    assert sentinel not in json.dumps(suite)
 
 
 def test_live_provenance_explanation_audits_real_commits(monkeypatch: pytest.MonkeyPatch) -> None:

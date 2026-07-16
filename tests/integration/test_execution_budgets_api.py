@@ -12,6 +12,7 @@ import pytest
 import alicebot_api.main as main_module
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
+from alicebot_api.execution_budgets import EXECUTION_BUDGET_LIFECYCLE_REJECTION_REASON
 from alicebot_api.store import ContinuityStore
 
 
@@ -56,11 +57,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -132,7 +129,7 @@ def test_execution_budget_endpoints_create_list_and_get_in_deterministic_order(
     detail_status, detail_payload = invoke_request(
         "GET",
         f"/v0/execution-budgets/{second_payload['execution_budget']['id']}",
-        query_params={"user_id": str(owner['user_id'])},
+        query_params={"user_id": str(owner["user_id"])},
     )
     isolated_list_status, isolated_list_payload = invoke_request(
         "GET",
@@ -166,12 +163,12 @@ def test_execution_budget_endpoints_create_list_and_get_in_deterministic_order(
     isolated_detail_status, isolated_detail_payload = invoke_request(
         "GET",
         f"/v0/execution-budgets/{first_payload['execution_budget']['id']}",
-        query_params={"user_id": str(intruder['user_id'])},
+        query_params={"user_id": str(intruder["user_id"])},
     )
 
     assert isolated_detail_status == 404
     assert isolated_detail_payload == {
-        "detail": f"execution budget {first_payload['execution_budget']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -192,9 +189,7 @@ def test_create_execution_budget_endpoint_requires_at_least_one_selector(
     )
 
     assert status_code == 400
-    assert payload == {
-        "detail": "execution budget requires at least one selector: tool_key or domain_hint"
-    }
+    assert payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_create_execution_budget_endpoint_rejects_duplicate_active_scope(
@@ -219,12 +214,7 @@ def test_create_execution_budget_endpoint_rejects_duplicate_active_scope(
 
     assert first_status == 201
     assert second_status == 400
-    assert second_payload == {
-        "detail": (
-            "active execution budget already exists for selector scope "
-            "agent_profile_id=None, tool_key='proxy.echo', domain_hint='docs'"
-        )
-    }
+    assert second_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_create_execution_budget_endpoint_rejects_unknown_agent_profile_id(
@@ -243,9 +233,7 @@ def test_create_execution_budget_endpoint_rejects_unknown_agent_profile_id(
     )
 
     assert status_code == 400
-    assert payload == {
-        "detail": "agent_profile_id must reference an existing profile in the registry"
-    }
+    assert payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_create_execution_budget_endpoint_allows_same_selector_across_profile_scopes(
@@ -339,9 +327,7 @@ def test_deactivate_execution_budget_endpoint_updates_reads_and_emits_trace(
     assert detail_status == 200
     assert detail_payload == {"execution_budget": deactivate_payload["execution_budget"]}
     assert isolated_status == 404
-    assert isolated_payload == {
-        "detail": f"execution budget {create_payload['execution_budget']['id']} was not found"
-    }
+    assert isolated_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -399,7 +385,7 @@ def test_supersede_execution_budget_endpoint_replaces_active_budget_and_emits_tr
     replacement_detail_status, replacement_detail_payload = invoke_request(
         "GET",
         f"/v0/execution-budgets/{supersede_payload['replacement_budget']['id']}",
-        query_params={"user_id": str(owner['user_id'])},
+        query_params={"user_id": str(owner["user_id"])},
     )
 
     assert supersede_status == 200
@@ -407,7 +393,10 @@ def test_supersede_execution_budget_endpoint_replaces_active_budget_and_emits_tr
     assert supersede_payload["replacement_budget"]["status"] == "active"
     assert supersede_payload["replacement_budget"]["rolling_window_seconds"] == 1800
     assert supersede_payload["replacement_budget"]["supersedes_budget_id"] == create_payload["execution_budget"]["id"]
-    assert supersede_payload["superseded_budget"]["superseded_by_budget_id"] == supersede_payload["replacement_budget"]["id"]
+    assert (
+        supersede_payload["superseded_budget"]["superseded_by_budget_id"]
+        == supersede_payload["replacement_budget"]["id"]
+    )
     assert list_status == 200
     assert [item["status"] for item in list_payload["items"]] == ["superseded", "active"]
     assert original_detail_status == 200
@@ -461,7 +450,7 @@ def test_execution_budget_lifecycle_rejects_invalid_transition_deterministically
     assert first_status == 200
     assert second_status == 409
     assert second_payload == {
-        "detail": f"execution budget {create_payload['execution_budget']['id']} is inactive and cannot be deactivated"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
@@ -472,7 +461,11 @@ def test_execution_budget_lifecycle_rejects_invalid_transition_deterministically
         ).fetchall()
         rejected_trace_events = store.list_trace_events(trace_rows[-1]["id"])
 
-    assert rejected_trace_events[1]["payload"]["rejection_reason"] == second_payload["detail"]
+    assert (
+        rejected_trace_events[1]["payload"]["rejection_reason"]
+        == EXECUTION_BUDGET_LIFECYCLE_REJECTION_REASON
+        == second_payload["detail"]["message"]
+    )
     assert rejected_trace_events[2]["payload"]["outcome"] == "rejected"
 
 

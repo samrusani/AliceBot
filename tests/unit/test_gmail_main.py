@@ -84,7 +84,7 @@ def test_connect_gmail_account_endpoint_maps_duplicate_to_409(monkeypatch) -> No
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": "gmail account acct-001 is already connected"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
 
@@ -129,12 +129,7 @@ def test_connect_gmail_account_endpoint_maps_invalid_refresh_bundle_to_400(monke
     )
 
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": (
-            "gmail refresh credentials must include refresh_token, client_id, client_secret, "
-            "and access_token_expires_at"
-        )
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_connect_gmail_account_endpoint_maps_secret_persistence_failure_to_409(monkeypatch) -> None:
@@ -164,7 +159,7 @@ def test_connect_gmail_account_endpoint_maps_secret_persistence_failure_to_409(m
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": "gmail protected credentials could not be persisted"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
 
@@ -187,7 +182,9 @@ def test_get_gmail_account_endpoint_maps_not_found_to_404(monkeypatch) -> None:
     response = main_module.get_gmail_account(gmail_account_id, user_id)
 
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": f"gmail account {gmail_account_id} was not found"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
 
 def test_ingest_gmail_message_endpoint_maps_workspace_not_found_to_404(monkeypatch) -> None:
@@ -218,7 +215,7 @@ def test_ingest_gmail_message_endpoint_maps_workspace_not_found_to_404(monkeypat
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
-        "detail": f"task workspace {task_workspace_id} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -248,7 +245,9 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
         ),
     )
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": "gmail message msg-001 was not found"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
     def fake_unsupported(*_args, **_kwargs):
         raise GmailMessageUnsupportedError("gmail message msg-001 is not a supported RFC822 email")
@@ -263,14 +262,10 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
         ),
     )
     assert response.status_code == 400
-    assert json.loads(response.body) == {
-        "detail": "gmail message msg-001 is not a supported RFC822 email"
-    }
+    assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
     def fake_missing_credentials(*_args, **_kwargs):
-        raise GmailCredentialNotFoundError(
-            f"gmail account {gmail_account_id} is missing protected credentials"
-        )
+        raise GmailCredentialNotFoundError(f"gmail account {gmail_account_id} is missing protected credentials")
 
     monkeypatch.setattr(main_module, "ingest_gmail_message_record", fake_missing_credentials)
     response = main_module.ingest_gmail_message(
@@ -283,13 +278,14 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
     )
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": f"gmail account {gmail_account_id} is missing protected credentials"
+        "detail": {
+            "code": "conflict",
+            "message": "The request conflicts with the current resource state",
+        }
     }
 
     def fake_invalid_credentials(*_args, **_kwargs):
-        raise GmailCredentialInvalidError(
-            f"gmail account {gmail_account_id} has invalid protected credentials"
-        )
+        raise GmailCredentialInvalidError(f"gmail account {gmail_account_id} has invalid protected credentials")
 
     monkeypatch.setattr(main_module, "ingest_gmail_message_record", fake_invalid_credentials)
     response = main_module.ingest_gmail_message(
@@ -302,7 +298,10 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
     )
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": f"gmail account {gmail_account_id} has invalid protected credentials"
+        "detail": {
+            "code": "conflict",
+            "message": "The request conflicts with the current resource state",
+        }
     }
 
     def fake_persistence_error(*_args, **_kwargs):
@@ -321,7 +320,10 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
     )
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": f"gmail account {gmail_account_id} renewed protected credentials could not be persisted"
+        "detail": {
+            "code": "conflict",
+            "message": "The request conflicts with the current resource state",
+        }
     }
 
     def fake_fetch_error(*_args, **_kwargs):
@@ -338,13 +340,11 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
     )
     assert response.status_code == 502
     assert json.loads(response.body) == {
-        "detail": "gmail message msg-001 could not be fetched"
+        "detail": {"code": "upstream_failure", "message": "An upstream service failed"}
     }
 
     def fake_refresh_error(*_args, **_kwargs):
-        raise GmailCredentialRefreshError(
-            f"gmail account {gmail_account_id} access token could not be renewed"
-        )
+        raise GmailCredentialRefreshError(f"gmail account {gmail_account_id} access token could not be renewed")
 
     monkeypatch.setattr(main_module, "ingest_gmail_message_record", fake_refresh_error)
     response = main_module.ingest_gmail_message(
@@ -357,5 +357,5 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
     )
     assert response.status_code == 502
     assert json.loads(response.body) == {
-        "detail": f"gmail account {gmail_account_id} access token could not be renewed"
+        "detail": {"code": "upstream_failure", "message": "An upstream service failed"}
     }

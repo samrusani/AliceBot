@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from psycopg.types.json import Jsonb
 
+import alicebot_api.vnext_store as vnext_store_module
 from alicebot_api.store import ContinuityStoreInvariantError
 from alicebot_api.vnext_capture import capture_dedupe_key_for_text
 from alicebot_api.vnext_embeddings import memory_embedding_content_sha256
@@ -722,6 +723,7 @@ def test_artifact_quality_ratings_insert_and_export_json_safe_payloads() -> None
     rating_id = str(uuid4())
     cursor = RecordingCursor(
         fetchone_results=[
+            {"id": artifact_id, "artifact_type": "daily_brief", "status": "needs_review"},
             {"id": rating_id, "artifact_id": artifact_id, "reviewer_id": "samir"},
             _event_row(artifact_id),
         ],
@@ -751,14 +753,50 @@ def test_artifact_quality_ratings_insert_and_export_json_safe_payloads() -> None
     assert created["id"] == rating_id
     assert rows == [{"id": rating_id, "artifact_id": artifact_id, "usefulness": 5}]
     assert _event_log_insert_count(cursor) == 1
-    insert_query, insert_params = cursor.executed[0]
+    assert "FOR UPDATE" in cursor.executed[0][0]
+    insert_query, insert_params = cursor.executed[1]
     assert "INSERT INTO artifact_quality_ratings" in insert_query
     assert insert_params is not None
     assert isinstance(insert_params[-1], Jsonb)
     assert insert_params[-1].obj == {"prompt_hash": "sha256:test"}
-    list_query, list_params = cursor.executed[2]
+    list_query, list_params = cursor.executed[3]
     assert "FROM artifact_quality_ratings" in list_query
     assert list_params == (artifact_id, artifact_id, None, None, 10)
+
+
+def test_quality_rating_rejects_exact_redacted_artifact_before_insert() -> None:
+    artifact_id = str(uuid4())
+    memory_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {
+                "id": artifact_id,
+                "artifact_type": "project_update",
+                "status": "accepted",
+                "title": "[REDACTED]",
+                "content_markdown": "[REDACTED]",
+                "prompt_hash": None,
+                "model_info_json": {"redacted": True},
+                "metadata_json": {
+                    "redacted": True,
+                    "redacted_at": "2026-07-16T00:00:00Z",
+                    "workflow": "project_auto_update",
+                    "project_id": "project-1",
+                    "project_scope": ["project-1"],
+                    "candidate_memory_id": memory_id,
+                    "review_action": "accept",
+                },
+            }
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    with pytest.raises(ValueError, match="ratings cannot be added to a redacted artifact"):
+        store.create_artifact_quality_rating({"artifact_id": artifact_id, "usefulness": 5})
+
+    assert len(cursor.executed) == 1
+    assert "FOR UPDATE" in cursor.executed[0][0]
+    assert not any("INSERT INTO artifact_quality_ratings" in query for query, _params in cursor.executed)
 
 
 def test_list_beliefs_joins_memory_domain_sensitivity_filters() -> None:
@@ -1015,7 +1053,7 @@ def test_resume_store_queries_apply_admission_predicates_before_limit() -> None:
         projects=("Project A",),
         created_at_start=since,
         created_at_end=until,
-        query="release",
+        query=r"Release%_\Marker",
         order_by_created_at=True,
         limit=1,
     )
@@ -1031,7 +1069,7 @@ def test_resume_store_queries_apply_admission_predicates_before_limit() -> None:
     store.list_resume_memory_events(
         statuses=("active", "candidate"),
         projects=("Project A",),
-        query="release",
+        query=r"Release%_\Marker",
         occurred_at_start=since,
         occurred_at_end=until,
         limit=2,
@@ -1055,12 +1093,19 @@ def test_resume_store_queries_apply_admission_predicates_before_limit() -> None:
     memory_query, loop_query, memory_event_query, loop_event_query, shared_event_query = (
         query for query, _params in cursor.executed
     )
+    memory_params = cursor.executed[0][1]
     loop_params = cursor.executed[1][1]
+    memory_event_params = cursor.executed[2][1]
     loop_event_params = cursor.executed[3][1]
     assert "status = ANY(%s::text[])" in memory_query
     assert "memory_type = ANY(%s::text[])" in memory_query
     assert "created_at >= %s::timestamptz" in memory_query
-    assert "strpos(lower(COALESCE(title, ''))" in memory_query
+    assert "translate(COALESCE(title, ''), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')" in memory_query
+    assert memory_query.count('COLLATE "C"') >= 6
+    assert memory_query.count("ESCAPE E'\\\\'") == 3
+    assert "strpos(lower(" not in memory_query
+    assert memory_params is not None
+    assert memory_params.count(r"Release\%\_\\Marker") == 3
     assert memory_query.index("status = ANY") < memory_query.index("LIMIT %s")
     assert memory_query.index("created_at >=") < memory_query.index("LIMIT %s")
     assert "status = ANY(%s::text[])" in loop_query
@@ -1092,6 +1137,15 @@ def test_resume_store_queries_apply_admission_predicates_before_limit() -> None:
         assert "event.occurred_at >= %s::timestamptz" in event_query
         assert event_query.index("event.occurred_at >=") < event_query.index("LIMIT %s")
         assert event_query.index("ORDER BY event.occurred_at DESC") < event_query.index("LIMIT %s")
+    assert (
+        "translate(COALESCE(m.title, ''), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
+        in memory_event_query
+    )
+    assert memory_event_query.count('COLLATE "C"') >= 6
+    assert memory_event_query.count("ESCAPE E'\\\\'") == 3
+    assert "strpos(lower(" not in memory_event_query
+    assert memory_event_params is not None
+    assert memory_event_params.count(r"Release\%\_\\Marker") == 4
     assert "loop.metadata_json ->> 'next_action'" in loop_event_query
     for guard, match in (
         (
@@ -1119,6 +1173,43 @@ def test_resume_store_queries_apply_admission_predicates_before_limit() -> None:
     assert "event.payload_json::text" not in loop_event_query
     assert "event_type_prefix" not in shared_event_query
     assert "JOIN memories m" in shared_event_query
+
+
+def test_project_update_event_lookup_is_one_bounded_target_and_payload_query() -> None:
+    cursor = RecordingCursor(fetchone_results=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    rows = store.list_project_update_events(
+        artifact_id="artifact-1",
+        candidate_memory_id="memory-1",
+    )
+
+    assert rows == []
+    assert len(cursor.executed) == 1
+    query, params = cursor.executed[0]
+    assert query.count("SELECT") == 5
+    assert query.count("user_id = app.current_user_id()") == 5
+    assert query.count("event_type IN (") == 5
+    assert query.count("'project.update_candidate_created'") == 5
+    assert query.count("'project.update_candidate_accepted'") == 5
+    assert query.count("'project.update_candidate_rejected'") == 5
+    assert query.count("\nUNION\n") == 4
+    assert " UNION ALL" not in query
+    assert " OR " not in query
+    assert "target_type = 'artifact' AND target_id = %s" in query
+    assert "target_type = 'memory' AND target_id = %s" in query
+    assert "payload_json @>" not in query
+    assert "payload_artifact_id = %s" in query
+    assert "payload_candidate_memory_id = %s" in query
+    assert "payload_memory_id = %s" in query
+    assert "ORDER BY occurred_at DESC, id DESC" in query
+    assert params == (
+        "artifact-1",
+        "memory-1",
+        "artifact-1",
+        "memory-1",
+        "memory-1",
+    )
 
 
 def test_memory_and_rollup_counts_are_exact_scoped_database_reads() -> None:
@@ -3065,7 +3156,7 @@ def _redaction_flag_statements(cursor: RecordingCursor) -> list[str]:
 
 
 def test_redaction_marker_constant() -> None:
-    from alicebot_api.vnext_store import REDACTION_MARKER, redacted_memory_metadata
+    from alicebot_api.vnext_store import REDACTION_MARKER, is_redacted_memory, redacted_memory_metadata
 
     assert REDACTION_MARKER == "[REDACTED]"
     scrubbed = redacted_memory_metadata(
@@ -3078,12 +3169,211 @@ def test_redaction_marker_constant() -> None:
         redacted_at="2026-07-06T00:00:00Z",
     )
     assert scrubbed == {
-        "consolidation_digest": "digest-1",
         "project_id": "proj-1",
         "superseded_by": "mem-2",
         "redacted": True,
         "redacted_at": "2026-07-06T00:00:00Z",
     }
+    exact_memory = {
+        "id": "memory-1",
+        "memory_key": "redacted.memory-1",
+        "title": None,
+        "canonical_text": REDACTION_MARKER,
+        "summary": REDACTION_MARKER,
+        "trust_reason": None,
+        "value": {"redacted": True},
+        "source_event_ids": [],
+        "metadata_json": scrubbed,
+        "commit_digest": None,
+        "confirmation_id": None,
+        "status": "archived",
+        "deleted_at": "2026-07-06T00:00:00Z",
+    }
+    assert is_redacted_memory(exact_memory) is True
+    assert is_redacted_memory({**exact_memory, "canonical_text": "secret"}) is False
+    assert is_redacted_memory(
+        {**exact_memory, "metadata_json": {**scrubbed, "source_refs": ["secret"]}}
+    ) is False
+
+
+@pytest.mark.parametrize("target_type", ["memory", "artifact"])
+def test_quoted_provenance_rejects_exact_redacted_target_before_insert(target_type: str) -> None:
+    target_id = str(uuid4())
+    if target_type == "memory":
+        target = {
+            "id": target_id,
+            "memory_key": f"redacted.{target_id}",
+            "title": None,
+            "canonical_text": "[REDACTED]",
+            "summary": "[REDACTED]",
+            "trust_reason": None,
+            "value": {"redacted": True},
+            "source_event_ids": [],
+            "metadata_json": {"redacted": True, "redacted_at": "2026-07-16T00:00:00Z"},
+            "commit_digest": None,
+            "confirmation_id": None,
+            "status": "archived",
+            "deleted_at": "2026-07-16T00:00:00Z",
+        }
+    else:
+        target = {
+            "id": target_id,
+            "artifact_type": "project_update",
+            "status": "accepted",
+            "title": "[REDACTED]",
+            "content_markdown": "[REDACTED]",
+            "prompt_hash": None,
+            "model_info_json": {"redacted": True},
+            "metadata_json": {
+                "redacted": True,
+                "redacted_at": "2026-07-16T00:00:00Z",
+                "workflow": "project_auto_update",
+                "project_id": "project-1",
+                "project_scope": ["project-1"],
+                "candidate_memory_id": str(uuid4()),
+                "review_action": "accept",
+            },
+        }
+    cursor = RecordingCursor(fetchone_results=[target])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    with pytest.raises(ValueError, match="quoted provenance cannot be added to a redacted target"):
+        store.create_provenance_link(
+            {
+                "target_type": target_type,
+                "target_id": target_id,
+                "quote": "must not survive",
+            }
+        )
+
+    assert len(cursor.executed) == 1
+    assert "FOR UPDATE" in cursor.executed[0][0]
+    assert not any("INSERT INTO provenance_links" in query for query, _params in cursor.executed)
+
+
+@pytest.mark.parametrize(
+    "metadata_patch",
+    [
+        {"workflow": "fabricated"},
+        {"project_scope": ["other-project"]},
+        {"project_scope": "project-1"},
+    ],
+)
+def test_redact_memory_bundle_rejects_malformed_terminal_artifact_provenance(
+    metadata_patch: dict[str, object],
+) -> None:
+    memory_id = str(uuid4())
+    artifact_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {
+                "id": memory_id,
+                "metadata_json": {},
+            }
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+    metadata = {
+        "workflow": "project_auto_update",
+        "project_id": "project-1",
+        "project_scope": ["project-1"],
+        "candidate_memory_id": memory_id,
+        "review_action": "accept",
+        **metadata_patch,
+    }
+
+    with pytest.raises(
+        ContinuityStoreInvariantError,
+        match="project-update redaction requires exact terminal artifact linkage",
+    ):
+        store.redact_memory_bundle(
+            memory_id=memory_id,
+            project_update_artifacts=[
+                {
+                    "id": artifact_id,
+                    "artifact_type": "project_update",
+                    "status": "accepted",
+                    "metadata_json": metadata,
+                }
+            ],
+        )
+
+    assert len(cursor.executed) == 2
+    assert "FROM event_log" in cursor.executed[1][0]
+    assert _redaction_flag_statements(cursor) == []
+
+
+@pytest.mark.parametrize("has_prior_receipt", [False, True])
+def test_redact_memory_bundle_only_reuses_authorized_prior_redaction_timestamp(
+    monkeypatch: pytest.MonkeyPatch,
+    has_prior_receipt: bool,
+) -> None:
+    memory_id = str(uuid4())
+    prior_timestamp = "2001-02-03T04:05:06Z"
+    minted_timestamp = "2026-07-16T12:34:56Z"
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls.fromisoformat(minted_timestamp.replace("Z", "+00:00"))
+
+    monkeypatch.setattr(vnext_store_module, "datetime", FixedDateTime)
+    current = {
+        "id": memory_id,
+        "memory_key": "legacy.content.derived.key",
+        "title": "[REDACTED]",
+        "canonical_text": "[REDACTED]",
+        "summary": None,
+        "trust_reason": "[REDACTED]",
+        "value": {"redacted": True},
+        # These were not cleared by the pre-0092 path and are deliberately
+        # not part of prior-marker eligibility.
+        "source_event_ids": [str(uuid4())],
+        "metadata_json": {
+            "redacted": True,
+            "redacted_at": prior_timestamp,
+            "source_refs": ["legacy-ref"],
+        },
+        "commit_digest": "legacy-digest",
+        "confirmation_id": "legacy-confirmation",
+        "status": "archived",
+        "deleted_at": "2026-07-15T00:00:00Z",
+        "_redaction_embedding_cleared": True,
+        "_redaction_fact_keys_cleared": True,
+    }
+    updated = {**current, "memory_key": f"redacted.{memory_id}"}
+    cursor = RecordingCursor(
+        fetchone_results=[
+            current,
+            {"id": str(uuid4())} if has_prior_receipt else None,  # type: ignore[list-item]
+            updated,
+            _event_row(memory_id),
+        ],
+        fetchall_result=[],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.redact_memory_bundle(memory_id=memory_id, project_update_artifacts=[])
+
+    update_query, update_params = next(
+        (query, params)
+        for query, params in cursor.executed
+        if "UPDATE memories" in query and "embedding_vector = NULL" in query
+    )
+    assert update_params is not None
+    metadata_params = [param.obj for param in update_params if isinstance(param, Jsonb) and "redacted_at" in param.obj]
+    assert metadata_params
+    assert metadata_params[0]["redacted_at"] == (prior_timestamp if has_prior_receipt else minted_timestamp)
+
+    event_update_query = next(
+        query
+        for query, _params in cursor.executed
+        if "UPDATE event_log" in query and "jsonb_build_object" in query
+    )
+    # PostgreSQL cannot infer a type for a bare bind used only as a
+    # jsonb_build_object value.  Keep both copies explicitly textual so the
+    # role-separated live path cannot regress to IndeterminateDatatype.
+    assert event_update_query.count("'memory_id', %s::text") == 2
 
 
 def test_redact_memory_content_wraps_marker_update_in_redaction_mode() -> None:
@@ -3213,12 +3503,15 @@ def test_redact_memory_events_scrubs_payloads_and_clears_integrity_hash() -> Non
     assert "'event_type', event_type" in update_query
     assert "integrity_hash = NULL" in update_query
     assert "target_type = 'memory' AND target_id = %s" in update_query
-    assert "payload_json::text LIKE %s" in update_query
+    assert "payload_candidate_memory_id = %s" in update_query
+    assert "payload_memory_id = %s" in update_query
+    assert "payload_json::text" not in update_query
+    assert "LIKE" not in update_query
     # Skeleton columns are never assigned in the SET clause.
     set_clause = update_query.split("WHERE")[0].replace("'event_type', event_type", "")
     for column in ("event_type =", "actor_type =", "occurred_at =", "target_id ="):
         assert column not in set_clause
-    assert update_params == (memory_id, memory_id, f"%{memory_id}%")
+    assert update_params == (memory_id, memory_id, memory_id, memory_id)
 
     flags = _redaction_flag_statements(cursor)
     assert len(flags) == 2 and "'on'" in flags[0] and "'off'" in flags[1]

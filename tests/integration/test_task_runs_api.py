@@ -54,11 +54,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -205,10 +201,10 @@ def test_task_run_endpoints_create_list_get_tick_and_user_isolation(
     assert tick_payload["task_run"]["step_count"] == 1
 
     assert isolated_list_status == 404
-    assert isolated_list_payload == {"detail": f"task {task_id} was not found"}
+    assert isolated_list_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert isolated_detail_status == 404
     assert isolated_detail_payload == {
-        "detail": f"task run {create_payload['task_run']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
 
@@ -265,9 +261,7 @@ def test_task_run_endpoints_cover_budget_wait_resume_pause_cancel_and_conflicts(
     assert second_tick_payload["task_run"]["retry_posture"] == "terminal"
     assert budget_resume_status == 409
     assert budget_resume_payload == {
-        "detail": (
-            f"task run {budget_run_id} is failed and cannot be resumed because failure class is terminal"
-        )
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
     wait_create_status, wait_create_payload = invoke_request(
@@ -326,7 +320,7 @@ def test_task_run_endpoints_cover_budget_wait_resume_pause_cancel_and_conflicts(
     assert wait_cancel_payload["task_run"]["stop_reason"] == "cancelled"
     assert wait_resume_conflict_status == 409
     assert wait_resume_conflict_payload == {
-        "detail": f"task run {wait_run_id} is cancelled and cannot be resumed"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
 
@@ -357,4 +351,4 @@ def test_task_run_create_endpoint_rejects_invalid_checkpoint(
     )
 
     assert status_code == 400
-    assert payload == {"detail": "checkpoint.cursor must be an integer"}
+    assert payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}

@@ -38,6 +38,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 import inspect
 import json
+import logging
 import re
 from typing import Callable, Mapping, Protocol, Sequence, TypeVar, TypedDict, cast
 from uuid import uuid4
@@ -104,6 +105,8 @@ from alicebot_api.vnext_temporal_query import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 class QueryInterpretation(TypedDict):
     query: str
     query_type: str
@@ -144,6 +147,7 @@ RRF_K = 60
 VECTOR_STAGE_ENABLED = "enabled"
 VECTOR_STAGE_DISABLED_NO_PROVIDER = "disabled: no embedding provider configured"
 VECTOR_STAGE_DISABLED_NO_STORE_SUPPORT = "disabled: store does not support vector search"
+VECTOR_STAGE_DISABLED_QUERY_EMBEDDING_FAILED = "disabled: query_embedding_failed"
 # Crude token estimate: ~4 characters of serialized JSON per token. Used by
 # the greedy context-pack budget packer; precision is not required, only a
 # stable, monotone proxy for payload size.
@@ -1874,7 +1878,11 @@ class VNextRetrievalService:
         try:
             return self.embedding_provider.embed_text(query), VECTOR_STAGE_ENABLED
         except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
-            return None, f"disabled: query embedding failed ({exc})"
+            logger.warning(
+                "Query embedding failed open error_code=query_embedding_failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            return None, VECTOR_STAGE_DISABLED_QUERY_EMBEDDING_FAILED
 
     def _memory_vector_rows(
         self,
@@ -1953,7 +1961,11 @@ class VNextRetrievalService:
                     raise
                 rows = search_memories_vector(**search_kwargs)
         except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
-            return [], f"disabled: query embedding failed ({exc})"
+            logger.warning(
+                "Query embedding failed open error_code=query_embedding_failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            return [], VECTOR_STAGE_DISABLED_QUERY_EMBEDDING_FAILED
         # Ascending stage: smaller distance ranks first. Equal distances
         # (identical texts embed identically) stabilize content-first.
         return _stabilize_scored_rows(rows, score_key="vector_distance", descending=False), VECTOR_STAGE_ENABLED
@@ -3774,6 +3786,7 @@ __all__ = [
     "VALID_TO_UNBOUNDED_YEAR",
     "VECTOR_STAGE_DISABLED_NO_PROVIDER",
     "VECTOR_STAGE_DISABLED_NO_STORE_SUPPORT",
+    "VECTOR_STAGE_DISABLED_QUERY_EMBEDDING_FAILED",
     "VECTOR_STAGE_ENABLED",
     "VNextRetrievalRequest",
     "VNextRetrievalCompletenessError",

@@ -578,40 +578,170 @@ REDACTION_MARKER = "[REDACTED]"
 # JSON replacement written into redacted JSON content columns.
 REDACTED_JSON_VALUE: JsonObject = {"redacted": True}
 
-# metadata_json keys that survive memory redaction: pure structure and
-# references (consolidation ids, scope pointers, run/agent attribution),
-# never prose. Everything else in metadata_json is treated as
-# content-bearing and dropped.
-REDACTION_METADATA_STRUCTURAL_KEYS = frozenset(
-    {
-        "consolidation_digest",
+
+def redacted_memory_metadata(metadata: object, *, redacted_at: str) -> JsonObject:
+    """Return the exact content-free metadata marker used by both stores.
+
+    Digests, source references, workflow inputs, and arbitrary extension keys
+    can confirm or reproduce erased content.  Only non-content ownership and
+    graph pointers survive alongside the marker and first redaction timestamp.
+    """
+    structural_keys = (
         "project_id",
         "project_scope",
         "superseded_by",
         "supersedes",
-        "source_refs",
         "run_id",
         "agent_id",
         "created_by_agent_id",
-    }
-)
-
-
-def redacted_memory_metadata(metadata: object, *, redacted_at: str) -> JsonObject:
-    """Scrub a memory's metadata_json down to structural keys.
-
-    Keeps only ``REDACTION_METADATA_STRUCTURAL_KEYS``, then stamps the
-    ``redacted`` flag and ``redacted_at`` timestamp. Shared by both store
-    backends so the scrub policy cannot drift.
-    """
+    )
     scrubbed: JsonObject = {}
-    if isinstance(metadata, dict):
-        for key in sorted(REDACTION_METADATA_STRUCTURAL_KEYS):
+    if isinstance(metadata, Mapping):
+        for key in structural_keys:
             if key in metadata:
                 scrubbed[key] = metadata[key]
     scrubbed["redacted"] = True
     scrubbed["redacted_at"] = redacted_at
     return scrubbed
+
+
+REDACTED_MEMORY_METADATA_KEYS = frozenset(
+    {
+        "project_id",
+        "project_scope",
+        "superseded_by",
+        "supersedes",
+        "run_id",
+        "agent_id",
+        "created_by_agent_id",
+        "redacted",
+        "redacted_at",
+    }
+)
+PRIOR_REDACTED_MEMORY_METADATA_KEYS = REDACTED_MEMORY_METADATA_KEYS | {
+    "consolidation_digest",
+    "source_refs",
+}
+
+
+def _is_redacted_memory_shape(
+    memory: Mapping[str, object],
+    *,
+    allowed_metadata_keys: frozenset[str] | set[str],
+) -> bool:
+    memory_id = str(memory.get("id") or "").strip()
+    metadata_value = memory.get("metadata_json")
+    value = memory.get("value")
+    if not memory_id or not isinstance(metadata_value, Mapping) or not isinstance(value, Mapping):
+        return False
+    metadata = dict(metadata_value)
+    return (
+        memory.get("memory_key") == f"redacted.{memory_id}"
+        and memory.get("canonical_text") == REDACTION_MARKER
+        and memory.get("title") in {None, REDACTION_MARKER}
+        and memory.get("summary") in {None, REDACTION_MARKER}
+        and memory.get("trust_reason") in {None, REDACTION_MARKER}
+        and dict(value) == REDACTED_JSON_VALUE
+        and memory.get("source_event_ids") == []
+        and memory.get("commit_digest") is None
+        and memory.get("confirmation_id") is None
+        and memory.get("status") == "archived"
+        and memory.get("deleted_at") is not None
+        and bool(memory.get("_redaction_embedding_cleared", True))
+        and bool(memory.get("_redaction_fact_keys_cleared", True))
+        and set(metadata).issubset(allowed_metadata_keys)
+        and metadata.get("redacted") is True
+        and bool(str(metadata.get("redacted_at") or "").strip())
+    )
+
+
+def is_redacted_memory(memory: Mapping[str, object]) -> bool:
+    """Recognize only the canonical content-free memory skeleton.
+
+    The predicate deliberately rejects partial marker rows.  It is shared by
+    replay detection and post-redaction write guards so a fabricated
+    ``metadata_json.redacted`` flag cannot freeze an ordinary memory.
+    """
+
+    return _is_redacted_memory_shape(
+        memory,
+        allowed_metadata_keys=REDACTED_MEMORY_METADATA_KEYS,
+    )
+
+
+def is_prior_redacted_memory_marker(memory: Mapping[str, object]) -> bool:
+    """Recognize the bounded pre-0092 content marker eligible for repair.
+
+    Pre-0092 redaction did not yet replace the memory key or clear every
+    digest/source pointer.  Timestamp reuse therefore mirrors the 0092
+    backfill's narrower proof: all content is already marker-shaped, derived
+    search state is gone, the row is retired, metadata is bounded, and the
+    caller separately proves an existing ``memory.redacted`` receipt.
+    """
+
+    metadata_value = memory.get("metadata_json")
+    value = memory.get("value")
+    if not isinstance(metadata_value, Mapping) or not isinstance(value, Mapping):
+        return False
+    metadata = dict(metadata_value)
+    return (
+        memory.get("canonical_text") == REDACTION_MARKER
+        and memory.get("title") in {None, REDACTION_MARKER}
+        and memory.get("summary") in {None, REDACTION_MARKER}
+        and memory.get("trust_reason") in {None, REDACTION_MARKER}
+        and dict(value) == REDACTED_JSON_VALUE
+        and memory.get("status") == "archived"
+        and memory.get("deleted_at") is not None
+        and bool(memory.get("_redaction_embedding_cleared", True))
+        and bool(memory.get("_redaction_fact_keys_cleared", True))
+        and set(metadata).issubset(PRIOR_REDACTED_MEMORY_METADATA_KEYS)
+        and metadata.get("redacted") is True
+        and bool(str(metadata.get("redacted_at") or "").strip())
+    )
+
+
+PROJECT_UPDATE_REDACTED_METADATA_KEYS = frozenset(
+    {
+        "redacted",
+        "redacted_at",
+        "workflow",
+        "project_id",
+        "project_scope",
+        "candidate_memory_id",
+        "review_action",
+    }
+)
+
+
+def is_redacted_project_update_artifact(artifact: Mapping[str, object]) -> bool:
+    """Recognize only the canonical terminal project-update artifact skeleton."""
+
+    metadata_value = artifact.get("metadata_json")
+    model_info_value = artifact.get("model_info_json")
+    if not isinstance(metadata_value, Mapping) or not isinstance(model_info_value, Mapping):
+        return False
+    metadata = dict(metadata_value)
+    project_id = str(metadata.get("project_id") or "").strip()
+    candidate_memory_id = str(metadata.get("candidate_memory_id") or "").strip()
+    review_action = str(metadata.get("review_action") or "").strip()
+    redacted_at = str(metadata.get("redacted_at") or "").strip()
+    return (
+        artifact.get("artifact_type") == "project_update"
+        and artifact.get("status") in {"accepted", "rejected"}
+        and artifact.get("title") == REDACTION_MARKER
+        and artifact.get("content_markdown") == REDACTION_MARKER
+        and artifact.get("prompt_hash") is None
+        and dict(model_info_value) == REDACTED_JSON_VALUE
+        and set(metadata) == PROJECT_UPDATE_REDACTED_METADATA_KEYS
+        and metadata.get("redacted") is True
+        and bool(redacted_at and project_id and candidate_memory_id)
+        and metadata.get("workflow") == "project_auto_update"
+        and metadata.get("project_scope") == [project_id]
+        and (
+            (artifact.get("status") == "accepted" and review_action in {"accept", "edit"})
+            or (artifact.get("status") == "rejected" and review_action == "reject")
+        )
+    )
 
 
 def _vector_literal(vector: list[float]) -> str:
@@ -719,6 +849,36 @@ EVENT_LOG_COLUMNS = """
                   run_id,
                   integrity_hash
                 """
+
+_PROJECT_UPDATE_EVENT_TYPES_SQL = """
+                    'project.update_candidate_created',
+                    'project.update_candidate_accepted',
+                    'project.update_candidate_rejected'
+                  """
+_PROJECT_UPDATE_EVENT_LINKAGE_SQL = (
+    "target_type = 'artifact' AND target_id = %s",
+    "target_type = 'memory' AND target_id = %s",
+    "payload_artifact_id = %s",
+    "payload_candidate_memory_id = %s",
+    "payload_memory_id = %s",
+)
+_PROJECT_UPDATE_EVENT_LOOKUP_SQL = (
+    "\nUNION\n".join(
+        f"""
+                SELECT {EVENT_LOG_COLUMNS}
+                FROM event_log
+                WHERE user_id = app.current_user_id()
+                  AND event_type IN (
+{_PROJECT_UPDATE_EVENT_TYPES_SQL}
+                  )
+                  AND {linkage_sql}
+        """
+        for linkage_sql in _PROJECT_UPDATE_EVENT_LINKAGE_SQL
+    )
+    + """
+                ORDER BY occurred_at DESC, id DESC
+    """
+)
 
 CONNECTOR_SETTINGS_COLUMNS = """
                   id,
@@ -1400,6 +1560,7 @@ class PostgresVNextStore:
         normalized_query = str(query).strip() if query is not None else None
         if normalized_query == "":
             normalized_query = None
+        escaped_query = _escape_like_literal(normalized_query) if normalized_query is not None else None
         qualified_columns = ", ".join(f"event.{column.strip()}" for column in EVENT_LOG_COLUMNS.split(","))
         return self._fetch_all(
             f"""
@@ -1417,9 +1578,9 @@ class PostgresVNextStore:
                   )
                   AND (
                     %s::text IS NULL
-                    OR strpos(lower(COALESCE(m.title, '')), lower(%s)) > 0
-                    OR strpos(lower(COALESCE(m.canonical_text, '')), lower(%s)) > 0
-                    OR strpos(lower(COALESCE(m.summary, '')), lower(%s)) > 0
+                    OR {_postgres_ascii_literal_contains_sql("COALESCE(m.title, '')")}
+                    OR {_postgres_ascii_literal_contains_sql("COALESCE(m.canonical_text, '')")}
+                    OR {_postgres_ascii_literal_contains_sql("COALESCE(m.summary, '')")}
                   )
                   AND (%s::timestamptz IS NULL OR event.occurred_at >= %s::timestamptz)
                   AND (%s::timestamptz IS NULL OR event.occurred_at <= %s::timestamptz)
@@ -1430,15 +1591,42 @@ class PostgresVNextStore:
                 normalized_statuses,
                 project_list,
                 project_list,
-                normalized_query,
-                normalized_query,
-                normalized_query,
-                normalized_query,
+                escaped_query,
+                escaped_query,
+                escaped_query,
+                escaped_query,
                 occurred_at_start,
                 occurred_at_start,
                 occurred_at_end,
                 occurred_at_end,
                 limit,
+            ),
+        )
+
+    def list_project_update_events(
+        self,
+        *,
+        artifact_id: str,
+        candidate_memory_id: str,
+    ) -> list[VNextRow]:
+        """Return every creation/decision event coupled to one project update.
+
+        Direct targets and every supported payload-only linkage are selected
+        in SQL so terminal replay is proportional to the coupled evidence,
+        rather than to the user's complete append-only event log.
+        """
+
+        # UNION (rather than one five-way OR or UNION ALL) gives each linkage
+        # arm its own indexable scan while collapsing an event that carries
+        # more than one valid linkage before the deterministic final ordering.
+        return self._fetch_all(
+            _PROJECT_UPDATE_EVENT_LOOKUP_SQL,
+            (
+                artifact_id,
+                candidate_memory_id,
+                artifact_id,
+                candidate_memory_id,
+                candidate_memory_id,
             ),
         )
 
@@ -2587,6 +2775,138 @@ class PostgresVNextStore:
             (memory_id,),
         )
 
+    def get_memory_for_redaction(self, memory_id: str) -> VNextRow | None:
+        """Lock a redaction target even after forget archived/tombstoned it."""
+
+        return self._fetch_optional_one(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories
+                WHERE id = %s::uuid
+                FOR UPDATE
+                """,
+            (memory_id,),
+        )
+
+    def lock_project_update_artifacts_for_redaction(self, memory_id: str) -> list[VNextRow]:
+        """Lock every artifact coupled to a candidate memory in UUID order."""
+
+        return self._fetch_all(
+            f"""
+                SELECT {ARTIFACT_COLUMNS}
+                FROM generated_artifacts
+                WHERE artifact_type = 'project_update'
+                  AND metadata_json ->> 'candidate_memory_id' = %s
+                ORDER BY id ASC
+                FOR UPDATE
+                """,
+            (memory_id,),
+        )
+
+    def memory_redaction_bundle_is_exact(self, memory_id: str, artifact_ids: Sequence[str]) -> bool:
+        """Return whether every coupled mutable copy is already marker-shaped."""
+
+        row = self._fetch_one(
+            "check exact memory redaction bundle",
+            """
+                WITH input AS (
+                  SELECT %s::uuid AS memory_id, %s::text[] AS artifact_ids
+                )
+                SELECT
+                  EXISTS (
+                    SELECT 1 FROM event_log AS event, input
+                    WHERE event.event_type = 'memory.redacted'
+                      AND event.target_type = 'memory'
+                      AND event.target_id = input.memory_id::text
+                  )
+                  AND EXISTS (
+                    SELECT 1 FROM memories AS memory, input
+                    WHERE memory.id = input.memory_id
+                      AND memory.embedding_vector IS NULL
+                      AND memory.fact_keys IS NULL
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM memory_revisions AS revision, input
+                    WHERE revision.memory_id = input.memory_id
+                      AND (
+                        revision.memory_key IS DISTINCT FROM
+                          'redacted.' || revision.memory_id::text
+                        OR revision.source_event_ids IS DISTINCT FROM '[]'::jsonb
+                        OR revision.candidate IS DISTINCT FROM '{"redacted": true}'::jsonb
+                        OR revision.text_after IS DISTINCT FROM '[REDACTED]'
+                        OR revision.text_before IS DISTINCT FROM CASE
+                          WHEN revision.text_before IS NULL THEN NULL ELSE '[REDACTED]'
+                        END
+                        OR revision.reason IS DISTINCT FROM CASE
+                          WHEN revision.reason IS NULL THEN NULL ELSE '[REDACTED]'
+                        END
+                        OR revision.previous_value IS DISTINCT FROM CASE
+                          WHEN revision.previous_value IS NULL
+                            THEN NULL
+                            ELSE '{"redacted": true}'::jsonb
+                        END
+                        OR revision.new_value IS DISTINCT FROM CASE
+                          WHEN revision.new_value IS NULL
+                            THEN NULL
+                            ELSE '{"redacted": true}'::jsonb
+                        END
+                        OR revision.metadata_json IS DISTINCT FROM '{"redacted": true}'::jsonb
+                      )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM event_log AS event, input
+                    WHERE (
+                        (event.target_type = 'memory' AND event.target_id = input.memory_id::text)
+                        OR (
+                          event.target_type = 'artifact'
+                          AND event.target_id = ANY(input.artifact_ids)
+                        )
+                        OR event.payload_artifact_id = ANY(input.artifact_ids)
+                        OR event.payload_candidate_memory_id = input.memory_id::text
+                        OR event.payload_memory_id = input.memory_id::text
+                      )
+                      AND (
+                        event.payload_json IS DISTINCT FROM jsonb_build_object(
+                          'redacted', true,
+                          'memory_id', input.memory_id::text,
+                          'event_type', event.event_type
+                        )
+                        OR event.integrity_hash IS NOT NULL
+                      )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM artifact_quality_ratings AS rating, input
+                    WHERE rating.artifact_id::text = ANY(input.artifact_ids)
+                      AND (
+                        rating.missed_context IS DISTINCT FROM CASE
+                          WHEN rating.missed_context IS NULL THEN NULL ELSE '[REDACTED]'
+                        END
+                        OR rating.comments IS DISTINCT FROM CASE
+                          WHEN rating.comments IS NULL THEN NULL ELSE '[REDACTED]'
+                        END
+                        OR rating.metadata_json IS DISTINCT FROM '{"redacted": true}'::jsonb
+                      )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM provenance_links AS provenance, input
+                    WHERE (
+                        (
+                          provenance.target_type = 'memory'
+                          AND provenance.target_id = input.memory_id::text
+                        )
+                        OR (
+                          provenance.target_type = 'artifact'
+                          AND provenance.target_id = ANY(input.artifact_ids)
+                        )
+                      )
+                      AND provenance.quote IS NOT NULL
+                      AND provenance.quote IS DISTINCT FROM '[REDACTED]'
+                  ) AS exact
+                """,
+            (memory_id, list(artifact_ids)),
+        )
+        return bool(row.get("exact"))
+
     def list_pending_derived_candidates_for_member(
         self,
         *,
@@ -2689,11 +3009,12 @@ class PostgresVNextStore:
             normalized_query = str(query).strip()
             if normalized_query:
                 query_sql = (
-                    " AND (strpos(lower(COALESCE(title, '')), lower(%s)) > 0"
-                    " OR strpos(lower(COALESCE(canonical_text, '')), lower(%s)) > 0"
-                    " OR strpos(lower(COALESCE(summary, '')), lower(%s)) > 0)"
+                    f" AND ({_postgres_ascii_literal_contains_sql("COALESCE(title, '')")}"
+                    f" OR {_postgres_ascii_literal_contains_sql("COALESCE(canonical_text, '')")}"
+                    f" OR {_postgres_ascii_literal_contains_sql("COALESCE(summary, '')")})"
                 )
-                params.extend((normalized_query, normalized_query, normalized_query))
+                escaped_query = _escape_like_literal(normalized_query)
+                params.extend((escaped_query, escaped_query, escaped_query))
         order_sql = (
             "ORDER BY created_at DESC, id DESC"
             if order_by_created_at
@@ -4006,6 +4327,379 @@ class PostgresVNextStore:
                 # (set_config assignments are transactional).
                 pass
 
+    def redact_memory_bundle(
+        self,
+        *,
+        memory_id: str,
+        project_update_artifacts: Sequence[Mapping[str, object]],
+        actor_type: str = "user",
+    ) -> VNextRow:
+        """Atomically scrub a memory and every persisted coupled copy.
+
+        The caller must acquire the user graph lock, the memory lock (including
+        deleted rows), and the project-update artifact locks in deterministic
+        id order before entering this method.  Every UPDATE is marker-shaped
+        and runs under the narrowly-scoped database redaction flag.  A single
+        content-free receipt is appended only when at least one stored value
+        changed, making a replay a byte-preserving no-op.
+        """
+
+        current = self._fetch_optional_one(
+            f"""
+                SELECT {MEMORY_COLUMNS},
+                       embedding_vector IS NULL AS _redaction_embedding_cleared,
+                       fact_keys IS NULL AS _redaction_fact_keys_cleared
+                FROM memories
+                WHERE id = %s::uuid
+            """,
+            (memory_id,),
+        )
+        if current is None:
+            raise ContinuityStoreInvariantError("redact_memory_bundle did not find the memory to redact")
+
+        current_metadata = current.get("metadata_json")
+        prior_receipt = self._fetch_optional_one(
+            """
+                SELECT id
+                FROM event_log
+                WHERE event_type = 'memory.redacted'
+                  AND target_type = 'memory'
+                  AND target_id = %s
+                ORDER BY occurred_at ASC, id ASC
+                LIMIT 1
+            """,
+            (memory_id,),
+        )
+        prior_redacted_at = ""
+        if is_prior_redacted_memory_marker(current) and prior_receipt is not None:
+            assert isinstance(current_metadata, Mapping)
+            prior_redacted_at = str(current_metadata.get("redacted_at") or "").strip()
+        redacted_at = prior_redacted_at or datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        memory_metadata = redacted_memory_metadata(current_metadata, redacted_at=redacted_at)
+        redacted_memory_key = f"redacted.{memory_id}"
+
+        artifacts = sorted(project_update_artifacts, key=lambda artifact: str(artifact.get("id") or ""))
+        artifact_ids: list[str] = []
+        artifact_metadata_by_id: dict[str, JsonObject] = {}
+        for artifact in artifacts:
+            artifact_id = str(artifact.get("id") or "").strip()
+            metadata_value = artifact.get("metadata_json")
+            metadata = dict(metadata_value) if isinstance(metadata_value, Mapping) else {}
+            project_id = str(metadata.get("project_id") or "").strip()
+            candidate_memory_id = str(metadata.get("candidate_memory_id") or "").strip()
+            workflow = str(metadata.get("workflow") or "").strip()
+            project_scope = metadata.get("project_scope")
+            action = str(metadata.get("review_action") or "").strip()
+            status = str(artifact.get("status") or "").strip()
+            valid_action = (status == "accepted" and action in {"accept", "edit"}) or (
+                status == "rejected" and action == "reject"
+            )
+            if (
+                not artifact_id
+                or artifact.get("artifact_type") != "project_update"
+                or candidate_memory_id != memory_id
+                or not project_id
+                or workflow != "project_auto_update"
+                or project_scope != [project_id]
+                or not valid_action
+            ):
+                raise ContinuityStoreInvariantError("project-update redaction requires exact terminal artifact linkage")
+            artifact_ids.append(artifact_id)
+            artifact_metadata_by_id[artifact_id] = {
+                "redacted": True,
+                "redacted_at": redacted_at,
+                "workflow": "project_auto_update",
+                "project_id": project_id,
+                "project_scope": [project_id],
+                "candidate_memory_id": memory_id,
+                "review_action": action,
+            }
+
+        changed_artifact_ids: list[str] = []
+        redacted_quality_ratings = 0
+        redacted_provenance_links = 0
+        redacted_revisions = 0
+        redacted_events = 0
+        memory_changed = False
+
+        with self._redaction_mode():
+            # Scrub artifacts first while their original structural metadata is
+            # still available to the 0092 marker-shape trigger.
+            for artifact_id in artifact_ids:
+                desired_metadata = artifact_metadata_by_id[artifact_id]
+                changed = self._fetch_optional_one(
+                    f"""
+                    UPDATE generated_artifacts
+                    SET title = %s,
+                        content_markdown = %s,
+                        prompt_hash = NULL,
+                        model_info_json = %s,
+                        metadata_json = %s
+                    WHERE id = %s::uuid
+                      AND (
+                        title IS DISTINCT FROM %s
+                        OR content_markdown IS DISTINCT FROM %s
+                        OR prompt_hash IS NOT NULL
+                        OR model_info_json IS DISTINCT FROM %s::jsonb
+                        OR metadata_json IS DISTINCT FROM %s::jsonb
+                      )
+                    RETURNING {ARTIFACT_COLUMNS}
+                    """,
+                    (
+                        REDACTION_MARKER,
+                        REDACTION_MARKER,
+                        _json_object(REDACTED_JSON_VALUE),
+                        _json_object(desired_metadata),
+                        artifact_id,
+                        REDACTION_MARKER,
+                        REDACTION_MARKER,
+                        _json_object(REDACTED_JSON_VALUE),
+                        _json_object(desired_metadata),
+                    ),
+                )
+                if changed is not None:
+                    changed_artifact_ids.append(artifact_id)
+
+            if artifact_ids:
+                ratings = self._fetch_all(
+                    """
+                    UPDATE artifact_quality_ratings
+                    SET missed_context = CASE
+                          WHEN missed_context IS NULL THEN NULL ELSE %s
+                        END,
+                        comments = CASE WHEN comments IS NULL THEN NULL ELSE %s END,
+                        metadata_json = %s
+                    WHERE artifact_id = ANY(%s::uuid[])
+                      AND (
+                        (missed_context IS NOT NULL AND missed_context IS DISTINCT FROM %s)
+                        OR (comments IS NOT NULL AND comments IS DISTINCT FROM %s)
+                        OR metadata_json IS DISTINCT FROM %s::jsonb
+                      )
+                    RETURNING id
+                    """,
+                    (
+                        REDACTION_MARKER,
+                        REDACTION_MARKER,
+                        _json_object(REDACTED_JSON_VALUE),
+                        artifact_ids,
+                        REDACTION_MARKER,
+                        REDACTION_MARKER,
+                        _json_object(REDACTED_JSON_VALUE),
+                    ),
+                )
+                redacted_quality_ratings = len(ratings)
+
+            provenance_target_ids = [memory_id, *artifact_ids]
+            provenance = self._fetch_all(
+                """
+                UPDATE provenance_links
+                SET quote = %s
+                WHERE quote IS NOT NULL
+                  AND quote IS DISTINCT FROM %s
+                  AND (
+                    (target_type = 'memory' AND target_id = %s)
+                    OR (target_type = 'artifact' AND target_id = ANY(%s::text[]))
+                  )
+                RETURNING id
+                """,
+                (REDACTION_MARKER, REDACTION_MARKER, memory_id, artifact_ids),
+            )
+            redacted_provenance_links = len(provenance)
+
+            revisions = self._fetch_all(
+                """
+                UPDATE memory_revisions
+                SET memory_key = %s,
+                    previous_value = CASE WHEN previous_value IS NULL THEN NULL ELSE %s END,
+                    new_value = CASE WHEN new_value IS NULL THEN NULL ELSE %s END,
+                    source_event_ids = '[]'::jsonb,
+                    candidate = %s,
+                    text_before = CASE WHEN text_before IS NULL THEN NULL ELSE %s END,
+                    text_after = %s,
+                    reason = CASE WHEN reason IS NULL THEN NULL ELSE %s END,
+                    metadata_json = %s
+                WHERE memory_id = %s::uuid
+                  AND (
+                    memory_key IS DISTINCT FROM %s
+                    OR previous_value IS DISTINCT FROM
+                      CASE WHEN previous_value IS NULL THEN NULL ELSE %s::jsonb END
+                    OR new_value IS DISTINCT FROM
+                      CASE WHEN new_value IS NULL THEN NULL ELSE %s::jsonb END
+                    OR source_event_ids IS DISTINCT FROM '[]'::jsonb
+                    OR candidate IS DISTINCT FROM %s::jsonb
+                    OR text_before IS DISTINCT FROM
+                      CASE WHEN text_before IS NULL THEN NULL ELSE %s END
+                    OR text_after IS DISTINCT FROM %s
+                    OR reason IS DISTINCT FROM CASE WHEN reason IS NULL THEN NULL ELSE %s END
+                    OR metadata_json IS DISTINCT FROM %s::jsonb
+                  )
+                RETURNING id
+                """,
+                (
+                    redacted_memory_key,
+                    _json_object(REDACTED_JSON_VALUE),
+                    _json_object(REDACTED_JSON_VALUE),
+                    _json_object(REDACTED_JSON_VALUE),
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    _json_object(REDACTED_JSON_VALUE),
+                    memory_id,
+                    redacted_memory_key,
+                    _json_object(REDACTED_JSON_VALUE),
+                    _json_object(REDACTED_JSON_VALUE),
+                    _json_object(REDACTED_JSON_VALUE),
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    _json_object(REDACTED_JSON_VALUE),
+                ),
+            )
+            redacted_revisions = len(revisions)
+
+            # Exact 0091 linkage columns and exact targets avoid the old
+            # payload_json::text sweep, which could redact an unrelated event
+            # that merely happened to mention the UUID in prose.
+            events = self._fetch_all(
+                """
+                UPDATE event_log
+                SET payload_json = jsonb_build_object(
+                      'redacted', true,
+                      'memory_id', %s::text,
+                      'event_type', event_type
+                    ),
+                    integrity_hash = NULL
+                WHERE (
+                    (target_type = 'memory' AND target_id = %s)
+                    OR (target_type = 'artifact' AND target_id = ANY(%s::text[]))
+                    OR payload_artifact_id = ANY(%s::text[])
+                    OR payload_candidate_memory_id = %s
+                    OR payload_memory_id = %s
+                  )
+                  AND (
+                    payload_json IS DISTINCT FROM jsonb_build_object(
+                      'redacted', true,
+                      'memory_id', %s::text,
+                      'event_type', event_type
+                    )
+                    OR integrity_hash IS NOT NULL
+                  )
+                RETURNING id
+                """,
+                (
+                    memory_id,
+                    memory_id,
+                    artifact_ids,
+                    artifact_ids,
+                    memory_id,
+                    memory_id,
+                    memory_id,
+                ),
+            )
+            redacted_events = len(events)
+
+            redacted_memory = self._fetch_optional_one(
+                f"""
+                UPDATE memories
+                SET memory_key = %s,
+                    title = CASE WHEN title IS NULL THEN NULL ELSE %s END,
+                    canonical_text = %s,
+                    summary = CASE WHEN summary IS NULL THEN NULL ELSE %s END,
+                    trust_reason = CASE WHEN trust_reason IS NULL THEN NULL ELSE %s END,
+                    value = %s,
+                    source_event_ids = '[]'::jsonb,
+                    metadata_json = %s,
+                    commit_digest = NULL,
+                    confirmation_id = NULL,
+                    embedding_vector = NULL,
+                    fact_keys = NULL,
+                    status = 'archived',
+                    deleted_at = COALESCE(deleted_at, clock_timestamp()),
+                    updated_at = clock_timestamp()
+                WHERE id = %s::uuid
+                  AND (
+                    memory_key IS DISTINCT FROM %s
+                    OR title IS DISTINCT FROM CASE WHEN title IS NULL THEN NULL ELSE %s END
+                    OR canonical_text IS DISTINCT FROM %s
+                    OR summary IS DISTINCT FROM CASE WHEN summary IS NULL THEN NULL ELSE %s END
+                    OR trust_reason IS DISTINCT FROM CASE WHEN trust_reason IS NULL THEN NULL ELSE %s END
+                    OR value IS DISTINCT FROM %s::jsonb
+                    OR source_event_ids IS DISTINCT FROM '[]'::jsonb
+                    OR metadata_json IS DISTINCT FROM %s::jsonb
+                    OR commit_digest IS NOT NULL
+                    OR confirmation_id IS NOT NULL
+                    OR embedding_vector IS NOT NULL
+                    OR fact_keys IS NOT NULL
+                    OR status IS DISTINCT FROM 'archived'
+                    OR deleted_at IS NULL
+                  )
+                RETURNING {MEMORY_COLUMNS}
+                """,
+                (
+                    redacted_memory_key,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    _json_object(REDACTED_JSON_VALUE),
+                    _json_object(memory_metadata),
+                    memory_id,
+                    redacted_memory_key,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    _json_object(REDACTED_JSON_VALUE),
+                    _json_object(memory_metadata),
+                ),
+            )
+            memory_changed = redacted_memory is not None
+
+        if redacted_memory is None:
+            redacted_memory = self._fetch_optional_one(
+                f"SELECT {MEMORY_COLUMNS} FROM memories WHERE id = %s::uuid",
+                (memory_id,),
+            )
+        if redacted_memory is None:  # pragma: no cover - locked row cannot disappear
+            raise ContinuityStoreInvariantError("redact_memory_bundle lost its locked memory")
+
+        bundle_changed = bool(
+            memory_changed
+            or changed_artifact_ids
+            or redacted_quality_ratings
+            or redacted_provenance_links
+            or redacted_revisions
+            or redacted_events
+        )
+        if bundle_changed:
+            receipt = build_event_log_record(
+                event_type="memory.redacted",
+                actor_type=actor_type,
+                target_type="memory",
+                target_id=memory_id,
+                payload={
+                    "redacted": True,
+                    "memory_id": memory_id,
+                    "event_type": "memory.redacted",
+                },
+            )
+            # This receipt is already an exact content-free skeleton; no
+            # content-derived integrity hash needs to survive or be scrubbed on
+            # replay.
+            receipt["integrity_hash"] = None
+            self.append_event(receipt)
+
+        return {
+            "memory": redacted_memory,
+            "redacted_revisions": redacted_revisions,
+            "redacted_events": redacted_events,
+            "redacted_artifacts": len(changed_artifact_ids),
+            "redacted_artifact_ids": changed_artifact_ids,
+            "redacted_quality_ratings": redacted_quality_ratings,
+            "redacted_provenance_links": redacted_provenance_links,
+            "idempotent_replay": not bundle_changed,
+        }
+
     def redact_memory_content(self, *, memory_id: str, actor_type: str = "user") -> VNextRow:
         """Expunge a memory's content in place, keeping the skeleton.
 
@@ -4035,12 +4729,16 @@ class PostgresVNextStore:
                 "redact_memory_content",
                 f"""
                     UPDATE memories
-                    SET title = CASE WHEN title IS NULL THEN NULL ELSE %s END,
+                    SET memory_key = 'redacted.' || id::text,
+                        title = CASE WHEN title IS NULL THEN NULL ELSE %s END,
                         canonical_text = %s,
                         summary = CASE WHEN summary IS NULL THEN NULL ELSE %s END,
                         trust_reason = CASE WHEN trust_reason IS NULL THEN NULL ELSE %s END,
                         value = %s,
+                        source_event_ids = '[]'::jsonb,
                         metadata_json = %s,
+                        commit_digest = NULL,
+                        confirmation_id = NULL,
                         embedding_vector = NULL,
                         fact_keys = NULL,
                         status = 'archived',
@@ -4082,8 +4780,10 @@ class PostgresVNextStore:
             redacted = self._fetch_all(
                 """
                     UPDATE memory_revisions
-                    SET previous_value = CASE WHEN previous_value IS NULL THEN NULL ELSE %s END,
+                    SET memory_key = 'redacted.' || memory_id::text,
+                        previous_value = CASE WHEN previous_value IS NULL THEN NULL ELSE %s END,
                         new_value = CASE WHEN new_value IS NULL THEN NULL ELSE %s END,
+                        source_event_ids = '[]'::jsonb,
                         candidate = %s,
                         text_before = CASE WHEN text_before IS NULL THEN NULL ELSE %s END,
                         text_after = %s,
@@ -4132,10 +4832,11 @@ class PostgresVNextStore:
                         ),
                         integrity_hash = NULL
                     WHERE (target_type = 'memory' AND target_id = %s)
-                       OR payload_json::text LIKE %s
+                       OR payload_candidate_memory_id = %s
+                       OR payload_memory_id = %s
                     RETURNING id
                     """,
-                (memory_id, memory_id, f"%{memory_id}%"),
+                (memory_id, memory_id, memory_id, memory_id),
             )
         self._append_mutation_event(
             event_type="memory.redacted",
@@ -4147,6 +4848,17 @@ class PostgresVNextStore:
         return {"memory_id": memory_id, "redacted_events": len(redacted)}
 
     def create_provenance_link(self, link: JsonObject, *, actor_type: str = "system") -> VNextRow:
+        if link.get("quote") is not None:
+            target_type = str(link.get("target_type") or "")
+            target_id = str(link.get("target_id") or "")
+            if target_type == "artifact":
+                artifact = self.get_artifact_for_update(target_id)
+                if artifact is not None and is_redacted_project_update_artifact(artifact):
+                    raise ValueError("quoted provenance cannot be added to a redacted target")
+            elif target_type == "memory":
+                memory = self.get_memory_for_redaction(target_id)
+                if memory is not None and is_redacted_memory(memory):
+                    raise ValueError("quoted provenance cannot be added to a redacted target")
         row = self._fetch_one(
             "create_provenance_link",
             f"""
@@ -6183,6 +6895,9 @@ class PostgresVNextStore:
         return row
 
     def create_artifact_quality_rating(self, rating: JsonObject, *, actor_type: str = "user") -> VNextRow:
+        artifact = self.get_artifact_for_update(str(rating.get("artifact_id") or ""))
+        if artifact is not None and is_redacted_project_update_artifact(artifact):
+            raise ValueError("ratings cannot be added to a redacted artifact")
         row = self._fetch_one(
             "create_artifact_quality_rating",
             f"""

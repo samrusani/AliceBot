@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import hashlib
+import logging
 from pathlib import Path
 from typing import Protocol
 
@@ -11,6 +12,9 @@ from alicebot_api.vnext_project_update_guard import is_project_update_artifact
 from alicebot_api.vnext_repositories import JsonObject
 
 DEFAULT_VNEXT_ARTIFACT_EXPORT_ROOT = Path("/tmp/alicebot-vnext-artifact-exports")
+QUEUE_TASK_PROCESSING_ERROR_CODE = "queue_task_processing_failed"
+QUEUE_TASK_PROCESSING_ERROR_MESSAGE = "Queue task processing failed"
+logger = logging.getLogger(__name__)
 
 # Artifact review is a lifecycle, not an arbitrary status setter.  Keeping the
 # complete transition table in one place makes terminal-state behavior
@@ -91,6 +95,7 @@ class QueueProcessResult:
     status: str
     task_id: str | None = None
     artifact_id: str | None = None
+    error_code: str | None = None
     error_message: str | None = None
 
     def to_record(self) -> JsonObject:
@@ -98,6 +103,7 @@ class QueueProcessResult:
             "status": self.status,
             "task_id": self.task_id,
             "artifact_id": self.artifact_id,
+            "error_code": self.error_code,
             "error_message": self.error_message,
         }
 
@@ -256,10 +262,18 @@ class VNextQueueService:
             )
             return QueueProcessResult(status="completed", task_id=task_id, artifact_id=artifact_id)
         except Exception as exc:
+            logger.exception(
+                "queue task processing failed task_id=%s error_code=%s",
+                task_id,
+                QUEUE_TASK_PROCESSING_ERROR_CODE,
+            )
             self.store.update_task_status(
                 task_id=task_id,
                 status="failed",
-                details={"error_message": str(exc)},
+                details={
+                    "error_code": QUEUE_TASK_PROCESSING_ERROR_CODE,
+                    "error_message": QUEUE_TASK_PROCESSING_ERROR_MESSAGE,
+                },
             )
             append_event(
                 self.store,
@@ -267,9 +281,17 @@ class VNextQueueService:
                 actor_type="system",
                 target_type="task",
                 target_id=task_id,
-                payload={"error_type": type(exc).__name__, "error_message": str(exc)},
+                payload={
+                    "error_code": QUEUE_TASK_PROCESSING_ERROR_CODE,
+                    "error_message": QUEUE_TASK_PROCESSING_ERROR_MESSAGE,
+                },
             )
-            return QueueProcessResult(status="failed", task_id=task_id, error_message=str(exc))
+            return QueueProcessResult(
+                status="failed",
+                task_id=task_id,
+                error_code=QUEUE_TASK_PROCESSING_ERROR_CODE,
+                error_message=QUEUE_TASK_PROCESSING_ERROR_MESSAGE,
+            )
 
     def review_artifact(
         self,

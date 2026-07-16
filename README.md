@@ -18,17 +18,20 @@ Agents connect over MCP, HTTP API, or CLI. Humans stay in control: agent writes 
 
 ## How Alice compares
 
-Most agent memory tools — mem0, Zep, Letta, and similar — focus on extracting facts from conversations and retrieving them later. That solves recall, and they do it well. Alice focuses on continuity: it stores typed continuity objects (decisions, open loops, resumption briefs) alongside plain memories; every answer carries explainable provenance back to source evidence; and writes are review-governed, so an agent cannot silently promote a bad extraction into durable truth. If you mainly need conversational fact recall, those tools are solid choices. If your agents need to resume work, honor past decisions, and explain why they believe something, that is what Alice is built for.
+Most agent memory tools — mem0, Zep, Letta, and similar — focus on extracting facts from conversations and retrieving them later. That solves recall, and they do it well. Alice focuses on continuity: it stores typed continuity objects (decisions, open loops, resumption briefs) alongside plain memories; source-backed answers trace to the evidence that was supplied; and writes are review-governed, so an agent cannot silently promote a bad extraction into durable truth. Explicit commits may legitimately have no source reference. If you mainly need conversational fact recall, those tools are solid choices. If your agents need to resume work, honor past decisions, and explain why they believe something, that is what Alice is built for.
 
 Alice is a layer, not a lock-in: it runs happily alongside other memory tools, and plenty of stacks will want both — a fact-extraction memory for conversational recall and Alice for governed continuity.
 
 ## What Alice stores
 
-- **Memories** — typed, revisioned facts with trust classification and provenance links to source evidence.
+- **Memories** — typed, revisioned facts with trust classification and, when
+  evidence was supplied, provenance links to that source evidence.
 - **Decisions** — what was decided, when, and what superseded it.
 - **Open loops** — blockers, waiting-fors, and follow-ups that agents can query, create, and close.
 - **Resumption briefs** — "here is where work stopped, and what should happen next" for a project or thread.
-- **Provenance and audit** — every memory can explain which sources, reviews, and corrections produced it.
+- **Provenance and audit** — source-backed memories identify their supplied
+  sources; reviews and corrections preserve their audit chain. Explicit
+  commits may legitimately have no source reference.
 
 Corrections are first-class: when a memory is corrected or superseded, future recall reflects the correction and the explanation chain shows why.
 
@@ -138,9 +141,16 @@ search degrades to full-text only and says so explicitly in the retrieval trace.
 
 ## Status
 
-`v0.11.0` is the latest published release.
-`v0.11.0` narrows the default runtime
-to the agent interface and retrieval/memory core.
+`v0.11.1` is the current uncommitted Phase 2 release-hardening candidate. Its
+bounded local Python, PostgreSQL, SQLite, evaluation, web, and static builder
+matrix was green at package-input freeze; final package reproduction, a
+superseding carrier receipt, and independent review were still pending then.
+Exact-SHA external release gates remain pending.
+
+`v0.11.0` is the latest published release and remains the install, checksum,
+and release-note baseline.
+The published `v0.11.0` runtime narrows the default product to the agent
+interface and retrieval/memory core.
 Alice is a public-alpha, pre-1.0 project.
 What that means in practice:
 
@@ -169,6 +179,7 @@ What that means in practice:
 - [Security and privacy](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/security-and-privacy.md)
 - [v0.10.4 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.10.4-release-notes.md)
 - [v0.11.0 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.11.0-release-notes.md)
+- [v0.11.1 candidate release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.11.1-release-notes.md)
 - [Release procedure](https://github.com/samrusani/AliceBot/blob/main/RELEASING.md)
 - [Architecture](https://github.com/samrusani/AliceBot/blob/main/ARCHITECTURE.md)
 - [Roadmap](https://github.com/samrusani/AliceBot/blob/main/ROADMAP.md)

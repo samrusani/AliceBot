@@ -56,11 +56,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -74,9 +70,9 @@ def seed_user_with_source_memories(database_url: str, *, email: str) -> dict[str
         session = store.create_session(thread["id"], status="active")
         event_ids = [
             store.append_event(thread["id"], session["id"], "message.user", {"text": "works on AliceBot"})["id"],
-            store.append_event(
-                thread["id"], session["id"], "message.user", {"text": "works with Neighborhood Cafe"}
-            )["id"],
+            store.append_event(thread["id"], session["id"], "message.user", {"text": "works with Neighborhood Cafe"})[
+                "id"
+            ],
             store.append_event(thread["id"], session["id"], "message.user", {"text": "coffee preference"})["id"],
         ]
 
@@ -299,7 +295,7 @@ def test_entity_edge_endpoints_enforce_per_user_isolation_and_reference_validati
     list_status, list_payload = invoke_request(
         "GET",
         f"/v0/entities/{owner_entities['project']}/edges",
-        query_params={"user_id": str(intruder['user_id'])},
+        query_params={"user_id": str(intruder["user_id"])},
     )
     entity_status, entity_payload = invoke_request(
         "POST",
@@ -325,19 +321,11 @@ def test_entity_edge_endpoints_enforce_per_user_isolation_and_reference_validati
     )
 
     assert list_status == 404
-    assert list_payload == {
-        "detail": f"entity {owner_entities['project']} was not found",
-    }
+    assert list_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert entity_status == 400
-    assert entity_payload == {
-        "detail": "from_entity_id must reference an existing entity owned by the user: "
-        f"{owner_entities['person']}"
-    }
+    assert entity_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
     assert memory_status == 400
-    assert memory_payload == {
-        "detail": "source_memory_ids must all reference existing memories owned by the user: "
-        f"{owner['memory_ids'][0]}"
-    }
+    assert memory_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_create_entity_edge_endpoint_rejects_invalid_temporal_range(
@@ -371,6 +359,4 @@ def test_create_entity_edge_endpoint_rejects_invalid_temporal_range(
     )
 
     assert status_code == 400
-    assert payload == {
-        "detail": "valid_to must be greater than or equal to valid_from",
-    }
+    assert payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}

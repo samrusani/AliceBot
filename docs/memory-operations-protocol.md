@@ -18,7 +18,7 @@ Ten verbs cover the lifecycle of a memory:
 | [audit](#audit) | Explain a memory: sources, revisions, events | Shipped |
 | [merge](#merge) | Accept a consolidation candidate; supersede its members | Shipped |
 | [expire / unexpire](#expire--unexpire) | Close or reopen a memory's validity window | Shipped |
-| [redact](#redact) | Expunge a memory's content everywhere, keeping the audit skeleton | Shipped |
+| [redact](#redact) | Scrub governed memory copies, keeping the audit skeleton and source evidence | Shipped |
 
 All shipped verbs are on the default (core) MCP surface — no
 `ALICE_MCP_LEGACY_TOOLS` flag needed — and all of them work in SQLite
@@ -49,7 +49,10 @@ What routes where (from `evaluate_memory_commit_policy`):
 
 ## Audit guarantees
 
-Every verb below appends to two append-only stores:
+Mutating verbs append audit evidence to revisions and events. Read-only verbs
+do not append. These stores are append-only during ordinary lifecycle
+operations; exact authorized true redaction is the narrow exception that
+rewrites governed content copies to content-free skeletons:
 
 - **Revisions** (`memory_revisions`): each state change records the previous
   and new value, the text before and after, a typed `revision_type`
@@ -62,8 +65,9 @@ Every verb below appends to two append-only stores:
   `agent.memory_consolidation_accepted`, `memory.redacted`, plus the policy
   decision events), correlated by `trace_id` and the agent's `run_id`.
 
-Committed memories also carry **provenance links** to their source
-references, so [audit](#audit) can answer "where did this come from?".
+Committed memories with source references also carry **provenance links** to
+those references, so [audit](#audit) can answer "where did this come from?".
+An explicit commit may legitimately have no source reference.
 
 ## Identity and authentication
 
@@ -248,9 +252,11 @@ an `edited` revision plus an `agent.memory_expired` /
 
 ## redact
 
-Expunges a memory's content everywhere — for content that must actually
-go, not just leave recall. Redaction is destructive, requires a `reason`,
-and is restricted to a human operator or an admin agent.
+Scrubs the governed copies in a memory's lifecycle and any coupled terminal
+project-update artifact — for content that must leave memory recall and those
+lifecycle records, not just become hidden. Redaction is destructive within
+that scope, requires a `reason`, and is restricted to a human operator or an
+admin agent. It does not erase Alice source or source-chunk evidence.
 
 - MCP: `alice_memory_manage` with `action: "redact"`, `memory_id`, and
   `reason`
@@ -259,26 +265,48 @@ and is restricted to a human operator or an admin agent.
 
 Order of operations: if the memory is still live it goes through the
 [forget](#forget) flow first (so the lifecycle trail records why it left
-recall), then content is expunged from the memory row, then from its
-revisions, then from event payloads that reference it.
+recall), then one transaction expunges content from the memory row and its
+coupled revisions, event payloads, and quoted provenance. For a terminal
+project-update candidate, the same transaction also scrubs the accepted,
+edited, or rejected artifact and its quality-rating prose. The already-applied
+project state is intentionally retained: redaction scrubs the governed
+memory/artifact copies; it does not undo the reviewed project update.
 
-**Honest semantics:** the content is expunged; the skeleton is not.
+**Honest semantics:** governed memory/artifact copies are expunged; the audit
+skeleton and source evidence are not. Governed text uses the exact
+`[REDACTED]` marker, governed non-null free-form JSON uses the exact
+`{"redacted":true}` marker, and nullable fields that were null stay null.
 
-- *Expunged*: the row's title, canonical text, summary, and value become
-  the `[REDACTED]` marker; the embedding vector is cleared; metadata is
-  scrubbed to structural keys; revision texts, values, and reasons become
-  the marker; event payloads that reference the memory become
-  `{"redacted": true, ...}` and their integrity hashes are cleared (a kept
-  hash would let someone confirm guesses of the redacted content).
-- *Retained*: ids, memory/revision/event types, timestamps, actor columns,
-  and sequence numbers — the audit skeleton.
+- *Expunged*: the memory key is replaced, title/canonical text/summary/trust
+  prose and other governed text become `[REDACTED]` when non-null, value and
+  governed free-form JSON become `{"redacted":true}`, arbitrary metadata is
+  removed, `commit_digest` and `confirmation_id` are cleared, and source-event
+  ids, embeddings, and fact keys are cleared. Revision content and reasons,
+  quoted provenance, coupled event payload content/integrity hashes, terminal
+  artifact text/model/prompt inputs, and quality-rating prose/arbitrary
+  metadata are scrubbed to their exact content-free shapes. Null content fields
+  remain null.
+- *Retained*: ids and identity/link columns; memory type, domain, sensitivity,
+  confidence, salience, trust class, promotion eligibility, evidence counts,
+  extracted-by-model, validity/seen/review timestamps, `confirmation_status`,
+  and `last_confirmed_at`; lifecycle state and timestamps; revision/event types,
+  actors, and sequence numbers; terminal artifact status/review linkage; and all
+  six numeric rating dimensions (`usefulness`, `accuracy`, `source_grounding`,
+  `novel_connections`, `actionability`, `hallucination_risk`), categorical
+  `verbosity`, reviewer/id, and timestamp. Alice source rows and source chunks,
+  including their evidence content, are also retained: they may support other
+  memories and require a separate source hygiene action.
 - *Proof*: the row is archived and the `memory.redacted` event trail
-  (content, revisions, events operations) proves the redaction happened
-  and when.
+  proves the redaction happened and when. Repeating the operation after the
+  complete skeleton exists is a write-free idempotent replay.
 
 Works on both backends (Postgres and the SQLite on-ramp). Redaction is not
-reversible and is not a substitute for backup hygiene: copies that left the
-store (exports, backups) are out of its reach.
+reversible. SQLite has no generated-artifact or quality-rating subsystem, so
+its response reports zero for those coupled counts. Redaction is not a
+substitute for source or backup hygiene. Alice source/source-chunk evidence
+inside the store is intentionally out of this memory-lifecycle operation's
+scope because it may be shared. Upstream providers, prior exports, replicas,
+and backups also need their own erasure policy.
 
 ---
 

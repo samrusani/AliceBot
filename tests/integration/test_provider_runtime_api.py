@@ -17,12 +17,11 @@ import alicebot_api.main as main_module
 from alicebot_api.config import Settings, WorkspaceProviderConfig
 from alicebot_api.db import user_connection
 from alicebot_api.provider_configuration import provider_config_fingerprint
+from alicebot_api.public_errors import UPSTREAM_FAILURE
 from alicebot_api.provider_secrets import decode_provider_secret_ref, resolve_provider_api_key
 from alicebot_api.store import ContinuityStore
 
-TEST_PROVIDER_SECRET_MANAGER_URL = (
-    f"file://{(Path('/tmp').resolve() / 'alicebot-provider-runtime-secrets').as_posix()}"
-)
+TEST_PROVIDER_SECRET_MANAGER_URL = f"file://{(Path('/tmp').resolve() / 'alicebot-provider-runtime-secrets').as_posix()}"
 
 
 def invoke_request(
@@ -377,7 +376,7 @@ def test_local_provider_test_runtime_invoke_and_workspace_isolation(
 ) -> None:
     _configure_settings(migrated_database_urls, monkeypatch)
     user_id_a, _, user_account_id_a = _bootstrap_local_workspace("provider-local-a@example.com")
-    user_id_b, _, _ = _bootstrap_local_workspace("provider-local-b@example.com")
+    user_id_b, _, _user_account_id_b = _bootstrap_local_workspace("provider-local-b@example.com")
 
     captured_requests: list[dict[str, object]] = []
 
@@ -505,7 +504,39 @@ def test_local_provider_test_runtime_invoke_and_workspace_isolation(
         headers=identity_header(user_id_b),
     )
     assert detail_other_status == 404
-    assert "was not found" in detail_other_payload["detail"]
+    assert detail_other_payload["detail"] == {
+        "code": "not_found",
+        "message": "The requested resource was not found",
+    }
+
+    test_other_status, test_other_payload = invoke_request(
+        "POST",
+        "/v1/providers/test",
+        payload={
+            "provider_id": ollama_provider_id,
+            "prompt": "Do not disclose a provider identifier.",
+        },
+        headers=identity_header(user_id_b),
+    )
+    assert test_other_status == 404
+    assert test_other_payload == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
+
+    runtime_other_status, runtime_other_payload = invoke_request(
+        "POST",
+        "/v1/runtime/invoke",
+        payload={
+            "provider_id": ollama_provider_id,
+            "thread_id": str(uuid4()),
+            "message": "Do not disclose a provider identifier.",
+        },
+        headers=identity_header(user_id_b),
+    )
+    assert runtime_other_status == 404
+    assert runtime_other_payload == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
     thread_id = _seed_thread_for_user(
         admin_db_url=migrated_database_urls["admin"],
@@ -549,8 +580,7 @@ def test_local_provider_test_runtime_invoke_and_workspace_isolation(
     assert ollama_runtime_payload["assistant"]["usage"]["total_tokens"] == 17
     assert UUID(ollama_runtime_payload["assistant"]["event_id"])
     ollama_calls_before_replay = sum(
-        record["url"] == "http://ollama.example:11434/api/chat"
-        for record in captured_requests
+        record["url"] == "http://ollama.example:11434/api/chat" for record in captured_requests
     )
 
     replay_status, replay_payload = invoke_request(
@@ -561,10 +591,10 @@ def test_local_provider_test_runtime_invoke_and_workspace_isolation(
     )
     assert replay_status == 200
     assert replay_payload == ollama_runtime_payload
-    assert sum(
-        record["url"] == "http://ollama.example:11434/api/chat"
-        for record in captured_requests
-    ) == ollama_calls_before_replay
+    assert (
+        sum(record["url"] == "http://ollama.example:11434/api/chat" for record in captured_requests)
+        == ollama_calls_before_replay
+    )
 
     llamacpp_test_status, llamacpp_test_payload = invoke_request(
         "POST",
@@ -660,9 +690,7 @@ def test_provider_control_plane_requires_local_workspace_bootstrap(
         headers=identity_header(user_id),
     )
     assert register_status == 404
-    assert register_payload == {
-        "detail": "local workspace is not bootstrapped; POST /v1/workspaces/bootstrap first"
-    }
+    assert register_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
 
     list_status, list_payload = invoke_request(
         "GET",
@@ -825,9 +853,7 @@ def test_openai_compatible_no_auth_update_omits_auth_for_test_and_runtime(
         response_text="No-auth runtime response",
         response_id="resp_no_auth_runtime",
     )
-    user_id, workspace_id, user_account_id = _bootstrap_local_workspace(
-        "provider-openai-no-auth@example.com"
-    )
+    user_id, workspace_id, user_account_id = _bootstrap_local_workspace("provider-openai-no-auth@example.com")
 
     create_status, create_payload = invoke_request(
         "POST",
@@ -883,10 +909,7 @@ def test_openai_compatible_no_auth_update_omits_auth_for_test_and_runtime(
     assert runtime_payload["assistant"]["response_id"] == "resp_no_auth_runtime"
 
     assert len(captured_requests) == 4
-    assert all(
-        "authorization" not in {str(key).lower() for key in record["headers"]}
-        for record in captured_requests
-    )
+    assert all("authorization" not in {str(key).lower() for key in record["headers"]} for record in captured_requests)
     with psycopg.connect(migrated_database_urls["admin"]) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1140,10 +1163,7 @@ def test_workspace_bootstrap_config_invokes_openai_compatible_without_auth(
     assert provider_test_status == 200
     assert provider_test_payload["result"]["response_id"] == "resp_bootstrap_no_auth"
     assert len(captured_requests) == 3
-    assert all(
-        "authorization" not in {str(key).lower() for key in record["headers"]}
-        for record in captured_requests
-    )
+    assert all("authorization" not in {str(key).lower() for key in record["headers"]} for record in captured_requests)
 
 
 def test_workspace_bootstrap_config_seeds_vllm_provider(
@@ -1319,9 +1339,7 @@ def test_provider_invocation_telemetry_respects_workspace_rls(
 ) -> None:
     _configure_settings(migrated_database_urls, monkeypatch)
     install_openai_compatible_success(monkeypatch)
-    owner_user_id, _, owner_user_account_id = _bootstrap_local_workspace(
-        "provider-telemetry-rls-owner@example.com"
-    )
+    owner_user_id, _, owner_user_account_id = _bootstrap_local_workspace("provider-telemetry-rls-owner@example.com")
     _, _, other_user_account_id = _bootstrap_local_workspace("provider-telemetry-rls-other@example.com")
 
     create_status, create_payload = invoke_request(
@@ -1393,7 +1411,7 @@ def test_local_provider_rejects_api_key_when_auth_mode_none(
         headers=identity_header(user_id),
     )
     assert status == 400
-    assert payload["detail"] == "api_key must be empty when auth_mode is none"
+    assert payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
 
 
 def test_azure_provider_registration_test_and_no_plaintext_storage(
@@ -1576,7 +1594,7 @@ def test_azure_auth_mode_rotation_requires_new_compatible_secret(
         headers=identity_header(user_id),
     )
     assert rejected_status == 400
-    assert rejected_payload["detail"] == ("ad_token is required when changing Azure auth_mode")
+    assert rejected_payload["detail"] == ({"code": "invalid_request", "message": "The request is invalid"})
     assert old_secret_path.is_file()
 
     updated_status, updated_payload = invoke_request(
@@ -1683,7 +1701,10 @@ def test_azure_runtime_invoke_workspace_isolation_and_ad_token_auth(
         headers=identity_header(user_id_b),
     )
     assert other_workspace_status == 404
-    assert "was not found" in other_workspace_payload["detail"]
+    assert other_workspace_payload["detail"] == {
+        "code": "not_found",
+        "message": "The requested resource was not found",
+    }
 
     invalid_register_status, invalid_register_payload = invoke_request(
         "POST",
@@ -1699,7 +1720,9 @@ def test_azure_runtime_invoke_workspace_isolation_and_ad_token_auth(
         headers=identity_header(user_id_a),
     )
     assert invalid_register_status == 422
-    assert "api_key must be empty when auth_mode is azure_ad_token" in json.dumps(invalid_register_payload["detail"])
+    assert "api_key must be empty when auth_mode is azure_ad_token" in json.dumps(
+        invalid_register_payload["detail"]
+    )
 
     thread_id = _seed_thread_for_user(
         admin_db_url=migrated_database_urls["admin"],
@@ -1759,7 +1782,10 @@ def test_provider_registration_rejects_disallowed_targets(
             headers=identity_header(user_id),
         )
         assert status == 400
-        assert "not allowed by outbound policy" in payload["detail"]
+        assert payload["detail"] == {
+            "code": "invalid_request",
+            "message": "The request is invalid",
+        }
 
 
 def test_provider_dns_rejection_leaves_no_durable_configuration(
@@ -1801,7 +1827,10 @@ def test_provider_dns_rejection_leaves_no_durable_configuration(
         headers=identity_header(user_id),
     )
     assert status == 400
-    assert "not allowed by outbound policy" in payload["detail"]
+    assert payload["detail"] == {
+        "code": "invalid_request",
+        "message": "The request is invalid",
+    }
 
     with psycopg.connect(migrated_database_urls["admin"]) as conn:
         with conn.cursor() as cur:
@@ -1823,9 +1852,7 @@ def test_provider_test_and_runtime_reject_disallowed_target_without_outbound(
 ) -> None:
     _configure_settings(migrated_database_urls, monkeypatch)
     install_openai_compatible_success(monkeypatch)
-    user_id, workspace_id, user_account_id = _bootstrap_local_workspace(
-        "provider-security-blocked-runtime@example.com"
-    )
+    user_id, workspace_id, user_account_id = _bootstrap_local_workspace("provider-security-blocked-runtime@example.com")
     urlopen_call_count = 0
 
     def fake_urlopen(_request, _timeout):
@@ -1870,7 +1897,10 @@ def test_provider_test_and_runtime_reject_disallowed_target_without_outbound(
         headers=identity_header(user_id),
     )
     assert test_status == 400
-    assert "not allowed by outbound policy" in test_payload["detail"]
+    assert test_payload["detail"] == {
+        "code": "invalid_request",
+        "message": "The request is invalid",
+    }
 
     thread_id = _seed_thread_for_user(
         admin_db_url=migrated_database_urls["admin"],
@@ -1888,7 +1918,10 @@ def test_provider_test_and_runtime_reject_disallowed_target_without_outbound(
         headers=identity_header(user_id),
     )
     assert runtime_status == 400
-    assert "not allowed by outbound policy" in runtime_payload["detail"]
+    assert runtime_payload["detail"] == {
+        "code": "invalid_request",
+        "message": "The request is invalid",
+    }
     assert urlopen_call_count == 0
 
 
@@ -1897,9 +1930,7 @@ def test_provider_rejects_userinfo_and_redacts_legacy_rows(
     monkeypatch,
 ) -> None:
     _configure_settings(migrated_database_urls, monkeypatch)
-    user_id, workspace_id, user_account_id = _bootstrap_local_workspace(
-        "provider-security-userinfo@example.com"
-    )
+    user_id, workspace_id, user_account_id = _bootstrap_local_workspace("provider-security-userinfo@example.com")
 
     rejected_status, rejected_payload = invoke_request(
         "POST",
@@ -1915,7 +1946,10 @@ def test_provider_rejects_userinfo_and_redacts_legacy_rows(
         headers=identity_header(user_id),
     )
     assert rejected_status == 400
-    assert "embedded credentials" in rejected_payload["detail"]
+    assert rejected_payload["detail"] == {
+        "code": "invalid_request",
+        "message": "The request is invalid",
+    }
 
     legacy_provider_id: str
     with psycopg.connect(migrated_database_urls["admin"]) as conn:
@@ -2029,7 +2063,10 @@ def test_provider_error_reflection_and_persistence_are_sanitized(
         headers=identity_header(user_id),
     )
     assert test_status == 502
-    assert test_payload["detail"] == "provider upstream request failed"
+    assert test_payload["detail"] == {
+        "code": "upstream_failure",
+        "message": "An upstream service failed",
+    }
     assert sensitive_detail not in json.dumps(test_payload)
 
     with psycopg.connect(migrated_database_urls["admin"]) as conn:
@@ -2044,7 +2081,7 @@ def test_provider_error_reflection_and_persistence_are_sanitized(
             )
             provider_capability_row = cur.fetchone()
     assert provider_capability_row is not None
-    assert provider_capability_row[0] == "provider upstream request failed"
+    assert provider_capability_row[0] == UPSTREAM_FAILURE.message
     assert sensitive_detail not in provider_capability_row[0]
 
     thread_id = _seed_thread_for_user(
@@ -2063,7 +2100,10 @@ def test_provider_error_reflection_and_persistence_are_sanitized(
         headers=identity_header(user_id),
     )
     assert runtime_status == 502
-    assert runtime_payload["detail"] == "provider upstream request failed"
+    assert runtime_payload["detail"] == {
+        "code": "upstream_failure",
+        "message": "An upstream service failed",
+    }
     assert sensitive_detail not in json.dumps(runtime_payload)
 
     with psycopg.connect(migrated_database_urls["admin"]) as conn:
@@ -2084,5 +2124,5 @@ def test_provider_error_reflection_and_persistence_are_sanitized(
             )
             trace_row = cur.fetchone()
     assert trace_row is not None
-    assert trace_row[0] == "provider upstream request failed"
+    assert trace_row[0] == UPSTREAM_FAILURE.message
     assert sensitive_detail not in trace_row[0]

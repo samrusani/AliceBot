@@ -1288,7 +1288,17 @@ OPENAPI_OPERATION_RESPONSE_SCHEMAS: dict[tuple[str, str], tuple[str, dict[str, o
         _operation_schema(
             "RedactVnextMemorySuccessResponse",
             (
+                "forgotten_first",
+                "idempotent_replay",
                 "memory",
+                "reason",
+                "redacted_artifact_ids",
+                "redacted_artifacts",
+                "redacted_events",
+                "redacted_provenance_links",
+                "redacted_quality_ratings",
+                "redacted_revisions",
+                "redaction_marker",
                 "status",
             ),
         ),
@@ -2281,7 +2291,19 @@ _OPENAPI_EXPLICIT_PROPERTY_SCHEMAS.update(
         ("POST", "/v0/vnext/memories/accept-consolidation"): _typed_properties(
             objects=("accept_consolidation",), strings=("status",)
         ),
-        ("POST", "/v0/vnext/memories/redact"): _typed_properties(objects=("memory",), strings=("status",)),
+        ("POST", "/v0/vnext/memories/redact"): _typed_properties(
+            objects=("memory",),
+            strings=("status", "redaction_marker", "reason"),
+            string_arrays=("redacted_artifact_ids",),
+            integers=(
+                "redacted_revisions",
+                "redacted_events",
+                "redacted_artifacts",
+                "redacted_quality_ratings",
+                "redacted_provenance_links",
+            ),
+            booleans=("forgotten_first", "idempotent_replay"),
+        ),
         ("GET", "/v0/vnext/memories/recent-commits"): _typed_properties(objects=("summary",), object_arrays=("items",)),
         ("GET", "/v0/vnext/memories/{memory_id}/audit"): _typed_properties(
             objects=("summary",), object_arrays=("items",)
@@ -2670,6 +2692,7 @@ _CONNECTOR_SYNC_RESPONSE_FIELDS = (
     "failed_count",
     "previous_cursor",
     "sync_cursor",
+    "error_code",
     "source_ids",
     "failed_external_ids",
     "errors",
@@ -2942,6 +2965,11 @@ _OPENAPI_SOURCE_AUDITED_RESPONSES: dict[
             "forgotten_first",
             "redacted_revisions",
             "redacted_events",
+            "redacted_artifacts",
+            "redacted_artifact_ids",
+            "redacted_quality_ratings",
+            "redacted_provenance_links",
+            "idempotent_replay",
             "redaction_marker",
             "reason",
         ),
@@ -2954,7 +2982,7 @@ _OPENAPI_SOURCE_AUDITED_RESPONSES: dict[
     ),
     ("POST", "/v0/vnext/queue/tasks"): (_TASK_RESPONSE_FIELDS, None),
     ("POST", "/v0/vnext/queue/process-next"): (
-        ("status", "task_id", "artifact_id", "error_message"),
+        ("status", "task_id", "artifact_id", "error_code", "error_message"),
         None,
     ),
     ("POST", "/v0/vnext/artifacts/{artifact_id}/quality-ratings"): (_QUALITY_RATING_RESPONSE_FIELDS, None),
@@ -3042,9 +3070,7 @@ _OPENAPI_POLYMORPHIC_VARIANTS = [
         },
     },
 ]
-OPENAPI_OPERATION_RESPONSE_SCHEMAS[("POST", "/v1/runtime/invoke")][1]["oneOf"] = (
-    _OPENAPI_POLYMORPHIC_VARIANTS
-)
+OPENAPI_OPERATION_RESPONSE_SCHEMAS[("POST", "/v1/runtime/invoke")][1]["oneOf"] = _OPENAPI_POLYMORPHIC_VARIANTS
 
 
 # Phase 1 removes these public operations permanently.  Keep the inventory exact

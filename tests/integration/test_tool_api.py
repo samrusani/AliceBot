@@ -54,11 +54,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -124,7 +120,7 @@ def test_tool_endpoints_create_list_and_get_in_deterministic_order(migrated_data
     detail_status, detail_payload = invoke_request(
         "GET",
         f"/v0/tools/{second_payload['tool']['id']}",
-        query_params={"user_id": str(seeded['user_id'])},
+        query_params={"user_id": str(seeded["user_id"])},
     )
 
     assert first_status == 201
@@ -562,13 +558,9 @@ def test_tool_route_validates_invalid_thread_and_tool(migrated_database_urls, mo
     )
 
     assert invalid_thread_status == 400
-    assert invalid_thread_payload == {
-        "detail": "thread_id must reference an existing thread owned by the user"
-    }
+    assert invalid_thread_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
     assert invalid_tool_status == 400
-    assert invalid_tool_payload == {
-        "detail": "tool_id must reference an existing active tool owned by the user"
-    }
+    assert invalid_tool_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_tool_endpoints_and_allowlist_enforce_per_user_isolation(migrated_database_urls, monkeypatch) -> None:
@@ -623,7 +615,7 @@ def test_tool_endpoints_and_allowlist_enforce_per_user_isolation(migrated_databa
         },
     }
     assert detail_status == 404
-    assert detail_payload == {"detail": f"tool {owner_tool['id']} was not found"}
+    assert detail_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert evaluation_status == 200
     assert evaluation_payload["allowed"] == []
     assert evaluation_payload["denied"] == []
@@ -877,17 +869,11 @@ def test_tool_routing_validates_invalid_references_and_per_user_isolation(
     )
 
     assert invalid_thread_status == 400
-    assert invalid_thread_payload == {
-        "detail": "thread_id must reference an existing thread owned by the user"
-    }
+    assert invalid_thread_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
     assert invalid_tool_status == 400
-    assert invalid_tool_payload == {
-        "detail": "tool_id must reference an existing active tool owned by the user"
-    }
+    assert invalid_tool_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
     assert isolation_status == 400
-    assert isolation_payload == {
-        "detail": "tool_id must reference an existing active tool owned by the user"
-    }
+    assert isolation_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_tool_route_enforces_per_user_isolation(migrated_database_urls, monkeypatch) -> None:
@@ -925,6 +911,4 @@ def test_tool_route_enforces_per_user_isolation(migrated_database_urls, monkeypa
     )
 
     assert route_status == 400
-    assert route_payload == {
-        "detail": "tool_id must reference an existing active tool owned by the user"
-    }
+    assert route_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}

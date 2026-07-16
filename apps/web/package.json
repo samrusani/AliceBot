@@ -1,7 +1,7 @@
 {
   "name": "@alicebot/web",
   "private": true,
-  "version": "0.11.0",
+  "version": "0.11.1",
   "packageManager": "pnpm@10.23.0",
   "scripts": {
     "dev": "next dev",
@@ -11,6 +11,7 @@
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit --pretty false",
     "test": "vitest run",
+    "test:advisory-audit": "node --test scripts/npm-advisory-audit.test.mjs",
     "test:coverage": "pnpm run test:coverage:core && pnpm run test:coverage:vnext",
     "test:coverage:core": "vitest run --coverage --exclude app/vnext/page.test.tsx --exclude components/vnext-operator-auth.test.tsx --exclude test/vnext-coverage/vnext-coverage.test.tsx",
     "test:coverage:vnext": "vitest run --config vitest.vnext.config.ts --coverage",
@@ -41,6 +42,7 @@
     "eslint": "9.39.5",
     "eslint-config-next": "15.5.20",
     "jsdom": "26.1.0",
+    "semver": "7.8.0",
     "typescript": "5.8.2",
     "vitest": "3.2.6"
   },

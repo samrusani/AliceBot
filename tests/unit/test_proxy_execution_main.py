@@ -129,7 +129,9 @@ def test_execute_approved_proxy_endpoint_maps_missing_approval_to_404(monkeypatc
     )
 
     assert response.status_code == 404
-    assert json.loads(response.body) == {"detail": f"approval {approval_id} was not found"}
+    assert json.loads(response.body) == {
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
+    }
 
 
 def test_execute_approved_proxy_endpoint_maps_blocked_approval_to_409(monkeypatch) -> None:
@@ -142,9 +144,7 @@ def test_execute_approved_proxy_endpoint_maps_blocked_approval_to_409(monkeypatc
         yield object()
 
     def fake_execute_approved_proxy_request(*_args, **_kwargs):
-        raise ProxyExecutionApprovalStateError(
-            f"approval {approval_id} is pending and cannot be executed"
-        )
+        raise ProxyExecutionApprovalStateError(f"approval {approval_id} is pending and cannot be executed")
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
@@ -161,7 +161,7 @@ def test_execute_approved_proxy_endpoint_maps_blocked_approval_to_409(monkeypatc
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": f"approval {approval_id} is pending and cannot be executed"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
 
@@ -175,9 +175,7 @@ def test_execute_approved_proxy_endpoint_maps_missing_handler_to_409(monkeypatch
         yield object()
 
     def fake_execute_approved_proxy_request(*_args, **_kwargs):
-        raise ProxyExecutionHandlerNotFoundError(
-            "tool 'proxy.missing' has no registered proxy handler"
-        )
+        raise ProxyExecutionHandlerNotFoundError("tool 'proxy.missing' has no registered proxy handler")
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
@@ -194,7 +192,7 @@ def test_execute_approved_proxy_endpoint_maps_missing_handler_to_409(monkeypatch
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": "tool 'proxy.missing' has no registered proxy handler"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
 
@@ -208,9 +206,7 @@ def test_execute_approved_proxy_endpoint_maps_linkage_error_to_409(monkeypatch) 
         yield object()
 
     def fake_execute_approved_proxy_request(*_args, **_kwargs):
-        raise TaskStepApprovalLinkageError(
-            f"approval {approval_id} is missing linked task_step_id"
-        )
+        raise TaskStepApprovalLinkageError(f"approval {approval_id} is missing linked task_step_id")
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
@@ -227,7 +223,7 @@ def test_execute_approved_proxy_endpoint_maps_linkage_error_to_409(monkeypatch) 
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": f"approval {approval_id} is missing linked task_step_id"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
 

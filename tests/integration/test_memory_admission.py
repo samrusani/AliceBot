@@ -48,11 +48,7 @@ def invoke_admit_memory(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -128,9 +124,7 @@ def test_admit_memory_endpoint_rejects_unknown_source_events(migrated_database_u
     )
 
     assert status_code == 400
-    assert payload["detail"].startswith(
-        "source_event_ids must all reference existing events owned by the user"
-    )
+    assert payload["detail"] == {"code": "invalid_request", "message": "The request is invalid"}
 
 
 def test_admit_memory_endpoint_rejects_invalid_memory_type(migrated_database_urls, monkeypatch) -> None:
@@ -152,12 +146,7 @@ def test_admit_memory_endpoint_rejects_invalid_memory_type(migrated_database_url
     )
 
     assert status_code == 400
-    assert payload == {
-        "detail": (
-            "memory_type must be one of: preference, identity_fact, relationship_fact, project_fact, "
-            "decision, commitment, routine, constraint, working_style"
-        )
-    }
+    assert payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_admit_memory_endpoint_persists_add_update_and_delete_revisions(

@@ -73,8 +73,17 @@ For the full Postgres stack from a checkout:
   `unexpire` its validity window, `accept_consolidation` for a
   consolidation candidate, or `redact` its content. Undo, forget, and
   expire hide the memory from recall but keep its revisions and events;
-  redact permanently expunges the content from the row, revisions, and
-  event payloads while keeping the audit skeleton. Redact and
+  redact permanently expunges governed content from the row and its coupled
+  revisions, event payloads, and quoted provenance while keeping the audit
+  skeleton. When a memory is the candidate behind a terminal project update,
+  the same atomic operation also marker-scrubs that accepted/edited/rejected
+  artifact and its quality-rating prose without rolling back applied project
+  state. A complete replay is write-free and reports `idempotent_replay: true`.
+  SQLite has no artifact/rating subsystem and reports zero coupled counts.
+  Alice source/source-chunk evidence is retained because it may support other
+  memories and requires separate source hygiene. This operation also cannot
+  erase upstream providers, earlier exports, or backups.
+  Redact and
   accept_consolidation require a human operator or an admin agent, and
   expire/unexpire/accept_consolidation/redact all require a `reason`.
 
@@ -118,11 +127,14 @@ For the full Postgres stack from a checkout:
   JSON value is a string. Loop-event payload keys, non-string values, and JSON
   serialization structure do not match, and each event string leaf is
   evaluated independently rather than concatenated with neighboring leaves.
-  For those open-loop row fields and loop-event string leaves only, matching
-  is an ASCII case-insensitive literal substring operation: non-ASCII code
-  points are exact and receive no Unicode normalization, while `%`, `_`, and
-  `\\` are literal characters rather than SQL wildcards. Decision/next-action
-  memory search retains its memory-store matching contract. Legacy person/
+  Memory title/canonical-text/summary fields selected by
+  `list_memories(query=...)` and `list_resume_memory_events(query=...)`,
+  open-loop row fields, and loop-event string leaves all use the same ASCII
+  case-insensitive literal substring contract: non-ASCII code points are exact
+  and receive no Unicode normalization, while `%`, `_`, and `\\` are literal
+  characters rather than SQL wildcards. This scoped resume/recent-decision
+  filtering does not redefine `alice_recall`; generic `search_memories` keeps
+  its separate FTS/websearch retrieval semantics. Legacy person/
   thread inputs are accepted for compatibility and reported in
   `filters_ignored`; they do not narrow the brief.
 - `alice_recent_decisions` — recent decisions, newest first.
@@ -283,7 +295,15 @@ granular queue/graph/belief tools. `alice_vnext_commit_memory`,
 `alice_vnext_confirm_memory`, `alice_vnext_undo_memory`, and
 `alice_vnext_forget_memory` remain as aliases of the same handlers that now
 power `alice_memory_commit` and `alice_memory_manage` on the core surface.
-Calling a legacy tool without the flag returns an error naming the flag.
+Calling a legacy tool without the flag returns the stable `tool_not_found`
+wire code; server logs retain the flag-specific diagnostic for operators.
+
+At the MCP wire boundary, tool failures are deliberately stable and do not
+echo that internal diagnostic. The response retains `isError: true`, and
+`content[0].text` contains one serialized JSON object with an `error.code` of
+`tool_not_found`, `tool_request_failed`, or `tool_execution_failed` plus a
+static `error.message`. Operator-specific details remain in server logs. This
+also applies to the SQLite `alice-memory mcp` adapter.
 The task-brief tools name both flags when either one is missing. Permanently
 deleted hosted, channel, chat, chief-of-staff, and model-pack tools never list.
 New integrations should stay on the eleven core tools; the legacy surface

@@ -31,6 +31,10 @@ EMBEDDING_SIGNATURE_METADATA_KEY = "_alice_embedding"
 # pre-endpoint (v1) vectors so they are re-embedded rather than silently pooled
 # across endpoints that share provider/model labels.
 EMBEDDING_SIGNATURE_VERSION = 2
+EMBEDDING_PREPARATION_ERROR_CODE = "embedding_preparation_failed"
+EMBEDDING_PREPARATION_ERROR_MESSAGE = "Memory embedding preparation failed"
+EMBEDDING_PERSISTENCE_ERROR_CODE = "embedding_persistence_failed"
+EMBEDDING_PERSISTENCE_ERROR_MESSAGE = "Memory embedding persistence failed"
 
 
 class VNextEmbeddingConfigurationError(ValueError):
@@ -127,7 +131,7 @@ class PreparedMemoryEmbedding:
 @dataclass(frozen=True, slots=True)
 class MemoryEmbeddingFailure:
     memory_id: str
-    error_type: str
+    error_code: str
     error_message: str
 
 
@@ -461,7 +465,7 @@ def _log_embedding_failure(
     store: object,
     memory_id: str,
     *,
-    error_type: str,
+    error_code: str,
     error_message: str,
     provider: str | None,
     model: str | None,
@@ -481,7 +485,7 @@ def _log_embedding_failure(
                 target_id=memory_id,
                 trace_id=trace_id,
                 payload={
-                    "error_type": error_type,
+                    "error_code": error_code,
                     "error_message": error_message,
                     "provider": provider,
                     "model": model,
@@ -542,9 +546,17 @@ def prepare_memory_embeddings(
                 raise VNextEmbeddingProviderError(
                     f"embedding provider returned {len(vectors)} vectors for {len(batch)} inputs"
                 )
-        except Exception as exc:
+        except Exception:
+            logger.exception(
+                "memory embedding preparation batch failed error_code=%s",
+                EMBEDDING_PREPARATION_ERROR_CODE,
+            )
             failures.extend(
-                MemoryEmbeddingFailure(item.memory_id, type(exc).__name__, str(exc))
+                MemoryEmbeddingFailure(
+                    item.memory_id,
+                    EMBEDDING_PREPARATION_ERROR_CODE,
+                    EMBEDDING_PREPARATION_ERROR_MESSAGE,
+                )
                 for item, _text in batch
             )
             continue
@@ -565,9 +577,18 @@ def prepare_memory_embeddings(
                         signature_version=update["signature_version"],
                     )
                 )
-            except Exception as exc:
+            except Exception:
+                logger.exception(
+                    "memory embedding signature preparation failed memory_id=%s error_code=%s",
+                    item.memory_id,
+                    EMBEDDING_PREPARATION_ERROR_CODE,
+                )
                 failures.append(
-                    MemoryEmbeddingFailure(item.memory_id, type(exc).__name__, str(exc))
+                    MemoryEmbeddingFailure(
+                        item.memory_id,
+                        EMBEDDING_PREPARATION_ERROR_CODE,
+                        EMBEDDING_PREPARATION_ERROR_MESSAGE,
+                    )
                 )
     return MemoryEmbeddingPreparation(
         tuple(prepared),
@@ -593,7 +614,7 @@ def persist_prepared_memory_embeddings(
         _log_embedding_failure(
             store,
             failure.memory_id,
-            error_type=failure.error_type,
+            error_code=failure.error_code,
             error_message=failure.error_message,
             provider=preparation.provider,
             model=preparation.model,
@@ -611,12 +632,17 @@ def persist_prepared_memory_embeddings(
             # provider preparation, so the stale vector must be discarded.
             if updated is not None:
                 attached_count += 1
-        except Exception as exc:
+        except Exception:
+            logger.exception(
+                "memory embedding persistence failed memory_id=%s error_code=%s",
+                prepared.memory_id,
+                EMBEDDING_PERSISTENCE_ERROR_CODE,
+            )
             _log_embedding_failure(
                 store,
                 prepared.memory_id,
-                error_type=type(exc).__name__,
-                error_message=str(exc),
+                error_code=EMBEDDING_PERSISTENCE_ERROR_CODE,
+                error_message=EMBEDDING_PERSISTENCE_ERROR_MESSAGE,
                 provider=prepared.provider,
                 model=prepared.model,
                 actor_type=actor_type,
@@ -721,6 +747,10 @@ __all__ = [
     "EMBEDDINGS_MODEL_ENV",
     "EMBEDDING_SIGNATURE_METADATA_KEY",
     "EMBEDDING_SIGNATURE_VERSION",
+    "EMBEDDING_PREPARATION_ERROR_CODE",
+    "EMBEDDING_PREPARATION_ERROR_MESSAGE",
+    "EMBEDDING_PERSISTENCE_ERROR_CODE",
+    "EMBEDDING_PERSISTENCE_ERROR_MESSAGE",
     "DeferredMemoryEmbedding",
     "EmbeddingProvider",
     "MemoryEmbeddingFailure",

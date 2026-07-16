@@ -151,6 +151,23 @@ def test_doctor_accepts_on_demand_telegram_without_a_secret() -> None:
     assert all(check["name"] != "telegram_secret_ref" for check in payload["checks"])
 
 
+def test_doctor_connector_storage_failure_omits_exception_type_and_text() -> None:
+    sentinel = "UNIQUE_DOCTOR_STORAGE_EXCEPTION_SENTINEL"
+    store = DoctorStore()
+
+    def fail_settings() -> list[dict[str, object]]:
+        raise RuntimeError(sentinel)
+
+    store.list_connector_settings = fail_settings  # type: ignore[method-assign]
+
+    payload = VNextDoctorService(store).run(ci=True)
+
+    check = next(item for item in payload["checks"] if item["name"] == "connector_storage")
+    assert check["message"] == "Connector settings/state storage is unavailable."
+    assert "RuntimeError" not in str(check)
+    assert sentinel not in str(check)
+
+
 def test_doctor_blocks_pgvector_older_than_required_version() -> None:
     store = DoctorStore()
     original_status = store.connector_storage_status

@@ -97,6 +97,13 @@ def test_required_checks_match_actual_workflow_job_display_names() -> None:
     )
 
 
+def test_default_surface_smoke_is_required_for_prs_and_exact_sha_release() -> None:
+    context = "Default surface integration smoke (Postgres)"
+
+    assert context in release_checks.REQUIRED_CHECKS
+    assert context in release_checks.BRANCH_PROTECTION_REQUIRED_CHECKS
+
+
 def _active_main_ruleset(
     *contexts: str,
     strict: bool = True,

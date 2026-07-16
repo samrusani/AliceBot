@@ -25,6 +25,7 @@ from alicebot_api import __version__
 from alicebot_api.surface_flags import legacy_surfaces_enabled
 from alicebot_api.compiler import compile_and_persist_trace, compile_resumption_brief
 from alicebot_api.config import Settings, get_settings
+from alicebot_api.public_errors import CONFLICT, UPSTREAM_FAILURE, public_exception_response
 from alicebot_api.continuity_brief import (
     ContinuityBriefValidationError,
     compile_continuity_brief,
@@ -463,6 +464,10 @@ from alicebot_api.vnext_agent_keys import (
     resolve_protected_agent_identity,
 )
 from alicebot_api.vnext_project_scope import source_project_scope
+from alicebot_api.vnext_project_update_guard import (
+    PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE,
+    is_pending_project_update_memory,
+)
 from alicebot_api.vnext_artifact_review import dispatch_vnext_artifact_review
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService, VNextBrainValidationError
 from alicebot_api.vnext_capture import VNextCaptureService, VNextCaptureValidationError
@@ -526,7 +531,7 @@ from alicebot_api.vnext_scheduler_runtime import (
     run_due_workflows_durable,
     run_now_durable,
 )
-from alicebot_api.vnext_store import PostgresVNextStore
+from alicebot_api.vnext_store import PostgresVNextStore, is_redacted_project_update_artifact
 from alicebot_api.continuity_lifecycle import (
     ContinuityLifecycleNotFoundError,
     ContinuityLifecycleValidationError,
@@ -976,9 +981,7 @@ class AliceFastAPI(FastAPI):
             for operation_key, contract in _OPENAPI_EXACT_RESPONSE_CONTRACTS.items()
             if operation_key in live_operation_keys
         }
-        component_names = [
-            component_name for component_name, _component_schema in live_registry.values()
-        ]
+        component_names = [component_name for component_name, _component_schema in live_registry.values()]
         if len(component_names) != len(set(component_names)):
             raise RuntimeError("OpenAPI per-operation success component names must be unique")
         non_closed_operation_keys = {
@@ -1009,16 +1012,26 @@ class AliceFastAPI(FastAPI):
                     components.setdefault(definition_name, definition)
             contract_schema["additionalProperties"] = False
             components[component_name] = contract_schema
+        components["APIErrorDetail"] = {
+            "title": "Stable API error detail",
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+                "code": {"type": "string", "minLength": 1},
+                "message": {"type": "string", "minLength": 1},
+            },
+            "additionalProperties": True,
+        }
         components["APIErrorResponse"] = {
             "title": "API error response",
             "type": "object",
             "required": ["detail"],
             "properties": {
                 "detail": {
-                    "description": "Human-readable detail or structured error payload.",
+                    "description": "Static detail, stable structured error, or validation errors.",
                     "oneOf": [
                         {"type": "string"},
-                        {"type": "object", "additionalProperties": True},
+                        {"$ref": "#/components/schemas/APIErrorDetail"},
                         {"type": "array", "items": {}},
                     ],
                 }
@@ -2216,7 +2229,7 @@ def _vnext_authenticated_agent_identity(
 
 
 def _vnext_agent_auth_error_response(exc: AgentKeyAuthenticationError) -> JSONResponse:
-    return _vnext_public_error_response(status_code=exc.status_code, detail=str(exc))
+    return public_exception_response(exc, status_code=exc.status_code)
 
 
 def _vnext_permission_response(decision: PolicyDecision) -> JSONResponse:
@@ -2437,7 +2450,7 @@ async def _vnext_protected_http_auth(
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     request.state.vnext_agent_identity = identity
     return await call_next(request)
@@ -2545,6 +2558,8 @@ def _vnext_authorized_artifact(
     artifact = store.get_artifact_for_update(artifact_id) if for_update else store.get_artifact(artifact_id)
     if artifact is None:
         raise VNextQueueNotFoundError(f"artifact {artifact_id} was not found")
+    if action == "artifact.feedback" and is_redacted_project_update_artifact(artifact):
+        raise ValueError("feedback cannot be added to a redacted artifact")
 
     _vnext_agent_record(store, identity)
     decision = _vnext_exact_resource_policy(
@@ -3662,7 +3677,17 @@ def _attempt_runtime_provider_model(
             request=model_request,
         )
     except ValueError as exc:
-        error_detail = str(exc)
+        LOGGER.exception(
+            "Provider invocation failed with public error code=%s status=%d",
+            UPSTREAM_FAILURE.code,
+            UPSTREAM_FAILURE.status_code,
+            exc_info=(type(exc), exc, exc.__traceback__),
+            extra={
+                "public_error_code": UPSTREAM_FAILURE.code,
+                "public_error_status": UPSTREAM_FAILURE.status_code,
+            },
+        )
+        error_detail = UPSTREAM_FAILURE.message
         return _RuntimeProviderInvocationOutcome(
             response=None,
             error=ModelInvocationError(error_detail),
@@ -3670,17 +3695,26 @@ def _attempt_runtime_provider_model(
             error_detail=error_detail,
         )
     except ModelInvocationError as exc:
-        sanitized_error = sanitize_provider_error_message(str(exc))
+        LOGGER.exception(
+            "Provider invocation failed with public error code=%s status=%d",
+            UPSTREAM_FAILURE.code,
+            UPSTREAM_FAILURE.status_code,
+            exc_info=(type(exc), exc, exc.__traceback__),
+            extra={
+                "public_error_code": UPSTREAM_FAILURE.code,
+                "public_error_status": UPSTREAM_FAILURE.status_code,
+            },
+        )
         error: ModelInvocationError
         if isinstance(exc, ModelProviderUnavailableError):
-            error = ModelProviderUnavailableError(sanitized_error)
+            error = ModelProviderUnavailableError(UPSTREAM_FAILURE.message)
         else:
-            error = ModelInvocationError(sanitized_error)
+            error = ModelInvocationError(UPSTREAM_FAILURE.message)
         return _RuntimeProviderInvocationOutcome(
             response=None,
             error=error,
             latency_ms=max(0, int((time.monotonic() - started_at) * 1000)),
-            error_detail=sanitized_error,
+            error_detail=UPSTREAM_FAILURE.message,
         )
     return _RuntimeProviderInvocationOutcome(
         response=model_response,
@@ -4845,7 +4879,7 @@ async def enforce_authenticated_user_identity(
             _rewrite_user_id_query_param(request, authenticated_user_id)
             request = await _rewrite_user_id_json_body(request, authenticated_user_id)
     except ValueError as exc:
-        return JSONResponse(status_code=401, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=401)
 
     return await call_next(request)
 
@@ -5015,9 +5049,7 @@ class RuntimeInvokeRequest(BaseModel):
 def _resolve_authenticated_v1_user_id(settings: Settings, request: Request) -> UUID:
     user_account_id = _resolve_authenticated_user_id(settings, request)
     if user_account_id is None:
-        raise ValueError(
-            "local identity is required; set ALICEBOT_AUTH_USER_ID or provide X-AliceBot-User-Id"
-        )
+        raise ValueError("local identity is required; set ALICEBOT_AUTH_USER_ID or provide X-AliceBot-User-Id")
     return user_account_id
 
 
@@ -5162,15 +5194,15 @@ def compile_context(request: CompileContextRequest) -> JSONResponse:
                 semantic_artifact_retrieval=semantic_artifact_retrieval,
             )
     except TaskArtifactChunkRetrievalValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except SemanticArtifactChunkRetrievalValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except SemanticMemoryRetrievalValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except (TaskNotFoundError, TaskArtifactNotFoundError) as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except ContinuityStoreInvariantError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -5266,7 +5298,7 @@ def get_thread(thread_id: UUID, user_id: UUID) -> JSONResponse:
         thread = ContinuityStore(conn).get_thread_optional(thread_id)
 
     if thread is None:
-        return JSONResponse(status_code=404, content={"detail": f"thread {thread_id} was not found"})
+        return public_exception_response(LookupError(f"thread {thread_id} was not found"), status_code=404)
 
     payload: ThreadDetailResponse = {"thread": _serialize_thread(thread)}
     return JSONResponse(
@@ -5283,7 +5315,7 @@ def list_thread_sessions(thread_id: UUID, user_id: UUID) -> JSONResponse:
         store = ContinuityStore(conn)
         thread = store.get_thread_optional(thread_id)
         if thread is None:
-            return JSONResponse(status_code=404, content={"detail": f"thread {thread_id} was not found"})
+            return public_exception_response(LookupError(f"thread {thread_id} was not found"), status_code=404)
         items = [_serialize_thread_session(session) for session in store.list_thread_sessions(thread_id)]
 
     summary: ThreadSessionListSummary = {
@@ -5309,7 +5341,7 @@ def list_thread_events(thread_id: UUID, user_id: UUID) -> JSONResponse:
         store = ContinuityStore(conn)
         thread = store.get_thread_optional(thread_id)
         if thread is None:
-            return JSONResponse(status_code=404, content={"detail": f"thread {thread_id} was not found"})
+            return public_exception_response(LookupError(f"thread {thread_id} was not found"), status_code=404)
         items = [_serialize_thread_event(event) for event in store.list_thread_events(thread_id)]
 
     summary: ThreadEventListSummary = {
@@ -5359,7 +5391,7 @@ def get_thread_resumption_brief(
         store = ContinuityStore(conn)
         thread = store.get_thread_optional(thread_id)
         if thread is None:
-            return JSONResponse(status_code=404, content={"detail": f"thread {thread_id} was not found"})
+            return public_exception_response(LookupError(f"thread {thread_id} was not found"), status_code=404)
         brief = compile_resumption_brief(
             store,
             thread=thread,
@@ -5403,7 +5435,7 @@ def get_trace(trace_id: UUID, user_id: UUID) -> JSONResponse:
                 trace_id=trace_id,
             )
     except TraceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -5423,7 +5455,7 @@ def list_trace_events(trace_id: UUID, user_id: UUID) -> JSONResponse:
                 trace_id=trace_id,
             )
     except TraceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -5470,7 +5502,7 @@ def admit_memory(request: AdmitMemoryRequest) -> JSONResponse:
                 ),
             )
     except MemoryAdmissionValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     payload: dict[str, object] = {
         "decision": decision.action,
@@ -5524,7 +5556,7 @@ def get_open_loop(
                 open_loop_id=open_loop_id,
             )
     except OpenLoopNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -5548,7 +5580,7 @@ def create_open_loop(request: CreateOpenLoopRequest) -> JSONResponse:
                 ),
             )
     except OpenLoopValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -5575,9 +5607,9 @@ def update_open_loop_status(
                 ),
             )
     except OpenLoopValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except OpenLoopNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -5601,7 +5633,7 @@ def upsert_consent(request: UpsertConsentRequest) -> JSONResponse:
                 ),
             )
     except PolicyValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     status_code = 201 if payload["write_mode"] == "created" else 200
     return JSONResponse(
@@ -5665,7 +5697,7 @@ def create_policy(request: CreatePolicyRequest) -> JSONResponse:
                 ),
             )
     except PolicyValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -5701,7 +5733,7 @@ def get_policy(policy_id: UUID, user_id: UUID) -> JSONResponse:
                 policy_id=policy_id,
             )
     except PolicyNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -5726,7 +5758,7 @@ def evaluate_policy(request: EvaluatePolicyRequest) -> JSONResponse:
                 ),
             )
     except PolicyEvaluationValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -5759,7 +5791,7 @@ def create_tool(request: CreateToolRequest) -> JSONResponse:
                 ),
             )
     except ToolValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -5802,7 +5834,7 @@ def evaluate_tools_allowlist(request: EvaluateToolAllowlistRequest) -> JSONRespo
                 ),
             )
     except ToolAllowlistValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -5830,7 +5862,7 @@ def route_tool(request: RouteToolRequest) -> JSONResponse:
                 ),
             )
     except ToolRoutingValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -5859,7 +5891,7 @@ def create_approval_request(request: CreateApprovalRequest) -> JSONResponse:
                 ),
             )
     except ToolRoutingValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -5895,7 +5927,7 @@ def get_approval(approval_id: UUID, user_id: UUID) -> JSONResponse:
                 approval_id=approval_id,
             )
     except ApprovalNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -5926,10 +5958,10 @@ def approve_approval(approval_id: UUID, request: ResolveApprovalRequest) -> JSON
                 resolution_error = exc
                 payload = None
     except ApprovalNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     if resolution_error is not None:
-        return JSONResponse(status_code=409, content={"detail": str(resolution_error)})
+        return public_exception_response(resolution_error, status_code=409)
 
     return JSONResponse(
         status_code=200,
@@ -5960,10 +5992,10 @@ def reject_approval(approval_id: UUID, request: ResolveApprovalRequest) -> JSONR
                 resolution_error = exc
                 payload = None
     except ApprovalNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     if resolution_error is not None:
-        return JSONResponse(status_code=409, content={"detail": str(resolution_error)})
+        return public_exception_response(resolution_error, status_code=409)
 
     return JSONResponse(
         status_code=200,
@@ -5999,10 +6031,10 @@ def execute_approved_proxy(approval_id: UUID, request: ExecuteApprovedProxyReque
                 execution_error = exc
                 payload = None
     except ApprovalNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     if execution_error is not None:
-        return JSONResponse(status_code=409, content={"detail": str(execution_error)})
+        return public_exception_response(execution_error, status_code=409)
 
     return JSONResponse(
         status_code=200,
@@ -6038,7 +6070,7 @@ def get_task(task_id: UUID, user_id: UUID) -> JSONResponse:
                 task_id=task_id,
             )
     except TaskNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -6063,9 +6095,9 @@ def create_task_run(task_id: UUID, request: CreateTaskRunRequest) -> JSONRespons
                 ),
             )
     except TaskNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except TaskRunValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -6085,7 +6117,7 @@ def list_task_runs(task_id: UUID, user_id: UUID) -> JSONResponse:
                 task_id=task_id,
             )
     except TaskNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -6105,7 +6137,7 @@ def get_task_run(task_run_id: UUID, user_id: UUID) -> JSONResponse:
                 task_run_id=task_run_id,
             )
     except TaskRunNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -6133,11 +6165,11 @@ def _mutate_task_run(
                 request=mutation_input_model(task_run_id=task_run_id),
             )
     except TaskRunValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except TaskRunNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except TaskRunTransitionError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
 
     return JSONResponse(
         status_code=200,
@@ -6209,11 +6241,11 @@ def connect_gmail_account(request: ConnectGmailAccountRequest) -> JSONResponse:
                 ),
             )
     except GmailCredentialValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except GmailCredentialPersistenceError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
     except GmailAccountAlreadyExistsError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
 
     return JSONResponse(
         status_code=201,
@@ -6249,7 +6281,7 @@ def get_gmail_account(gmail_account_id: UUID, user_id: UUID) -> JSONResponse:
                 gmail_account_id=gmail_account_id,
             )
     except GmailAccountNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -6279,25 +6311,25 @@ def ingest_gmail_message(
                 ),
             )
     except GmailAccountNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except TaskWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except GmailMessageNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except GmailMessageUnsupportedError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except (
         GmailCredentialNotFoundError,
         GmailCredentialInvalidError,
         GmailCredentialPersistenceError,
     ) as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
     except TaskArtifactValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except (GmailMessageFetchError, GmailCredentialRefreshError) as exc:
-        return JSONResponse(status_code=502, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=502)
     except TaskArtifactAlreadyExistsError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
 
     return JSONResponse(
         status_code=200,
@@ -6325,11 +6357,11 @@ def connect_calendar_account(request: ConnectCalendarAccountRequest) -> JSONResp
                 ),
             )
     except CalendarCredentialValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except CalendarCredentialPersistenceError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
     except CalendarAccountAlreadyExistsError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
 
     return JSONResponse(
         status_code=201,
@@ -6365,7 +6397,7 @@ def get_calendar_account(calendar_account_id: UUID, user_id: UUID) -> JSONRespon
                 calendar_account_id=calendar_account_id,
             )
     except CalendarAccountNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -6398,17 +6430,17 @@ def list_calendar_events(
                 ),
             )
     except CalendarAccountNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except (
         CalendarCredentialNotFoundError,
         CalendarCredentialInvalidError,
         CalendarCredentialPersistenceError,
     ) as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
     except CalendarEventListValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except CalendarEventFetchError as exc:
-        return JSONResponse(status_code=502, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=502)
 
     return JSONResponse(
         status_code=200,
@@ -6438,25 +6470,25 @@ def ingest_calendar_event(
                 ),
             )
     except CalendarAccountNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except TaskWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except CalendarEventNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except CalendarEventUnsupportedError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except (
         CalendarCredentialNotFoundError,
         CalendarCredentialInvalidError,
         CalendarCredentialPersistenceError,
     ) as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
     except TaskArtifactValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except CalendarEventFetchError as exc:
-        return JSONResponse(status_code=502, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=502)
     except TaskArtifactAlreadyExistsError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
 
     return JSONResponse(
         status_code=200,
@@ -6480,9 +6512,9 @@ def create_task_workspace(task_id: UUID, request: CreateTaskWorkspaceRequest) ->
                 ),
             )
     except TaskNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except (TaskWorkspaceAlreadyExistsError, TaskWorkspaceProvisioningError) as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
 
     return JSONResponse(
         status_code=201,
@@ -6518,7 +6550,7 @@ def get_task_workspace(task_workspace_id: UUID, user_id: UUID) -> JSONResponse:
                 task_workspace_id=task_workspace_id,
             )
     except TaskWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -6538,7 +6570,7 @@ def list_task_steps(task_id: UUID, user_id: UUID) -> JSONResponse:
                 task_id=task_id,
             )
     except TaskNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -6558,7 +6590,7 @@ def get_task_step(task_step_id: UUID, user_id: UUID) -> JSONResponse:
                 task_step_id=task_step_id,
             )
     except TaskStepNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -6585,11 +6617,11 @@ def register_task_artifact(
                 ),
             )
     except TaskWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except TaskArtifactValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except TaskArtifactAlreadyExistsError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
 
     return JSONResponse(
         status_code=201,
@@ -6625,7 +6657,7 @@ def get_task_artifact(task_artifact_id: UUID, user_id: UUID) -> JSONResponse:
                 task_artifact_id=task_artifact_id,
             )
     except TaskArtifactNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -6648,11 +6680,11 @@ def ingest_task_artifact(
                 request=TaskArtifactIngestInput(task_artifact_id=task_artifact_id),
             )
     except TaskArtifactNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except TaskWorkspaceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except TaskArtifactValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -6672,7 +6704,7 @@ def list_task_artifact_chunks(task_artifact_id: UUID, user_id: UUID) -> JSONResp
                 task_artifact_id=task_artifact_id,
             )
     except TaskArtifactNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -6698,9 +6730,9 @@ def retrieve_task_artifact_chunks(
                 ),
             )
     except TaskNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except TaskArtifactChunkRetrievalValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -6726,9 +6758,9 @@ def retrieve_task_artifact_chunks_for_artifact(
                 ),
             )
     except TaskArtifactNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except TaskArtifactChunkRetrievalValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -6756,9 +6788,9 @@ def retrieve_semantic_task_artifact_chunks(
                 ),
             )
     except TaskNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except SemanticArtifactChunkRetrievalValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -6786,9 +6818,9 @@ def retrieve_semantic_artifact_chunks_for_artifact(
                 ),
             )
     except TaskArtifactNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except SemanticArtifactChunkRetrievalValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -6819,9 +6851,9 @@ def create_next_task_step(task_id: UUID, request: CreateNextTaskStepRequest) -> 
                 ),
             )
     except TaskNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except TaskStepSequenceError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
 
     return JSONResponse(
         status_code=201,
@@ -6845,9 +6877,9 @@ def transition_task_step(task_step_id: UUID, request: TransitionTaskStepRequest)
                 ),
             )
     except TaskStepNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except TaskStepTransitionError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
 
     return JSONResponse(
         status_code=200,
@@ -6873,7 +6905,7 @@ def create_execution_budget(request: CreateExecutionBudgetRequest) -> JSONRespon
                 ),
             )
     except ExecutionBudgetValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -6909,7 +6941,7 @@ def get_execution_budget(execution_budget_id: UUID, user_id: UUID) -> JSONRespon
                 execution_budget_id=execution_budget_id,
             )
     except ExecutionBudgetNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -6940,12 +6972,12 @@ def deactivate_execution_budget(
                 lifecycle_error = exc
                 payload = None
     except ExecutionBudgetValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except ExecutionBudgetNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     if lifecycle_error is not None:
-        return JSONResponse(status_code=409, content={"detail": str(lifecycle_error)})
+        return public_exception_response(lifecycle_error, status_code=409)
 
     return JSONResponse(
         status_code=200,
@@ -6977,12 +7009,12 @@ def supersede_execution_budget(
                 lifecycle_error = exc
                 payload = None
     except ExecutionBudgetValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except ExecutionBudgetNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     if lifecycle_error is not None:
-        return JSONResponse(status_code=409, content={"detail": str(lifecycle_error)})
+        return public_exception_response(lifecycle_error, status_code=409)
 
     return JSONResponse(
         status_code=200,
@@ -7018,7 +7050,7 @@ def get_tool_execution(execution_id: UUID, user_id: UUID) -> JSONResponse:
                 execution_id=execution_id,
             )
     except ToolExecutionNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -7038,7 +7070,7 @@ def get_tool(tool_id: UUID, user_id: UUID) -> JSONResponse:
                 tool_id=tool_id,
             )
     except ToolNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -7060,9 +7092,9 @@ def extract_explicit_preferences(request: ExtractExplicitPreferencesRequest) -> 
                 ),
             )
     except ExplicitPreferenceExtractionValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except MemoryAdmissionValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -7084,9 +7116,9 @@ def extract_explicit_commitments(request: ExtractExplicitCommitmentsRequest) -> 
                 ),
             )
     except ExplicitCommitmentExtractionValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except MemoryAdmissionValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -7108,9 +7140,9 @@ def capture_explicit_signals(request: CaptureExplicitSignalsRequest) -> JSONResp
                 ),
             )
     except ExplicitSignalCaptureValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except MemoryAdmissionValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -7133,7 +7165,7 @@ def create_continuity_capture(request: ContinuityCaptureRequest) -> JSONResponse
                 ),
             )
     except (ContinuityCaptureValidationError, ContinuityObjectValidationError) as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -7160,7 +7192,7 @@ def create_vnext_source(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -7692,7 +7724,7 @@ def review_vnext_source(source_id: UUID, request: VNextSourceReviewRequest) -> J
                 source=updated,
             )
     except ContinuityStoreInvariantError as exc:
-        return _vnext_public_error_response(status_code=409, detail=str(exc))
+        return public_exception_response(exc, status_code=409)
 
     return JSONResponse(
         status_code=200, content=jsonable_encoder({"source": updated, "archived": False, "trace": trace})
@@ -7813,7 +7845,7 @@ def create_vnext_context_pack(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         requested_domains = _vnext_string_list(scope, "domains")
@@ -7922,7 +7954,7 @@ def get_vnext_context_tree(
                 )
             )
     except VNextContextTreeValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -7968,7 +8000,7 @@ def review_vnext_memory(
             if decision.decision == "blocked":
                 return _vnext_permission_response(decision)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
 
@@ -8013,7 +8045,7 @@ def review_vnext_memory(
         except AgentPolicyBlockedError as exc:
             return _vnext_permission_response(exc.decision)
         except VNextMemoryCommitValidationError as exc:
-            return _vnext_public_error_response(status_code=400, detail=str(exc))
+            return public_exception_response(exc, status_code=400)
         _persist_vnext_deferred_embeddings(
             database_url=settings.database_url,
             user_id=request.user_id,
@@ -8125,6 +8157,11 @@ def review_vnext_memory(
                     status_code=409,
                     detail="vNext memory became a consolidation candidate during review; retry the approval",
                 )
+        if is_pending_project_update_memory(existing):
+            return _vnext_public_error_response(
+                status_code=409,
+                detail=PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE,
+            )
 
         existing_metadata_value = existing.get("metadata_json")
         existing_metadata: dict[str, object] = (
@@ -8306,7 +8343,7 @@ def create_vnext_memory_proposal(
     try:
         _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -8429,7 +8466,7 @@ def commit_vnext_memory(
             user_id=request.user_id,
         )
     except (AgentIdentityValidationError, VNextMemoryCommitValidationError) as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -8442,7 +8479,7 @@ def commit_vnext_memory(
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except VNextMemoryCommitValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     _persist_vnext_deferred_embeddings(
         database_url=settings.database_url,
@@ -8465,7 +8502,7 @@ def confirm_vnext_memory(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -8486,7 +8523,7 @@ def confirm_vnext_memory(
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
     except VNextMemoryCommitValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     _persist_vnext_deferred_embeddings(
         database_url=settings.database_url,
@@ -8507,7 +8544,7 @@ def undo_vnext_memory(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -8525,7 +8562,7 @@ def undo_vnext_memory(
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
     except VNextMemoryCommitValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -8539,7 +8576,7 @@ def correct_vnext_memory(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -8559,7 +8596,7 @@ def correct_vnext_memory(
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
     except VNextMemoryCommitValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     _persist_vnext_deferred_embeddings(
         database_url=settings.database_url,
@@ -8580,7 +8617,7 @@ def forget_vnext_memory(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -8598,7 +8635,7 @@ def forget_vnext_memory(
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
     except VNextMemoryCommitValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -8612,7 +8649,7 @@ def expire_vnext_memory(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -8635,7 +8672,7 @@ def expire_vnext_memory(
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except VNextMemoryCommitValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -8649,7 +8686,7 @@ def unexpire_vnext_memory(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -8668,7 +8705,7 @@ def unexpire_vnext_memory(
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except VNextMemoryCommitValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -8683,7 +8720,7 @@ def accept_vnext_memory_consolidation(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -8705,7 +8742,7 @@ def accept_vnext_memory_consolidation(
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except VNextMemoryCommitValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     if service is not None:
         actor_type, actor_id = _vnext_agent_actor(identity, fallback="user")
@@ -8728,7 +8765,7 @@ def redact_vnext_memory(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -8736,8 +8773,6 @@ def redact_vnext_memory(
             identity = _vnext_authenticated_agent_identity(
                 store, request, user_id=request.user_id, authorization=authorization
             )
-            if store.get_memory(str(request.memory_id)) is None:
-                return _vnext_public_error_response(status_code=404, detail="vNext memory was not found")
             try:
                 payload = redact_memory_flow(
                     store,
@@ -8750,7 +8785,9 @@ def redact_vnext_memory(
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except VNextMemoryCommitValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        if str(exc) == "memory was not found":
+            return _vnext_public_error_response(status_code=404, detail="vNext memory was not found")
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -8772,7 +8809,7 @@ def get_vnext_memory_audit(memory_id: UUID, user_id: UUID) -> JSONResponse:
             store = PostgresVNextStore(conn)
             payload = VNextMemoryCommitService(store).audit(memory_id=str(memory_id))
     except VNextMemoryCommitValidationError as exc:
-        return _vnext_public_error_response(status_code=404, detail=str(exc))
+        return public_exception_response(exc, status_code=404)
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
@@ -8785,7 +8822,7 @@ def generate_vnext_daily_brief(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -8835,7 +8872,7 @@ def generate_vnext_weekly_synthesis(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -8885,7 +8922,7 @@ def generate_vnext_connection_report(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -8936,7 +8973,7 @@ def generate_vnext_contradiction_report(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -8987,7 +9024,7 @@ def create_vnext_queue_task(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -9115,7 +9152,7 @@ def review_vnext_artifact(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -9187,7 +9224,7 @@ def rate_vnext_artifact_quality(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -9235,6 +9272,11 @@ def rate_vnext_artifact_quality(
         return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
+    except ValueError:
+        return _vnext_public_error_response(
+            status_code=400,
+            detail="vNext artifact quality rating request is invalid",
+        )
 
     return JSONResponse(status_code=201, content=jsonable_encoder(payload))
 
@@ -9391,7 +9433,7 @@ def generate_vnext_project_update_candidate(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -9443,7 +9485,7 @@ def review_vnext_project_update_candidate(
     try:
         _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -9519,7 +9561,7 @@ def create_vnext_open_loop(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -9680,7 +9722,7 @@ def patch_vnext_scheduler_workflow(
         if request.schedule_json is not None:
             validate_schedule(workflow_type, request.schedule_json)
     except (AgentIdentityValidationError, VNextSchedulerValidationError) as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -9712,7 +9754,7 @@ def patch_vnext_scheduler_workflow(
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except VNextSchedulerValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -9731,7 +9773,7 @@ def run_vnext_scheduler_workflow_now(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
     scope = request.scope
     options = request.options
     requested_domains = _vnext_string_list(scope, "domains")
@@ -9779,7 +9821,7 @@ def run_vnext_scheduler_workflow_now(
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except VNextSchedulerValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -9795,7 +9837,7 @@ def run_vnext_scheduler_due(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     actor_type = "scheduler"
     try:
@@ -9824,7 +9866,7 @@ def run_vnext_scheduler_due(
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except VNextSchedulerValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -9858,7 +9900,7 @@ def _vnext_scheduler_global_control(
     try:
         identity = _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -9880,7 +9922,7 @@ def _vnext_scheduler_global_control(
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except VNextSchedulerValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -9946,7 +9988,7 @@ def review_vnext_open_loop(
                 resolution_note=request.resolution_note,
             )
     except AgentIdentityValidationError as exc:
-        return _vnext_public_error_response(status_code=400, detail=str(exc))
+        return public_exception_response(exc, status_code=400)
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
     except AgentPolicyBlockedError as exc:
@@ -9974,7 +10016,7 @@ def create_continuity_capture_candidates(request: ContinuityCaptureCandidatesReq
                 ),
             )
     except ContinuityCaptureValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -9999,7 +10041,7 @@ def commit_continuity_capture_candidates(request: ContinuityCaptureCommitRequest
                 ),
             )
     except (ContinuityCaptureValidationError, ContinuityObjectValidationError) as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -10035,11 +10077,11 @@ def generate_memory_operation_candidates_endpoint(
                 ),
             )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except MemoryMutationValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except ContinuityCaptureValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -10071,9 +10113,9 @@ def list_memory_operation_candidates_endpoint(
                 ),
             )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except MemoryMutationValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -10101,9 +10143,9 @@ def commit_memory_operations_endpoint(
                 ),
             )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except MemoryMutationValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -10131,9 +10173,9 @@ def list_memory_operations_endpoint(
                 ),
             )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except MemoryMutationValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -10173,7 +10215,7 @@ def get_continuity_capture(capture_event_id: UUID, user_id: UUID) -> JSONRespons
                 capture_event_id=capture_event_id,
             )
     except ContinuityCaptureNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -10200,7 +10242,7 @@ def list_continuity_lifecycle_endpoint(
                 request=ContinuityLifecycleQueryInput(limit=limit),
             )
     except ContinuityLifecycleValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -10223,7 +10265,7 @@ def get_continuity_lifecycle_endpoint(
                 continuity_object_id=continuity_object_id,
             )
     except ContinuityLifecycleNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -10254,7 +10296,7 @@ def list_continuity_review_queue_endpoint(
                 ),
             )
     except ContinuityReviewValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -10277,7 +10319,7 @@ def get_continuity_review_detail_endpoint(
                 continuity_object_id=continuity_object_id,
             )
     except ContinuityReviewNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -10301,7 +10343,7 @@ def get_continuity_explain_endpoint(
                 include_raw_content=False,
             )
     except ContinuityEvidenceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -10328,9 +10370,9 @@ def detect_contradictions_endpoint(
                 ),
             )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except ContinuityContradictionValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -10361,9 +10403,9 @@ def list_contradiction_cases_endpoint(
                 ),
             )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except ContinuityContradictionValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -10384,9 +10426,9 @@ def get_contradiction_case_endpoint(
                 contradiction_case_id=contradiction_case_id,
             )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except ContinuityContradictionNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -10412,11 +10454,11 @@ def resolve_contradiction_case_endpoint(
                 ),
             )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except ContinuityContradictionValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except ContinuityContradictionNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -10449,7 +10491,7 @@ def list_trust_signals_endpoint(
                 ),
             )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -10474,7 +10516,7 @@ def get_temporal_state_at_endpoint(
             )
     except (TemporalStateNotFoundError, TemporalStateValidationError) as exc:
         status_code = 404 if isinstance(exc, TemporalStateNotFoundError) else 400
-        return JSONResponse(status_code=status_code, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=status_code)
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -10503,7 +10545,7 @@ def get_temporal_timeline_endpoint(
             )
     except (TemporalStateNotFoundError, TemporalStateValidationError) as exc:
         status_code = 404 if isinstance(exc, TemporalStateNotFoundError) else 400
-        return JSONResponse(status_code=status_code, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=status_code)
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -10528,7 +10570,7 @@ def get_temporal_explain_endpoint(
             )
     except (TemporalStateNotFoundError, TemporalStateValidationError) as exc:
         status_code = 404 if isinstance(exc, TemporalStateNotFoundError) else 400
-        return JSONResponse(status_code=status_code, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=status_code)
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -10568,7 +10610,7 @@ def get_trusted_fact_pattern_endpoint(
                 pattern_id=pattern_id,
             )
     except TrustedFactPromotionNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -10608,7 +10650,7 @@ def get_trusted_fact_playbook_endpoint(
                 playbook_id=playbook_id,
             )
     except TrustedFactPromotionNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -10644,7 +10686,7 @@ def get_continuity_artifact_detail_endpoint(
                 include_raw_content=include_raw_content,
             )
     except ContinuityEvidenceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -10679,9 +10721,9 @@ def apply_continuity_correction_endpoint(
                 ),
             )
     except ContinuityReviewValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except ContinuityReviewNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -10724,9 +10766,9 @@ def get_continuity_open_loop_dashboard(
                 ),
             )
     except ContinuityOpenLoopValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except ContinuityRecallValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -10769,9 +10811,9 @@ def get_continuity_daily_brief(
                 ),
             )
     except ContinuityOpenLoopValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except ContinuityRecallValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -10814,9 +10856,9 @@ def get_continuity_weekly_review(
                 ),
             )
     except ContinuityOpenLoopValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except ContinuityRecallValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -10843,9 +10885,9 @@ def apply_continuity_open_loop_review_action_endpoint(
                 ),
             )
     except ContinuityOpenLoopValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except ContinuityOpenLoopNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -10890,7 +10932,7 @@ def list_continuity_recall(
                 ),
             )
     except ContinuityRecallValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -10917,7 +10959,7 @@ def get_continuity_retrieval_runs(
                 limit=limit,
             )
     except ContinuityRecallValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -10940,7 +10982,7 @@ def get_continuity_retrieval_trace(
                 retrieval_run_id=retrieval_run_id,
             )
     except RetrievalTraceNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -10976,7 +11018,7 @@ def get_public_eval_suites(request: Request) -> JSONResponse:
                 user_id=user_id,
             )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -11000,9 +11042,9 @@ def create_public_eval_run(
                 suite_keys=suite_key,
             )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -11026,7 +11068,7 @@ def get_public_eval_runs(
                 limit=limit,
             )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -11050,9 +11092,9 @@ def get_public_eval_run_detail(
                 eval_run_id=eval_run_id,
             )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except LookupError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -11105,9 +11147,9 @@ def get_continuity_resumption_brief(
                 ),
             )
     except ContinuityResumptionValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except ContinuityRecallValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -11146,14 +11188,14 @@ def post_continuity_brief(
                 ),
             )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except (
         ContinuityBriefValidationError,
         ContinuityRecallValidationError,
         ContinuityResumptionValidationError,
         TaskBriefValidationError,
     ) as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -11190,7 +11232,7 @@ def post_v0_task_brief_compile(body: TaskBriefCompileRequest) -> JSONResponse:
         ContinuityRecallValidationError,
         ContinuityResumptionValidationError,
     ) as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -11209,7 +11251,7 @@ def get_v0_task_brief(task_brief_id: UUID, user_id: UUID) -> JSONResponse:
                 task_brief_id=task_brief_id,
             )
     except TaskBriefNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -11260,7 +11302,7 @@ def post_v0_task_brief_compare(body: TaskBriefCompareRequest) -> JSONResponse:
         ContinuityRecallValidationError,
         ContinuityResumptionValidationError,
     ) as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -11392,7 +11434,7 @@ def retrieve_semantic_memories(request: RetrieveSemanticMemoriesRequest) -> JSON
                 ),
             )
     except SemanticMemoryRetrievalValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -11415,7 +11457,7 @@ def get_memory(
                 memory_id=memory_id,
             )
     except MemoryReviewNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -11440,7 +11482,7 @@ def list_memory_revisions(
                 limit=limit,
             )
     except MemoryReviewNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -11465,7 +11507,7 @@ def create_memory_review_label(
                 note=request.note,
             )
     except MemoryReviewNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=201,
@@ -11488,7 +11530,7 @@ def list_memory_review_labels(
                 memory_id=memory_id,
             )
     except MemoryReviewNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -11515,7 +11557,7 @@ def create_embedding_config(request: CreateEmbeddingConfigRequest) -> JSONRespon
                 ),
             )
     except EmbeddingConfigValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -11555,7 +11597,7 @@ def upsert_memory_embedding(request: UpsertMemoryEmbeddingRequest) -> JSONRespon
                 ),
             )
     except MemoryEmbeddingValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -11581,7 +11623,7 @@ def upsert_task_artifact_chunk_embedding(
                 ),
             )
     except TaskArtifactChunkEmbeddingValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -11601,7 +11643,7 @@ def list_memory_embeddings(memory_id: UUID, user_id: UUID) -> JSONResponse:
                 memory_id=memory_id,
             )
     except MemoryEmbeddingNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -11624,7 +11666,7 @@ def list_task_artifact_chunk_embeddings_for_artifact(
                 task_artifact_id=task_artifact_id,
             )
     except TaskArtifactNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -11647,7 +11689,7 @@ def list_task_artifact_chunk_embeddings(
                 task_artifact_chunk_id=task_artifact_chunk_id,
             )
     except TaskArtifactChunkEmbeddingNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -11667,7 +11709,7 @@ def get_memory_embedding(memory_embedding_id: UUID, user_id: UUID) -> JSONRespon
                 memory_embedding_id=memory_embedding_id,
             )
     except MemoryEmbeddingNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -11690,7 +11732,7 @@ def get_task_artifact_chunk_embedding(
                 task_artifact_chunk_embedding_id=task_artifact_chunk_embedding_id,
             )
     except TaskArtifactChunkEmbeddingNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -11714,7 +11756,7 @@ def create_entity(request: CreateEntityRequest) -> JSONResponse:
                 ),
             )
     except EntityValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -11741,7 +11783,7 @@ def create_entity_edge(request: CreateEntityEdgeRequest) -> JSONResponse:
                 ),
             )
     except EntityEdgeValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -11777,7 +11819,7 @@ def list_entity_edges(entity_id: UUID, user_id: UUID) -> JSONResponse:
                 entity_id=entity_id,
             )
     except EntityNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -11797,7 +11839,7 @@ def get_entity(entity_id: UUID, user_id: UUID) -> JSONResponse:
                 entity_id=entity_id,
             )
     except EntityNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
 
     return JSONResponse(
         status_code=200,
@@ -11829,9 +11871,9 @@ def bootstrap_v1_workspace(request: Request) -> JSONResponse:
                 outcome=discovery,
             )
     except LookupError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -11862,11 +11904,11 @@ def get_v1_workspace_bootstrap_status(request: Request) -> JSONResponse:
             with conn.transaction():
                 context = get_local_workspace(conn, user_account_id=user_account_id)
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     if context is None:
-        return JSONResponse(
+        return public_exception_response(
+            LookupError("local workspace is not bootstrapped; POST /v1/workspaces/bootstrap first"),
             status_code=404,
-            content={"detail": "local workspace is not bootstrapped; POST /v1/workspaces/bootstrap first"},
         )
     workspace = context["workspace"]
     return JSONResponse(
@@ -11921,22 +11963,22 @@ def register_v1_provider(request: Request, body: RegisterProviderRequest) -> JSO
             )
         capability = refreshed_capability
     except LookupError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except ProviderConfigurationChangedError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
     except psycopg.errors.UniqueViolation:
         return JSONResponse(
             status_code=409,
             content={"detail": "provider display_name must be unique within the workspace"},
         )
     except ProviderAdapterNotFoundError as exc:
-        return JSONResponse(status_code=422, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=422)
     except ProviderSecretManagerError as exc:
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=500)
     except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=403)
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -11987,22 +12029,22 @@ def register_v1_ollama_provider(
             )
         capability = refreshed_capability
     except LookupError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except ProviderConfigurationChangedError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
     except psycopg.errors.UniqueViolation:
         return JSONResponse(
             status_code=409,
             content={"detail": "provider display_name must be unique within the workspace"},
         )
     except ProviderAdapterNotFoundError as exc:
-        return JSONResponse(status_code=422, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=422)
     except ProviderSecretManagerError as exc:
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=500)
     except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=403)
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -12053,22 +12095,22 @@ def register_v1_llamacpp_provider(
             )
         capability = refreshed_capability
     except LookupError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except ProviderConfigurationChangedError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
     except psycopg.errors.UniqueViolation:
         return JSONResponse(
             status_code=409,
             content={"detail": "provider display_name must be unique within the workspace"},
         )
     except ProviderAdapterNotFoundError as exc:
-        return JSONResponse(status_code=422, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=422)
     except ProviderSecretManagerError as exc:
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=500)
     except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=403)
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -12119,22 +12161,22 @@ def register_v1_vllm_provider(
             )
         capability = refreshed_capability
     except LookupError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except ProviderConfigurationChangedError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
     except psycopg.errors.UniqueViolation:
         return JSONResponse(
             status_code=409,
             content={"detail": "provider display_name must be unique within the workspace"},
         )
     except ProviderAdapterNotFoundError as exc:
-        return JSONResponse(status_code=422, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=422)
     except ProviderSecretManagerError as exc:
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=500)
     except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=403)
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -12192,22 +12234,22 @@ def register_v1_azure_provider(
             )
         capability = refreshed_capability
     except LookupError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except ProviderConfigurationChangedError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
     except psycopg.errors.UniqueViolation:
         return JSONResponse(
             status_code=409,
             content={"detail": "provider display_name must be unique within the workspace"},
         )
     except ProviderAdapterNotFoundError as exc:
-        return JSONResponse(status_code=422, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=422)
     except ProviderSecretManagerError as exc:
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=500)
     except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=403)
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=201,
@@ -12238,9 +12280,9 @@ def list_v1_providers(request: Request) -> JSONResponse:
                 store = ContinuityStore(conn)
                 providers = store.list_model_providers_for_workspace(workspace_id=workspace_id)
     except LookupError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     items = [_serialize_model_provider(provider) for provider in providers]
     return JSONResponse(
@@ -12278,15 +12320,17 @@ def get_v1_provider(provider_id: UUID, request: Request) -> JSONResponse:
                     workspace_id=workspace_id,
                 )
                 if provider is None:
-                    return JSONResponse(status_code=404, content={"detail": f"provider {provider_id} was not found"})
+                    return public_exception_response(
+                        LookupError(f"provider {provider_id} was not found"), status_code=404
+                    )
                 capability = store.get_provider_capability_for_provider_optional(
                     provider_id=provider_id,
                     workspace_id=workspace_id,
                 )
     except LookupError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -12340,22 +12384,22 @@ def update_v1_provider(
             )
         capability = refreshed_capability
     except LookupError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except ProviderConfigurationChangedError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
     except psycopg.errors.UniqueViolation:
         return JSONResponse(
             status_code=409,
             content={"detail": "provider display_name must be unique within the workspace"},
         )
     except ProviderAdapterNotFoundError as exc:
-        return JSONResponse(status_code=422, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=422)
     except ProviderSecretManagerError as exc:
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=500)
     except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=403)
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     return JSONResponse(
         status_code=200,
@@ -12388,9 +12432,8 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                     workspace_id=workspace_id,
                 )
                 if provider is None:
-                    return JSONResponse(
-                        status_code=404,
-                        content={"detail": f"provider {body.provider_id} was not found"},
+                    return public_exception_response(
+                        LookupError(f"provider {body.provider_id} was not found"), status_code=404
                     )
 
         runtime_provider = resolve_runtime_provider_config_secrets(
@@ -12461,22 +12504,25 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                         outcome=invocation_outcome,
                     )
     except LookupError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except ProviderAdapterNotFoundError as exc:
-        return JSONResponse(status_code=422, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=422)
     except ProviderSecretManagerError as exc:
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=500)
     except PermissionError as exc:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=403)
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     if discovery.discovery_status != "ready" or model_response is None:
         return JSONResponse(
             status_code=502,
             content=jsonable_encoder(
                 {
-                    "detail": discovery.discovery_error or "provider test failed",
+                    "detail": {
+                        "code": UPSTREAM_FAILURE.code,
+                        "message": UPSTREAM_FAILURE.message,
+                    },
                     "provider": _serialize_model_provider(provider),
                     "capabilities": _serialize_provider_capability(capability),
                 }
@@ -12514,7 +12560,7 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
     try:
         normalized_idempotency_key = normalize_idempotency_key(raw_idempotency_key)
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     workspace_id: UUID | None = None
     user_account_id: UUID | None = None
@@ -12528,9 +12574,9 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
             user_account_id=user_account_id,
         )
     except LookupError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
 
     if workspace_id is None or user_account_id is None:
         return JSONResponse(status_code=500, content={"detail": "runtime context could not be resolved"})
@@ -12568,7 +12614,7 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
             if replay is not None:
                 return replay
     except ResponseJobFenceLostError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
 
     # Fetch only database-backed provider state while the transaction
     # is open. Credential resolution and network-address validation happen after
@@ -12582,9 +12628,8 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                 workspace_id=workspace_id,
             )
             if provider_row is None:
-                return JSONResponse(
-                    status_code=404,
-                    content={"detail": f"provider {body.provider_id} was not found"},
+                return public_exception_response(
+                    LookupError(f"provider {body.provider_id} was not found"), status_code=404
                 )
             unresolved_runtime_provider = RuntimeProviderConfig.from_row(_object_dict(provider_row))
 
@@ -12594,9 +12639,9 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
             settings=settings,
         )
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=400)
     except ProviderSecretManagerError as exc:
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=500)
 
     if runtime_provider is None:
         return JSONResponse(status_code=500, content={"detail": "runtime provider could not be resolved"})
@@ -12615,7 +12660,7 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
     try:
         adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
     except ProviderAdapterNotFoundError as exc:
-        return JSONResponse(status_code=422, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=422)
 
     try:
         with user_connection(settings.database_url, user_account_id) as conn:
@@ -12638,7 +12683,6 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                 return replay
             prepared = prepare_response_generation(
                 store=store,
-                settings=settings,
                 user_id=user_account_id,
                 thread_id=body.thread_id,
                 message_text=body.message,
@@ -12656,9 +12700,9 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                 user_event_sequence_no=prepared.user_event_sequence_no,
             )
     except ContinuityStoreInvariantError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except ResponseJobFenceLostError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
 
     outcome = _attempt_runtime_provider_model(
         adapter=adapter,
@@ -12702,10 +12746,21 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                     )
                 except ResponseGenerationConflictError as exc:
                     response_conflict = True
+                    LOGGER.exception(
+                        "Runtime response generation failed with public error code=%s status=%d",
+                        CONFLICT.code,
+                        CONFLICT.status_code,
+                        exc_info=(type(exc), exc, exc.__traceback__),
+                        extra={
+                            "public_error_code": CONFLICT.code,
+                            "public_error_status": CONFLICT.status_code,
+                        },
+                    )
                     result = fail_response_generation(
                         store=store,
                         prepared=prepared,
-                        error=ModelInvocationError(str(exc)),
+                        error=ModelInvocationError(CONFLICT.message),
+                        error_code="conflict",
                     )
             response_metadata: JsonObject = {
                 "workspace_id": str(workspace_id),
@@ -12716,7 +12771,10 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                     JsonObject,
                     jsonable_encoder(
                         {
-                            "detail": result.detail,
+                            "detail": {
+                                "code": result.error_code,
+                                "message": result.detail,
+                            },
                             "trace": result.trace,
                             "metadata": {
                                 **response_metadata,
@@ -12763,9 +12821,9 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                 payload=response_payload,
             )
     except ContinuityStoreInvariantError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=404)
     except ResponseJobFenceLostError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return public_exception_response(exc, status_code=409)
 
     return JSONResponse(
         status_code=status_code,
@@ -12785,11 +12843,7 @@ def _apply_legacy_surface_mount_policy() -> None:
         if not isinstance(path, str) or not isinstance(methods, set):
             retained_routes.append(route)
             continue
-        operation_keys = {
-            (method, path)
-            for method in methods
-            if method in {"GET", "POST", "PUT", "PATCH", "DELETE"}
-        }
+        operation_keys = {(method, path) for method in methods if method in {"GET", "POST", "PUT", "PATCH", "DELETE"}}
         gated_keys = operation_keys & LEGACY_HTTP_OPERATION_KEYS
         if gated_keys:
             if operation_keys != gated_keys:  # pragma: no cover - one-operation route invariant

@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+## v0.11.1 — 2026-07-16
+
+- **Default-surface release coverage.** CI now boots the default PostgreSQL
+  surface with every legacy/agent-key mount flag absent and exercises the core
+  bootstrap, capture, recall, resume, context-pack, and review round trip. The
+  exact job name is part of the repository's required-check contract.
+- **Stable public failures.** Surviving HTTP, MCP, CLI, and onramp failures,
+  plus migrated provider, response, scheduler, evaluation, doctor, and
+  connector diagnostics, return stable error codes and static messages while
+  keeping private exception detail in server-side logs. Intentional legacy-on
+  `proxy_execution.py` business-result reasons remain dynamic and are
+  explicitly excluded from this diagnostic migration. Closed OpenAPI contracts
+  describe the machine-readable error envelope.
+- **Store and replay parity.** The `list_memories(query=...)` and
+  `list_resume_memory_events(query=...)` legs used by recent decisions and
+  resume now share the open-loop ASCII case-insensitive literal-substring
+  contract across PostgreSQL, SQLite, and test fakes; generic
+  `search_memories` and `alice_recall` FTS/websearch semantics are unchanged.
+  Terminal project-update replay uses target-filtered, indexed event lookups
+  instead of full event-log scans, and both accept and reject fail closed when
+  their mandatory memory identity is absent.
+- **Coupled project-update integrity.** Generic review/correct/forget adapters
+  cannot strand a pending project-update candidate. Authorized true redaction
+  scrubs the terminal artifact, free-text quality feedback, provenance quotes,
+  memory, revisions, and coupled events to exact content-free skeletons
+  without undoing already-applied project state. Source and source-chunk
+  evidence remains unchanged because it may support other memories.
+- **Defensive schema and test truth.** Forward migrations add bounded
+  project-update event lookup support, explicit CPython whitespace/domain
+  normalization, and fail-closed redaction triggers. Store fakes no longer
+  swallow unknown filters, the development dependencies declare the coverage
+  feature floor, and release/workflow shape checks cover previously implicit
+  contracts.
+- **Smaller runtime and pinned automation.** Dead response-generation wrappers
+  were removed around the retained provider invocation path. Checkout and
+  CodeQL actions use evaluated immutable pins; incompatible major dependency
+  proposals remain deferred instead of being folded into this patch carrier.
+- **Release-process truth.** The Node 20/pnpm 10 advisory wrapper remains the
+  documented fail-closed dependency-audit path. The removed rate-limiter and
+  already-landed Phase 1 directory/documentation riders are recorded as
+  re-measured closures rather than recreated work.
+
 ## v0.11.0 — 2026-07-15
 
 - **Phase-1 product boundary.** The default runtime is narrowed to Alice's

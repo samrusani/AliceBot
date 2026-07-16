@@ -54,11 +54,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -192,7 +188,7 @@ def test_policy_endpoints_create_list_and_get_in_priority_order(migrated_databas
     detail_status, detail_payload = invoke_request(
         "GET",
         f"/v0/policies/{low_priority_payload['policy']['id']}",
-        query_params={"user_id": str(seeded['user_id'])},
+        query_params={"user_id": str(seeded["user_id"])},
     )
 
     assert low_priority_status == 201
@@ -493,7 +489,7 @@ def test_policy_and_consent_endpoints_enforce_per_user_isolation(migrated_databa
         },
     }
     assert detail_status == 404
-    assert detail_payload == {"detail": f"policy {owner_policy['id']} was not found"}
+    assert detail_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert evaluation_status == 200
     assert evaluation_payload["decision"] == "deny"
     assert evaluation_payload["matched_policy"] is None

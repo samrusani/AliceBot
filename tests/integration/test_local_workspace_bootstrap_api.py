@@ -56,11 +56,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return int(start_message["status"]), json.loads(body)
 
 
@@ -85,9 +81,7 @@ def test_local_workspace_bootstrap_requires_a_valid_identity_header(monkeypatch:
 
     missing_status, missing_payload = invoke_request("POST", "/v1/workspaces/bootstrap")
     assert missing_status == 400
-    assert missing_payload == {
-        "detail": "local identity is required; set ALICEBOT_AUTH_USER_ID or provide X-AliceBot-User-Id"
-    }
+    assert missing_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
     invalid_status, invalid_payload = invoke_request(
         "POST",
@@ -95,7 +89,8 @@ def test_local_workspace_bootstrap_requires_a_valid_identity_header(monkeypatch:
         user_id="not-a-uuid",
     )
     assert invalid_status == 400
-    assert invalid_payload == {"detail": "X-AliceBot-User-Id must be a valid UUID"}
+    assert invalid_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
+
 
 def test_local_workspace_bootstrap_is_deterministic_idempotent_and_identity_isolated(
     migrated_database_urls: dict[str, str],
@@ -110,7 +105,7 @@ def test_local_workspace_bootstrap_is_deterministic_idempotent_and_identity_isol
         user_id=unknown_user_id,
     )
     assert unknown_status == 404
-    assert unknown_payload == {"detail": f"local Alice user {unknown_user_id} was not found"}
+    assert unknown_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
 
     owner_id = seed_user(migrated_database_urls["app"], email="local-owner@example.com")
     other_id = seed_user(migrated_database_urls["app"], email="local-other@example.com")
@@ -121,9 +116,7 @@ def test_local_workspace_bootstrap_is_deterministic_idempotent_and_identity_isol
         user_id=owner_id,
     )
     assert before_status == 404
-    assert before_payload == {
-        "detail": "local workspace is not bootstrapped; POST /v1/workspaces/bootstrap first"
-    }
+    assert before_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
 
     create_status, create_payload = invoke_request(
         "POST",

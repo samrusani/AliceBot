@@ -605,7 +605,8 @@ def test_connector_health_reports_counts_cursor_and_last_error() -> None:
     assert health["items_seen"] == 2
     assert health["items_captured"] == 1
     assert health["items_failed"] == 1
-    assert health["last_error"]
+    assert health["last_error_code"] == "connector_item_import_failed"
+    assert health["last_error"] == "Connector item could not be imported"
 
 
 def test_browser_and_document_connectors_apply_explicit_defaults_and_source_types() -> None:
@@ -717,12 +718,15 @@ def test_connector_failure_does_not_advance_cursor_past_failed_item_or_corrupt_m
     assert result.status == "partial"
     assert result.imported_count == 2
     assert result.failed_count == 1
+    assert result.error_code == "connector_item_import_failed"
+    assert result.errors == ("Connector item could not be imported",)
     assert result.sync_cursor is None
     assert result.failed_external_ids == ("clip-2",)
     assert len(store.sources) == 2
     assert all(source["external_id"] != "clip-2" for source in store.sources)
     assert store.events[-1]["event_type"] == "connector.sync_completed"
     assert store.events[-1]["payload_json"]["sync_cursor"] is None
+    assert "required" not in str(result.to_record())
 
 
 def test_connector_payload_loader_accepts_json_items_and_csv_file(tmp_path: Path) -> None:

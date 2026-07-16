@@ -23,7 +23,12 @@ from alicebot_api.vnext_project_update_guard import (
 )
 from alicebot_api.vnext_project_scope import project_scope_identity, source_project_scope
 from alicebot_api.vnext_repositories import JsonObject
-from alicebot_api.vnext_store import REDACTION_MARKER, PostgresVNextStore
+from alicebot_api.vnext_store import (
+    REDACTED_JSON_VALUE,
+    REDACTION_MARKER,
+    PostgresVNextStore,
+    is_redacted_project_update_artifact,
+)
 
 
 DEFAULT_PROJECT_LIMIT = 8
@@ -56,7 +61,12 @@ class VNextProjectTerminalConsistencyError(VNextProjectValidationError):
 class VNextProjectStore(Protocol):
     def append_event(self, event: JsonObject) -> JsonObject: ...
 
-    def list_events(self, *, target_type: str | None = None, target_id: str | None = None) -> list[JsonObject]: ...
+    def list_project_update_events(
+        self,
+        *,
+        artifact_id: str,
+        candidate_memory_id: str,
+    ) -> list[JsonObject]: ...
 
     def create_artifact(self, artifact: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
@@ -880,6 +890,9 @@ class VNextProjectService:
         if project_scope_identity(resource_project_scope(candidate_memory)) != expected_scope_identity:
             raise VNextProjectValidationError("project update candidate memory scope linkage does not match")
         if action == "reject":
+            memory_key = str(candidate_memory.get("memory_key") or "").strip()
+            if memory_key == "":
+                raise VNextProjectValidationError("candidate memory is missing memory_key")
             rejected_memory = self.store.update_memory(
                 memory_id=candidate_memory_id,
                 patch={
@@ -895,23 +908,21 @@ class VNextProjectService:
                 },
                 actor_type=actor_type,
             )
-            memory_key = str(rejected_memory.get("memory_key") or "")
-            if memory_key:
-                self.store.append_revision(
-                    {
-                        "memory_id": candidate_memory_id,
-                        "memory_key": memory_key,
-                        "revision_type": "rejected",
-                        "action": "project_update_review",
-                        "text_before": str(candidate_memory.get("canonical_text") or ""),
-                        "text_after": str(rejected_memory.get("canonical_text") or ""),
-                        "reason": "Project update candidate rejected by review action.",
-                        "actor_type": actor_type,
-                        "actor_id": actor_id,
-                        "metadata_json": {"artifact_id": artifact_id, "action": action},
-                    },
-                    actor_type=actor_type,
-                )
+            self.store.append_revision(
+                {
+                    "memory_id": candidate_memory_id,
+                    "memory_key": memory_key,
+                    "revision_type": "rejected",
+                    "action": "project_update_review",
+                    "text_before": str(candidate_memory.get("canonical_text") or ""),
+                    "text_after": str(rejected_memory.get("canonical_text") or ""),
+                    "reason": "Project update candidate rejected by review action.",
+                    "actor_type": actor_type,
+                    "actor_id": actor_id,
+                    "metadata_json": {"artifact_id": artifact_id, "action": action},
+                },
+                actor_type=actor_type,
+            )
             updated_artifact = self.store.update_artifact_status(
                 artifact_id=artifact_id,
                 status="rejected",
@@ -1060,13 +1071,21 @@ class VNextProjectService:
         require(str(artifact.get("id") or "") == artifact_id)
         require(artifact.get("artifact_type") == "project_update")
         require(artifact.get("status") == terminal_status)
+        redacted_artifact = is_redacted_project_update_artifact(artifact)
+        if metadata.get("redacted") is True:
+            # A marker claim is privileged only when every content-bearing
+            # artifact field and every retained metadata key match the exact
+            # canonical skeleton. Partial/fabricated shapes fail closed.
+            require(redacted_artifact)
         require(metadata.get("workflow") == PROJECT_UPDATE_WORKFLOW)
         candidate_memory_id = str(metadata.get("candidate_memory_id") or "").strip()
         project_id = str(metadata.get("project_id") or "").strip()
         automation_digest = str(metadata.get("automation_digest") or "").strip()
-        require(bool(candidate_memory_id and project_id and automation_digest))
-        require(metadata.get("candidate") is False)
-        require(metadata.get("review_status") == terminal_status)
+        require(bool(candidate_memory_id and project_id))
+        if not redacted_artifact:
+            require(bool(automation_digest))
+            require(metadata.get("candidate") is False)
+            require(metadata.get("review_status") == terminal_status)
 
         review_action = str(metadata.get("review_action") or "").strip()
         allowed_actions = {"accept", "edit"} if terminal_status == "accepted" else {"reject"}
@@ -1074,22 +1093,17 @@ class VNextProjectService:
         expected_scope_identity = project_scope_identity((project_id,))
         require(project_scope_identity(resource_project_scope(artifact)) == expected_scope_identity)
 
+        project_update_events = self.store.list_project_update_events(
+            artifact_id=artifact_id,
+            candidate_memory_id=candidate_memory_id,
+        )
+
         creation_event_type = "project.update_candidate_created"
         creation_artifact_targets: set[str] = set()
-        for event in self.store.list_events():
-            if event.get("event_type") != creation_event_type:
-                continue
+        creation_events = [event for event in project_update_events if event.get("event_type") == creation_event_type]
+        for event in creation_events:
             payload_value = event.get("payload_json")
             payload = payload_value if isinstance(payload_value, Mapping) else {}
-            targets_locked_artifact = (
-                event.get("target_type") == "artifact" and str(event.get("target_id") or "") == artifact_id
-            )
-            references_candidate = (
-                str(payload.get("candidate_memory_id") or "") == candidate_memory_id
-                or str(payload.get("memory_id") or "") == candidate_memory_id
-            )
-            if not targets_locked_artifact and not references_candidate:
-                continue
 
             # Candidate creation is the immutable leg that binds terminal
             # review evidence to the artifact row currently held under lock.
@@ -1105,9 +1119,11 @@ class VNextProjectService:
                 "event_type": creation_event_type,
             }
             if payload.get("redacted") is True:
+                require(redacted_artifact)
                 require(dict(payload) == redacted_creation_payload)
                 require(event.get("integrity_hash") is None)
             else:
+                require(not redacted_artifact)
                 require(str(payload.get("candidate_memory_id") or "") == candidate_memory_id)
             creation_artifact_targets.add(creation_target_id)
 
@@ -1136,6 +1152,14 @@ class VNextProjectService:
 
         redacted_revision = (
             dict(revision_metadata) == {"redacted": True}
+            and review_revision.get("memory_key") == f"redacted.{candidate_memory_id}"
+            and review_revision.get("source_event_ids") == []
+            and (
+                review_revision.get("previous_value") is None
+                or review_revision.get("previous_value") == REDACTED_JSON_VALUE
+            )
+            and (review_revision.get("new_value") is None or review_revision.get("new_value") == REDACTED_JSON_VALUE)
+            and review_revision.get("candidate") == REDACTED_JSON_VALUE
             and review_revision.get("text_before") == REDACTION_MARKER
             and review_revision.get("text_after") == REDACTION_MARKER
             and review_revision.get("reason") == REDACTION_MARKER
@@ -1145,24 +1169,26 @@ class VNextProjectService:
             # path is admissible.  A partially scrubbed or fabricated marker
             # must fail closed instead of weakening the ordinary evidence
             # checks below.
+            require(redacted_artifact)
             require(redacted_revision)
         else:
+            require(not redacted_artifact)
             require(str(revision_metadata.get("artifact_id") or "") == artifact_id)
             require(revision_metadata.get("action") == review_action)
 
         if terminal_status == "accepted":
-            accepted_state = str(metadata.get("accepted_current_state") or "").strip()
-            require(bool(accepted_state))
-            require(str(metadata.get("suggested_current_state") or "").strip() == accepted_state)
-            if not redacted_revision:
+            if not redacted_artifact:
+                accepted_state = str(metadata.get("accepted_current_state") or "").strip()
+                require(bool(accepted_state))
+                require(str(metadata.get("suggested_current_state") or "").strip() == accepted_state)
                 require(bool(str(review_revision.get("text_before") or "").strip()))
                 require(str(review_revision.get("text_after") or "").strip() == accepted_state)
                 require(str(revision_metadata.get("project_id") or "").strip() == project_id)
         else:
-            rejected_state = str(metadata.get("suggested_current_state") or "").strip()
-            require(bool(rejected_state))
-            require(not str(metadata.get("accepted_current_state") or "").strip())
-            if not redacted_revision:
+            if not redacted_artifact:
+                rejected_state = str(metadata.get("suggested_current_state") or "").strip()
+                require(bool(rejected_state))
+                require(not str(metadata.get("accepted_current_state") or "").strip())
                 require(str(review_revision.get("text_before") or "").strip() == rejected_state)
                 require(str(review_revision.get("text_after") or "").strip() == rejected_state)
 
@@ -1171,25 +1197,7 @@ class VNextProjectService:
             "project.update_candidate_accepted",
             "project.update_candidate_rejected",
         }
-        coupled_events: list[JsonObject] = []
-        for event in self.store.list_events():
-            if event.get("event_type") not in decision_event_types:
-                continue
-            payload_value = event.get("payload_json")
-            payload = payload_value if isinstance(payload_value, Mapping) else {}
-            coupled_to_artifact = (
-                event.get("target_type") == "artifact" and str(event.get("target_id") or "") == artifact_id
-            )
-            coupled_to_candidate = (
-                event.get("target_type") == "memory" and str(event.get("target_id") or "") == candidate_memory_id
-            )
-            coupled_by_payload = (
-                str(payload.get("artifact_id") or "") == artifact_id
-                or str(payload.get("candidate_memory_id") or "") == candidate_memory_id
-                or str(payload.get("memory_id") or "") == candidate_memory_id
-            )
-            if coupled_to_artifact or coupled_to_candidate or coupled_by_payload:
-                coupled_events.append(event)
+        coupled_events = [event for event in project_update_events if event.get("event_type") in decision_event_types]
 
         # First reject every competing decision coupled through any supported
         # artifact/candidate linkage. Filtering by the expected outcome,
@@ -1204,14 +1212,14 @@ class VNextProjectService:
         require(decision_event.get("actor_type") == review_revision.get("actor_type"))
         require(decision_event.get("actor_id") == review_revision.get("actor_id"))
 
+        redacted_event_payload = {
+            "redacted": True,
+            "memory_id": candidate_memory_id,
+            "event_type": expected_event_type,
+        }
         if terminal_status == "accepted":
             require(decision_event.get("target_type") == "project")
             require(str(decision_event.get("target_id") or "") == project_id)
-            redacted_event_payload = {
-                "redacted": True,
-                "memory_id": candidate_memory_id,
-                "event_type": expected_event_type,
-            }
             accepted_event_payload = {
                 "artifact_id": artifact_id,
                 "candidate_memory_id": candidate_memory_id,
@@ -1220,22 +1228,30 @@ class VNextProjectService:
             if payload.get("redacted") is True:
                 # True redaction deliberately retains this exact linkage
                 # skeleton while scrubbing every content-bearing field.
+                require(redacted_artifact)
                 require(dict(payload) == redacted_event_payload)
                 require(decision_event.get("integrity_hash") is None)
             else:
+                require(not redacted_artifact)
                 require(dict(payload) == accepted_event_payload)
         else:
             require(decision_event.get("target_type") == "artifact")
             require(str(decision_event.get("target_id") or "") == artifact_id)
-            artifact_source_ids = metadata.get("source_ids")
-            require(isinstance(artifact_source_ids, list))
-            rejected_event_payload = {
-                "project_id": project_id,
-                "source_ids": [str(source_id) for source_id in artifact_source_ids]
-                if isinstance(artifact_source_ids, list)
-                else [],
-            }
-            require(dict(payload) == rejected_event_payload)
+            if payload.get("redacted") is True:
+                require(redacted_artifact)
+                require(dict(payload) == redacted_event_payload)
+                require(decision_event.get("integrity_hash") is None)
+            else:
+                require(not redacted_artifact)
+                artifact_source_ids = metadata.get("source_ids")
+                require(isinstance(artifact_source_ids, list))
+                rejected_event_payload = {
+                    "project_id": project_id,
+                    "source_ids": [str(source_id) for source_id in artifact_source_ids]
+                    if isinstance(artifact_source_ids, list)
+                    else [],
+                }
+                require(dict(payload) == rejected_event_payload)
 
     def review_open_loop(
         self,

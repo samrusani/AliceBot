@@ -916,6 +916,89 @@ def test_postgres_open_loop_queries_use_ascii_literal_leaf_semantics(
             ) == len(event_payloads) + len(row_event_targets)
 
 
+def test_postgres_memory_queries_use_ascii_literal_semantics_across_store_and_public_mcp(
+    migrated_database_urls,
+) -> None:
+    app_url = migrated_database_urls["app"]
+    user_id = uuid4()
+    with user_connection(app_url, user_id) as conn:
+        ContinuityStore(conn).create_user(
+            user_id,
+            f"ascii-memory-query-{user_id}@example.invalid",
+            "ASCII memory query",
+        )
+        store = PostgresVNextStore(conn)
+
+        def create_memory(title: str, canonical_text: str, summary: str = "unrelated summary") -> dict[str, object]:
+            return store.create_memory(
+                {
+                    "memory_key": f"ascii.memory.query.{uuid4().hex}",
+                    "value": {"text": canonical_text},
+                    "status": "active",
+                    "memory_type": "decision",
+                    "title": title,
+                    "canonical_text": canonical_text,
+                    "summary": summary,
+                    "domain": "project",
+                    "sensitivity": "internal",
+                }
+            )
+
+        rows = {
+            "title": create_memory("Release title", "unrelated canonical text"),
+            "canonical": create_memory("Unrelated title", "Release canonical text"),
+            "summary": create_memory("Unrelated title", "unrelated canonical text", "Release summary"),
+            "arende": create_memory("Ärende row", "unrelated canonical text"),
+            "strasse": create_memory("Straße row", "unrelated canonical text"),
+            "literals": create_memory(r"100% under_score path\segment", "unrelated canonical text"),
+        }
+
+        expectations = {
+            "release": {str(rows[key]["id"]) for key in ("title", "canonical", "summary")},
+            "RELEASE": {str(rows[key]["id"]) for key in ("title", "canonical", "summary")},
+            "ärende": set(),
+            "Ärende": {str(rows["arende"]["id"])},
+            "STRASSE": set(),
+            "Straße": {str(rows["strasse"]["id"])},
+            "%": {str(rows["literals"]["id"])},
+            "_": {str(rows["literals"]["id"])},
+            "\\": {str(rows["literals"]["id"])},
+            r"missing%_\path": set(),
+        }
+        for query, expected_ids in expectations.items():
+            memories = store.list_memories(query=query, order_by_created_at=True, limit=50)
+            resume_events = store.list_resume_memory_events(statuses=("active",), query=query, limit=100)
+            assert {str(row["id"]) for row in memories} == expected_ids
+            assert {str(event["target_id"]) for event in resume_events} == expected_ids
+
+        assert len(store.list_memories(query="   ", limit=50)) == len(rows)
+        assert {
+            str(event["target_id"])
+            for event in store.list_resume_memory_events(statuses=("active",), query="   ", limit=100)
+        } == {str(row["id"]) for row in rows.values()}
+
+    context = MCPRuntimeContext(database_url=app_url, user_id=user_id)
+    for query, expected_ids in {
+        "release": expectations["release"],
+        "ärende": set(),
+        "Ärende": expectations["Ärende"],
+        "%": expectations["%"],
+        r"missing%_\path": set(),
+    }.items():
+        recent = call_mcp_tool(context, name="alice_recent_decisions", arguments={"query": query, "limit": 50})
+        resume = call_mcp_tool(
+            context,
+            name="alice_resume",
+            arguments={"query": query, "max_open_loops": 0, "max_recent_changes": 0},
+        )
+        assert {str(row["id"]) for row in recent["decisions"]} == expected_ids
+        last_decision = resume["brief"]["last_decision"]
+        if expected_ids:
+            assert str(last_decision["id"]) in expected_ids
+        else:
+            assert last_decision is None
+
+
 def test_project_scope_identity_is_case_order_whitespace_and_duplicate_insensitive(
     migrated_database_urls,
 ) -> None:

@@ -54,11 +54,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -205,9 +201,7 @@ def test_trace_review_endpoints_list_detail_and_events_with_deterministic_order(
     }
 
     assert detail_status == 200
-    assert detail_payload == {
-        "trace": serialize_trace_detail(seeded["second_trace"], trace_event_count=2)
-    }
+    assert detail_payload == {"trace": serialize_trace_detail(seeded["second_trace"], trace_event_count=2)}
 
     assert events_status == 200
     assert events_payload == {
@@ -260,10 +254,6 @@ def test_trace_review_endpoints_enforce_user_isolation_and_not_found(
         },
     }
     assert detail_status == 404
-    assert detail_payload == {
-        "detail": f"trace {owner['second_trace']['id']} was not found",
-    }
+    assert detail_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert events_status == 404
-    assert events_payload == {
-        "detail": f"trace {owner['second_trace']['id']} was not found",
-    }
+    assert events_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}

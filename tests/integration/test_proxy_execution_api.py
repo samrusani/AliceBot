@@ -55,11 +55,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -379,7 +375,7 @@ def test_execute_approved_proxy_endpoint_rejects_pending_approval(
 
     assert execute_status == 409
     assert execute_payload == {
-        "detail": f"approval {create_payload['approval']['id']} is pending and cannot be executed"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
@@ -436,7 +432,7 @@ def test_execute_approved_proxy_endpoint_rejects_rejected_approval(
 
     assert execute_status == 409
     assert execute_payload == {
-        "detail": f"approval {create_payload['approval']['id']} is rejected and cannot be executed"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
 
@@ -475,7 +471,7 @@ def test_execute_approved_proxy_endpoint_rejects_missing_handler(
 
     assert execute_status == 409
     assert execute_payload == {
-        "detail": "tool 'proxy.missing' has no registered proxy handler"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
@@ -523,7 +519,7 @@ def test_execute_approved_proxy_endpoint_rejects_missing_handler(
     detail_status, detail_payload = invoke_request(
         "GET",
         f"/v0/tool-executions/{tool_executions[0]['id']}",
-        query_params={"user_id": str(owner['user_id'])},
+        query_params={"user_id": str(owner["user_id"])},
     )
 
     assert list_status == 200
@@ -595,7 +591,7 @@ def test_execute_approved_proxy_endpoint_marks_linked_run_failed_when_blocked(
     )
     assert execute_status == 409
     assert execute_payload == {
-        "detail": "tool 'proxy.missing' has no registered proxy handler"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
     run_detail_status, run_detail_payload = invoke_request(
@@ -646,9 +642,7 @@ def test_execute_approved_proxy_endpoint_enforces_user_isolation(
     )
 
     assert execute_status == 404
-    assert execute_payload == {
-        "detail": f"approval {create_payload['approval']['id']} was not found"
-    }
+    assert execute_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
 
 
 def test_execute_approved_proxy_endpoint_updates_the_explicitly_linked_later_step(
@@ -959,8 +953,7 @@ def test_execute_approved_proxy_endpoint_blocks_when_execution_budget_is_exceede
         "status": "blocked",
         "output": None,
         "reason": (
-            f"execution budget {budget_id} blocks execution: projected completed executions "
-            "2 would exceed limit 1"
+            f"execution budget {budget_id} blocks execution: projected completed executions 2 would exceed limit 1"
         ),
         "budget_decision": {
             "matched_budget_id": str(budget_id),
@@ -996,7 +989,7 @@ def test_execute_approved_proxy_endpoint_blocks_when_execution_budget_is_exceede
     detail_status, detail_payload = invoke_request(
         "GET",
         f"/v0/tool-executions/{stored_executions[1]['id']}",
-        query_params={"user_id": str(owner['user_id'])},
+        query_params={"user_id": str(owner["user_id"])},
     )
 
     assert len(stored_executions) == 2
@@ -1609,12 +1602,8 @@ def test_execute_approved_proxy_endpoint_applies_profile_scope_before_global_fal
         assistant_first_trace_events = store.list_trace_events(
             UUID(assistant_first_execute_payload["trace"]["trace_id"])
         )
-        coach_first_trace_events = store.list_trace_events(
-            UUID(coach_first_execute_payload["trace"]["trace_id"])
-        )
-        coach_second_trace_events = store.list_trace_events(
-            UUID(coach_second_execute_payload["trace"]["trace_id"])
-        )
+        coach_first_trace_events = store.list_trace_events(UUID(coach_first_execute_payload["trace"]["trace_id"]))
+        coach_second_trace_events = store.list_trace_events(UUID(coach_second_execute_payload["trace"]["trace_id"]))
         assistant_second_trace_events = store.list_trace_events(
             UUID(assistant_second_execute_payload["trace"]["trace_id"])
         )
@@ -1794,9 +1783,7 @@ def test_tool_execution_review_endpoints_are_deterministic_and_user_scoped(
     }
     assert detail_status == 200
     assert detail_payload == {
-        "execution": next(
-            item for item in list_payload["items"] if item["id"] == str(stored_executions[1]["id"])
-        )
+        "execution": next(item for item in list_payload["items"] if item["id"] == str(stored_executions[1]["id"]))
     }
     assert isolated_list_status == 200
     assert isolated_list_payload == {
@@ -1807,10 +1794,10 @@ def test_tool_execution_review_endpoints_are_deterministic_and_user_scoped(
     isolated_detail_status, isolated_detail_payload = invoke_request(
         "GET",
         f"/v0/tool-executions/{stored_executions[0]['id']}",
-        query_params={"user_id": str(intruder['user_id'])},
+        query_params={"user_id": str(intruder["user_id"])},
     )
 
     assert isolated_detail_status == 404
     assert isolated_detail_payload == {
-        "detail": f"tool execution {stored_executions[0]['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }

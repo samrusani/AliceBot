@@ -118,6 +118,23 @@ The `operator-console` smoke is the broadest local go/no-go check for daily `/vn
 ## Determinism Contract
 
 - output format is deterministic for stable automated validation
+- `alice`/`alicebot` and `alice-memory` write argument, boundary-validation,
+  and unhandled execution failures to stderr as one compact JSON line:
+  `{"error":{"code":"...","message":"..."}}`; messages are static and
+  never contain exception text, exception types, tracebacks, paths, record
+  identifiers, or rejected input
+- handled `EvalGateFailure`, `EmbeddingBackfillFailure`, and
+  `PartialCommandFailure` cases emit their structured failure report on stdout
+  and return nonzero; they are not part of the one-line stderr guarantee
+- `alice-memory` preserves distinct committed-state codes so automation can
+  distinguish a rollback-safe failure from a restore that already committed:
+  `restore_failed`, `restore_committed_hardening_failed`,
+  `restore_committed_summary_failed`, and
+  `restore_committed_hardening_and_summary_failed`
+- other SQLite boundary codes distinguish invalid input, source/path conflicts,
+  snapshot/validation failures, export failures, provider configuration, and
+  embedding-batch failures; failed batch/result objects expose an
+  `error_code` with a static companion message
 - provenance snippets remain visible in recall/resume responses
 - correction flow updates future recall/resume results
 - vNext scheduler, connector-hardening, secret-redaction, doctor, and model-backed smoke output is JSON and fails nonzero if any gate fails

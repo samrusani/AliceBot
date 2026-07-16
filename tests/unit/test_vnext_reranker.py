@@ -37,6 +37,7 @@ from alicebot_api.vnext_reranker import (
     RERANK_PROMPT_TEMPLATE,
     RERANK_SOURCE_CANDIDATE_CAP,
     RERANK_STATUS_NOOP,
+    RERANK_STATUS_FAIL_OPEN_PROVIDER_ERROR,
     RERANK_STATUS_RERANKED,
     RERANK_TEXT_MAX_CHARS,
     OpenAICompatibleRerankProvider,
@@ -394,8 +395,8 @@ def test_rerank_fails_open_on_provider_error() -> None:
     assert outcome.scores is None
     assert outcome.reordered is False
     assert outcome.candidates_scored == 0
-    assert outcome.status.startswith(RERANK_FAIL_OPEN_PREFIX)
-    assert "VNextRerankerProviderError" in outcome.status
+    assert outcome.status == RERANK_STATUS_FAIL_OPEN_PROVIDER_ERROR
+    assert "VNextRerankerProviderError" not in outcome.status
 
 
 def test_rerank_fails_open_on_malformed_scores() -> None:

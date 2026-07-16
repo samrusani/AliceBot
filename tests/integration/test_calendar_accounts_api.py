@@ -57,11 +57,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -229,7 +225,9 @@ def test_calendar_account_endpoints_connect_list_detail_and_isolate(
     assert detail_status == 200
     assert detail_payload == {"account": create_payload["account"]}
     assert duplicate_status == 409
-    assert duplicate_payload == {"detail": "calendar account acct-owner-001 is already connected"}
+    assert duplicate_payload == {
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
+    }
     assert isolated_list_status == 200
     assert isolated_list_payload == {
         "items": [],
@@ -237,7 +235,7 @@ def test_calendar_account_endpoints_connect_list_detail_and_isolate(
     }
     assert isolated_detail_status == 404
     assert isolated_detail_payload == {
-        "detail": f"calendar account {create_payload['account']['id']} was not found"
+        "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
     assert '"access_token":' not in json.dumps(create_payload)
     assert '"access_token":' not in json.dumps(list_payload)
@@ -420,11 +418,14 @@ def test_calendar_event_list_endpoint_isolates_users_and_handles_missing_account
     )
 
     assert isolated_status == 404
-    assert isolated_payload == {
-        "detail": f"calendar account {account_payload['account']['id']} was not found"
-    }
+    assert isolated_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert missing_status == 404
-    assert missing_payload["detail"].endswith("was not found")
+    assert missing_payload == {
+        "detail": {
+            "code": "not_found",
+            "message": "The requested resource was not found",
+        }
+    }
 
 
 def test_calendar_event_list_endpoint_maps_credential_fetch_and_validation_failures(
@@ -466,7 +467,7 @@ def test_calendar_event_list_endpoint_maps_credential_fetch_and_validation_failu
     )
     assert credential_status == 409
     assert credential_payload == {
-        "detail": f"calendar account {account_id} is missing protected credentials"
+        "detail": {"code": "conflict", "message": "The request conflicts with the current resource state"}
     }
 
     monkeypatch.setattr(
@@ -487,7 +488,7 @@ def test_calendar_event_list_endpoint_maps_credential_fetch_and_validation_failu
         query_params={"user_id": str(owner["user_id"])},
     )
     assert fetch_status == 502
-    assert fetch_payload == {"detail": "calendar events could not be fetched"}
+    assert fetch_payload == {"detail": {"code": "upstream_failure", "message": "An upstream service failed"}}
 
     invalid_window_status, invalid_window_payload = invoke_request(
         "GET",
@@ -499,9 +500,7 @@ def test_calendar_event_list_endpoint_maps_credential_fetch_and_validation_failu
         },
     )
     assert invalid_window_status == 400
-    assert invalid_window_payload == {
-        "detail": "calendar event time_min must be less than or equal to time_max"
-    }
+    assert invalid_window_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
 
 def test_calendar_event_ingestion_endpoint_persists_artifact_and_chunks(
@@ -586,9 +585,7 @@ def test_calendar_event_ingestion_endpoint_persists_artifact_and_chunks(
         },
     }
     assert ingest_payload["summary"]["total_count"] >= 1
-    artifact_file = (
-        Path(workspace_payload["workspace"]["local_path"]) / "calendar" / "acct-owner-001" / "evt-001.txt"
-    )
+    artifact_file = Path(workspace_payload["workspace"]["local_path"]) / "calendar" / "acct-owner-001" / "evt-001.txt"
     assert artifact_file.is_file()
     artifact_text = artifact_file.read_text(encoding="utf-8")
     assert "Summary: Sprint Planning" in artifact_text
@@ -653,9 +650,7 @@ def test_calendar_event_ingestion_endpoint_rejects_cross_user_workspace_access(
     )
 
     assert ingest_status == 404
-    assert ingest_payload == {
-        "detail": f"task workspace {owner_workspace_payload['workspace']['id']} was not found"
-    }
+    assert ingest_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
 
 
 def test_calendar_event_ingestion_endpoint_rejects_missing_and_unsupported_events(
@@ -721,11 +716,9 @@ def test_calendar_event_ingestion_endpoint_rejects_missing_and_unsupported_event
     )
 
     assert missing_status == 404
-    assert missing_payload == {"detail": "calendar event evt-missing was not found"}
+    assert missing_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
     assert unsupported_status == 400
-    assert unsupported_payload == {
-        "detail": "calendar event evt-unsupported is not supported for ingestion"
-    }
+    assert unsupported_payload == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         store = ContinuityStore(conn)
