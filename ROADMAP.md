@@ -2,13 +2,13 @@
 
 ## Baseline (Not Roadmap Work)
 
-- `v0.11.0` is the latest published release. Its immutable release record is
+- `v0.11.1` is the latest published release. Its immutable release record is
   `docs/release/v0.11.0-release-notes.md`, with artifact digests in
-  `docs/release/v0.11.0-checksums.txt`.
+  `docs/release/v0.11.1-checksums.txt`.
 - `v0.11.0` shipped Phase 1 and narrowed the default product to Alice's agent
   interface and retrieval/memory-quality core. Its tag and publication are
   complete and immutable.
-- `v0.11.1` is the current uncommitted Phase 2 release-hardening candidate.
+- `v0.11.1` shipped the Phase 2 debt sweep.
   At package-input freeze, its bounded local Python, PostgreSQL, SQLite,
   evaluation, web, and static builder matrix was green while final package
   reproduction, a superseding receipt, and independent review were still

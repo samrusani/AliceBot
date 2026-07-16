@@ -15,14 +15,14 @@ Agent developers — people building or operating AI agents who need durable, ex
 - Local-first: your data stays on your machine; models and embeddings are pluggable via OpenAI-compatible endpoints.
 
 ## Current Posture
-- `v0.11.1` is the current uncommitted Phase 2 release-hardening candidate;
+- `v0.11.1` shipped the Phase 2 debt sweep;
   at package-input freeze, its bounded local builder matrix was green while
   final package reproduction, a superseding receipt, and independent review
   were still pending. Exact-SHA external release gates remain pending.
 
-- `v0.11.0` is the latest published release and immutable baseline. Its PyPI
+- `v0.11.1` is the latest published release and immutable baseline. Its PyPI
   wheel and source distribution have Trusted Publishing provenance, with exact
-  digests in `docs/release/v0.11.0-checksums.txt`.
+  digests in `docs/release/v0.11.1-checksums.txt`.
 - `v0.11.0` shipped the Phase 1 periphery cut. It removes the Telegram,
   hosted/control-plane, public chat/response, chief-of-staff, and model-pack
   periphery so the default runtime matches the product described here. The

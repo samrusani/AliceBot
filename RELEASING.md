@@ -1,8 +1,8 @@
 # Releasing Alice
 
-`v0.11.1` is the current uncommitted release-hardening candidate.
 
-`v0.11.0` is the latest published release and remains the checksum/install
+
+`v0.11.1` is the latest published release and remains the checksum/install
 baseline.
 Preparing candidate documents does not authorize a tag, PyPI upload, or GitHub
 Release.
