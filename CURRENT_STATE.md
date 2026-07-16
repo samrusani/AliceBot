@@ -2,18 +2,18 @@
 
 ## Snapshot
 
-- `v0.11.1` is the current uncommitted Phase 2 release-hardening candidate.
+- `v0.11.1` shipped the Phase 2 debt sweep.
   At package-input freeze, its bounded local builder matrix was green while
   final package reproduction, a superseding carrier receipt, and independent
   review were still pending. Exact-SHA external release gates remain pending.
-- `v0.11.0` is the latest published release. It is available from PyPI and
+- `v0.11.1` is the latest published release. It is available from PyPI and
   GitHub; exact artifact digests are in
   `docs/release/v0.11.0-checksums.txt`.
 - The historical LongMemEval_s result is **79.4% (397/500)** from one run on
   2026-07-07. It is not a repeated estimate or a measurement of this candidate.
 - Alice remains public-alpha, pre-1.0, local-first, single-user, and self-hosted.
 
-## What `v0.11.1` Changes
+## What `v0.11.1` Shipped
 
 - Adds a required real-PostgreSQL smoke for the default surface with legacy and
   agent-key mount flags absent. It exercises bootstrap, capture, recall,
@@ -77,14 +77,17 @@
 
 ## Release Boundary
 
-`v0.11.0` is tagged, published, and immutable. Its authoritative records are:
+`v0.11.1` is tagged, published, and immutable. Its authoritative records are:
 
-- `docs/release/v0.11.0-release-notes.md`
-- `docs/release/v0.11.0-checksums.txt`
+- `docs/release/v0.11.1-release-notes.md`
+- `docs/release/v0.11.1-checksums.txt`
 
-`docs/release/v0.11.1-release-notes.md` is a pending candidate record. There is
-no `v0.11.1` checksum record while publication is pending, and the candidate
-documents do not authorize a tag or upload.
+`v0.11.0` is the prior published release; its records remain at
+`docs/release/v0.11.0-release-notes.md` and `docs/release/v0.11.0-checksums.txt`.
+
+`docs/release/v0.11.1-release-notes.md` and
+`docs/release/v0.11.1-checksums.txt` are the authoritative publication
+receipt.
 
 `v0.10.4` is the prior published release; its records remain at
 `docs/release/v0.10.4-release-notes.md` and `docs/release/v0.10.4-checksums.txt`.

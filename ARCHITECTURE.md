@@ -2,16 +2,15 @@
 
 ## Scope Boundary
 
-- **Candidate boundary:** `v0.11.1` is the current uncommitted Phase 2
-  release-hardening candidate. At package-input freeze, its bounded local
-  builder matrix was green while final package reproduction, a superseding
-  receipt, and independent review were still pending. Exact-SHA external
-  release gates remain pending.
+- **Shipped boundary:** `v0.11.1` shipped the Phase 2 debt sweep. It is
+  tagged and immutable, passed the exact-SHA CI, semantic, and
+  repository-control gates, and is published on PyPI with Trusted Publishing
+  provenance.
 
-- **Published boundary:** `v0.11.0` is the latest published release. It is
+- **Published boundary:** `v0.11.1` is the latest published release. It is
   tagged and immutable, with artifact digests in
-  `docs/release/v0.11.0-checksums.txt`.
-- **Shipped boundary:** `v0.11.0` is the latest published release. Its
+  `docs/release/v0.11.1-checksums.txt`.
+- **Shipped boundary:** `v0.11.1` is the latest published release. Its
   default runtime is the continuity/memory layer for external AI agents, not a
   hosted product, channel platform, or bundled chat runtime.
 - **Product priorities:** (1) a small, easy-to-integrate agent interface over
@@ -220,12 +219,12 @@ usage justifies a separately reviewed boundary.
 
 ## Current Architectural Posture
 
-- `v0.11.1` is the current uncommitted Phase 2 candidate. At package-input
+- `v0.11.1` shipped the Phase 2 debt sweep. At package-input
   freeze, the bounded local builder matrix was green while final packages, a
   superseding receipt, and independent review were still pending. Exact-SHA
   external release gates remain pending.
 
-- `v0.11.0` is the latest published release and reconciles runtime and product
+- `v0.11.1` is the latest published release and reconciles runtime and product
   identity around the agent interface plus retrieval/memory quality.
 - `v0.10.4` is the prior published release; later changes were not part of its
   immutable artifacts.

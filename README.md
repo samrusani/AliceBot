@@ -141,13 +141,13 @@ search degrades to full-text only and says so explicitly in the retrieval trace.
 
 ## Status
 
-`v0.11.1` is the current uncommitted Phase 2 release-hardening candidate. Its
+`v0.11.1` is the latest published release. Its
 bounded local Python, PostgreSQL, SQLite, evaluation, web, and static builder
 matrix was green at package-input freeze; final package reproduction, a
 superseding carrier receipt, and independent review were still pending then.
 Exact-SHA external release gates remain pending.
 
-`v0.11.0` is the latest published release and remains the install, checksum,
+`v0.11.1` is the latest published release and remains the install, checksum,
 and release-note baseline.
 The published `v0.11.0` runtime narrows the default product to the agent
 interface and retrieval/memory core.
@@ -179,7 +179,7 @@ What that means in practice:
 - [Security and privacy](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/security-and-privacy.md)
 - [v0.10.4 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.10.4-release-notes.md)
 - [v0.11.0 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.11.0-release-notes.md)
-- [v0.11.1 candidate release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.11.1-release-notes.md)
+- [v0.11.1 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.11.1-release-notes.md)
 - [Release procedure](https://github.com/samrusani/AliceBot/blob/main/RELEASING.md)
 - [Architecture](https://github.com/samrusani/AliceBot/blob/main/ARCHITECTURE.md)
 - [Roadmap](https://github.com/samrusani/AliceBot/blob/main/ROADMAP.md)
