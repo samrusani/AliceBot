@@ -291,10 +291,12 @@ tools are listed but their calls fail.
 With the flag set, `tools/list` includes the full long tail — for example
 `alice_vnext_ingest_agent_output` for structured agent-output ingestion,
 `alice_recall_debug` for the legacy continuity recall view, and the
-granular queue/graph/belief tools. `alice_vnext_commit_memory`,
+granular queue/graph/belief tools. `alice_vnext_commit_memory` remains a
+direct alias of the handler behind core `alice_memory_commit`;
 `alice_vnext_confirm_memory`, `alice_vnext_undo_memory`, and
-`alice_vnext_forget_memory` remain as aliases of the same handlers that now
-power `alice_memory_commit` and `alice_memory_manage` on the core surface.
+`alice_vnext_forget_memory` remain available as distinct legacy handlers
+whose lifecycle actions the core `alice_memory_manage` tool covers through
+its own dispatching handler.
 Calling a legacy tool without the flag returns the stable `tool_not_found`
 wire code; server logs retain the flag-specific diagnostic for operators.
 
