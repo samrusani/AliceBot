@@ -4,7 +4,7 @@ import json
 from contextlib import contextmanager
 from uuid import uuid4
 
-import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 from alicebot_api.task_runs import (
     TaskRunNotFoundError,
@@ -45,13 +45,13 @@ def test_create_task_run_endpoint_returns_payload(monkeypatch) -> None:
             }
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "create_task_run_record", fake_create_task_run_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "create_task_run_record", fake_create_task_run_record)
 
-    response = main_module.create_task_run(
+    response = legacy_gated_router.create_task_run(
         task_id,
-        main_module.CreateTaskRunRequest(
+        legacy_gated_router.CreateTaskRunRequest(
             user_id=user_id,
             max_ticks=2,
             checkpoint={"cursor": 0, "target_steps": 2, "wait_for_signal": False},
@@ -76,17 +76,17 @@ def test_create_task_run_endpoint_maps_not_found_and_validation_errors(monkeypat
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
 
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "create_task_run_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(TaskNotFoundError(f"task {task_id} was not found")),
     )
-    not_found_response = main_module.create_task_run(
+    not_found_response = legacy_gated_router.create_task_run(
         task_id,
-        main_module.CreateTaskRunRequest(user_id=user_id, max_ticks=1, checkpoint={}),
+        legacy_gated_router.CreateTaskRunRequest(user_id=user_id, max_ticks=1, checkpoint={}),
     )
     assert not_found_response.status_code == 404
     assert json.loads(not_found_response.body) == {
@@ -94,13 +94,13 @@ def test_create_task_run_endpoint_maps_not_found_and_validation_errors(monkeypat
     }
 
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "create_task_run_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(TaskRunValidationError("checkpoint.cursor must be an integer")),
     )
-    validation_response = main_module.create_task_run(
+    validation_response = legacy_gated_router.create_task_run(
         task_id,
-        main_module.CreateTaskRunRequest(user_id=user_id, max_ticks=1, checkpoint={"cursor": "x"}),
+        legacy_gated_router.CreateTaskRunRequest(user_id=user_id, max_ticks=1, checkpoint={"cursor": "x"}),
     )
     assert validation_response.status_code == 400
     assert json.loads(validation_response.body) == {
@@ -118,10 +118,10 @@ def test_list_and_get_task_runs_endpoints_return_payload(monkeypatch) -> None:
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "list_task_run_records",
         lambda *_args, **_kwargs: {
             "items": [
@@ -146,7 +146,7 @@ def test_list_and_get_task_runs_endpoints_return_payload(monkeypatch) -> None:
         },
     )
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "get_task_run_record",
         lambda *_args, **_kwargs: {
             "task_run": {
@@ -164,8 +164,8 @@ def test_list_and_get_task_runs_endpoints_return_payload(monkeypatch) -> None:
         },
     )
 
-    list_response = main_module.list_task_runs(task_id, user_id)
-    get_response = main_module.get_task_run(task_run_id, user_id)
+    list_response = legacy_gated_router.list_task_runs(task_id, user_id)
+    get_response = legacy_gated_router.get_task_run(task_run_id, user_id)
 
     assert list_response.status_code == 200
     assert json.loads(list_response.body)["summary"]["task_id"] == str(task_id)
@@ -182,15 +182,15 @@ def test_get_task_run_endpoint_maps_missing_record_to_404(monkeypatch) -> None:
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "get_task_run_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(TaskRunNotFoundError(f"task run {task_run_id} was not found")),
     )
 
-    response = main_module.get_task_run(task_run_id, user_id)
+    response = legacy_gated_router.get_task_run(task_run_id, user_id)
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
@@ -210,18 +210,18 @@ def test_task_run_tick_pause_resume_cancel_endpoints_map_conflicts(monkeypatch) 
     def conflict(*_args, **_kwargs):
         raise TaskRunTransitionError(f"task run {task_run_id} is completed and cannot be resumed")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "tick_task_run_record", conflict)
-    monkeypatch.setattr(main_module, "pause_task_run_record", conflict)
-    monkeypatch.setattr(main_module, "resume_task_run_record", conflict)
-    monkeypatch.setattr(main_module, "cancel_task_run_record", conflict)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "tick_task_run_record", conflict)
+    monkeypatch.setattr(legacy_gated_router, "pause_task_run_record", conflict)
+    monkeypatch.setattr(legacy_gated_router, "resume_task_run_record", conflict)
+    monkeypatch.setattr(legacy_gated_router, "cancel_task_run_record", conflict)
 
-    request = main_module.MutateTaskRunRequest(user_id=user_id)
-    tick_response = main_module.tick_task_run(task_run_id, request)
-    pause_response = main_module.pause_task_run(task_run_id, request)
-    resume_response = main_module.resume_task_run(task_run_id, request)
-    cancel_response = main_module.cancel_task_run(task_run_id, request)
+    request = legacy_gated_router.MutateTaskRunRequest(user_id=user_id)
+    tick_response = legacy_gated_router.tick_task_run(task_run_id, request)
+    pause_response = legacy_gated_router.pause_task_run(task_run_id, request)
+    resume_response = legacy_gated_router.resume_task_run(task_run_id, request)
+    cancel_response = legacy_gated_router.cancel_task_run(task_run_id, request)
 
     expected = {
         "detail": {

@@ -9,6 +9,8 @@ from uuid import UUID, uuid4
 import anyio
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import memories_legacy as memories_legacy_router
+from alicebot_api.routers import continuity as continuity_router
 import scripts.run_phase6_quality_evidence as quality_evidence
 from alicebot_api.config import Settings
 from alicebot_api.contracts import MemoryCandidateInput
@@ -200,6 +202,11 @@ def test_memory_quality_gate_endpoint_returns_canonical_status_transitions(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     insufficient_user = seed_quality_gate_state(
         migrated_database_urls["app"],
@@ -325,6 +332,11 @@ def test_memory_quality_gate_endpoint_is_deterministic_for_fixed_state(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     first_status, first_payload = invoke_request(
         "GET",
@@ -361,6 +373,11 @@ def test_memory_quality_gate_endpoint_enforces_per_user_isolation(
 
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -422,6 +439,16 @@ def test_memory_trust_dashboard_endpoint_aggregates_canonical_quality_inputs(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        continuity_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     dashboard_status, dashboard_payload = invoke_request(
         "GET",
@@ -475,6 +502,11 @@ def test_memory_trust_dashboard_endpoint_is_deterministic_for_fixed_state(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     first_status, first_payload = invoke_request(
         "GET",
@@ -509,6 +541,11 @@ def test_phase6_quality_evidence_script_writes_deterministic_artifact_matching_d
 
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

@@ -10,6 +10,7 @@ import psycopg
 import pytest
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -422,6 +423,11 @@ def test_compile_context_endpoint_persists_trace_and_trace_events(migrated_datab
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status_code, payload = invoke_compile_context(
         {
@@ -678,6 +684,11 @@ def test_compile_context_prefers_updated_active_memory_within_same_transaction(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status_code, payload = invoke_compile_context(
         {
@@ -870,6 +881,11 @@ def test_compile_context_endpoint_merges_hybrid_memory_provenance_and_trace_even
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status_code, payload = invoke_compile_context(
         {
@@ -1015,6 +1031,11 @@ def test_compile_context_semantic_validation_rejects_missing_config_dimension_mi
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     missing_status, missing_payload = invoke_compile_context(
         {
@@ -1070,6 +1091,11 @@ def test_compile_context_artifact_retrieval_integrates_chunks_traces_and_exclusi
     )
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -1239,6 +1265,11 @@ def test_compile_context_artifact_scoped_retrieval_returns_only_visible_artifact
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status_code, payload = invoke_compile_context(
         {
@@ -1387,6 +1418,11 @@ def test_compile_context_hybrid_artifact_merge_preserves_dual_source_provenance_
     )
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -1579,6 +1615,11 @@ def test_compile_context_semantic_artifact_retrieval_integrates_chunks_traces_an
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status_code, payload = invoke_compile_context(
         {
@@ -1748,6 +1789,11 @@ def test_compile_context_semantic_artifact_scoped_retrieval_returns_only_visible
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status_code, payload = invoke_compile_context(
         {
@@ -1880,6 +1926,11 @@ def test_compile_context_semantic_artifact_retrieval_validation_and_isolation(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     invalid_shape_status, invalid_shape_payload = invoke_compile_context(
         {
@@ -1977,6 +2028,11 @@ def test_compile_context_artifact_retrieval_validation_and_isolation(
     )
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -2095,6 +2151,11 @@ def test_traces_and_trace_events_respect_per_user_isolation(migrated_database_ur
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status_code, payload = invoke_compile_context(
         {
@@ -2174,6 +2235,11 @@ def test_compile_context_scopes_memories_to_active_thread_profile(
 
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -2266,6 +2332,11 @@ def test_compile_context_scopes_semantic_memory_retrieval_to_active_thread_profi
 
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

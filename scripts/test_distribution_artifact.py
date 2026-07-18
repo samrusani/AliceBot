@@ -95,6 +95,10 @@ def smoke_artifact(artifact: Path, *, expected_version: str) -> None:
                         "from pathlib import Path",
                         "from alembic.script import ScriptDirectory",
                         "import alicebot_api",
+                        "import alicebot_api.cli as cli_module",
+                        "import alicebot_api.cli.parser as cli_parser",
+                        "import alicebot_api.cli.runner as cli_runner",
+                        "import alicebot_api.mcp.registry as mcp_registry",
                         "from alicebot_api.main import app",
                         "from alicebot_api.migrations import make_alembic_config",
                         "from alicebot_api.public_evals import _load_fixture_catalog",
@@ -105,6 +109,15 @@ def smoke_artifact(artifact: Path, *, expected_version: str) -> None:
                         "  'version': version('alice-memory'),",
                         "  'api_version': app.version,",
                         "  'package_inside_venv': Path(alicebot_api.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()),",
+                        "  'cli_package_inside_venv': Path(cli_module.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()),",
+                        "  'cli_parser_inside_venv': Path(cli_parser.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()),",
+                        "  'cli_runner_inside_venv': Path(cli_runner.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()),",
+                        "  'cli_build_parser_inside_venv': Path(cli_module.build_parser.__code__.co_filename).resolve().is_relative_to(Path(sys.prefix).resolve()),",
+                        "  'cli_main_inside_venv': Path(cli_module.main.__code__.co_filename).resolve().is_relative_to(Path(sys.prefix).resolve()),",
+                        "  'cli_public_aliases_match': [cli_module.build_parser is cli_parser.build_parser, cli_module.main is cli_runner.main],",
+                        "  'mcp_registry_inside_venv': Path(mcp_registry.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()),",
+                        "  'mcp_handler_inside_venv': Path(mcp_registry._TOOL_HANDLERS['alice_recall'].__code__.co_filename).resolve().is_relative_to(Path(sys.prefix).resolve()),",
+                        "  'mcp_registry_counts': [len(mcp_registry._CORE_TOOL_DEFINITIONS), len(mcp_registry._LEGACY_TOOL_DEFINITIONS), len(mcp_registry._TOOL_HANDLERS)],",
                         "  'alembic_head': script_dir.get_current_head(),",
                         "  'alembic_path_exists': Path(cfg.get_main_option('script_location')).is_dir(),",
                         "  'public_eval_schema': catalog.get('schema_version'),",
@@ -119,6 +132,15 @@ def smoke_artifact(artifact: Path, *, expected_version: str) -> None:
         assert payload["version"] == expected_version
         assert payload["api_version"] == expected_version
         assert payload["package_inside_venv"] is True
+        assert payload["cli_package_inside_venv"] is True
+        assert payload["cli_parser_inside_venv"] is True
+        assert payload["cli_runner_inside_venv"] is True
+        assert payload["cli_build_parser_inside_venv"] is True
+        assert payload["cli_main_inside_venv"] is True
+        assert payload["cli_public_aliases_match"] == [True, True]
+        assert payload["mcp_registry_inside_venv"] is True
+        assert payload["mcp_handler_inside_venv"] is True
+        assert payload["mcp_registry_counts"] == [11, 65, 76]
         assert payload["alembic_head"]
         assert payload["alembic_path_exists"] is True
         assert payload["public_eval_schema"] == "public_eval_fixture_v1"

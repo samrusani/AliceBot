@@ -4,7 +4,7 @@ import json
 from contextlib import contextmanager
 from uuid import uuid4
 
-import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api import proxy_execution as proxy_execution_module
 from alicebot_api.config import Settings
 from alicebot_api.approvals import ApprovalNotFoundError
@@ -74,17 +74,17 @@ def test_execute_approved_proxy_endpoint_returns_payload(monkeypatch) -> None:
             "trace": {"trace_id": "proxy-trace-123", "trace_event_count": 5},
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
         proxy_execution_module,
         "execute_approved_proxy_request",
         fake_execute_approved_proxy_request,
     )
 
-    response = main_module.execute_approved_proxy(
+    response = legacy_gated_router.execute_approved_proxy(
         approval_id,
-        main_module.ExecuteApprovedProxyRequest(user_id=user_id),
+        legacy_gated_router.ExecuteApprovedProxyRequest(user_id=user_id),
     )
 
     assert response.status_code == 200
@@ -115,17 +115,17 @@ def test_execute_approved_proxy_endpoint_maps_missing_approval_to_404(monkeypatc
     def fake_execute_approved_proxy_request(*_args, **_kwargs):
         raise ApprovalNotFoundError(f"approval {approval_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
         proxy_execution_module,
         "execute_approved_proxy_request",
         fake_execute_approved_proxy_request,
     )
 
-    response = main_module.execute_approved_proxy(
+    response = legacy_gated_router.execute_approved_proxy(
         approval_id,
-        main_module.ExecuteApprovedProxyRequest(user_id=user_id),
+        legacy_gated_router.ExecuteApprovedProxyRequest(user_id=user_id),
     )
 
     assert response.status_code == 404
@@ -146,17 +146,17 @@ def test_execute_approved_proxy_endpoint_maps_blocked_approval_to_409(monkeypatc
     def fake_execute_approved_proxy_request(*_args, **_kwargs):
         raise ProxyExecutionApprovalStateError(f"approval {approval_id} is pending and cannot be executed")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
         proxy_execution_module,
         "execute_approved_proxy_request",
         fake_execute_approved_proxy_request,
     )
 
-    response = main_module.execute_approved_proxy(
+    response = legacy_gated_router.execute_approved_proxy(
         approval_id,
-        main_module.ExecuteApprovedProxyRequest(user_id=user_id),
+        legacy_gated_router.ExecuteApprovedProxyRequest(user_id=user_id),
     )
 
     assert response.status_code == 409
@@ -177,17 +177,17 @@ def test_execute_approved_proxy_endpoint_maps_missing_handler_to_409(monkeypatch
     def fake_execute_approved_proxy_request(*_args, **_kwargs):
         raise ProxyExecutionHandlerNotFoundError("tool 'proxy.missing' has no registered proxy handler")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
         proxy_execution_module,
         "execute_approved_proxy_request",
         fake_execute_approved_proxy_request,
     )
 
-    response = main_module.execute_approved_proxy(
+    response = legacy_gated_router.execute_approved_proxy(
         approval_id,
-        main_module.ExecuteApprovedProxyRequest(user_id=user_id),
+        legacy_gated_router.ExecuteApprovedProxyRequest(user_id=user_id),
     )
 
     assert response.status_code == 409
@@ -208,17 +208,17 @@ def test_execute_approved_proxy_endpoint_maps_linkage_error_to_409(monkeypatch) 
     def fake_execute_approved_proxy_request(*_args, **_kwargs):
         raise TaskStepApprovalLinkageError(f"approval {approval_id} is missing linked task_step_id")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
         proxy_execution_module,
         "execute_approved_proxy_request",
         fake_execute_approved_proxy_request,
     )
 
-    response = main_module.execute_approved_proxy(
+    response = legacy_gated_router.execute_approved_proxy(
         approval_id,
-        main_module.ExecuteApprovedProxyRequest(user_id=user_id),
+        legacy_gated_router.ExecuteApprovedProxyRequest(user_id=user_id),
     )
 
     assert response.status_code == 409
@@ -293,17 +293,17 @@ def test_execute_approved_proxy_endpoint_returns_budget_blocked_payload(monkeypa
             "trace": {"trace_id": "proxy-trace-456", "trace_event_count": 5},
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
         proxy_execution_module,
         "execute_approved_proxy_request",
         fake_execute_approved_proxy_request,
     )
 
-    response = main_module.execute_approved_proxy(
+    response = legacy_gated_router.execute_approved_proxy(
         approval_id,
-        main_module.ExecuteApprovedProxyRequest(user_id=user_id),
+        legacy_gated_router.ExecuteApprovedProxyRequest(user_id=user_id),
     )
 
     assert response.status_code == 200
@@ -382,17 +382,17 @@ def test_execute_approved_proxy_endpoint_returns_invalid_context_budget_blocked_
             "trace": {"trace_id": "proxy-trace-456", "trace_event_count": 5},
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
         proxy_execution_module,
         "execute_approved_proxy_request",
         fake_execute_approved_proxy_request,
     )
 
-    response = main_module.execute_approved_proxy(
+    response = legacy_gated_router.execute_approved_proxy(
         approval_id,
-        main_module.ExecuteApprovedProxyRequest(user_id=user_id),
+        legacy_gated_router.ExecuteApprovedProxyRequest(user_id=user_id),
     )
 
     assert response.status_code == 200

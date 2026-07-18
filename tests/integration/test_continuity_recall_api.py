@@ -10,6 +10,7 @@ import anyio
 import psycopg
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import continuity as continuity_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -183,6 +184,11 @@ def test_continuity_recall_api_returns_provenance_backed_scoped_results(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        continuity_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status, payload = invoke_request(
         "GET",
@@ -263,6 +269,11 @@ def test_continuity_recall_api_rejects_invalid_time_window(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        continuity_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status, payload = invoke_request(
         "GET",
@@ -311,6 +322,11 @@ def test_continuity_recall_debug_api_persists_and_exposes_trace(
 
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        continuity_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -383,6 +399,11 @@ def test_continuity_resumption_debug_api_includes_underlying_retrieval_trace(
 
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        continuity_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -484,6 +505,11 @@ def test_continuity_recall_api_prefers_confirmed_fresh_active_truth_over_superse
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        continuity_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status, payload = invoke_request(
         "GET",
@@ -566,6 +592,11 @@ def test_continuity_recall_api_excludes_preserved_but_non_searchable_objects(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        continuity_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status, payload = invoke_request(
         "GET",
@@ -612,6 +643,11 @@ def test_continuity_lifecycle_debug_endpoints_expose_flags(
 
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        continuity_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

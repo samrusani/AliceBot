@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import anyio
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -83,6 +84,9 @@ def test_approval_request_persists_record_for_approval_required_route(
 ) -> None:
     seeded = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -239,6 +243,9 @@ def test_approval_request_routing_excludes_profile_mismatched_policies(
         agent_profile_id="coach_default",
     )
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -323,6 +330,9 @@ def test_approval_request_does_not_create_records_for_ready_or_denied_routes(
 ) -> None:
     seeded = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -425,6 +435,9 @@ def test_approval_endpoints_list_and_detail_are_deterministic_and_user_scoped(
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     intruder = seed_user(migrated_database_urls["app"], email="intruder@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -543,6 +556,9 @@ def test_approval_resolution_endpoints_update_reads_and_emit_trace(
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -711,6 +727,9 @@ def test_approval_resolution_does_not_reopen_cancelled_linked_task_run(
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner-cancelled-run@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -820,6 +839,9 @@ def test_approval_resolution_rejects_duplicate_conflicting_and_cross_user_attemp
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     intruder = seed_user(migrated_database_urls["app"], email="intruder@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -973,6 +995,9 @@ def test_approval_resolution_rejects_inconsistent_linkage_without_mutating_task_
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner-boundary@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         store = ContinuityStore(conn)

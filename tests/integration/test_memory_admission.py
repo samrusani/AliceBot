@@ -9,6 +9,7 @@ import psycopg
 import pytest
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -79,6 +80,11 @@ def test_admit_memory_endpoint_returns_noop_and_persists_nothing_without_value(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status_code, payload = invoke_admit_memory(
         {
@@ -113,6 +119,11 @@ def test_admit_memory_endpoint_rejects_unknown_source_events(migrated_database_u
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status_code, payload = invoke_admit_memory(
         {
@@ -131,6 +142,11 @@ def test_admit_memory_endpoint_rejects_invalid_memory_type(migrated_database_url
     user_id, event_ids = seed_memory_evidence(migrated_database_urls["app"])
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -156,6 +172,11 @@ def test_admit_memory_endpoint_persists_add_update_and_delete_revisions(
     user_id, event_ids = seed_memory_evidence(migrated_database_urls["app"])
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -235,6 +256,11 @@ def test_memories_and_memory_revisions_respect_per_user_isolation(
     intruder_id = uuid4()
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

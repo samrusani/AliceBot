@@ -61,11 +61,23 @@ import json
 import sys
 from alicebot_api.main import app
 
+route_paths = set()
+for route in app.router.routes:
+    effective_route_contexts = getattr(route, "effective_route_contexts", None)
+    route_contexts = (
+        effective_route_contexts()
+        if callable(effective_route_contexts)
+        else (route,)
+    )
+    route_paths.update(
+        str(route_context.path)
+        for route_context in route_contexts
+        if getattr(route_context, "path", None) is not None
+    )
+
 print(json.dumps({
     "module_loaded": "alicebot_api.proxy_execution" in sys.modules,
-    "execute_route_mounted": "/v0/approvals/{approval_id}/execute" in {
-        route.path for route in app.routes
-    },
+    "execute_route_mounted": "/v0/approvals/{approval_id}/execute" in route_paths,
 }))
 """
     completed = subprocess.run(

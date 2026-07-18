@@ -10,6 +10,7 @@ import anyio
 import psycopg
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 import alicebot_api.calendar as calendar_module
 from alicebot_api.db import user_connection
@@ -171,6 +172,14 @@ def test_calendar_account_endpoints_connect_list_detail_and_isolate(
             calendar_secret_manager_url=_build_calendar_secret_manager_url(calendar_secret_root),
         ),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            calendar_secret_manager_url=_build_calendar_secret_manager_url(calendar_secret_root),
+        ),
+    )
 
     create_status, create_payload = _connect_calendar_account(
         user_id=owner["user_id"],
@@ -287,6 +296,14 @@ def test_calendar_event_list_endpoint_is_deterministic_and_limit_bounded(
         ),
     )
     monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            calendar_secret_manager_url=_build_calendar_secret_manager_url(calendar_secret_root),
+        ),
+    )
+    monkeypatch.setattr(
         calendar_module,
         "fetch_calendar_event_list_payload",
         lambda **_kwargs: [
@@ -396,6 +413,14 @@ def test_calendar_event_list_endpoint_isolates_users_and_handles_missing_account
         ),
     )
     monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            calendar_secret_manager_url=_build_calendar_secret_manager_url(calendar_secret_root),
+        ),
+    )
+    monkeypatch.setattr(
         calendar_module,
         "fetch_calendar_event_list_payload",
         lambda **_kwargs: [],
@@ -437,6 +462,14 @@ def test_calendar_event_list_endpoint_maps_credential_fetch_and_validation_failu
     calendar_secret_root = tmp_path / "calendar-secrets"
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            calendar_secret_manager_url=_build_calendar_secret_manager_url(calendar_secret_root),
+        ),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
@@ -513,6 +546,15 @@ def test_calendar_event_ingestion_endpoint_persists_artifact_and_chunks(
     calendar_secret_root = tmp_path / "calendar-secrets"
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+            calendar_secret_manager_url=_build_calendar_secret_manager_url(calendar_secret_root),
+        ),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
@@ -621,6 +663,15 @@ def test_calendar_event_ingestion_endpoint_rejects_cross_user_workspace_access(
         ),
     )
     monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+            calendar_secret_manager_url=_build_calendar_secret_manager_url(calendar_secret_root),
+        ),
+    )
+    monkeypatch.setattr(
         calendar_module,
         "fetch_calendar_event_payload",
         lambda **_kwargs: {
@@ -663,6 +714,15 @@ def test_calendar_event_ingestion_endpoint_rejects_missing_and_unsupported_event
     calendar_secret_root = tmp_path / "calendar-secrets"
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+            calendar_secret_manager_url=_build_calendar_secret_manager_url(calendar_secret_root),
+        ),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],

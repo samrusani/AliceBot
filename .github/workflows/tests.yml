@@ -28,7 +28,7 @@ jobs:
       - name: Unit tests with coverage baseline
         run: |
           python -m pytest tests/unit -q --cov=alicebot_api --cov-report=term --cov-report=xml --cov-report=json:/tmp/alicebot-python-coverage.json --cov-fail-under=50
-          python scripts/check_python_coverage.py --coverage-json /tmp/alicebot-python-coverage.json --path apps/api/src/alicebot_api/main.py --min-percent 45
+          python scripts/check_python_coverage.py --coverage-json /tmp/alicebot-python-coverage.json --path apps/api/src/alicebot_api/main.py --path apps/api/src/alicebot_api/routers/_api_shared.py --path apps/api/src/alicebot_api/routers/_vnext_automation.py --path apps/api/src/alicebot_api/routers/_vnext_embeddings.py --path apps/api/src/alicebot_api/routers/_vnext_shared.py --path apps/api/src/alicebot_api/routers/continuity.py --path apps/api/src/alicebot_api/routers/legacy_gated.py --path apps/api/src/alicebot_api/routers/memories_legacy.py --path apps/api/src/alicebot_api/routers/providers.py --path apps/api/src/alicebot_api/routers/vnext_memories.py --path apps/api/src/alicebot_api/routers/vnext_projects.py --path apps/api/src/alicebot_api/routers/vnext_retrieval.py --path apps/api/src/alicebot_api/routers/vnext_review.py --path apps/api/src/alicebot_api/routers/workspaces.py --min-percent 45
       - name: All model-free LongMemEval tests and dataset-manifest consistency
         run: python -m pytest eval/longmemeval -q
       - name: Replay committed LongMemEval evidence
@@ -206,20 +206,1962 @@ jobs:
           ALICE_TEST_INSTALLED_WHEEL: "1"
         run: |
           python - <<'PY'
+          from datetime import datetime, timezone
+          import inspect
+          import pickle
           from pathlib import Path
+          import sys
+          import typing
+          from uuid import UUID
           import alicebot_api
+          import alicebot_api.cli as cli_module
+          import alicebot_api.cli.parser as cli_parser
+          import alicebot_api.cli.runner as cli_runner
+          import alicebot_api.contracts as contracts_module
+          import alicebot_api.mcp.registry as mcp_registry
+          import alicebot_api.mcp_tools as mcp_tools_module
+          import alicebot_api.store as store_module
+          from alicebot_api._contracts import common as contracts_common
+          from alicebot_api._contracts import continuity as contracts_continuity
+          from alicebot_api._contracts import governance as contracts_governance
+          from alicebot_api._contracts import tasks as contracts_tasks
+          from alicebot_api._contracts import integrations as contracts_integrations
+          from alicebot_api._contracts import execution as contracts_execution
+          from alicebot_api._contracts import knowledge as contracts_knowledge
+          from alicebot_api._contracts import retrieval as contracts_retrieval
+          from alicebot_api._contracts import runtime as contracts_runtime
+          from alicebot_api.legacy_store import conversation_memory
+          from alicebot_api.legacy_store import continuity
+          from alicebot_api.legacy_store import governance_integrations
+          from alicebot_api.legacy_store import providers_knowledge
+          from alicebot_api.legacy_store import task_execution
 
           module_path = Path(alicebot_api.__file__).resolve()
+          cli_package_path = Path(cli_module.__file__).resolve()
+          cli_parser_path = Path(cli_parser.__file__).resolve()
+          cli_runner_path = Path(cli_runner.__file__).resolve()
+          cli_build_parser_code_path = Path(
+              cli_module.build_parser.__code__.co_filename
+          ).resolve()
+          cli_main_code_path = Path(cli_module.main.__code__.co_filename).resolve()
+          mcp_registry_path = Path(mcp_registry.__file__).resolve()
+          mcp_handler_code_path = Path(
+              mcp_tools_module._TOOL_HANDLERS["alice_recall"].__code__.co_filename
+          ).resolve()
+          carrier_path = Path(providers_knowledge.__file__).resolve()
+          conversation_memory_carrier_path = Path(conversation_memory.__file__).resolve()
+          continuity_carrier_path = Path(continuity.__file__).resolve()
+          governance_carrier_path = Path(governance_integrations.__file__).resolve()
+          task_execution_carrier_path = Path(task_execution.__file__).resolve()
+          contracts_common_carrier_path = Path(contracts_common.__file__).resolve()
+          contracts_common_code_path = Path(
+              contracts_module.isoformat_or_none.__code__.co_filename
+          ).resolve()
+          contracts_runtime_carrier_path = Path(contracts_runtime.__file__).resolve()
+          contracts_runtime_method_path = Path(
+              contracts_module.ContextCompilerLimits.as_payload.__code__.co_filename
+          ).resolve()
+          contracts_continuity_carrier_path = Path(contracts_continuity.__file__).resolve()
+          contracts_continuity_method_path = Path(
+              contracts_module.MemoryCandidateInput.as_payload.__code__.co_filename
+          ).resolve()
+          contracts_knowledge_carrier_path = Path(contracts_knowledge.__file__).resolve()
+          contracts_knowledge_method_path = Path(
+              contracts_module.EntityCreateInput.as_payload.__code__.co_filename
+          ).resolve()
+          contracts_retrieval_carrier_path = Path(contracts_retrieval.__file__).resolve()
+          contracts_retrieval_method_path = Path(
+              contracts_module.SemanticMemoryRetrievalRequestInput.as_payload.__code__.co_filename
+          ).resolve()
+          contracts_governance_carrier_path = Path(contracts_governance.__file__).resolve()
+          contracts_governance_method_path = Path(
+              contracts_module.ToolRoutingRequestInput.as_payload.__code__.co_filename
+          ).resolve()
+          contracts_tasks_carrier_path = Path(contracts_tasks.__file__).resolve()
+          contracts_tasks_method_path = Path(
+              contracts_module.TaskArtifactChunkEmbeddingUpsertInput.as_payload.__code__.co_filename
+          ).resolve()
+          contracts_integrations_carrier_path = Path(
+              contracts_integrations.__file__
+          ).resolve()
+          contracts_execution_carrier_path = Path(
+              contracts_execution.__file__
+          ).resolve()
+          moved_code_path = Path(store_module.ContinuityStore.create_model_provider.__code__.co_filename).resolve()
+          conversation_memory_moved_code_path = Path(
+              store_module.ContinuityStore.append_event_if_tail.__code__.co_filename
+          ).resolve()
+          continuity_moved_code_path = Path(
+              store_module.ContinuityStore.create_continuity_object.__code__.co_filename
+          ).resolve()
+          governance_moved_code_path = Path(store_module.ContinuityStore.create_consent.__code__.co_filename).resolve()
+          task_execution_moved_code_path = Path(
+              store_module.ContinuityStore.create_task_step.__code__.co_filename
+          ).resolve()
           repository_path = Path.cwd().resolve()
           assert not module_path.is_relative_to(repository_path), (
               f"alicebot_api resolved to checkout source instead of the installed wheel: {module_path}"
           )
+          assert not cli_package_path.is_relative_to(repository_path), (
+              "CLI package resolved to checkout source instead of the installed wheel: "
+              f"{cli_package_path}"
+          )
+          assert not cli_parser_path.is_relative_to(repository_path), (
+              "CLI parser carrier resolved to checkout source instead of the installed wheel: "
+              f"{cli_parser_path}"
+          )
+          assert not cli_runner_path.is_relative_to(repository_path), (
+              "CLI runner carrier resolved to checkout source instead of the installed wheel: "
+              f"{cli_runner_path}"
+          )
+          assert not cli_build_parser_code_path.is_relative_to(repository_path), (
+              "moved CLI parser resolved to checkout source instead of the installed wheel: "
+              f"{cli_build_parser_code_path}"
+          )
+          assert not cli_main_code_path.is_relative_to(repository_path), (
+              "moved CLI runner resolved to checkout source instead of the installed wheel: "
+              f"{cli_main_code_path}"
+          )
+          assert cli_module.build_parser is cli_parser.build_parser
+          assert cli_module.main is cli_runner.main
+          assert not mcp_registry_path.is_relative_to(repository_path), (
+              "MCP registry carrier resolved to checkout source instead of the installed wheel: "
+              f"{mcp_registry_path}"
+          )
+          assert not mcp_handler_code_path.is_relative_to(repository_path), (
+              "moved MCP handler resolved to checkout source instead of the installed wheel: "
+              f"{mcp_handler_code_path}"
+          )
+          assert mcp_tools_module.call_mcp_tool is mcp_registry.call_mcp_tool
+          assert len(mcp_registry._CORE_TOOL_DEFINITIONS) == 11
+          assert len(mcp_registry._LEGACY_TOOL_DEFINITIONS) == 65
+          assert len(mcp_registry._TOOL_HANDLERS) == 76
+          assert not carrier_path.is_relative_to(repository_path), (
+              f"legacy store carrier resolved to checkout source instead of the installed wheel: {carrier_path}"
+          )
+          assert not conversation_memory_carrier_path.is_relative_to(repository_path), (
+              "conversation memory legacy store carrier resolved to checkout source instead of "
+              f"the installed wheel: {conversation_memory_carrier_path}"
+          )
+          assert not continuity_carrier_path.is_relative_to(repository_path), (
+              "continuity legacy store carrier resolved to checkout source instead of the "
+              f"installed wheel: {continuity_carrier_path}"
+          )
+          assert not governance_carrier_path.is_relative_to(repository_path), (
+              "governance legacy store carrier resolved to checkout source instead of the installed "
+              f"wheel: {governance_carrier_path}"
+          )
+          assert not task_execution_carrier_path.is_relative_to(repository_path), (
+              "task execution legacy store carrier resolved to checkout source instead of the "
+              f"installed wheel: {task_execution_carrier_path}"
+          )
+          assert not contracts_common_carrier_path.is_relative_to(repository_path), (
+              "common contracts carrier resolved to checkout source instead of the installed "
+              f"wheel: {contracts_common_carrier_path}"
+          )
+          assert not contracts_common_code_path.is_relative_to(repository_path), (
+              "moved common contract function resolved to checkout source instead of the installed "
+              f"wheel: {contracts_common_code_path}"
+          )
+          assert not contracts_runtime_carrier_path.is_relative_to(repository_path), (
+              "runtime contracts carrier resolved to checkout source instead of the installed "
+              f"wheel: {contracts_runtime_carrier_path}"
+          )
+          assert not contracts_runtime_method_path.is_relative_to(repository_path), (
+              "moved runtime contract method resolved to checkout source instead of the installed "
+              f"wheel: {contracts_runtime_method_path}"
+          )
+          assert not contracts_continuity_carrier_path.is_relative_to(repository_path), (
+              "continuity contracts carrier resolved to checkout source instead of the installed "
+              f"wheel: {contracts_continuity_carrier_path}"
+          )
+          assert not contracts_continuity_method_path.is_relative_to(repository_path), (
+              "moved continuity contract method resolved to checkout source instead of the "
+              f"installed wheel: {contracts_continuity_method_path}"
+          )
+          assert not contracts_knowledge_carrier_path.is_relative_to(repository_path), (
+              "knowledge contracts carrier resolved to checkout source instead of the installed "
+              f"wheel: {contracts_knowledge_carrier_path}"
+          )
+          assert not contracts_knowledge_method_path.is_relative_to(repository_path), (
+              "moved knowledge contract method resolved to checkout source instead of the installed "
+              f"wheel: {contracts_knowledge_method_path}"
+          )
+          assert not contracts_retrieval_carrier_path.is_relative_to(repository_path), (
+              "retrieval contracts carrier resolved to checkout source instead of the installed "
+              f"wheel: {contracts_retrieval_carrier_path}"
+          )
+          assert not contracts_retrieval_method_path.is_relative_to(repository_path), (
+              "moved retrieval contract method resolved to checkout source instead of the installed "
+              f"wheel: {contracts_retrieval_method_path}"
+          )
+          assert not contracts_governance_carrier_path.is_relative_to(repository_path), (
+              "governance contracts carrier resolved to checkout source instead of the installed "
+              f"wheel: {contracts_governance_carrier_path}"
+          )
+          assert not contracts_governance_method_path.is_relative_to(repository_path), (
+              "moved governance contract method resolved to checkout source instead of the installed "
+              f"wheel: {contracts_governance_method_path}"
+          )
+          assert not contracts_tasks_carrier_path.is_relative_to(repository_path), (
+              "tasks contracts carrier resolved to checkout source instead of the installed "
+              f"wheel: {contracts_tasks_carrier_path}"
+          )
+          assert not contracts_tasks_method_path.is_relative_to(repository_path), (
+              "moved tasks contract method resolved to checkout source instead of the installed "
+              f"wheel: {contracts_tasks_method_path}"
+          )
+          assert not contracts_integrations_carrier_path.is_relative_to(repository_path), (
+              "integrations contracts carrier resolved to checkout source instead of the installed "
+              f"wheel: {contracts_integrations_carrier_path}"
+          )
+          assert not contracts_execution_carrier_path.is_relative_to(repository_path), (
+              "execution contracts carrier resolved to checkout source instead of the installed "
+              f"wheel: {contracts_execution_carrier_path}"
+          )
+          assert not moved_code_path.is_relative_to(repository_path), (
+              f"moved store method resolved to checkout source instead of the installed wheel: {moved_code_path}"
+          )
+          assert not conversation_memory_moved_code_path.is_relative_to(repository_path), (
+              "moved conversation memory store method resolved to checkout source instead of the "
+              f"installed wheel: {conversation_memory_moved_code_path}"
+          )
+          assert not continuity_moved_code_path.is_relative_to(repository_path), (
+              "moved continuity store method resolved to checkout source instead of the "
+              f"installed wheel: {continuity_moved_code_path}"
+          )
+          assert not governance_moved_code_path.is_relative_to(repository_path), (
+              "moved governance store method resolved to checkout source instead of the installed "
+              f"wheel: {governance_moved_code_path}"
+          )
+          assert not task_execution_moved_code_path.is_relative_to(repository_path), (
+              "moved task execution store method resolved to checkout source instead of the "
+              f"installed wheel: {task_execution_moved_code_path}"
+          )
+          moved_method = store_module.ContinuityStore.create_model_provider
+          moved_signature = inspect.signature(moved_method)
+          moved_annotations = inspect.get_annotations(moved_method, eval_str=False)
+          assert moved_method.__globals__ is vars(store_module)
+          assert moved_method.__module__ == "alicebot_api.store"
+          assert moved_method.__qualname__ == "ContinuityStore.create_model_provider"
+          assert list(moved_signature.parameters)[:3] == [
+              "self",
+              "workspace_id",
+              "created_by_user_account_id",
+          ]
+          assert "ModelProviderRow" in str(moved_signature.return_annotation)
+          assert "UUID" in str(moved_annotations["workspace_id"])
+          conversation_memory_moved_method = store_module.ContinuityStore.append_event_if_tail
+          conversation_memory_signature = inspect.signature(conversation_memory_moved_method)
+          conversation_memory_annotations = inspect.get_annotations(
+              conversation_memory_moved_method,
+              eval_str=False,
+          )
+          assert conversation_memory.AppendOnlyViolation is store_module.AppendOnlyViolation
+          assert conversation_memory_moved_method.__globals__ is vars(store_module)
+          assert conversation_memory_moved_method.__module__ == "alicebot_api.store"
+          assert conversation_memory_moved_method.__qualname__ == (
+              "ContinuityStore.append_event_if_tail"
+          )
+          assert conversation_memory_moved_method.__code__.co_qualname == (
+              "ContinuityStore.append_event_if_tail"
+          )
+          assert list(conversation_memory_signature.parameters)[:4] == [
+              "self",
+              "thread_id",
+              "session_id",
+              "kind",
+          ]
+          assert "EventRow" in str(conversation_memory_signature.return_annotation)
+          assert "JsonObject" in str(conversation_memory_annotations["payload"])
+          assert "The same transaction-scoped advisory lock" in (
+              conversation_memory_moved_method.__doc__ or ""
+          )
+          continuity_moved_method = store_module.ContinuityStore.create_continuity_object
+          continuity_signature = inspect.signature(continuity_moved_method)
+          continuity_annotations = inspect.get_annotations(
+              continuity_moved_method,
+              eval_str=False,
+          )
+          assert (
+              continuity.ContinuityStoreInvariantError
+              is store_module.ContinuityStoreInvariantError
+          )
+          assert continuity_moved_method.__globals__ is vars(store_module)
+          assert continuity_moved_method.__module__ == "alicebot_api.store"
+          assert continuity_moved_method.__qualname__ == (
+              "ContinuityStore.create_continuity_object"
+          )
+          assert continuity_moved_method.__code__.co_qualname == (
+              "ContinuityStore.create_continuity_object"
+          )
+          assert list(continuity_signature.parameters)[:4] == [
+              "self",
+              "capture_event_id",
+              "object_type",
+              "status",
+          ]
+          assert "ContinuityObjectRow" in str(continuity_signature.return_annotation)
+          assert "UUID" in str(continuity_annotations["capture_event_id"])
+          assert "JsonObject" in str(continuity_annotations["body"])
+          governance_moved_method = store_module.ContinuityStore.create_consent
+          governance_signature = inspect.signature(governance_moved_method)
+          governance_annotations = inspect.get_annotations(
+              governance_moved_method,
+              eval_str=False,
+          )
+          assert governance_moved_method.__globals__ is vars(store_module)
+          assert governance_moved_method.__module__ == "alicebot_api.store"
+          assert governance_moved_method.__qualname__ == "ContinuityStore.create_consent"
+          assert list(governance_signature.parameters)[:3] == [
+              "self",
+              "consent_key",
+              "status",
+          ]
+          assert "ConsentRow" in str(governance_signature.return_annotation)
+          assert "JsonObject" in str(governance_annotations["metadata"])
+          task_execution_moved_method = store_module.ContinuityStore.create_task_step
+          task_execution_signature = inspect.signature(task_execution_moved_method)
+          task_execution_annotations = inspect.get_annotations(
+              task_execution_moved_method,
+              eval_str=False,
+          )
+          assert task_execution_moved_method.__globals__ is vars(store_module)
+          assert task_execution_moved_method.__module__ == "alicebot_api.store"
+          assert task_execution_moved_method.__qualname__ == "ContinuityStore.create_task_step"
+          assert task_execution_moved_method.__code__.co_qualname == "ContinuityStore.create_task_step"
+          assert list(task_execution_signature.parameters)[:3] == [
+              "self",
+              "task_id",
+              "sequence_no",
+          ]
+          assert "TaskStepRow" in str(task_execution_signature.return_annotation)
+          assert "JsonObject" in str(task_execution_annotations["request"])
+          isoformat_or_none = contracts_module.isoformat_or_none
+          assert isoformat_or_none is not contracts_common.isoformat_or_none
+          assert isoformat_or_none.__globals__ is vars(contracts_module)
+          assert isoformat_or_none.__module__ == "alicebot_api.contracts"
+          assert isoformat_or_none.__qualname__ == "isoformat_or_none"
+          assert isoformat_or_none.__code__.co_qualname == "isoformat_or_none"
+          assert contracts_common.isoformat_or_none.__module__ == (
+              "alicebot_api._contracts.common"
+          )
+          assert contracts_common_code_path == Path(
+              contracts_common.isoformat_or_none.__code__.co_filename
+          ).resolve()
+          assert pickle.loads(pickle.dumps(isoformat_or_none)) is isoformat_or_none
+          assert typing.get_type_hints(isoformat_or_none) == {
+              "value": datetime | None,
+              "return": str | None,
+          }
+          assert isoformat_or_none(None) is None
+          timestamp = datetime(2026, 7, 18, 10, 30, tzinfo=timezone.utc)
+          assert isoformat_or_none(timestamp) == timestamp.isoformat()
+          facade_annotate = getattr(isoformat_or_none, "__annotate__", None)
+          carrier_annotate = getattr(
+              contracts_common.isoformat_or_none,
+              "__annotate__",
+              None,
+          )
+          assert (facade_annotate is None) == (carrier_annotate is None)
+          if carrier_annotate is not None:
+              assert facade_annotate is not carrier_annotate
+              assert facade_annotate.__globals__ is vars(contracts_module)
+              assert facade_annotate.__module__ == "alicebot_api.contracts"
+              assert facade_annotate.__name__ == "__annotate__"
+              assert facade_annotate.__qualname__ == carrier_annotate.__qualname__
+              assert facade_annotate.__code__.co_qualname == (
+                  carrier_annotate.__code__.co_qualname
+              )
+              assert facade_annotate(1) == {
+                  "value": "datetime | None",
+                  "return": "str | None",
+              }
+              assert carrier_annotate.__module__ == "alicebot_api._contracts.common"
+              assert Path(carrier_annotate.__code__.co_filename).resolve() == (
+                  contracts_common_carrier_path
+              )
+          runtime_class = contracts_module.ContextCompilerLimits
+          runtime_method = runtime_class.as_payload
+          assert runtime_class is contracts_runtime.ContextCompilerLimits
+          assert runtime_class.__module__ == "alicebot_api.contracts"
+          assert runtime_class.__qualname__ == "ContextCompilerLimits"
+          assert runtime_method.__globals__ is vars(contracts_module)
+          assert runtime_method.__module__ == "alicebot_api.contracts"
+          assert runtime_method.__qualname__ == "ContextCompilerLimits.as_payload"
+          assert runtime_method.__code__.co_qualname == "ContextCompilerLimits.as_payload"
+          assert contracts_runtime_method_path == Path(
+              runtime_method.__code__.co_filename
+          ).resolve()
+          assert pickle.loads(pickle.dumps(runtime_class)) is runtime_class
+          assert pickle.loads(pickle.dumps(runtime_method)) is runtime_method
+          runtime_limits = runtime_class()
+          assert runtime_limits.as_payload() == {
+              "max_sessions": 3,
+              "max_events": 8,
+              "max_memories": 5,
+              "max_entities": 5,
+              "max_entity_edges": 10,
+          }
+          assert pickle.loads(pickle.dumps(runtime_limits)) == runtime_limits
+          scope_annotation = (
+              contracts_module.ContextPackArtifactChunkSummary.__annotations__["scope"]
+          )
+          assert isinstance(scope_annotation, typing.ForwardRef)
+          assert scope_annotation.__forward_module__ == "alicebot_api.contracts"
+          assert typing.get_type_hints(
+              contracts_module.ContextPackArtifactChunkSummary,
+              include_extras=True,
+          )["scope"] == (contracts_module.TaskArtifactChunkRetrievalScope | None)
+          runtime_method_annotate = getattr(runtime_method, "__annotate__", None)
+          if runtime_method_annotate is not None:
+              assert runtime_method_annotate.__globals__ is vars(contracts_module)
+              assert runtime_method_annotate.__module__ == "alicebot_api.contracts"
+              assert runtime_method_annotate.__qualname__.startswith(
+                  "ContextCompilerLimits."
+              )
+              assert runtime_method_annotate.__qualname__.endswith("__annotate__")
+              assert runtime_method_annotate.__code__.co_qualname == (
+                  "ContextCompilerLimits.__annotate__"
+              )
+              assert runtime_method_annotate(1) == {"return": "JsonObject"}
+          runtime_typed_dicts = [
+              value
+              for value in vars(contracts_runtime).values()
+              if isinstance(value, type)
+              and value.__module__ == "alicebot_api.contracts"
+              and typing.is_typeddict(value)
+          ]
+          assert len(runtime_typed_dicts) == 71
+          if sys.version_info >= (3, 14):
+              for runtime_typed_dict in runtime_typed_dicts:
+                  typed_dict_annotate = runtime_typed_dict.__annotate__
+                  assert typed_dict_annotate.__module__ == "typing"
+                  assert typed_dict_annotate.__globals__ is vars(typing)
+                  assert isinstance(typed_dict_annotate(1), dict)
+              runtime_init = runtime_class.__init__
+              assert runtime_init.__module__ == "alicebot_api.contracts"
+              assert runtime_init.__qualname__ == "ContextCompilerLimits.__init__"
+              assert runtime_init.__globals__ is vars(contracts_module)
+              runtime_init_annotate = runtime_init.__annotate__
+              assert runtime_init_annotate.__module__ == "dataclasses"
+              assert runtime_init_annotate.__qualname__ == (
+                  "ContextCompilerLimits.__init__.__annotate__"
+              )
+              assert runtime_init_annotate.__code__.co_qualname == (
+                  "_make_annotate_function.<locals>.__annotate__"
+              )
+              assert runtime_init_annotate.__globals__["__name__"] == "dataclasses"
+              assert runtime_init_annotate(1) == {
+                  "max_sessions": "int",
+                  "max_events": "int",
+                  "max_memories": "int",
+                  "max_entities": "int",
+                  "max_entity_edges": "int",
+                  "return": None,
+              }
+          continuity_class = contracts_module.MemoryCandidateInput
+          continuity_method = continuity_class.as_payload
+          assert continuity_class is contracts_continuity.MemoryCandidateInput
+          assert continuity_class.__module__ == "alicebot_api.contracts"
+          assert continuity_class.__qualname__ == "MemoryCandidateInput"
+          assert continuity_method.__globals__ is vars(contracts_module)
+          assert continuity_method.__module__ == "alicebot_api.contracts"
+          assert continuity_method.__qualname__ == "MemoryCandidateInput.as_payload"
+          assert continuity_method.__code__.co_qualname == "MemoryCandidateInput.as_payload"
+          assert contracts_continuity_method_path == Path(
+              continuity_method.__code__.co_filename
+          ).resolve()
+          assert pickle.loads(pickle.dumps(continuity_class)) is continuity_class
+          assert pickle.loads(pickle.dumps(continuity_method)) is continuity_method
+          continuity_candidate = continuity_class(
+              memory_key="preference:editor",
+              value={"name": "vim"},
+              source_event_ids=(),
+          )
+          assert continuity_candidate.as_payload()["memory_key"] == "preference:editor"
+          assert pickle.loads(pickle.dumps(continuity_candidate)) == continuity_candidate
+          resumption_summary_annotation = (
+              contracts_module.ContinuityResumptionListSection.__annotations__["summary"]
+          )
+          retrieval_summary_annotation = (
+              contracts_module.MemoryTrustDashboardSummary.__annotations__["retrieval_quality"]
+          )
+          assert isinstance(resumption_summary_annotation, typing.ForwardRef)
+          assert isinstance(retrieval_summary_annotation, typing.ForwardRef)
+          assert resumption_summary_annotation.__forward_module__ == "alicebot_api.contracts"
+          assert retrieval_summary_annotation.__forward_module__ == "alicebot_api.contracts"
+          assert typing.get_type_hints(
+              contracts_module.ContinuityResumptionListSection,
+              include_extras=True,
+          )["summary"] is contracts_module.ResumptionBriefSectionSummary
+          assert typing.get_type_hints(
+              contracts_module.MemoryTrustDashboardSummary,
+              include_extras=True,
+          )["retrieval_quality"] is contracts_module.RetrievalEvaluationSummary
+          continuity_classes = [
+              value
+              for value in vars(contracts_continuity).values()
+              if isinstance(value, type) and value.__module__ == "alicebot_api.contracts"
+          ]
+          continuity_dataclasses = [
+              value for value in continuity_classes if hasattr(value, "__dataclass_fields__")
+          ]
+          continuity_typed_dicts = [
+              value for value in continuity_classes if typing.is_typeddict(value)
+          ]
+          assert len(continuity_classes) == 190
+          assert len(continuity_dataclasses) == 30
+          assert len(continuity_typed_dicts) == 160
+          assert all(
+              contract_class.__init__.__globals__ is vars(contracts_module)
+              for contract_class in continuity_dataclasses
+          )
+          assert all(
+              getattr(getattr(contracts_module, owner_name), method_name).__globals__
+              is vars(contracts_module)
+              for owner_name, method_name in contracts_module._CONTINUITY_EXPLICIT_METHODS
+          )
+          assert len(contracts_module._CONTINUITY_EXPLICIT_METHODS) == 29
+          if sys.version_info >= (3, 14):
+              for continuity_typed_dict in continuity_typed_dicts:
+                  typed_dict_annotate = continuity_typed_dict.__annotate__
+                  assert typed_dict_annotate.__module__ == "typing"
+                  assert typed_dict_annotate.__globals__ is vars(typing)
+                  assert isinstance(typed_dict_annotate(1), dict)
+              for continuity_dataclass in continuity_dataclasses:
+                  continuity_init_annotate = continuity_dataclass.__init__.__annotate__
+                  assert continuity_init_annotate.__module__ == "dataclasses"
+                  assert continuity_init_annotate.__globals__["__name__"] == "dataclasses"
+                  continuity_replace = continuity_dataclass.__replace__
+                  assert continuity_replace.__module__ == "dataclasses"
+                  assert continuity_replace.__globals__["__name__"] == "dataclasses"
+              for owner_name, method_name in contracts_module._CONTINUITY_EXPLICIT_METHODS:
+                  continuity_explicit_annotate = getattr(
+                      getattr(getattr(contracts_module, owner_name), method_name),
+                      "__annotate__",
+                  )
+                  assert continuity_explicit_annotate.__module__ == "alicebot_api.contracts"
+                  assert continuity_explicit_annotate.__globals__ is vars(contracts_module)
+                  assert continuity_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert continuity_explicit_annotate.__qualname__.endswith("__annotate__")
+                  assert isinstance(continuity_explicit_annotate(1), dict)
+          knowledge_classes = [
+              getattr(contracts_knowledge, name)
+              for name in contracts_module._KNOWLEDGE_CONTRACT_CLASS_NAMES
+          ]
+          knowledge_dataclasses = [
+              value for value in knowledge_classes if hasattr(value, "__dataclass_fields__")
+          ]
+          knowledge_typed_dicts = [
+              value for value in knowledge_classes if typing.is_typeddict(value)
+          ]
+          assert len(knowledge_classes) == 45
+          assert len(knowledge_dataclasses) == 7
+          assert len(knowledge_typed_dicts) == 38
+          assert all(
+              getattr(contracts_module, name) is getattr(contracts_knowledge, name)
+              for name in contracts_module._KNOWLEDGE_CONTRACT_CLASS_NAMES
+          )
+          assert all(
+              contract_class.__init__.__globals__ is vars(contracts_module)
+              for contract_class in knowledge_dataclasses
+          )
+          assert not [
+              (contract_class.__name__, method_name)
+              for contract_class in knowledge_dataclasses
+              for method_name, method in vars(contract_class).items()
+              if inspect.isfunction(method)
+              and method.__globals__ is vars(contracts_knowledge)
+          ]
+          assert len(contracts_module._KNOWLEDGE_EXPLICIT_METHODS) == 7
+          assert all(
+              getattr(getattr(contracts_module, owner_name), method_name).__globals__
+              is vars(contracts_module)
+              for owner_name, method_name in contracts_module._KNOWLEDGE_EXPLICIT_METHODS
+          )
+          assert contracts_module.EntityEdgeRecord.__orig_bases__ == (
+              contracts_module.ContextPackEntityEdge,
+          )
+          knowledge_class = contracts_module.EntityCreateInput
+          knowledge_method = knowledge_class.as_payload
+          assert knowledge_method.__globals__ is vars(contracts_module)
+          assert knowledge_method.__module__ == "alicebot_api.contracts"
+          assert knowledge_method.__qualname__ == "EntityCreateInput.as_payload"
+          assert contracts_knowledge_method_path == Path(
+              knowledge_method.__code__.co_filename
+          ).resolve()
+          assert pickle.loads(pickle.dumps(knowledge_class)) is knowledge_class
+          assert pickle.loads(pickle.dumps(knowledge_method)) is knowledge_method
+          knowledge_candidate = knowledge_class(
+              entity_type="project",
+              name="Alice",
+              source_memory_ids=(),
+          )
+          assert knowledge_candidate.as_payload() == {
+              "entity_type": "project",
+              "name": "Alice",
+              "source_memory_ids": [],
+          }
+          assert pickle.loads(pickle.dumps(knowledge_candidate)) == knowledge_candidate
+          for knowledge_contract in knowledge_classes:
+              typing.get_type_hints(knowledge_contract, include_extras=True)
+          if sys.version_info >= (3, 14):
+              for knowledge_typed_dict in knowledge_typed_dicts:
+                  knowledge_typed_dict_annotate = knowledge_typed_dict.__annotate__
+                  assert knowledge_typed_dict_annotate.__module__ == "typing"
+                  assert knowledge_typed_dict_annotate.__globals__ is vars(typing)
+                  assert isinstance(knowledge_typed_dict_annotate(1), dict)
+              for knowledge_dataclass in knowledge_dataclasses:
+                  knowledge_init_annotate = knowledge_dataclass.__init__.__annotate__
+                  assert knowledge_init_annotate.__module__ == "dataclasses"
+                  assert knowledge_init_annotate.__globals__["__name__"] == "dataclasses"
+                  knowledge_replace = knowledge_dataclass.__replace__
+                  assert knowledge_replace.__module__ == "dataclasses"
+                  assert knowledge_replace.__globals__["__name__"] == "dataclasses"
+              for owner_name, method_name in contracts_module._KNOWLEDGE_EXPLICIT_METHODS:
+                  knowledge_explicit_annotate = getattr(
+                      getattr(getattr(contracts_module, owner_name), method_name),
+                      "__annotate__",
+                  )
+                  assert knowledge_explicit_annotate.__module__ == "alicebot_api.contracts"
+                  assert knowledge_explicit_annotate.__globals__ is vars(contracts_module)
+                  assert knowledge_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert knowledge_explicit_annotate.__qualname__.endswith("__annotate__")
+                  assert isinstance(knowledge_explicit_annotate(1), dict)
+          retrieval_classes = [
+              getattr(contracts_retrieval, name)
+              for name in contracts_module._RETRIEVAL_CONTRACT_CLASS_NAMES
+          ]
+          retrieval_dataclasses = [
+              value for value in retrieval_classes if hasattr(value, "__dataclass_fields__")
+          ]
+          retrieval_typed_dicts = [
+              value for value in retrieval_classes if typing.is_typeddict(value)
+          ]
+          assert len(retrieval_classes) == 29
+          assert len(retrieval_dataclasses) == 3
+          assert len(retrieval_typed_dicts) == 26
+          assert all(
+              getattr(contracts_module, name) is getattr(contracts_retrieval, name)
+              for name in contracts_module._RETRIEVAL_CONTRACT_CLASS_NAMES
+          )
+          assert all(
+              pickle.loads(pickle.dumps(contract_class)) is contract_class
+              for contract_class in retrieval_classes
+          )
+          assert all(
+              contract_class.__init__.__globals__ is vars(contracts_module)
+              for contract_class in retrieval_dataclasses
+          )
+          assert not [
+              (contract_class.__name__, method_name)
+              for contract_class in retrieval_dataclasses
+              for method_name, method in vars(contract_class).items()
+              if inspect.isfunction(method)
+              and method.__globals__ is vars(contracts_retrieval)
+          ]
+          assert len(contracts_module._RETRIEVAL_EXPLICIT_METHODS) == 3
+          assert all(
+              getattr(getattr(contracts_module, owner_name), method_name).__globals__
+              is vars(contracts_module)
+              for owner_name, method_name in contracts_module._RETRIEVAL_EXPLICIT_METHODS
+          )
+          retrieval_class = contracts_module.SemanticMemoryRetrievalRequestInput
+          retrieval_method = retrieval_class.as_payload
+          assert retrieval_class is contracts_retrieval.SemanticMemoryRetrievalRequestInput
+          assert retrieval_class.__module__ == "alicebot_api.contracts"
+          assert retrieval_class.__qualname__ == "SemanticMemoryRetrievalRequestInput"
+          assert retrieval_method.__globals__ is vars(contracts_module)
+          assert retrieval_method.__module__ == "alicebot_api.contracts"
+          assert retrieval_method.__qualname__ == (
+              "SemanticMemoryRetrievalRequestInput.as_payload"
+          )
+          assert contracts_retrieval_method_path == Path(
+              retrieval_method.__code__.co_filename
+          ).resolve()
+          assert inspect.signature(retrieval_class).parameters["limit"].default == 5
+          assert pickle.loads(pickle.dumps(retrieval_class)) is retrieval_class
+          assert pickle.loads(pickle.dumps(retrieval_method)) is retrieval_method
+          retrieval_candidate = retrieval_class(
+              embedding_config_id=UUID("10000000-0000-0000-0000-000000000001"),
+              query_vector=(0.25, 0.75),
+          )
+          assert retrieval_candidate.as_payload() == {
+              "embedding_config_id": "10000000-0000-0000-0000-000000000001",
+              "query_vector": [0.25, 0.75],
+              "limit": 5,
+          }
+          assert pickle.loads(pickle.dumps(retrieval_candidate)) == retrieval_candidate
+          for retrieval_contract in retrieval_classes:
+              typing.get_type_hints(retrieval_contract, include_extras=True)
+          assert not hasattr(contracts_retrieval, "TaskArtifactChunkEmbeddingUpsertInput")
+          if sys.version_info >= (3, 14):
+              for retrieval_typed_dict in retrieval_typed_dicts:
+                  retrieval_typed_dict_annotate = retrieval_typed_dict.__annotate__
+                  assert retrieval_typed_dict_annotate.__module__ == "typing"
+                  assert retrieval_typed_dict_annotate.__globals__ is vars(typing)
+                  assert isinstance(retrieval_typed_dict_annotate(1), dict)
+              for retrieval_dataclass in retrieval_dataclasses:
+                  retrieval_init_annotate = retrieval_dataclass.__init__.__annotate__
+                  assert retrieval_init_annotate.__module__ == "dataclasses"
+                  assert retrieval_init_annotate.__globals__["__name__"] == "dataclasses"
+                  retrieval_replace = retrieval_dataclass.__replace__
+                  assert retrieval_replace.__module__ == "dataclasses"
+                  assert retrieval_replace.__globals__["__name__"] == "dataclasses"
+              for owner_name, method_name in contracts_module._RETRIEVAL_EXPLICIT_METHODS:
+                  retrieval_explicit_annotate = getattr(
+                      getattr(getattr(contracts_module, owner_name), method_name),
+                      "__annotate__",
+                  )
+                  assert retrieval_explicit_annotate.__module__ == "alicebot_api.contracts"
+                  assert retrieval_explicit_annotate.__globals__ is vars(contracts_module)
+                  assert retrieval_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert retrieval_explicit_annotate.__qualname__.endswith("__annotate__")
+                  assert isinstance(retrieval_explicit_annotate(1), dict)
+          governance_classes = [
+              getattr(contracts_governance, name)
+              for name in contracts_module._GOVERNANCE_CONTRACT_CLASS_NAMES
+          ]
+          governance_dataclasses = [
+              value for value in governance_classes if hasattr(value, "__dataclass_fields__")
+          ]
+          governance_typed_dicts = [
+              value for value in governance_classes if typing.is_typeddict(value)
+          ]
+          assert len(governance_classes) == 52
+          assert len(governance_dataclasses) == 9
+          assert len(governance_typed_dicts) == 43
+          assert all(
+              getattr(contracts_module, name) is getattr(contracts_governance, name)
+              for name in contracts_module._GOVERNANCE_CONTRACT_CLASS_NAMES
+          )
+          assert all(
+              pickle.loads(pickle.dumps(contract_class)) is contract_class
+              for contract_class in governance_classes
+          )
+          assert all(
+              contract_class.__init__.__globals__ is vars(contracts_module)
+              for contract_class in governance_dataclasses
+          )
+          assert not [
+              (contract_class.__name__, method_name)
+              for contract_class in governance_dataclasses
+              for method_name, method in vars(contract_class).items()
+              if inspect.isfunction(method)
+              and method.__globals__ is vars(contracts_governance)
+          ]
+          assert len(contracts_module._GOVERNANCE_EXPLICIT_METHODS) == 9
+          assert all(
+              getattr(getattr(contracts_module, owner_name), method_name).__globals__
+              is vars(contracts_module)
+              for owner_name, method_name in contracts_module._GOVERNANCE_EXPLICIT_METHODS
+          )
+          governance_method = contracts_module.ToolRoutingRequestInput.as_payload
+          assert governance_method.__globals__ is vars(contracts_module)
+          assert governance_method.__module__ == "alicebot_api.contracts"
+          assert governance_method.__qualname__ == "ToolRoutingRequestInput.as_payload"
+          assert contracts_governance_method_path == Path(
+              governance_method.__code__.co_filename
+          ).resolve()
+          governance_candidate = contracts_module.ToolRoutingRequestInput(
+              thread_id=UUID("10000000-0000-0000-0000-000000000001"),
+              tool_id=UUID("20000000-0000-0000-0000-000000000002"),
+              action="read",
+              scope="workspace",
+          )
+          assert governance_candidate.as_payload()["domain_hint"] is None
+          assert pickle.loads(pickle.dumps(governance_candidate)) == governance_candidate
+          governance_task_annotation = (
+              contracts_module.ApprovalRequestCreateResponse.__annotations__["task"]
+          )
+          assert isinstance(governance_task_annotation, typing.ForwardRef)
+          assert governance_task_annotation.__forward_module__ == "alicebot_api.contracts"
+          assert typing.get_type_hints(
+              contracts_module.ApprovalRequestCreateResponse,
+              include_extras=True,
+          )["task"] is contracts_module.TaskRecord
+          for governance_contract in governance_classes:
+              typing.get_type_hints(governance_contract, include_extras=True)
+          assert not hasattr(contracts_governance, "TaskRecord")
+          tasks_classes = [
+              getattr(contracts_tasks, name)
+              for name in contracts_module._TASK_CONTRACT_CLASS_NAMES
+          ]
+          tasks_dataclasses = [
+              value for value in tasks_classes if hasattr(value, "__dataclass_fields__")
+          ]
+          tasks_typed_dicts = [
+              value for value in tasks_classes if typing.is_typeddict(value)
+          ]
+          assert len(tasks_classes) == 91
+          assert len(tasks_dataclasses) == 18
+          assert len(tasks_typed_dicts) == 73
+          assert all(
+              getattr(contracts_module, name) is getattr(contracts_tasks, name)
+              for name in contracts_module._TASK_CONTRACT_CLASS_NAMES
+          )
+          assert all(
+              pickle.loads(pickle.dumps(contract_class)) is contract_class
+              for contract_class in tasks_classes
+          )
+          assert all(
+              contract_class.__init__.__globals__ is vars(contracts_module)
+              for contract_class in tasks_dataclasses
+          )
+          assert not [
+              (contract_class.__name__, method_name)
+              for contract_class in tasks_dataclasses
+              for method_name, method in vars(contract_class).items()
+              if inspect.isfunction(method)
+              and method.__globals__ is vars(contracts_tasks)
+          ]
+          assert len(contracts_module._TASK_EXPLICIT_METHODS) == 3
+          assert all(
+              getattr(getattr(contracts_module, owner_name), method_name).__globals__
+              is vars(contracts_module)
+              for owner_name, method_name in contracts_module._TASK_EXPLICIT_METHODS
+          )
+          tasks_method = contracts_module.TaskArtifactChunkEmbeddingUpsertInput.as_payload
+          assert tasks_method.__globals__ is vars(contracts_module)
+          assert tasks_method.__module__ == "alicebot_api.contracts"
+          assert tasks_method.__qualname__ == (
+              "TaskArtifactChunkEmbeddingUpsertInput.as_payload"
+          )
+          assert contracts_tasks_method_path == Path(
+              tasks_method.__code__.co_filename
+          ).resolve()
+          tasks_artifact_id = UUID("30000000-0000-0000-0000-000000000003")
+          tasks_config_id = UUID("40000000-0000-0000-0000-000000000004")
+          tasks_candidate = contracts_module.TaskArtifactChunkEmbeddingUpsertInput(
+              task_artifact_chunk_id=tasks_artifact_id,
+              embedding_config_id=tasks_config_id,
+              vector=(0.25, 0.75),
+          )
+          assert tasks_candidate.as_payload() == {
+              "task_artifact_chunk_id": str(tasks_artifact_id),
+              "embedding_config_id": str(tasks_config_id),
+              "vector": [0.25, 0.75],
+          }
+          assert pickle.loads(pickle.dumps(tasks_candidate)) == tasks_candidate
+          tasks_run_one = contracts_module.TaskRunCreateInput(task_id=tasks_artifact_id)
+          tasks_run_two = contracts_module.TaskRunCreateInput(task_id=tasks_artifact_id)
+          assert tasks_run_one.checkpoint == {}
+          assert tasks_run_one.checkpoint is not tasks_run_two.checkpoint
+          for tasks_contract in tasks_classes:
+              typing.get_type_hints(tasks_contract, include_extras=True)
+          assert contracts_tasks.ToolRecord is contracts_governance.ToolRecord
+          assert (
+              contracts_tasks.ToolRoutingRequestRecord
+              is contracts_governance.ToolRoutingRequestRecord
+          )
+          tasks_task_record_hints = typing.get_type_hints(
+              contracts_module.TaskRecord,
+              include_extras=True,
+          )
+          assert (
+              tasks_task_record_hints["request"]
+              is contracts_governance.ToolRoutingRequestRecord
+          )
+          assert tasks_task_record_hints["tool"] is contracts_governance.ToolRecord
+          tasks_conversation_hints = typing.get_type_hints(
+              contracts_module.ResumptionBriefConversationSection,
+              include_extras=True,
+          )
+          assert (
+              typing.get_args(tasks_conversation_hints["items"])[0]
+              is contracts_runtime.ThreadEventRecord
+          )
+          tasks_open_loop_hints = typing.get_type_hints(
+              contracts_module.ResumptionBriefOpenLoopSection,
+              include_extras=True,
+          )
+          assert (
+              typing.get_args(tasks_open_loop_hints["items"])[0]
+              is contracts_continuity.OpenLoopRecord
+          )
+          tasks_highlight_hints = typing.get_type_hints(
+              contracts_module.ResumptionBriefMemoryHighlightSection,
+              include_extras=True,
+          )
+          assert (
+              typing.get_args(tasks_highlight_hints["items"])[0]
+              is contracts_runtime.ContextPackMemory
+          )
+          tasks_record_hints = typing.get_type_hints(
+              contracts_module.ResumptionBriefRecord,
+              include_extras=True,
+          )
+          assert tasks_record_hints["thread"] is contracts_runtime.ThreadRecord
+          tasks_runtime_provenance_hints = typing.get_type_hints(
+              contracts_module.ContextPackArtifactChunkSourceProvenance,
+              include_extras=True,
+          )
+          assert contracts_tasks.TaskArtifactChunkRetrievalMatch in typing.get_args(
+              tasks_runtime_provenance_hints["lexical_match"]
+          )
+          tasks_runtime_summary_hints = typing.get_type_hints(
+              contracts_module.ContextPackArtifactChunkSummary,
+              include_extras=True,
+          )
+          assert contracts_tasks.TaskArtifactChunkRetrievalScope in typing.get_args(
+              tasks_runtime_summary_hints["scope"]
+          )
+          tasks_approval_task_annotation = (
+              contracts_module.ApprovalRequestCreateResponse.__annotations__["task"]
+          )
+          assert isinstance(tasks_approval_task_annotation, typing.ForwardRef)
+          assert (
+              tasks_approval_task_annotation.__forward_module__
+              == "alicebot_api.contracts"
+          )
+          assert typing.get_type_hints(
+              contracts_module.ApprovalRequestCreateResponse,
+              include_extras=True,
+          )["task"] is contracts_tasks.TaskRecord
+          tasks_continuity_summary_hint = typing.get_type_hints(
+              contracts_module.ContinuityResumptionListSection,
+              include_extras=True,
+          )["summary"]
+          assert (
+              tasks_continuity_summary_hint
+              is contracts_tasks.ResumptionBriefSectionSummary
+          )
+          tasks_step_list_orig_bases = (
+              contracts_module.TaskStepListSummary.__orig_bases__
+          )
+          assert tasks_step_list_orig_bases == (
+              contracts_tasks.TaskStepSequencingSummary,
+          )
+          tasks_resumption_orig_bases = (
+              contracts_module.ResumptionBriefConversationSummary.__orig_bases__
+          )
+          assert tasks_resumption_orig_bases == (
+              contracts_tasks.ResumptionBriefSectionSummary,
+          )
+          assert not hasattr(contracts_tasks, "GmailAccountConnectInput")
+          assert not hasattr(contracts_tasks, "ExecutionBudgetRecord")
+          assert not hasattr(contracts_tasks, "ProxyExecutionRequestInput")
+          integrations_classes = [
+              getattr(contracts_integrations, name)
+              for name in contracts_module._INTEGRATION_CONTRACT_CLASS_NAMES
+          ]
+          integrations_dataclasses = [
+              value
+              for value in integrations_classes
+              if hasattr(value, "__dataclass_fields__")
+          ]
+          integrations_typed_dicts = [
+              value for value in integrations_classes if typing.is_typeddict(value)
+          ]
+          assert len(integrations_classes) == 22
+          assert len(integrations_dataclasses) == 5
+          assert len(integrations_typed_dicts) == 17
+          assert all(
+              getattr(contracts_module, name) is getattr(contracts_integrations, name)
+              for name in contracts_module._INTEGRATION_CONTRACT_CLASS_NAMES
+          )
+          assert all(
+              pickle.loads(pickle.dumps(contract_class)) is contract_class
+              for contract_class in integrations_classes
+          )
+          assert all(
+              contract_class.__init__.__globals__ is vars(contracts_module)
+              for contract_class in integrations_dataclasses
+          )
+          assert not [
+              (contract_class.__name__, method_name)
+              for contract_class in integrations_dataclasses
+              for method_name, method in vars(contract_class).items()
+              if inspect.isfunction(method)
+              and method.__globals__ is vars(contracts_integrations)
+          ]
+          integrations_gmail_hints = typing.get_type_hints(
+              contracts_module.GmailMessageIngestionResponse,
+              include_extras=True,
+          )
+          integrations_calendar_hints = typing.get_type_hints(
+              contracts_module.CalendarEventIngestionResponse,
+              include_extras=True,
+          )
+          assert integrations_gmail_hints["artifact"] is contracts_tasks.TaskArtifactRecord
+          assert (
+              integrations_gmail_hints["summary"]
+              is contracts_tasks.TaskArtifactChunkListSummary
+          )
+          assert integrations_calendar_hints["artifact"] is contracts_tasks.TaskArtifactRecord
+          assert (
+              integrations_calendar_hints["summary"]
+              is contracts_tasks.TaskArtifactChunkListSummary
+          )
+          assert contracts_integrations.TaskArtifactRecord is contracts_tasks.TaskArtifactRecord
+          assert (
+              contracts_integrations.TaskArtifactChunkListSummary
+              is contracts_tasks.TaskArtifactChunkListSummary
+          )
+          assert not hasattr(contracts_integrations, "ExecutionBudgetRecord")
+          assert not hasattr(contracts_integrations, "ProxyExecutionRequestInput")
+          if sys.version_info >= (3, 14):
+              for integrations_typed_dict in integrations_typed_dicts:
+                  integrations_typed_dict_annotate = integrations_typed_dict.__annotate__
+                  assert integrations_typed_dict_annotate.__module__ == "typing"
+                  assert integrations_typed_dict_annotate.__globals__ is vars(typing)
+                  assert isinstance(integrations_typed_dict_annotate(1), dict)
+              for integrations_dataclass in integrations_dataclasses:
+                  integrations_init_annotate = integrations_dataclass.__init__.__annotate__
+                  assert integrations_init_annotate.__module__ == "dataclasses"
+                  assert integrations_init_annotate.__globals__["__name__"] == "dataclasses"
+                  integrations_replace = integrations_dataclass.__replace__
+                  assert integrations_replace.__module__ == "dataclasses"
+                  assert integrations_replace.__globals__["__name__"] == "dataclasses"
+          execution_classes = [
+              getattr(contracts_execution, name)
+              for name in contracts_module._EXECUTION_CONTRACT_CLASS_NAMES
+          ]
+          execution_dataclasses = [
+              value
+              for value in execution_classes
+              if hasattr(value, "__dataclass_fields__")
+          ]
+          execution_typed_dicts = [
+              value for value in execution_classes if typing.is_typeddict(value)
+          ]
+          assert len(execution_classes) == 35
+          assert len(execution_dataclasses) == 5
+          assert len(execution_typed_dicts) == 30
+          assert all(
+              getattr(contracts_module, name) is getattr(contracts_execution, name)
+              for name in contracts_module._EXECUTION_CONTRACT_CLASS_NAMES
+          )
+          assert all(
+              pickle.loads(pickle.dumps(contract_class)) is contract_class
+              for contract_class in execution_classes
+          )
+          assert all(
+              contract_class.__init__.__globals__ is vars(contracts_module)
+              for contract_class in execution_dataclasses
+          )
+          assert not [
+              (contract_class.__name__, method_name)
+              for contract_class in execution_dataclasses
+              for method_name, method in vars(contract_class).items()
+              if inspect.isfunction(method)
+              and method.__globals__ is vars(contracts_execution)
+          ]
+          assert len(contracts_module._EXECUTION_EXPLICIT_METHODS) == 4
+          assert all(
+              getattr(getattr(contracts_module, owner_name), method_name).__globals__
+              is vars(contracts_module)
+              for owner_name, method_name in contracts_module._EXECUTION_EXPLICIT_METHODS
+          )
+          execution_precheck_orig_bases = (
+              contracts_module.ProxyExecutionBudgetPrecheckTracePayload.__orig_bases__
+          )
+          assert execution_precheck_orig_bases == (
+              contracts_execution.ExecutionBudgetDecisionRecord,
+          )
+          assert contracts_execution.ApprovalRecord is contracts_governance.ApprovalRecord
+          assert contracts_execution.ToolRecord is contracts_governance.ToolRecord
+          assert (
+              contracts_execution.ToolRoutingRequestRecord
+              is contracts_governance.ToolRoutingRequestRecord
+          )
+          execution_approval_id = UUID("50000000-0000-0000-0000-000000000005")
+          assert contracts_module.ProxyExecutionRequestInput(
+              approval_id=execution_approval_id
+          ).as_payload() == {
+              "approval_id": str(execution_approval_id),
+              "task_run_id": None,
+          }
+          assert contracts_module.ExecutionBudgetCreateInput(
+              max_completed_executions=3
+          ).as_payload() == {
+              "max_completed_executions": 3,
+              "tool_key": None,
+              "domain_hint": None,
+              "rolling_window_seconds": None,
+              "agent_profile_id": None,
+          }
+          if sys.version_info >= (3, 14):
+              for execution_typed_dict in execution_typed_dicts:
+                  execution_typed_dict_annotate = execution_typed_dict.__annotate__
+                  assert execution_typed_dict_annotate.__module__ == "typing"
+                  assert execution_typed_dict_annotate.__globals__ is vars(typing)
+                  assert isinstance(execution_typed_dict_annotate(1), dict)
+              for execution_dataclass in execution_dataclasses:
+                  execution_init_annotate = execution_dataclass.__init__.__annotate__
+                  assert execution_init_annotate.__module__ == "dataclasses"
+                  assert execution_init_annotate.__globals__["__name__"] == "dataclasses"
+                  execution_replace = execution_dataclass.__replace__
+                  assert execution_replace.__module__ == "dataclasses"
+                  assert execution_replace.__globals__["__name__"] == "dataclasses"
+              for owner_name, method_name in contracts_module._EXECUTION_EXPLICIT_METHODS:
+                  execution_explicit_annotate = getattr(
+                      getattr(getattr(contracts_module, owner_name), method_name),
+                      "__annotate__",
+                  )
+                  assert execution_explicit_annotate.__module__ == "alicebot_api.contracts"
+                  assert execution_explicit_annotate.__globals__ is vars(contracts_module)
+                  assert isinstance(execution_explicit_annotate(1), dict)
+          if sys.version_info >= (3, 14):
+              for governance_typed_dict in governance_typed_dicts:
+                  governance_typed_dict_annotate = governance_typed_dict.__annotate__
+                  assert governance_typed_dict_annotate.__module__ == "typing"
+                  assert governance_typed_dict_annotate.__globals__ is vars(typing)
+                  assert isinstance(governance_typed_dict_annotate(1), dict)
+              for governance_dataclass in governance_dataclasses:
+                  governance_init_annotate = governance_dataclass.__init__.__annotate__
+                  assert governance_init_annotate.__module__ == "dataclasses"
+                  assert governance_init_annotate.__globals__["__name__"] == "dataclasses"
+                  governance_replace = governance_dataclass.__replace__
+                  assert governance_replace.__module__ == "dataclasses"
+                  assert governance_replace.__globals__["__name__"] == "dataclasses"
+              for owner_name, method_name in contracts_module._GOVERNANCE_EXPLICIT_METHODS:
+                  governance_explicit_annotate = getattr(
+                      getattr(getattr(contracts_module, owner_name), method_name),
+                      "__annotate__",
+                  )
+                  assert governance_explicit_annotate.__module__ == "alicebot_api.contracts"
+                  assert governance_explicit_annotate.__globals__ is vars(contracts_module)
+                  assert governance_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert governance_explicit_annotate.__qualname__.endswith("__annotate__")
+                  assert isinstance(governance_explicit_annotate(1), dict)
+          if sys.version_info >= (3, 14):
+              for tasks_typed_dict in tasks_typed_dicts:
+                  tasks_typed_dict_annotate = tasks_typed_dict.__annotate__
+                  assert tasks_typed_dict_annotate.__module__ == "typing"
+                  assert tasks_typed_dict_annotate.__globals__ is vars(typing)
+                  assert isinstance(tasks_typed_dict_annotate(1), dict)
+              for tasks_dataclass in tasks_dataclasses:
+                  tasks_init_annotate = tasks_dataclass.__init__.__annotate__
+                  assert tasks_init_annotate.__module__ == "dataclasses"
+                  assert tasks_init_annotate.__globals__["__name__"] == "dataclasses"
+                  tasks_replace = tasks_dataclass.__replace__
+                  assert tasks_replace.__module__ == "dataclasses"
+                  assert tasks_replace.__globals__["__name__"] == "dataclasses"
+              for owner_name, method_name in contracts_module._TASK_EXPLICIT_METHODS:
+                  tasks_explicit_annotate = getattr(
+                      getattr(getattr(contracts_module, owner_name), method_name),
+                      "__annotate__",
+                  )
+                  assert tasks_explicit_annotate.__module__ == "alicebot_api.contracts"
+                  assert tasks_explicit_annotate.__globals__ is vars(contracts_module)
+                  assert tasks_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert tasks_explicit_annotate.__qualname__.endswith("__annotate__")
+                  assert isinstance(tasks_explicit_annotate(1), dict)
           print(f"installed alicebot_api: {module_path}")
+          print(f"installed common contracts carrier: {contracts_common_carrier_path}")
+          print(f"installed runtime contracts carrier: {contracts_runtime_carrier_path}")
+          print(f"installed continuity contracts carrier: {contracts_continuity_carrier_path}")
+          print(f"installed knowledge contracts carrier: {contracts_knowledge_carrier_path}")
+          print(f"installed retrieval contracts carrier: {contracts_retrieval_carrier_path}")
+          print(f"installed governance contracts carrier: {contracts_governance_carrier_path}")
+          print(f"installed tasks contracts carrier: {contracts_tasks_carrier_path}")
+          print(f"installed legacy store carrier: {carrier_path}")
+          print(f"installed conversation memory carrier: {conversation_memory_carrier_path}")
+          print(f"installed continuity legacy store carrier: {continuity_carrier_path}")
+          print(f"installed governance legacy store carrier: {governance_carrier_path}")
+          print(f"installed task execution legacy store carrier: {task_execution_carrier_path}")
+          PY
+          python - <<'PY'
+          import hashlib
+          import inspect
+          import pickle
+          from pathlib import Path
+          import sys
+          import typing
+          from uuid import UUID
+
+          from alicebot_api._contracts import common as contracts_common
+          from alicebot_api._contracts import continuity as contracts_continuity
+          from alicebot_api._contracts import runtime as contracts_runtime
+          from alicebot_api._contracts import knowledge as contracts_knowledge
+          from alicebot_api._contracts import retrieval as contracts_retrieval
+          from alicebot_api._contracts import governance as contracts_governance
+          from alicebot_api._contracts import tasks as contracts_tasks
+          from alicebot_api._contracts import integrations as contracts_integrations
+          from alicebot_api._contracts import execution as contracts_execution
+          import alicebot_api.cli as cli_module
+          import alicebot_api.cli.parser as cli_parser
+          import alicebot_api.cli.runner as cli_runner
+          import alicebot_api.contracts as contracts_module
+
+          repository_path = Path.cwd().resolve()
+          assert not Path(cli_module.__file__).resolve().is_relative_to(
+              repository_path
+          ), "CLI package resolved to checkout source"
+          assert not Path(cli_parser.__file__).resolve().is_relative_to(
+              repository_path
+          ), "CLI parser carrier resolved to checkout source"
+          assert not Path(cli_runner.__file__).resolve().is_relative_to(
+              repository_path
+          ), "CLI runner carrier resolved to checkout source"
+          assert not Path(
+              cli_module.build_parser.__code__.co_filename
+          ).resolve().is_relative_to(
+              repository_path
+          ), "moved CLI parser resolved to checkout source"
+          assert not Path(cli_module.main.__code__.co_filename).resolve().is_relative_to(
+              repository_path
+          ), "moved CLI runner resolved to checkout source"
+          assert cli_module.build_parser is cli_parser.build_parser
+          assert cli_module.main is cli_runner.main
+          assert not Path(contracts_runtime.__file__).resolve().is_relative_to(repository_path)
+          assert not Path(contracts_continuity.__file__).resolve().is_relative_to(
+              repository_path
+          )
+          assert not Path(contracts_knowledge.__file__).resolve().is_relative_to(
+              repository_path
+          ), "knowledge contracts carrier resolved to checkout source"
+          assert not Path(
+              contracts_module.EntityCreateInput.as_payload.__code__.co_filename
+          ).resolve().is_relative_to(
+              repository_path
+          ), "moved knowledge contract method resolved to checkout source"
+          assert not Path(contracts_retrieval.__file__).resolve().is_relative_to(
+              repository_path
+          ), "retrieval contracts carrier resolved to checkout source"
+          assert not Path(
+              contracts_module.SemanticMemoryRetrievalRequestInput.as_payload.__code__.co_filename
+          ).resolve().is_relative_to(
+              repository_path
+          ), "moved retrieval contract method resolved to checkout source"
+          assert not Path(contracts_governance.__file__).resolve().is_relative_to(
+              repository_path
+          ), "governance contracts carrier resolved to checkout source"
+          assert not Path(
+              contracts_module.ToolRoutingRequestInput.as_payload.__code__.co_filename
+          ).resolve().is_relative_to(
+              repository_path
+          ), "moved governance contract method resolved to checkout source"
+          contracts_tasks_carrier_path = Path(contracts_tasks.__file__).resolve()
+          contracts_tasks_method_path = Path(
+              contracts_module.TaskArtifactChunkEmbeddingUpsertInput.as_payload.__code__.co_filename
+          ).resolve()
+          assert not contracts_tasks_carrier_path.is_relative_to(
+              repository_path
+          ), "tasks contracts carrier resolved to checkout source"
+          assert not contracts_tasks_method_path.is_relative_to(
+              repository_path
+          ), "moved tasks contract method resolved to checkout source"
+          contracts_integrations_carrier_path = Path(
+              contracts_integrations.__file__
+          ).resolve()
+          assert not contracts_integrations_carrier_path.is_relative_to(
+              repository_path
+          ), "integrations contracts carrier resolved to checkout source"
+          contracts_execution_carrier_path = Path(
+              contracts_execution.__file__
+          ).resolve()
+          assert not contracts_execution_carrier_path.is_relative_to(
+              repository_path
+          ), "execution contracts carrier resolved to checkout source"
+          runtime_classes = [
+              value
+              for value in vars(contracts_runtime).values()
+              if isinstance(value, type) and value.__module__ == "alicebot_api.contracts"
+          ]
+          runtime_dataclasses = [
+              value for value in runtime_classes if hasattr(value, "__dataclass_fields__")
+          ]
+          runtime_typed_dicts = [
+              value for value in runtime_classes if typing.is_typeddict(value)
+          ]
+          assert len(runtime_classes) == 88
+          assert len(runtime_dataclasses) == 17
+          assert len(runtime_typed_dicts) == 71
+          assert all(
+              contract_class.__init__.__globals__ is vars(contracts_module)
+              for contract_class in runtime_dataclasses
+          )
+          assert not [
+              (contract_class.__name__, method_name)
+              for contract_class in runtime_dataclasses
+              for method_name, method in vars(contract_class).items()
+              if inspect.isfunction(method)
+              and method.__globals__ is vars(contracts_runtime)
+          ]
+          assert all(
+              getattr(getattr(contracts_module, owner_name), method_name).__globals__
+              is vars(contracts_module)
+              for owner_name, method_name in contracts_module._RUNTIME_EXPLICIT_METHODS
+          )
+          continuity_classes = [
+              value
+              for value in vars(contracts_continuity).values()
+              if isinstance(value, type) and value.__module__ == "alicebot_api.contracts"
+          ]
+          continuity_dataclasses = [
+              value for value in continuity_classes if hasattr(value, "__dataclass_fields__")
+          ]
+          continuity_typed_dicts = [
+              value for value in continuity_classes if typing.is_typeddict(value)
+          ]
+          assert len(continuity_classes) == 190
+          assert len(continuity_dataclasses) == 30
+          assert len(continuity_typed_dicts) == 160
+          assert all(
+              contract_class.__init__.__globals__ is vars(contracts_module)
+              for contract_class in continuity_dataclasses
+          )
+          assert not [
+              (contract_class.__name__, method_name)
+              for contract_class in continuity_dataclasses
+              for method_name, method in vars(contract_class).items()
+              if inspect.isfunction(method)
+              and method.__globals__ is vars(contracts_continuity)
+          ]
+          assert len(contracts_module._CONTINUITY_EXPLICIT_METHODS) == 29
+          assert all(
+              getattr(getattr(contracts_module, owner_name), method_name).__globals__
+              is vars(contracts_module)
+              for owner_name, method_name in contracts_module._CONTINUITY_EXPLICIT_METHODS
+          )
+          continuity_candidate = contracts_module.MemoryCandidateInput(
+              memory_key="preference:editor",
+              value={"name": "vim"},
+              source_event_ids=(),
+          )
+          assert continuity_candidate.as_payload()["memory_key"] == "preference:editor"
+          assert pickle.loads(pickle.dumps(continuity_candidate)) == continuity_candidate
+          assert typing.get_type_hints(
+              contracts_module.ContinuityResumptionListSection,
+              include_extras=True,
+          )["summary"] is contracts_module.ResumptionBriefSectionSummary
+          assert typing.get_type_hints(
+              contracts_module.MemoryTrustDashboardSummary,
+              include_extras=True,
+          )["retrieval_quality"] is contracts_module.RetrievalEvaluationSummary
+          knowledge_classes = [
+              getattr(contracts_knowledge, name)
+              for name in contracts_module._KNOWLEDGE_CONTRACT_CLASS_NAMES
+          ]
+          knowledge_dataclasses = [
+              value for value in knowledge_classes if hasattr(value, "__dataclass_fields__")
+          ]
+          knowledge_typed_dicts = [
+              value for value in knowledge_classes if typing.is_typeddict(value)
+          ]
+          assert len(knowledge_classes) == 45
+          assert len(knowledge_dataclasses) == 7
+          assert len(knowledge_typed_dicts) == 38
+          assert all(
+              getattr(contracts_module, name) is getattr(contracts_knowledge, name)
+              for name in contracts_module._KNOWLEDGE_CONTRACT_CLASS_NAMES
+          )
+          assert all(
+              contract_class.__init__.__globals__ is vars(contracts_module)
+              for contract_class in knowledge_dataclasses
+          )
+          assert not [
+              (contract_class.__name__, method_name)
+              for contract_class in knowledge_dataclasses
+              for method_name, method in vars(contract_class).items()
+              if inspect.isfunction(method)
+              and method.__globals__ is vars(contracts_knowledge)
+          ]
+          assert len(contracts_module._KNOWLEDGE_EXPLICIT_METHODS) == 7
+          assert all(
+              getattr(getattr(contracts_module, owner_name), method_name).__globals__
+              is vars(contracts_module)
+              for owner_name, method_name in contracts_module._KNOWLEDGE_EXPLICIT_METHODS
+          )
+          assert contracts_module.EntityEdgeRecord.__orig_bases__ == (
+              contracts_module.ContextPackEntityEdge,
+          )
+          knowledge_candidate = contracts_module.EntityCreateInput(
+              entity_type="project",
+              name="Alice",
+              source_memory_ids=(),
+          )
+          assert knowledge_candidate.as_payload()["name"] == "Alice"
+          assert pickle.loads(pickle.dumps(knowledge_candidate)) == knowledge_candidate
+          for knowledge_contract in knowledge_classes:
+              typing.get_type_hints(knowledge_contract, include_extras=True)
+          retrieval_classes = [
+              getattr(contracts_retrieval, name)
+              for name in contracts_module._RETRIEVAL_CONTRACT_CLASS_NAMES
+          ]
+          retrieval_dataclasses = [
+              value for value in retrieval_classes if hasattr(value, "__dataclass_fields__")
+          ]
+          retrieval_typed_dicts = [
+              value for value in retrieval_classes if typing.is_typeddict(value)
+          ]
+          assert len(retrieval_classes) == 29
+          assert len(retrieval_dataclasses) == 3
+          assert len(retrieval_typed_dicts) == 26
+          assert all(
+              getattr(contracts_module, name) is getattr(contracts_retrieval, name)
+              for name in contracts_module._RETRIEVAL_CONTRACT_CLASS_NAMES
+          )
+          assert all(
+              pickle.loads(pickle.dumps(contract_class)) is contract_class
+              for contract_class in retrieval_classes
+          )
+          assert all(
+              contract_class.__init__.__globals__ is vars(contracts_module)
+              for contract_class in retrieval_dataclasses
+          )
+          assert not [
+              (contract_class.__name__, method_name)
+              for contract_class in retrieval_dataclasses
+              for method_name, method in vars(contract_class).items()
+              if inspect.isfunction(method)
+              and method.__globals__ is vars(contracts_retrieval)
+          ]
+          assert len(contracts_module._RETRIEVAL_EXPLICIT_METHODS) == 3
+          assert all(
+              getattr(getattr(contracts_module, owner_name), method_name).__globals__
+              is vars(contracts_module)
+              for owner_name, method_name in contracts_module._RETRIEVAL_EXPLICIT_METHODS
+          )
+          retrieval_class = contracts_module.SemanticMemoryRetrievalRequestInput
+          retrieval_method = retrieval_class.as_payload
+          assert retrieval_class is contracts_retrieval.SemanticMemoryRetrievalRequestInput
+          assert retrieval_class.__module__ == "alicebot_api.contracts"
+          assert retrieval_class.__qualname__ == "SemanticMemoryRetrievalRequestInput"
+          assert retrieval_method.__globals__ is vars(contracts_module)
+          assert retrieval_method.__module__ == "alicebot_api.contracts"
+          assert retrieval_method.__qualname__ == (
+              "SemanticMemoryRetrievalRequestInput.as_payload"
+          )
+          assert pickle.loads(pickle.dumps(retrieval_class)) is retrieval_class
+          assert pickle.loads(pickle.dumps(retrieval_method)) is retrieval_method
+          retrieval_candidate = retrieval_class(
+              embedding_config_id=UUID("10000000-0000-0000-0000-000000000001"),
+              query_vector=(0.25, 0.75),
+          )
+          assert retrieval_candidate.as_payload() == {
+              "embedding_config_id": "10000000-0000-0000-0000-000000000001",
+              "query_vector": [0.25, 0.75],
+              "limit": 5,
+          }
+          assert inspect.signature(
+              contracts_module.SemanticMemoryRetrievalRequestInput
+          ).parameters["limit"].default == 5
+          assert pickle.loads(pickle.dumps(retrieval_candidate)) == retrieval_candidate
+          for retrieval_contract in retrieval_classes:
+              typing.get_type_hints(retrieval_contract, include_extras=True)
+          assert not hasattr(contracts_retrieval, "TaskArtifactChunkEmbeddingUpsertInput")
+          governance_classes = [
+              getattr(contracts_governance, name)
+              for name in contracts_module._GOVERNANCE_CONTRACT_CLASS_NAMES
+          ]
+          governance_dataclasses = [
+              value for value in governance_classes if hasattr(value, "__dataclass_fields__")
+          ]
+          governance_typed_dicts = [
+              value for value in governance_classes if typing.is_typeddict(value)
+          ]
+          assert len(governance_classes) == 52
+          assert len(governance_dataclasses) == 9
+          assert len(governance_typed_dicts) == 43
+          assert all(
+              getattr(contracts_module, name) is getattr(contracts_governance, name)
+              for name in contracts_module._GOVERNANCE_CONTRACT_CLASS_NAMES
+          )
+          assert all(
+              pickle.loads(pickle.dumps(contract_class)) is contract_class
+              for contract_class in governance_classes
+          )
+          assert all(
+              contract_class.__init__.__globals__ is vars(contracts_module)
+              for contract_class in governance_dataclasses
+          )
+          assert not [
+              (contract_class.__name__, method_name)
+              for contract_class in governance_dataclasses
+              for method_name, method in vars(contract_class).items()
+              if inspect.isfunction(method)
+              and method.__globals__ is vars(contracts_governance)
+          ]
+          assert len(contracts_module._GOVERNANCE_EXPLICIT_METHODS) == 9
+          assert all(
+              getattr(getattr(contracts_module, owner_name), method_name).__globals__
+              is vars(contracts_module)
+              for owner_name, method_name in contracts_module._GOVERNANCE_EXPLICIT_METHODS
+          )
+          governance_candidate = contracts_module.ToolRoutingRequestInput(
+              thread_id=UUID("10000000-0000-0000-0000-000000000001"),
+              tool_id=UUID("20000000-0000-0000-0000-000000000002"),
+              action="read",
+              scope="workspace",
+          )
+          assert governance_candidate.as_payload()["domain_hint"] is None
+          assert pickle.loads(pickle.dumps(governance_candidate)) == governance_candidate
+          governance_task_annotation = (
+              contracts_module.ApprovalRequestCreateResponse.__annotations__["task"]
+          )
+          assert isinstance(governance_task_annotation, typing.ForwardRef)
+          assert governance_task_annotation.__forward_module__ == "alicebot_api.contracts"
+          assert typing.get_type_hints(
+              contracts_module.ApprovalRequestCreateResponse,
+              include_extras=True,
+          )["task"] is contracts_module.TaskRecord
+          for governance_contract in governance_classes:
+              typing.get_type_hints(governance_contract, include_extras=True)
+          assert not hasattr(contracts_governance, "TaskRecord")
+          tasks_classes = [
+              getattr(contracts_tasks, name)
+              for name in contracts_module._TASK_CONTRACT_CLASS_NAMES
+          ]
+          tasks_dataclasses = [
+              value for value in tasks_classes if hasattr(value, "__dataclass_fields__")
+          ]
+          tasks_typed_dicts = [
+              value for value in tasks_classes if typing.is_typeddict(value)
+          ]
+          assert len(tasks_classes) == 91
+          assert len(tasks_dataclasses) == 18
+          assert len(tasks_typed_dicts) == 73
+          assert all(
+              getattr(contracts_module, name) is getattr(contracts_tasks, name)
+              for name in contracts_module._TASK_CONTRACT_CLASS_NAMES
+          )
+          assert all(
+              pickle.loads(pickle.dumps(contract_class)) is contract_class
+              for contract_class in tasks_classes
+          )
+          assert all(
+              contract_class.__init__.__globals__ is vars(contracts_module)
+              for contract_class in tasks_dataclasses
+          )
+          assert not [
+              (contract_class.__name__, method_name)
+              for contract_class in tasks_dataclasses
+              for method_name, method in vars(contract_class).items()
+              if inspect.isfunction(method)
+              and method.__globals__ is vars(contracts_tasks)
+          ]
+          assert len(contracts_module._TASK_EXPLICIT_METHODS) == 3
+          assert all(
+              getattr(getattr(contracts_module, owner_name), method_name).__globals__
+              is vars(contracts_module)
+              for owner_name, method_name in contracts_module._TASK_EXPLICIT_METHODS
+          )
+          tasks_method = contracts_module.TaskArtifactChunkEmbeddingUpsertInput.as_payload
+          assert tasks_method.__globals__ is vars(contracts_module)
+          assert tasks_method.__module__ == "alicebot_api.contracts"
+          assert tasks_method.__qualname__ == (
+              "TaskArtifactChunkEmbeddingUpsertInput.as_payload"
+          )
+          assert contracts_tasks_method_path == Path(
+              tasks_method.__code__.co_filename
+          ).resolve()
+          tasks_artifact_id = UUID("30000000-0000-0000-0000-000000000003")
+          tasks_config_id = UUID("40000000-0000-0000-0000-000000000004")
+          tasks_candidate = contracts_module.TaskArtifactChunkEmbeddingUpsertInput(
+              task_artifact_chunk_id=tasks_artifact_id,
+              embedding_config_id=tasks_config_id,
+              vector=(0.25, 0.75),
+          )
+          assert tasks_candidate.as_payload() == {
+              "task_artifact_chunk_id": str(tasks_artifact_id),
+              "embedding_config_id": str(tasks_config_id),
+              "vector": [0.25, 0.75],
+          }
+          assert pickle.loads(pickle.dumps(tasks_candidate)) == tasks_candidate
+          tasks_run_one = contracts_module.TaskRunCreateInput(task_id=tasks_artifact_id)
+          tasks_run_two = contracts_module.TaskRunCreateInput(task_id=tasks_artifact_id)
+          assert tasks_run_one.checkpoint == {}
+          assert tasks_run_one.checkpoint is not tasks_run_two.checkpoint
+          for tasks_contract in tasks_classes:
+              typing.get_type_hints(tasks_contract, include_extras=True)
+          assert contracts_tasks.ToolRecord is contracts_governance.ToolRecord
+          assert (
+              contracts_tasks.ToolRoutingRequestRecord
+              is contracts_governance.ToolRoutingRequestRecord
+          )
+          tasks_task_record_hints = typing.get_type_hints(
+              contracts_module.TaskRecord,
+              include_extras=True,
+          )
+          assert (
+              tasks_task_record_hints["request"]
+              is contracts_governance.ToolRoutingRequestRecord
+          )
+          assert tasks_task_record_hints["tool"] is contracts_governance.ToolRecord
+          tasks_conversation_hints = typing.get_type_hints(
+              contracts_module.ResumptionBriefConversationSection,
+              include_extras=True,
+          )
+          assert (
+              typing.get_args(tasks_conversation_hints["items"])[0]
+              is contracts_runtime.ThreadEventRecord
+          )
+          tasks_open_loop_hints = typing.get_type_hints(
+              contracts_module.ResumptionBriefOpenLoopSection,
+              include_extras=True,
+          )
+          assert (
+              typing.get_args(tasks_open_loop_hints["items"])[0]
+              is contracts_continuity.OpenLoopRecord
+          )
+          tasks_highlight_hints = typing.get_type_hints(
+              contracts_module.ResumptionBriefMemoryHighlightSection,
+              include_extras=True,
+          )
+          assert (
+              typing.get_args(tasks_highlight_hints["items"])[0]
+              is contracts_runtime.ContextPackMemory
+          )
+          tasks_record_hints = typing.get_type_hints(
+              contracts_module.ResumptionBriefRecord,
+              include_extras=True,
+          )
+          assert tasks_record_hints["thread"] is contracts_runtime.ThreadRecord
+          tasks_runtime_provenance_hints = typing.get_type_hints(
+              contracts_module.ContextPackArtifactChunkSourceProvenance,
+              include_extras=True,
+          )
+          assert contracts_tasks.TaskArtifactChunkRetrievalMatch in typing.get_args(
+              tasks_runtime_provenance_hints["lexical_match"]
+          )
+          tasks_runtime_summary_hints = typing.get_type_hints(
+              contracts_module.ContextPackArtifactChunkSummary,
+              include_extras=True,
+          )
+          assert contracts_tasks.TaskArtifactChunkRetrievalScope in typing.get_args(
+              tasks_runtime_summary_hints["scope"]
+          )
+          tasks_approval_task_annotation = (
+              contracts_module.ApprovalRequestCreateResponse.__annotations__["task"]
+          )
+          assert isinstance(tasks_approval_task_annotation, typing.ForwardRef)
+          assert (
+              tasks_approval_task_annotation.__forward_module__
+              == "alicebot_api.contracts"
+          )
+          assert typing.get_type_hints(
+              contracts_module.ApprovalRequestCreateResponse,
+              include_extras=True,
+          )["task"] is contracts_tasks.TaskRecord
+          tasks_continuity_summary_hint = typing.get_type_hints(
+              contracts_module.ContinuityResumptionListSection,
+              include_extras=True,
+          )["summary"]
+          assert (
+              tasks_continuity_summary_hint
+              is contracts_tasks.ResumptionBriefSectionSummary
+          )
+          tasks_step_list_orig_bases = (
+              contracts_module.TaskStepListSummary.__orig_bases__
+          )
+          assert tasks_step_list_orig_bases == (
+              contracts_tasks.TaskStepSequencingSummary,
+          )
+          tasks_resumption_orig_bases = (
+              contracts_module.ResumptionBriefConversationSummary.__orig_bases__
+          )
+          assert tasks_resumption_orig_bases == (
+              contracts_tasks.ResumptionBriefSectionSummary,
+          )
+          assert not hasattr(contracts_tasks, "GmailAccountConnectInput")
+          assert not hasattr(contracts_tasks, "ExecutionBudgetRecord")
+          assert not hasattr(contracts_tasks, "ProxyExecutionRequestInput")
+          integrations_classes = [
+              getattr(contracts_integrations, name)
+              for name in contracts_module._INTEGRATION_CONTRACT_CLASS_NAMES
+          ]
+          integrations_dataclasses = [
+              value
+              for value in integrations_classes
+              if hasattr(value, "__dataclass_fields__")
+          ]
+          integrations_typed_dicts = [
+              value for value in integrations_classes if typing.is_typeddict(value)
+          ]
+          assert len(integrations_classes) == 22
+          assert len(integrations_dataclasses) == 5
+          assert len(integrations_typed_dicts) == 17
+          assert all(
+              getattr(contracts_module, name) is getattr(contracts_integrations, name)
+              for name in contracts_module._INTEGRATION_CONTRACT_CLASS_NAMES
+          )
+          assert all(
+              pickle.loads(pickle.dumps(contract_class)) is contract_class
+              for contract_class in integrations_classes
+          )
+          assert all(
+              contract_class.__init__.__globals__ is vars(contracts_module)
+              for contract_class in integrations_dataclasses
+          )
+          assert not [
+              (contract_class.__name__, method_name)
+              for contract_class in integrations_dataclasses
+              for method_name, method in vars(contract_class).items()
+              if inspect.isfunction(method)
+              and method.__globals__ is vars(contracts_integrations)
+          ]
+          integrations_gmail_hints = typing.get_type_hints(
+              contracts_module.GmailMessageIngestionResponse,
+              include_extras=True,
+          )
+          integrations_calendar_hints = typing.get_type_hints(
+              contracts_module.CalendarEventIngestionResponse,
+              include_extras=True,
+          )
+          assert integrations_gmail_hints["artifact"] is contracts_tasks.TaskArtifactRecord
+          assert (
+              integrations_gmail_hints["summary"]
+              is contracts_tasks.TaskArtifactChunkListSummary
+          )
+          assert integrations_calendar_hints["artifact"] is contracts_tasks.TaskArtifactRecord
+          assert (
+              integrations_calendar_hints["summary"]
+              is contracts_tasks.TaskArtifactChunkListSummary
+          )
+          assert contracts_integrations.TaskArtifactRecord is contracts_tasks.TaskArtifactRecord
+          assert (
+              contracts_integrations.TaskArtifactChunkListSummary
+              is contracts_tasks.TaskArtifactChunkListSummary
+          )
+          assert not hasattr(contracts_integrations, "ExecutionBudgetRecord")
+          assert not hasattr(contracts_integrations, "ProxyExecutionRequestInput")
+          if sys.version_info >= (3, 14):
+              for integrations_typed_dict in integrations_typed_dicts:
+                  integrations_typed_dict_annotate = integrations_typed_dict.__annotate__
+                  assert integrations_typed_dict_annotate.__module__ == "typing"
+                  assert integrations_typed_dict_annotate.__globals__ is vars(typing)
+                  assert isinstance(integrations_typed_dict_annotate(1), dict)
+              for integrations_dataclass in integrations_dataclasses:
+                  integrations_init_annotate = integrations_dataclass.__init__.__annotate__
+                  assert integrations_init_annotate.__module__ == "dataclasses"
+                  assert integrations_init_annotate.__globals__["__name__"] == "dataclasses"
+                  integrations_replace = integrations_dataclass.__replace__
+                  assert integrations_replace.__module__ == "dataclasses"
+                  assert integrations_replace.__globals__["__name__"] == "dataclasses"
+          execution_classes = [
+              getattr(contracts_execution, name)
+              for name in contracts_module._EXECUTION_CONTRACT_CLASS_NAMES
+          ]
+          execution_dataclasses = [
+              value
+              for value in execution_classes
+              if hasattr(value, "__dataclass_fields__")
+          ]
+          execution_typed_dicts = [
+              value for value in execution_classes if typing.is_typeddict(value)
+          ]
+          assert len(execution_classes) == 35
+          assert len(execution_dataclasses) == 5
+          assert len(execution_typed_dicts) == 30
+          assert all(
+              getattr(contracts_module, name) is getattr(contracts_execution, name)
+              for name in contracts_module._EXECUTION_CONTRACT_CLASS_NAMES
+          )
+          assert all(
+              pickle.loads(pickle.dumps(contract_class)) is contract_class
+              for contract_class in execution_classes
+          )
+          assert all(
+              contract_class.__init__.__globals__ is vars(contracts_module)
+              for contract_class in execution_dataclasses
+          )
+          assert not [
+              (contract_class.__name__, method_name)
+              for contract_class in execution_dataclasses
+              for method_name, method in vars(contract_class).items()
+              if inspect.isfunction(method)
+              and method.__globals__ is vars(contracts_execution)
+          ]
+          assert len(contracts_module._EXECUTION_EXPLICIT_METHODS) == 4
+          assert all(
+              getattr(getattr(contracts_module, owner_name), method_name).__globals__
+              is vars(contracts_module)
+              for owner_name, method_name in contracts_module._EXECUTION_EXPLICIT_METHODS
+          )
+          execution_precheck_orig_bases = (
+              contracts_module.ProxyExecutionBudgetPrecheckTracePayload.__orig_bases__
+          )
+          assert execution_precheck_orig_bases == (
+              contracts_execution.ExecutionBudgetDecisionRecord,
+          )
+          assert contracts_execution.ApprovalRecord is contracts_governance.ApprovalRecord
+          assert contracts_execution.ToolRecord is contracts_governance.ToolRecord
+          assert (
+              contracts_execution.ToolRoutingRequestRecord
+              is contracts_governance.ToolRoutingRequestRecord
+          )
+          execution_approval_id = UUID("50000000-0000-0000-0000-000000000005")
+          assert contracts_module.ProxyExecutionRequestInput(
+              approval_id=execution_approval_id
+          ).as_payload() == {
+              "approval_id": str(execution_approval_id),
+              "task_run_id": None,
+          }
+          assert contracts_module.ExecutionBudgetCreateInput(
+              max_completed_executions=3
+          ).as_payload() == {
+              "max_completed_executions": 3,
+              "tool_key": None,
+              "domain_hint": None,
+              "rolling_window_seconds": None,
+              "agent_profile_id": None,
+          }
+          if sys.version_info >= (3, 14):
+              for execution_typed_dict in execution_typed_dicts:
+                  execution_typed_dict_annotate = execution_typed_dict.__annotate__
+                  assert execution_typed_dict_annotate.__module__ == "typing"
+                  assert execution_typed_dict_annotate.__globals__ is vars(typing)
+                  assert isinstance(execution_typed_dict_annotate(1), dict)
+              for execution_dataclass in execution_dataclasses:
+                  execution_init_annotate = execution_dataclass.__init__.__annotate__
+                  assert execution_init_annotate.__module__ == "dataclasses"
+                  assert execution_init_annotate.__globals__["__name__"] == "dataclasses"
+                  execution_replace = execution_dataclass.__replace__
+                  assert execution_replace.__module__ == "dataclasses"
+                  assert execution_replace.__globals__["__name__"] == "dataclasses"
+              for owner_name, method_name in contracts_module._EXECUTION_EXPLICIT_METHODS:
+                  execution_explicit_annotate = getattr(
+                      getattr(getattr(contracts_module, owner_name), method_name),
+                      "__annotate__",
+                  )
+                  assert execution_explicit_annotate.__module__ == "alicebot_api.contracts"
+                  assert execution_explicit_annotate.__globals__ is vars(contracts_module)
+                  assert isinstance(execution_explicit_annotate(1), dict)
+          assert contracts_module.DecisionKind is contracts_common.DecisionKind
+          assert contracts_module.isoformat_or_none.__globals__ is vars(contracts_module)
+          assert pickle.loads(pickle.dumps(contracts_module.isoformat_or_none)) is (
+              contracts_module.isoformat_or_none
+          )
+          assert hashlib.sha256(
+              "\n".join(
+                  name for name in vars(contracts_module) if not name.startswith("_")
+              ).encode()
+          ).hexdigest() == (
+              "c0a3b796ae8ba267137ace2abf5ec8efcfa192a486b2fcd0fa787c3f0ab6f2ed"
+          )
+          if sys.version_info >= (3, 14):
+              for runtime_typed_dict in runtime_typed_dicts:
+                  typed_dict_annotate = runtime_typed_dict.__annotate__
+                  assert typed_dict_annotate.__module__ == "typing"
+                  assert typed_dict_annotate.__globals__ is vars(typing)
+                  assert isinstance(typed_dict_annotate(1), dict)
+              runtime_init_annotate = runtime_dataclasses[0].__init__.__annotate__
+              assert runtime_init_annotate.__module__ == "dataclasses"
+              assert runtime_init_annotate.__globals__["__name__"] == "dataclasses"
+              for continuity_typed_dict in continuity_typed_dicts:
+                  continuity_typed_dict_annotate = continuity_typed_dict.__annotate__
+                  assert continuity_typed_dict_annotate.__module__ == "typing"
+                  assert continuity_typed_dict_annotate.__globals__ is vars(typing)
+                  assert isinstance(continuity_typed_dict_annotate(1), dict)
+              for continuity_dataclass in continuity_dataclasses:
+                  continuity_init_annotate = continuity_dataclass.__init__.__annotate__
+                  assert continuity_init_annotate.__module__ == "dataclasses"
+                  assert continuity_init_annotate.__globals__["__name__"] == "dataclasses"
+                  continuity_replace = continuity_dataclass.__replace__
+                  assert continuity_replace.__module__ == "dataclasses"
+                  assert continuity_replace.__globals__["__name__"] == "dataclasses"
+              for owner_name, method_name in contracts_module._CONTINUITY_EXPLICIT_METHODS:
+                  continuity_explicit_annotate = getattr(
+                      getattr(getattr(contracts_module, owner_name), method_name),
+                      "__annotate__",
+                  )
+                  assert continuity_explicit_annotate.__module__ == "alicebot_api.contracts"
+                  assert continuity_explicit_annotate.__globals__ is vars(contracts_module)
+                  assert continuity_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert continuity_explicit_annotate.__qualname__.endswith("__annotate__")
+                  assert isinstance(continuity_explicit_annotate(1), dict)
+              for knowledge_typed_dict in knowledge_typed_dicts:
+                  knowledge_typed_dict_annotate = knowledge_typed_dict.__annotate__
+                  assert knowledge_typed_dict_annotate.__module__ == "typing"
+                  assert knowledge_typed_dict_annotate.__globals__ is vars(typing)
+                  assert isinstance(knowledge_typed_dict_annotate(1), dict)
+              for knowledge_dataclass in knowledge_dataclasses:
+                  knowledge_init_annotate = knowledge_dataclass.__init__.__annotate__
+                  assert knowledge_init_annotate.__module__ == "dataclasses"
+                  assert knowledge_init_annotate.__globals__["__name__"] == "dataclasses"
+                  knowledge_replace = knowledge_dataclass.__replace__
+                  assert knowledge_replace.__module__ == "dataclasses"
+                  assert knowledge_replace.__globals__["__name__"] == "dataclasses"
+              for owner_name, method_name in contracts_module._KNOWLEDGE_EXPLICIT_METHODS:
+                  knowledge_explicit_annotate = getattr(
+                      getattr(getattr(contracts_module, owner_name), method_name),
+                      "__annotate__",
+                  )
+                  assert knowledge_explicit_annotate.__module__ == "alicebot_api.contracts"
+                  assert knowledge_explicit_annotate.__globals__ is vars(contracts_module)
+                  assert knowledge_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert knowledge_explicit_annotate.__qualname__.endswith("__annotate__")
+                  assert isinstance(knowledge_explicit_annotate(1), dict)
+              for retrieval_typed_dict in retrieval_typed_dicts:
+                  retrieval_typed_dict_annotate = retrieval_typed_dict.__annotate__
+                  assert retrieval_typed_dict_annotate.__module__ == "typing"
+                  assert retrieval_typed_dict_annotate.__globals__ is vars(typing)
+                  assert isinstance(retrieval_typed_dict_annotate(1), dict)
+              for retrieval_dataclass in retrieval_dataclasses:
+                  retrieval_init_annotate = retrieval_dataclass.__init__.__annotate__
+                  assert retrieval_init_annotate.__module__ == "dataclasses"
+                  assert retrieval_init_annotate.__globals__["__name__"] == "dataclasses"
+                  retrieval_replace = retrieval_dataclass.__replace__
+                  assert retrieval_replace.__module__ == "dataclasses"
+                  assert retrieval_replace.__globals__["__name__"] == "dataclasses"
+              for owner_name, method_name in contracts_module._RETRIEVAL_EXPLICIT_METHODS:
+                  retrieval_explicit_annotate = getattr(
+                      getattr(getattr(contracts_module, owner_name), method_name),
+                      "__annotate__",
+                  )
+                  assert retrieval_explicit_annotate.__module__ == "alicebot_api.contracts"
+                  assert retrieval_explicit_annotate.__globals__ is vars(contracts_module)
+                  assert retrieval_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert retrieval_explicit_annotate.__qualname__.endswith("__annotate__")
+                  assert isinstance(retrieval_explicit_annotate(1), dict)
+              for governance_typed_dict in governance_typed_dicts:
+                  governance_typed_dict_annotate = governance_typed_dict.__annotate__
+                  assert governance_typed_dict_annotate.__module__ == "typing"
+                  assert governance_typed_dict_annotate.__globals__ is vars(typing)
+                  assert isinstance(governance_typed_dict_annotate(1), dict)
+              for governance_dataclass in governance_dataclasses:
+                  governance_init_annotate = governance_dataclass.__init__.__annotate__
+                  assert governance_init_annotate.__module__ == "dataclasses"
+                  assert governance_init_annotate.__globals__["__name__"] == "dataclasses"
+                  governance_replace = governance_dataclass.__replace__
+                  assert governance_replace.__module__ == "dataclasses"
+                  assert governance_replace.__globals__["__name__"] == "dataclasses"
+              for owner_name, method_name in contracts_module._GOVERNANCE_EXPLICIT_METHODS:
+                  governance_explicit_annotate = getattr(
+                      getattr(getattr(contracts_module, owner_name), method_name),
+                      "__annotate__",
+                  )
+                  assert governance_explicit_annotate.__module__ == "alicebot_api.contracts"
+                  assert governance_explicit_annotate.__globals__ is vars(contracts_module)
+                  assert governance_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert governance_explicit_annotate.__qualname__.endswith("__annotate__")
+                  assert isinstance(governance_explicit_annotate(1), dict)
+          if sys.version_info >= (3, 14):
+              for tasks_typed_dict in tasks_typed_dicts:
+                  tasks_typed_dict_annotate = tasks_typed_dict.__annotate__
+                  assert tasks_typed_dict_annotate.__module__ == "typing"
+                  assert tasks_typed_dict_annotate.__globals__ is vars(typing)
+                  assert isinstance(tasks_typed_dict_annotate(1), dict)
+              for tasks_dataclass in tasks_dataclasses:
+                  tasks_init_annotate = tasks_dataclass.__init__.__annotate__
+                  assert tasks_init_annotate.__module__ == "dataclasses"
+                  assert tasks_init_annotate.__globals__["__name__"] == "dataclasses"
+                  tasks_replace = tasks_dataclass.__replace__
+                  assert tasks_replace.__module__ == "dataclasses"
+                  assert tasks_replace.__globals__["__name__"] == "dataclasses"
+              for owner_name, method_name in contracts_module._TASK_EXPLICIT_METHODS:
+                  tasks_explicit_annotate = getattr(
+                      getattr(getattr(contracts_module, owner_name), method_name),
+                      "__annotate__",
+                  )
+                  assert tasks_explicit_annotate.__module__ == "alicebot_api.contracts"
+                  assert tasks_explicit_annotate.__globals__ is vars(contracts_module)
+                  assert tasks_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert tasks_explicit_annotate.__qualname__.endswith("__annotate__")
+                  assert isinstance(tasks_explicit_annotate(1), dict)
           PY
           python -m pytest -o pythonpath= \
             tests/unit/test_sqlite_onramp.py \
             tests/unit/test_config.py \
+            tests/unit/test_cli_error_contracts.py \
+            tests/unit/test_cli_package_split.py \
             tests/unit/test_mcp.py \
+            tests/unit/test_mcp_error_contracts.py \
+            tests/unit/test_mcp_package_split.py \
             -q
 
   python-integration:
@@ -280,7 +2222,7 @@ jobs:
           DATABASE_ADMIN_URL: postgresql://alicebot_admin:ci@localhost:5432/alicebot
         run: |
           unset ALICE_LEGACY_SURFACES ALICE_MCP_LEGACY_TOOLS ALICE_AGENT_API_KEY
-          ./.venv/bin/python -m pytest tests/integration/test_default_surface_integration.py -q -p no:cacheprovider
+          ./.venv/bin/python -m pytest tests/integration/test_default_surface_integration.py -q -p no:cacheprovider --require-executed-tests
 
   web:
     name: Web tests, types, accessibility, and budgets

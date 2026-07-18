@@ -22,9 +22,16 @@ PROTECTED_AREAS: tuple[ProtectedArea, ...] = (
         patterns=(
             "apps/api/alembic/versions/*.py",
             "apps/api/src/alicebot_api/store.py",
+            "apps/api/src/alicebot_api/legacy_store/*.py",
+            "apps/api/src/alicebot_api/vnext_store.py",
+            "apps/api/src/alicebot_api/sqlite_store.py",
+            "apps/api/src/alicebot_api/vnext_stores/*.py",
+            "apps/api/src/alicebot_api/vnext_stores/postgres/*.py",
+            "apps/api/src/alicebot_api/vnext_stores/sqlite/*.py",
             "apps/api/src/alicebot_api/db.py",
             "apps/api/src/alicebot_api/memory.py",
             "apps/api/src/alicebot_api/contracts.py",
+            "apps/api/src/alicebot_api/_contracts/*.py",
         ),
     ),
     ProtectedArea(
@@ -43,6 +50,7 @@ PROTECTED_AREAS: tuple[ProtectedArea, ...] = (
         label="trust rules",
         patterns=(
             "apps/api/src/alicebot_api/contracts.py",
+            "apps/api/src/alicebot_api/_contracts/*.py",
             "apps/api/src/alicebot_api/memory.py",
             "apps/api/src/alicebot_api/trusted_fact_promotions.py",
         ),
@@ -58,10 +66,14 @@ PROTECTED_AREAS: tuple[ProtectedArea, ...] = (
         label="continuity APIs",
         patterns=(
             "apps/api/src/alicebot_api/cli.py",
+            "apps/api/src/alicebot_api/cli/*.py",
             "apps/api/src/alicebot_api/contracts.py",
+            "apps/api/src/alicebot_api/_contracts/*.py",
             "apps/api/src/alicebot_api/main.py",
+            "apps/api/src/alicebot_api/routers/*.py",
             "apps/api/src/alicebot_api/mcp_server.py",
             "apps/api/src/alicebot_api/mcp_tools.py",
+            "apps/api/src/alicebot_api/mcp/*.py",
             "apps/web/lib/api.ts",
         ),
     ),
@@ -160,9 +172,7 @@ def validate_upgrade_overview(pr_body: str, touched_areas: dict[str, list[str]])
 
     sections = extract_upgrade_sections(pr_body)
     if not sections:
-        return [
-            "Protected paths were modified, but the PR body is missing the required `## Upgrade Overview` section."
-        ]
+        return ["Protected paths were modified, but the PR body is missing the required `## Upgrade Overview` section."]
 
     errors: list[str] = []
     protected_area_section = sections.get("protected areas")
@@ -170,9 +180,7 @@ def validate_upgrade_overview(pr_body: str, touched_areas: dict[str, list[str]])
         errors.append("`### Protected Areas` is missing from `## Upgrade Overview`.")
     else:
         checked_areas = parse_checked_areas(protected_area_section)
-        normalized_touched_labels = {
-            _normalize_heading(area_label): area_label for area_label in touched_areas
-        }
+        normalized_touched_labels = {_normalize_heading(area_label): area_label for area_label in touched_areas}
         missing_checked = sorted(
             (
                 normalized_touched_labels[normalized_label]
@@ -182,9 +190,7 @@ def validate_upgrade_overview(pr_body: str, touched_areas: dict[str, list[str]])
         )
         if missing_checked:
             errors.append(
-                "The checked protected areas do not cover the touched categories: "
-                + ", ".join(missing_checked)
-                + "."
+                "The checked protected areas do not cover the touched categories: " + ", ".join(missing_checked) + "."
             )
 
     for section_name in REQUIRED_NARRATIVE_SECTIONS:

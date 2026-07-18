@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import anyio
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import continuity as continuity_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -72,6 +73,11 @@ def test_continuity_capture_create_list_and_detail_support_deterministic_signal_
     user_id = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        continuity_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -143,6 +149,11 @@ def test_continuity_capture_ambiguous_input_is_preserved_with_triage_posture(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        continuity_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     create_status, create_payload = invoke_request(
         "POST",
@@ -176,6 +187,11 @@ def test_continuity_capture_rejects_invalid_signal_and_enforces_user_scope(
     intruder_id = seed_user(migrated_database_urls["app"], email="intruder@example.com")
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        continuity_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -242,6 +258,11 @@ def test_continuity_capture_candidate_and_commit_pipeline_supports_assist_mode_a
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        continuity_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     candidates_status, candidates_payload = invoke_request(
         "POST",
@@ -287,6 +308,11 @@ def test_continuity_capture_pipeline_routes_disallowed_or_low_confidence_candida
     user_id = seed_user(migrated_database_urls["app"], email="pipeline-review@example.com")
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        continuity_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -337,6 +363,11 @@ def test_continuity_capture_pipeline_noop_and_repeated_sync_are_write_safe(
     user_id = seed_user(migrated_database_urls["app"], email="pipeline-noop@example.com")
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        continuity_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import anyio
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.explicit_commitments import _build_memory_key
@@ -109,6 +110,11 @@ def test_extract_explicit_commitments_endpoint_persists_memory_open_loop_and_rem
     memory_key = _build_memory_key("submit tax forms")
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -216,6 +222,11 @@ def test_extract_explicit_commitments_endpoint_returns_no_candidates_for_unsuppo
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     unsupported_status, unsupported_payload = invoke_request(
         "POST",
@@ -274,6 +285,11 @@ def test_extract_explicit_commitments_endpoint_rejects_invalid_source_event_and_
     intruder_id = uuid4()
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

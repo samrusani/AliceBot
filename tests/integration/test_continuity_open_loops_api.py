@@ -10,6 +10,7 @@ import anyio
 import psycopg
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import continuity as continuity_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -181,6 +182,11 @@ def test_continuity_open_loop_dashboard_groups_posture_and_order(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        continuity_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status, payload = invoke_request(
         "GET",
@@ -248,6 +254,11 @@ def test_open_loop_review_actions_update_resumption_immediately(
 
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        continuity_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -343,6 +354,11 @@ def test_open_loop_dashboard_rejects_mixed_naive_and_offset_aware_time_window(
 
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        continuity_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

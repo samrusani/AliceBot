@@ -10,6 +10,7 @@ import anyio
 import psycopg
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import continuity as continuity_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -198,6 +199,11 @@ def test_daily_and_weekly_review_endpoints_are_deterministic(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        continuity_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     first_daily_status, first_daily = invoke_request(
         "GET",
@@ -306,6 +312,11 @@ def test_daily_and_weekly_review_endpoints_emit_explicit_empty_states(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        continuity_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     daily_status, daily_payload = invoke_request(
         "GET",
@@ -377,6 +388,11 @@ def test_daily_and_weekly_review_endpoints_reject_mixed_naive_and_offset_aware_t
 
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        continuity_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

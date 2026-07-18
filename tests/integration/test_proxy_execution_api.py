@@ -9,6 +9,7 @@ import anyio
 import psycopg
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -202,6 +203,9 @@ def test_execute_approved_proxy_endpoint_executes_only_approved_requests(
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],
@@ -354,6 +358,9 @@ def test_execute_approved_proxy_endpoint_rejects_pending_approval(
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],
@@ -403,6 +410,9 @@ def test_execute_approved_proxy_endpoint_rejects_rejected_approval(
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],
@@ -442,6 +452,9 @@ def test_execute_approved_proxy_endpoint_rejects_missing_handler(
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],
@@ -538,6 +551,9 @@ def test_execute_approved_proxy_endpoint_marks_linked_run_failed_when_blocked(
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner-linked-run@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],
@@ -615,6 +631,9 @@ def test_execute_approved_proxy_endpoint_enforces_user_isolation(
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     other_user = seed_user(migrated_database_urls["app"], email="other@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],
@@ -651,6 +670,9 @@ def test_execute_approved_proxy_endpoint_updates_the_explicitly_linked_later_ste
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner-step-linkage@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],
@@ -804,6 +826,9 @@ def test_execute_approved_proxy_endpoint_fail_closes_when_runtime_context_is_inv
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],
@@ -895,6 +920,9 @@ def test_execute_approved_proxy_endpoint_blocks_when_execution_budget_is_exceede
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],
@@ -1037,6 +1065,9 @@ def test_execute_approved_proxy_endpoint_allows_when_recent_history_is_within_ro
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],
@@ -1114,6 +1145,9 @@ def test_execute_approved_proxy_endpoint_blocks_when_recent_window_history_excee
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],
@@ -1211,6 +1245,9 @@ def test_execute_approved_proxy_endpoint_excludes_old_window_history_and_keeps_c
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     other_user = seed_user(migrated_database_urls["app"], email="other@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     owner_tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],
@@ -1312,6 +1349,9 @@ def test_execute_approved_proxy_endpoint_ignores_deactivated_budget(
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],
@@ -1406,6 +1446,9 @@ def test_execute_approved_proxy_endpoint_uses_replacement_budget_after_supersess
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],
@@ -1507,6 +1550,9 @@ def test_execute_approved_proxy_endpoint_applies_profile_scope_before_global_fal
         agent_profile_id="coach_default",
     )
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],
@@ -1636,6 +1682,9 @@ def test_execute_approved_proxy_execution_budget_is_user_scoped(
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     other_user = seed_user(migrated_database_urls["app"], email="other@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     owner_tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],
@@ -1703,6 +1752,9 @@ def test_tool_execution_review_endpoints_are_deterministic_and_user_scoped(
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     intruder = seed_user(migrated_database_urls["app"], email="intruder@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
     tool_id = create_tool_and_policy(
         migrated_database_urls["app"],
         user_id=owner["user_id"],

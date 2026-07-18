@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import anyio
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -198,6 +199,11 @@ def test_task_artifact_chunk_embedding_endpoints_persist_and_read_embeddings(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     second_write_status, second_write_payload = invoke_request(
         "POST",
@@ -326,6 +332,11 @@ def test_task_artifact_chunk_embedding_writes_reject_invalid_refs_dimension_mism
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     missing_config_status, missing_config_payload = invoke_request(
         "POST",
@@ -409,6 +420,11 @@ def test_task_artifact_chunk_embedding_reads_respect_per_user_isolation(
     )
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

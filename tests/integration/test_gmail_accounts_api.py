@@ -11,6 +11,7 @@ import anyio
 import psycopg
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 import alicebot_api.gmail as gmail_module
 from alicebot_api.db import user_connection
@@ -191,6 +192,14 @@ def test_gmail_account_endpoints_connect_list_detail_and_isolate(
             gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
         ),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
+        ),
+    )
 
     create_status, create_payload = _connect_gmail_account(
         user_id=owner["user_id"],
@@ -321,6 +330,15 @@ def test_gmail_message_ingestion_endpoint_persists_artifact_and_chunks(
             gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
         ),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
+        ),
+    )
     raw_bytes = _build_rfc822_email_bytes(subject="Inbox Update", plain_body="ingest this message")
     monkeypatch.setattr(
         gmail_module,
@@ -401,6 +419,15 @@ def test_gmail_message_ingestion_endpoint_renews_expired_access_token(
     gmail_secret_root = tmp_path / "gmail-secrets"
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
+        ),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
@@ -509,6 +536,15 @@ def test_gmail_message_ingestion_endpoint_persists_rotated_refresh_token(
     gmail_secret_root = tmp_path / "gmail-secrets"
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
+        ),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
@@ -648,6 +684,15 @@ def test_gmail_message_ingestion_endpoint_fails_deterministically_when_rotated_c
             gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
         ),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
+        ),
+    )
 
     monkeypatch.setattr(
         gmail_module,
@@ -762,6 +807,15 @@ def test_gmail_message_ingestion_endpoint_rejects_cross_user_workspace_access(
         ),
     )
     monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
+        ),
+    )
+    monkeypatch.setattr(
         gmail_module,
         "fetch_gmail_message_raw_bytes",
         lambda **_kwargs: _build_rfc822_email_bytes(
@@ -803,6 +857,15 @@ def test_gmail_message_ingestion_endpoint_rejects_missing_protected_credentials_
     gmail_secret_root = tmp_path / "gmail-secrets"
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
+        ),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
@@ -866,6 +929,15 @@ def test_gmail_message_ingestion_endpoint_rejects_missing_external_secret_withou
     gmail_secret_root = tmp_path / "gmail-secrets"
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
+        ),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
@@ -947,6 +1019,15 @@ def test_gmail_message_ingestion_endpoint_rejects_invalid_refresh_credentials_wi
             gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
         ),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
+        ),
+    )
 
     _, account_payload = _connect_gmail_account(
         user_id=owner["user_id"],
@@ -1010,6 +1091,15 @@ def test_gmail_message_ingestion_endpoint_rejects_sanitized_path_collisions_with
     gmail_secret_root = tmp_path / "gmail-secrets"
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
+        ),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
@@ -1087,6 +1177,15 @@ def test_gmail_message_ingestion_endpoint_rejects_missing_and_unsupported_messag
     gmail_secret_root = tmp_path / "gmail-secrets"
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
+        ),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],

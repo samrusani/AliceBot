@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-import alicebot_api.main as main_module
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.traces import (
     TraceNotFoundError,
@@ -321,11 +321,11 @@ def test_list_traces_endpoint_returns_payload(monkeypatch) -> None:
             "summary": {"total_count": 0, "order": ["created_at_desc", "id_desc"]},
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "list_trace_records", fake_list_trace_records)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "list_trace_records", fake_list_trace_records)
 
-    response = main_module.list_traces(user_id)
+    response = memories_legacy_router.list_traces(user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -352,11 +352,11 @@ def test_get_trace_endpoint_maps_not_found_to_404(monkeypatch) -> None:
     def fake_get_trace_record(*_args, **_kwargs):
         raise TraceNotFoundError(f"trace {trace_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "get_trace_record", fake_get_trace_record)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_trace_record", fake_get_trace_record)
 
-    response = main_module.get_trace(trace_id, user_id)
+    response = memories_legacy_router.get_trace(trace_id, user_id)
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
@@ -391,13 +391,13 @@ def test_list_trace_events_endpoint_returns_payload_and_maps_not_found(monkeypat
             },
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "list_trace_event_records", fake_list_trace_event_records)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "list_trace_event_records", fake_list_trace_event_records)
 
-    success_response = main_module.list_trace_events(trace_id, user_id)
+    success_response = memories_legacy_router.list_trace_events(trace_id, user_id)
     captured["fail"] = True
-    not_found_response = main_module.list_trace_events(trace_id, user_id)
+    not_found_response = memories_legacy_router.list_trace_events(trace_id, user_id)
 
     assert success_response.status_code == 200
     assert json.loads(success_response.body) == {

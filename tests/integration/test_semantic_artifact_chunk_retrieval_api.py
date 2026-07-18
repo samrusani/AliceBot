@@ -9,6 +9,8 @@ import anyio
 import pytest
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -253,6 +255,16 @@ def test_semantic_artifact_chunk_retrieval_endpoints_return_deterministic_task_a
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     task_status, task_payload = invoke_request(
         "POST",
@@ -387,6 +399,16 @@ def test_semantic_artifact_chunk_retrieval_rejects_invalid_config_dimension_mism
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     missing_status, missing_payload = invoke_request(
         "POST",
@@ -505,6 +527,11 @@ def test_semantic_artifact_chunk_retrieval_supports_empty_results_and_per_user_i
     )
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

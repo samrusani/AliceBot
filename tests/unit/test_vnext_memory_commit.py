@@ -1940,7 +1940,7 @@ def test_confirm_refuses_a_row_a_review_already_rejected() -> None:
     """Audit #1(a): confirmation_required -> rejected -> confirm must NOT reactivate.
 
     A dashboard/review rejection retires the row (status -> rejected) but the
-    nested inline-confirmation flag is left ``pending`` (mcp_tools.py:2081).
+    nested inline-confirmation flag is left ``pending`` (mcp/review.py).
     confirm() must verify the row's lifecycle status, not just the flag.
     """
     store = _live_sqlite_store()

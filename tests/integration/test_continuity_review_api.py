@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import anyio
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import continuity as continuity_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -98,6 +99,11 @@ def test_continuity_review_queue_and_confirm_flow(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        continuity_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     queue_status, queue_payload = invoke_request(
         "GET",
@@ -171,6 +177,11 @@ def test_continuity_review_supersede_updates_recall_and_resumption_immediately(
 
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        continuity_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -274,6 +285,11 @@ def test_continuity_review_mark_stale_and_delete_posture(
 
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        continuity_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

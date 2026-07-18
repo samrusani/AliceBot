@@ -16,14 +16,14 @@ and fails fast instead of racing ahead; without the lock it slips through.
 from __future__ import annotations
 
 import threading
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from psycopg import errors as pg_errors
 import pytest
 
-import alicebot_api.main as main_module
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
+from alicebot_api.routers import vnext_memories as vnext_memories_router
 from alicebot_api.store import ContinuityStore
 from alicebot_api.vnext_memory_commit import (
     VNextMemoryCommitService,
@@ -361,7 +361,7 @@ def test_consolidation_acceptance_serializes_against_member_mutations(
     """
     _clear_provider_env(monkeypatch)
     app_url = migrated_database_urls["app"]
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=app_url))
+    monkeypatch.setattr(vnext_memories_router, "get_settings", lambda: Settings(database_url=app_url))
     user_id = uuid4()
     member_id, candidate_id = _seed_consolidation_pair(app_url, user_id)
     start = threading.Barrier(2)
@@ -372,9 +372,9 @@ def test_consolidation_acceptance_serializes_against_member_mutations(
         try:
             start.wait(timeout=10)
             if accept_surface == "http":
-                outcome: object = main_module.review_vnext_memory(
-                    main_module.UUID(candidate_id),
-                    main_module.VNextMemoryReviewRequest(
+                outcome: object = vnext_memories_router.review_vnext_memory(
+                    UUID(candidate_id),
+                    vnext_memories_router.VNextMemoryReviewRequest(
                         user_id=user_id,
                         action="accept",
                         reason="Adversarial HTTP acceptance.",
@@ -454,7 +454,7 @@ def test_http_review_acquires_graph_lock_before_candidate_row(
     """The HTTP adapter must not restore the reviewed row -> graph inversion."""
     _clear_provider_env(monkeypatch)
     app_url = migrated_database_urls["app"]
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=app_url))
+    monkeypatch.setattr(vnext_memories_router, "get_settings", lambda: Settings(database_url=app_url))
     user_id = uuid4()
     _member_id, candidate_id = _seed_consolidation_pair(app_url, user_id)
     graph_acquired = threading.Event()
@@ -472,9 +472,9 @@ def test_http_review_acquires_graph_lock_before_candidate_row(
 
     def review_candidate() -> None:
         try:
-            outcome["response"] = main_module.review_vnext_memory(
-                main_module.UUID(candidate_id),
-                main_module.VNextMemoryReviewRequest(
+            outcome["response"] = vnext_memories_router.review_vnext_memory(
+                UUID(candidate_id),
+                vnext_memories_router.VNextMemoryReviewRequest(
                     user_id=user_id,
                     action="accept",
                     reason="Lock-order regression.",

@@ -10,6 +10,7 @@ import psycopg
 import pytest
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.execution_budgets import EXECUTION_BUDGET_LIFECYCLE_REJECTION_REASON
@@ -106,6 +107,9 @@ def test_execution_budget_endpoints_create_list_and_get_in_deterministic_order(
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     intruder = seed_user(migrated_database_urls["app"], email="intruder@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     second_status, second_payload = create_budget(
         user_id=owner["user_id"],
@@ -178,6 +182,9 @@ def test_create_execution_budget_endpoint_requires_at_least_one_selector(
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     status_code, payload = invoke_request(
         "POST",
@@ -198,6 +205,9 @@ def test_create_execution_budget_endpoint_rejects_duplicate_active_scope(
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     first_status, _ = create_budget(
         user_id=owner["user_id"],
@@ -223,6 +233,9 @@ def test_create_execution_budget_endpoint_rejects_unknown_agent_profile_id(
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     status_code, payload = create_budget(
         user_id=owner["user_id"],
@@ -242,6 +255,9 @@ def test_create_execution_budget_endpoint_allows_same_selector_across_profile_sc
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     scoped_status, scoped_payload = create_budget(
         user_id=owner["user_id"],
@@ -281,6 +297,9 @@ def test_deactivate_execution_budget_endpoint_updates_reads_and_emits_trace(
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     intruder = seed_user(migrated_database_urls["app"], email="intruder@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     create_status, create_payload = create_budget(
         user_id=owner["user_id"],
@@ -352,6 +371,9 @@ def test_supersede_execution_budget_endpoint_replaces_active_budget_and_emits_tr
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     create_status, create_payload = create_budget(
         user_id=owner["user_id"],
@@ -421,6 +443,9 @@ def test_execution_budget_lifecycle_rejects_invalid_transition_deterministically
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     create_status, create_payload = create_budget(
         user_id=owner["user_id"],

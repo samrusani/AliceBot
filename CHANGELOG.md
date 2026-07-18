@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## v0.12.0 — 2026-07-18
+
+- **Structure only. Zero behavior change.** The Phase 3 carrier moves HTTP
+  handlers into domain routers; splits PostgreSQL and SQLite store seams in
+  parallel; divides the surviving legacy store and pure contracts by domain;
+  and relocates MCP/CLI implementations behind their stable facades.
+- **Stable public surfaces.** `alicebot_api.main:app`, console entrypoints,
+  compatibility imports, route paths and operation IDs, error contracts, SQL
+  text, the 182-default/231-gated OpenAPI registry, the 11-core/65-legacy MCP
+  registry, and CLI parser topology remain unchanged.
+- **Truth gates follow the move.** Response-hygiene enforcement scans the
+  router package with a 296-call per-module manifest; coverage enforcement
+  follows the router aggregate; the default-surface PostgreSQL smoke requires
+  a nonzero executed-test count; split-module namespace and registry guards
+  fail on the old monolith shape.
+- **Verified equivalence.** The OpenAPI document is byte-identical in both
+  surface postures, all 76 MCP tool definitions are byte-identical, every
+  store method keeps its exact signature, and the pinned SQL-shape tests
+  pass unedited. Six narrow internal adaptations forced by the split are
+  documented in the Phase 3 handoff and were owner-ratified; none is
+  observable at the HTTP, MCP, or CLI surface. No production file exceeds
+  3,803 lines.
+
 ## v0.11.1 — 2026-07-16
 
 - **Default-surface release coverage.** CI now boots the default PostgreSQL

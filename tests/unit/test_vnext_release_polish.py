@@ -16,6 +16,13 @@ def _read(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
+def _read_cli_sources() -> str:
+    package_root = ROOT / "apps/api/src/alicebot_api/cli"
+    source_paths = sorted(package_root.rglob("*.py"))
+    assert source_paths
+    return "\n".join(path.read_text(encoding="utf-8") for path in source_paths)
+
+
 def test_vnext_public_preview_docs_cover_release_polish_acceptance() -> None:
     readme = _read("README.md")
     overview = _read("docs/vnext/README.md")
@@ -144,7 +151,7 @@ def test_headless_ubuntu_packaging_is_discoverable_and_safe_by_default() -> None
     api_service = _read("packaging/systemd/alice-api.service")
     web_service = _read("packaging/systemd/alice-web.service")
     scheduler_service = _read("packaging/systemd/alice-scheduler.service")
-    cli = _read("apps/api/src/alicebot_api/cli.py")
+    cli = _read_cli_sources()
 
     assert "docs/alpha/quickstart.md" in readme
     assert "headless-ubuntu-install.md" in alpha_readme
@@ -483,6 +490,7 @@ def test_ci_action_dependency_carrier_uses_exact_atomic_pins() -> None:
 
 def test_python_compatibility_functional_tests_do_not_shadow_installed_wheel() -> None:
     tests_workflow = _read(".github/workflows/tests.yml")
+    artifact_smoke = _read("scripts/test_distribution_artifact.py")
     compatibility = tests_workflow.split("python-compatibility:", 1)[1].split(
         "python-integration:", 1
     )[0]
@@ -491,6 +499,16 @@ def test_python_compatibility_functional_tests_do_not_shadow_installed_wheel() -
     assert "python -m pytest -o pythonpath=" in " ".join(compatibility.split())
     assert "resolved to checkout source instead of the installed wheel" in compatibility
     assert "Representative installed-wheel functional tests" in compatibility
+    assert "tests/unit/test_cli_error_contracts.py" in compatibility
+    assert "tests/unit/test_cli_package_split.py" in compatibility
+    for marker in (
+        "import alicebot_api.cli.parser as cli_parser",
+        "import alicebot_api.cli.runner as cli_runner",
+        "cli_module.build_parser is cli_parser.build_parser",
+        "cli_module.main is cli_runner.main",
+    ):
+        assert marker in compatibility
+        assert marker in artifact_smoke
 
 
 def test_local_playwright_setup_is_explicit_idempotent_and_platform_safe() -> None:

@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-import alicebot_api.main as main_module
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.store import AppendOnlyViolation, ContinuityStore
 
@@ -168,9 +168,9 @@ def install_continuity_api_stubs(
             ContinuityApiStoreStub(current_user_id=conn.current_user_id),
         )
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "ContinuityStore", fake_store_factory)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "ContinuityStore", fake_store_factory)
 
 
 def test_event_updates_are_rejected_by_contract():
@@ -192,8 +192,8 @@ def test_thread_create_endpoint_persists_one_visible_thread(monkeypatch: pytest.
     stores: dict[UUID, ContinuityApiStoreStub] = {}
     install_continuity_api_stubs(monkeypatch, stores)
 
-    response = main_module.create_thread(
-        main_module.CreateThreadRequest(user_id=owner_id, title="Operator Inbox")
+    response = memories_legacy_router.create_thread(
+        memories_legacy_router.CreateThreadRequest(user_id=owner_id, title="Operator Inbox")
     )
 
     assert response.status_code == 201
@@ -276,14 +276,14 @@ def test_thread_review_endpoints_preserve_shape_order_and_user_isolation(
         created_at=shared_created_at + timedelta(hours=1),
     )
 
-    list_response = main_module.list_threads(owner_id)
-    detail_response = main_module.get_thread(second_thread["id"], owner_id)
-    sessions_response = main_module.list_thread_sessions(second_thread["id"], owner_id)
-    events_response = main_module.list_thread_events(second_thread["id"], owner_id)
-    intruder_list_response = main_module.list_threads(intruder_id)
-    intruder_detail_response = main_module.get_thread(second_thread["id"], intruder_id)
-    intruder_sessions_response = main_module.list_thread_sessions(second_thread["id"], intruder_id)
-    intruder_events_response = main_module.list_thread_events(second_thread["id"], intruder_id)
+    list_response = memories_legacy_router.list_threads(owner_id)
+    detail_response = memories_legacy_router.get_thread(second_thread["id"], owner_id)
+    sessions_response = memories_legacy_router.list_thread_sessions(second_thread["id"], owner_id)
+    events_response = memories_legacy_router.list_thread_events(second_thread["id"], owner_id)
+    intruder_list_response = memories_legacy_router.list_threads(intruder_id)
+    intruder_detail_response = memories_legacy_router.get_thread(second_thread["id"], intruder_id)
+    intruder_sessions_response = memories_legacy_router.list_thread_sessions(second_thread["id"], intruder_id)
+    intruder_events_response = memories_legacy_router.list_thread_events(second_thread["id"], intruder_id)
 
     assert json.loads(list_response.body) == {
         "items": [

@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import anyio
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.explicit_commitments import _build_memory_key as build_commitment_memory_key
@@ -106,6 +107,11 @@ def test_capture_explicit_signals_endpoint_returns_unified_sections_and_aggregat
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status_code, payload = invoke_request(
         "POST",
@@ -178,6 +184,11 @@ def test_capture_explicit_signals_endpoint_remains_idempotent_for_open_loop_crea
     commitment_memory_key = build_commitment_memory_key("submit tax forms")
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -270,6 +281,11 @@ def test_capture_explicit_signals_endpoint_rejects_invalid_source_event_and_user
     intruder_id = uuid4()
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

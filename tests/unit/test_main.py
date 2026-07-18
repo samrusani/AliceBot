@@ -13,8 +13,14 @@ from fastapi import Request
 from fastapi.responses import Response
 from pydantic import ValidationError
 import alicebot_api.main as main_module
+from alicebot_api.routers import memories_legacy as memories_legacy_router
+from alicebot_api.routers import providers as providers_router
 import alicebot_api.openapi_operation_contracts as openapi_contracts
 from alicebot_api.config import Settings
+from alicebot_api.routers import _api_shared as api_shared
+from alicebot_api.routers import vnext_memories as vnext_memories_router
+from alicebot_api.routers import vnext_projects as vnext_projects_router
+from alicebot_api.routers import vnext_review as vnext_review_router
 from alicebot_api.artifacts import TaskArtifactNotFoundError
 from alicebot_api.compiler import CompiledTraceRun
 from alicebot_api.contracts import AdmissionDecisionOutput
@@ -56,6 +62,10 @@ from alicebot_api.vnext_store import (
     SOURCE_COLUMNS,
     TASK_COLUMNS,
 )
+
+
+def _registered_route_paths() -> set[str]:
+    return set(main_module.app.openapi()["paths"])
 
 
 def _openapi_schema_accepts(value: object, schema: dict[str, object]) -> bool:
@@ -263,7 +273,7 @@ def test_healthcheck_reports_degraded_when_database_is_unreachable(monkeypatch) 
 
 
 def test_healthcheck_route_is_registered() -> None:
-    route_paths = {route.path for route in main_module.app.routes}
+    route_paths = _registered_route_paths()
 
     assert "/healthz" in route_paths
     assert "/v0/context/compile" in route_paths
@@ -281,7 +291,7 @@ def test_healthcheck_route_is_registered() -> None:
 
 def test_request_models_reject_unknown_fields() -> None:
     with pytest.raises(ValidationError, match="unexpected"):
-        main_module.CreateThreadRequest.model_validate(
+        memories_legacy_router.CreateThreadRequest.model_validate(
             {
                 "user_id": str(uuid4()),
                 "title": "Strict request",
@@ -291,7 +301,7 @@ def test_request_models_reject_unknown_fields() -> None:
 
 
 def test_openapi_has_concrete_success_contracts_and_accurate_statuses() -> None:
-    route_paths = {route.path for route in main_module.app.routes}
+    route_paths = _registered_route_paths()
     schema = main_module.app.openapi()
     components = schema["components"]["schemas"]
     operations_by_key = {
@@ -857,14 +867,14 @@ def test_scheduler_status_endpoint_payload_matches_its_generated_openapi_contrac
         yield object()
 
     monkeypatch.setattr(
-        main_module,
+        vnext_projects_router,
         "get_settings",
         lambda: Settings(database_url="postgresql://scheduler-status"),
     )
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "PostgresVNextStore", lambda _conn: store)
+    monkeypatch.setattr(vnext_projects_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(vnext_projects_router, "PostgresVNextStore", lambda _conn: store)
     monkeypatch.setattr(
-        main_module,
+        vnext_projects_router,
         "daemon_status",
         lambda: daemon_status(
             pid_file=tmp_path / "scheduler.pid",
@@ -872,7 +882,7 @@ def test_scheduler_status_endpoint_payload_matches_its_generated_openapi_contrac
         ),
     )
 
-    response = main_module.get_vnext_scheduler_status(requested_user_id)
+    response = vnext_projects_router.get_vnext_scheduler_status(requested_user_id)
     assert response.status_code == 200
     payload = json.loads(response.body)
     operation_key = ("GET", "/v0/vnext/scheduler/status")
@@ -938,13 +948,13 @@ def test_openapi_typed_contracts_validate_representative_runtime_envelopes() -> 
     active_job = {
         "id": uuid4(),
         "state": "running",
-        "endpoint": main_module.RESPONSE_JOB_ENDPOINT_RUNTIME,
+        "endpoint": providers_router.RESPONSE_JOB_ENDPOINT_RUNTIME,
         "request_fingerprint_sha256": "a" * 64,
         "created_at": now,
         "updated_at": now,
         "completed_at": None,
     }
-    accepted_response = main_module._response_job_replay_or_in_progress(
+    accepted_response = providers_router._response_job_replay_or_in_progress(
         store=_FakeResponseGenerationJobStore(object()),  # type: ignore[arg-type]
         job=active_job,  # type: ignore[arg-type]
         expected_request_fingerprint="a" * 64,
@@ -993,8 +1003,10 @@ def test_openapi_typed_contracts_validate_representative_runtime_envelopes() -> 
 
 
 def test_redact_url_credentials_strips_embedded_secrets() -> None:
-    assert main_module.redact_url_credentials("redis://alicebot:supersecret@cache:6379/0") == ("redis://cache:6379/0")
-    assert main_module.redact_url_credentials("redis://cache:6379/0") == "redis://cache:6379/0"
+    assert providers_router.redact_url_credentials("redis://alicebot:supersecret@cache:6379/0") == (
+        "redis://cache:6379/0"
+    )
+    assert providers_router.redact_url_credentials("redis://cache:6379/0") == "redis://cache:6379/0"
 
 
 def test_build_healthcheck_payload_keeps_boundary_statuses_consistent() -> None:
@@ -1065,7 +1077,7 @@ def test_resolve_authenticated_user_id_prefers_configured_identity() -> None:
         headers={"x-alicebot-user-id": str(uuid4())},
     )
 
-    resolved = main_module._resolve_authenticated_user_id(
+    resolved = api_shared._resolve_authenticated_user_id(
         Settings(app_env="test", auth_user_id=str(configured_user_id)),
         request,
     )
@@ -1076,7 +1088,7 @@ def test_resolve_authenticated_user_id_prefers_configured_identity() -> None:
 def test_resolve_authenticated_user_id_allows_dev_without_header() -> None:
     request = _build_request(method="GET", path="/v0/threads")
 
-    resolved = main_module._resolve_authenticated_user_id(
+    resolved = api_shared._resolve_authenticated_user_id(
         Settings(app_env="test", auth_user_id=""),
         request,
     )
@@ -1098,6 +1110,17 @@ def test_request_client_is_loopback_rejects_remote_clients() -> None:
     )
 
     assert main_module._request_client_is_loopback(request, Settings()) is False
+
+
+def test_api_shared_bindings_preserve_main_compatibility_and_logger_identity() -> None:
+    assert main_module._json_value is api_shared._json_value
+    assert main_module._json_object is api_shared._json_object
+    assert main_module._resolve_authenticated_user_id is api_shared._resolve_authenticated_user_id
+    assert main_module._resolve_authenticated_v1_user_id is api_shared._resolve_authenticated_v1_user_id
+    assert main_module._request_client_identifier is api_shared._request_client_identifier
+    assert main_module.AUTH_USER_HEADER == api_shared.AUTH_USER_HEADER
+    assert main_module.LOGGER is api_shared.LOGGER
+    assert api_shared.LOGGER.name == "alicebot_api.main"
 
 
 def test_v0_middleware_blocks_non_dev_when_legacy_api_disabled(monkeypatch) -> None:
@@ -1158,7 +1181,7 @@ def test_rewrite_user_id_json_body_injects_missing_user_id() -> None:
     authenticated_user_id = uuid4()
     thread_id = uuid4()
     retained_path = "/v1/runtime/invoke"
-    assert retained_path in {route.path for route in main_module.app.routes}
+    assert retained_path in _registered_route_paths()
     request = _build_request(
         method="POST",
         path=retained_path,
@@ -1178,7 +1201,7 @@ def test_rewrite_user_id_json_body_injects_missing_user_id() -> None:
 
 def test_rewrite_user_id_json_body_rejects_mismatch() -> None:
     retained_path = "/v1/runtime/invoke"
-    assert retained_path in {route.path for route in main_module.app.routes}
+    assert retained_path in _registered_route_paths()
     request = _build_request(
         method="POST",
         path=retained_path,
@@ -1198,14 +1221,14 @@ def test_rewrite_user_id_json_body_rejects_mismatch() -> None:
 
 def test_request_client_identifier_ignores_forwarded_header_when_proxy_not_trusted() -> None:
     retained_path = "/v1/continuity/brief"
-    assert retained_path in {route.path for route in main_module.app.routes}
+    assert retained_path in _registered_route_paths()
     request = _build_request(
         method="POST",
         path=retained_path,
         headers={"x-forwarded-for": "203.0.113.9, 127.0.0.1"},
     )
 
-    client_identifier = main_module._request_client_identifier(
+    client_identifier = api_shared._request_client_identifier(
         request,
         Settings(database_url="postgresql://app"),
     )
@@ -1215,14 +1238,14 @@ def test_request_client_identifier_ignores_forwarded_header_when_proxy_not_trust
 
 def test_request_client_identifier_uses_forwarded_header_for_trusted_proxy() -> None:
     retained_path = "/v1/continuity/brief"
-    assert retained_path in {route.path for route in main_module.app.routes}
+    assert retained_path in _registered_route_paths()
     request = _build_request(
         method="POST",
         path=retained_path,
         headers={"x-forwarded-for": "203.0.113.9, 127.0.0.1"},
     )
 
-    client_identifier = main_module._request_client_identifier(
+    client_identifier = api_shared._request_client_identifier(
         request,
         Settings(
             database_url="postgresql://app",
@@ -1404,10 +1427,10 @@ def test_compile_context_returns_trace_and_context_pack(monkeypatch) -> None:
             },
         )
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module.ContinuityStore,
+        memories_legacy_router.ContinuityStore,
         "get_thread",
         lambda _self, thread_id: {
             "id": thread_id,
@@ -1418,10 +1441,10 @@ def test_compile_context_returns_trace_and_context_pack(monkeypatch) -> None:
             "updated_at": datetime.now(),
         },
     )
-    monkeypatch.setattr(main_module, "compile_and_persist_trace", fake_compile_and_persist_trace)
+    monkeypatch.setattr(memories_legacy_router, "compile_and_persist_trace", fake_compile_and_persist_trace)
 
-    response = main_module.compile_context(
-        main_module.CompileContextRequest(
+    response = memories_legacy_router.compile_context(
+        memories_legacy_router.CompileContextRequest(
             user_id=user_id,
             thread_id=thread_id,
             max_sessions=2,
@@ -1595,10 +1618,10 @@ def test_compile_context_returns_not_found_when_scope_row_is_missing(monkeypatch
     def fake_user_connection(_database_url: str, _current_user_id):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url="postgresql://app"))
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module.ContinuityStore,
+        memories_legacy_router.ContinuityStore,
         "get_thread",
         lambda _self, thread_id: {
             "id": thread_id,
@@ -1610,14 +1633,16 @@ def test_compile_context_returns_not_found_when_scope_row_is_missing(monkeypatch
         },
     )
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "compile_and_persist_trace",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             ContinuityStoreInvariantError("get_thread did not return a row from the database")
         ),
     )
 
-    response = main_module.compile_context(main_module.CompileContextRequest(user_id=uuid4(), thread_id=uuid4()))
+    response = memories_legacy_router.compile_context(
+        memories_legacy_router.CompileContextRequest(user_id=uuid4(), thread_id=uuid4())
+    )
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
@@ -1803,10 +1828,10 @@ def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_erro
             },
         )
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module.ContinuityStore,
+        memories_legacy_router.ContinuityStore,
         "get_thread",
         lambda _self, thread_id: {
             "id": thread_id,
@@ -1817,25 +1842,25 @@ def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_erro
             "updated_at": datetime.now(),
         },
     )
-    monkeypatch.setattr(main_module, "compile_and_persist_trace", fake_compile_and_persist_trace)
+    monkeypatch.setattr(memories_legacy_router, "compile_and_persist_trace", fake_compile_and_persist_trace)
 
-    response = main_module.compile_context(
-        main_module.CompileContextRequest(
+    response = memories_legacy_router.compile_context(
+        memories_legacy_router.CompileContextRequest(
             user_id=user_id,
             thread_id=thread_id,
-            semantic=main_module.CompileContextSemanticRequest(
+            semantic=memories_legacy_router.CompileContextSemanticRequest(
                 embedding_config_id=config_id,
                 query_vector=[0.1, 0.2, 0.3],
                 limit=2,
             ),
-            artifact_retrieval=main_module.CompileContextTaskScopedArtifactRetrievalRequest(
+            artifact_retrieval=memories_legacy_router.CompileContextTaskScopedArtifactRetrievalRequest(
                 kind="task",
                 task_id=uuid4(),
                 query="alpha beta",
                 limit=2,
             ),
             semantic_artifact_retrieval=(
-                main_module.CompileContextTaskScopedSemanticArtifactRetrievalRequest(
+                memories_legacy_router.CompileContextTaskScopedSemanticArtifactRetrievalRequest(
                     kind="task",
                     task_id=uuid4(),
                     embedding_config_id=config_id,
@@ -1878,7 +1903,7 @@ def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_erro
     assert captured["semantic_artifact_retrieval"].limit == 2
 
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "compile_and_persist_trace",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             SemanticMemoryRetrievalValidationError(
@@ -1887,11 +1912,11 @@ def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_erro
         ),
     )
 
-    error_response = main_module.compile_context(
-        main_module.CompileContextRequest(
+    error_response = memories_legacy_router.compile_context(
+        memories_legacy_router.CompileContextRequest(
             user_id=user_id,
             thread_id=thread_id,
-            semantic=main_module.CompileContextSemanticRequest(
+            semantic=memories_legacy_router.CompileContextSemanticRequest(
                 embedding_config_id=config_id,
                 query_vector=[0.1, 0.2, 0.3],
                 limit=2,
@@ -1905,7 +1930,7 @@ def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_erro
     }
 
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "compile_and_persist_trace",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             SemanticArtifactChunkRetrievalValidationError(
@@ -1914,12 +1939,12 @@ def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_erro
         ),
     )
 
-    semantic_artifact_error_response = main_module.compile_context(
-        main_module.CompileContextRequest(
+    semantic_artifact_error_response = memories_legacy_router.compile_context(
+        memories_legacy_router.CompileContextRequest(
             user_id=user_id,
             thread_id=thread_id,
             semantic_artifact_retrieval=(
-                main_module.CompileContextTaskScopedSemanticArtifactRetrievalRequest(
+                memories_legacy_router.CompileContextTaskScopedSemanticArtifactRetrievalRequest(
                     kind="task",
                     task_id=uuid4(),
                     embedding_config_id=config_id,
@@ -1938,7 +1963,7 @@ def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_erro
 
 def test_compile_context_request_rejects_invalid_artifact_scope_shape() -> None:
     with pytest.raises(Exception) as exc_info:
-        main_module.CompileContextRequest(
+        memories_legacy_router.CompileContextRequest(
             user_id=uuid4(),
             thread_id=uuid4(),
             artifact_retrieval={
@@ -1953,7 +1978,7 @@ def test_compile_context_request_rejects_invalid_artifact_scope_shape() -> None:
 
 def test_compile_context_request_rejects_invalid_semantic_artifact_scope_shape() -> None:
     with pytest.raises(Exception) as exc_info:
-        main_module.CompileContextRequest(
+        memories_legacy_router.CompileContextRequest(
             user_id=uuid4(),
             thread_id=uuid4(),
             semantic_artifact_retrieval={
@@ -1971,13 +1996,13 @@ def test_runtime_invoke_replays_terminal_job_before_provider_resolution(monkeypa
     user_id = uuid4()
     workspace_id = uuid4()
     provider_id = uuid4()
-    body = main_module.RuntimeInvokeRequest(
+    body = providers_router.RuntimeInvokeRequest(
         provider_id=provider_id,
         thread_id=uuid4(),
         message="Replay the completed turn.",
     )
     idempotency_key = "runtime-replay-before-provider"
-    fingerprint = main_module.request_fingerprint(
+    fingerprint = providers_router.request_fingerprint(
         {
             "workspace_id": str(workspace_id),
             "body": body.model_dump(mode="json"),
@@ -1989,7 +2014,7 @@ def test_runtime_invoke_replays_terminal_job_before_provider_resolution(monkeypa
         yield object()
 
     _FakeResponseGenerationJobStore.reset()
-    monkeypatch.setattr(main_module, "ResponseGenerationJobStore", _FakeResponseGenerationJobStore)
+    monkeypatch.setattr(providers_router, "ResponseGenerationJobStore", _FakeResponseGenerationJobStore)
     monkeypatch.setattr(
         _FakeResponseGenerationJobStore,
         "get_for_update",
@@ -1998,7 +2023,7 @@ def test_runtime_invoke_replays_terminal_job_before_provider_resolution(monkeypa
     lookup = _FakeResponseGenerationJobStore(object()).create_or_get_for_update(
         user_id=user_id,
         workspace_id=workspace_id,
-        endpoint=main_module.RESPONSE_JOB_ENDPOINT_RUNTIME,
+        endpoint=providers_router.RESPONSE_JOB_ENDPOINT_RUNTIME,
         idempotency_key=idempotency_key,
         request_fingerprint_sha256=fingerprint,
     )
@@ -2009,26 +2034,26 @@ def test_runtime_invoke_replays_terminal_job_before_provider_resolution(monkeypa
         completed_at=datetime.now(UTC),
     )
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
+    monkeypatch.setattr(providers_router, "get_settings", lambda: Settings(database_url="postgresql://app"))
     monkeypatch.setattr(
-        main_module,
+        providers_router,
         "_resolve_authenticated_v1_user_id",
         lambda *_args, **_kwargs: user_id,
     )
     monkeypatch.setattr(
-        main_module,
+        providers_router,
         "_require_local_provider_workspace",
         lambda **_kwargs: (workspace_id, user_id),
     )
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "set_current_user_account", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(providers_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(providers_router, "set_current_user_account", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        main_module,
+        providers_router,
         "ContinuityStore",
         lambda *_args, **_kwargs: pytest.fail("terminal replay must not read provider state"),
     )
     monkeypatch.setattr(
-        main_module,
+        providers_router,
         "resolve_runtime_provider_config_secrets",
         lambda *_args, **_kwargs: pytest.fail("terminal replay must not resolve provider secrets"),
     )
@@ -2044,7 +2069,7 @@ def test_runtime_invoke_replays_terminal_job_before_provider_resolution(monkeypa
         }
     )
 
-    response = main_module.invoke_v1_runtime(request, body)
+    response = providers_router.invoke_v1_runtime(request, body)
 
     assert response.status_code == 200
     assert response.headers["Idempotency-Replayed"] == "true"
@@ -2095,24 +2120,24 @@ def test_provider_registration_stages_secret_outside_transaction_and_compensates
             return False
 
     monkeypatch.setattr(
-        main_module,
+        providers_router,
         "_resolve_owned_provider_workspace",
         lambda **_kwargs: (workspace_id, user_id),
     )
-    monkeypatch.setattr(main_module.psycopg, "connect", lambda *_args, **_kwargs: FakeConnection())
-    monkeypatch.setattr(main_module, "_assert_provider_write_context", lambda **_kwargs: None)
-    monkeypatch.setattr(main_module, "ContinuityStore", FakeStore)
+    monkeypatch.setattr(providers_router.psycopg, "connect", lambda *_args, **_kwargs: FakeConnection())
+    monkeypatch.setattr(providers_router, "_assert_provider_write_context", lambda **_kwargs: None)
+    monkeypatch.setattr(providers_router, "ContinuityStore", FakeStore)
     monkeypatch.setattr(
-        main_module,
+        providers_router,
         "validate_provider_base_url",
         lambda value, **_kwargs: value,
     )
-    monkeypatch.setattr(main_module, "write_provider_api_key", fake_write_provider_api_key)
-    monkeypatch.setattr(main_module, "_register_workspace_provider", fake_register_workspace_provider)
-    monkeypatch.setattr(main_module, "delete_provider_api_key", fake_delete_provider_api_key)
+    monkeypatch.setattr(providers_router, "write_provider_api_key", fake_write_provider_api_key)
+    monkeypatch.setattr(providers_router, "_register_workspace_provider", fake_register_workspace_provider)
+    monkeypatch.setattr(providers_router, "delete_provider_api_key", fake_delete_provider_api_key)
 
     with pytest.raises(RuntimeError, match="simulated database rejection"):
-        main_module._create_workspace_provider_durable(
+        providers_router._create_workspace_provider_durable(
             settings=Settings(database_url="postgresql://app"),
             authenticated_user_id=user_id,
             provider_key="openai_compatible",
@@ -2155,20 +2180,20 @@ def test_staged_provider_secret_is_not_deleted_when_database_references_it(
         def is_provider_secret_reference_in_use(self, **_kwargs) -> bool:
             return True
 
-    monkeypatch.setattr(main_module.psycopg, "connect", lambda *_args, **_kwargs: FakeConnection())
-    monkeypatch.setattr(main_module, "_assert_provider_write_context", lambda **_kwargs: None)
-    monkeypatch.setattr(main_module, "ContinuityStore", FakeStore)
+    monkeypatch.setattr(providers_router.psycopg, "connect", lambda *_args, **_kwargs: FakeConnection())
+    monkeypatch.setattr(providers_router, "_assert_provider_write_context", lambda **_kwargs: None)
+    monkeypatch.setattr(providers_router, "ContinuityStore", FakeStore)
     monkeypatch.setattr(
-        main_module,
+        providers_router,
         "delete_provider_api_key",
         lambda **_kwargs: pytest.fail("an ambiguously committed, referenced secret must never be deleted"),
     )
 
-    main_module._discard_staged_provider_secret(
+    providers_router._discard_staged_provider_secret(
         settings=Settings(database_url="postgresql://app"),
         workspace_id=workspace_id,
         user_account_id=user_id,
-        staged_secret=main_module._StagedProviderSecret(
+        staged_secret=providers_router._StagedProviderSecret(
             secret_ref=f"workspaces/{workspace_id}/model-provider-secrets/secret.json",
             encoded_reference=encoded_reference,
         ),
@@ -2213,10 +2238,10 @@ def test_provider_update_reports_atomic_cas_loss() -> None:
     }
 
     with pytest.raises(
-        main_module.ProviderConfigurationChangedError,
+        providers_router.ProviderConfigurationChangedError,
         match="changed while the update was being committed",
     ):
-        main_module._update_workspace_provider(
+        providers_router._update_workspace_provider(
             store=LostUpdateStore(),  # type: ignore[arg-type]
             existing_provider=existing_provider,  # type: ignore[arg-type]
             updated_by_user_account_id=user_id,
@@ -2284,12 +2309,12 @@ def test_admit_memory_returns_decision_payload(monkeypatch) -> None:
             },
         )
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "admit_memory_candidate", fake_admit_memory_candidate)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "admit_memory_candidate", fake_admit_memory_candidate)
 
-    response = main_module.admit_memory(
-        main_module.AdmitMemoryRequest(
+    response = memories_legacy_router.admit_memory(
+        memories_legacy_router.AdmitMemoryRequest(
             user_id=user_id,
             memory_key="user.preference.coffee",
             value={"likes": "oat milk"},
@@ -2368,17 +2393,17 @@ def test_admit_memory_includes_open_loop_payload_when_created(monkeypatch) -> No
             },
         )
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "admit_memory_candidate", fake_admit_memory_candidate)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "admit_memory_candidate", fake_admit_memory_candidate)
 
-    response = main_module.admit_memory(
-        main_module.AdmitMemoryRequest(
+    response = memories_legacy_router.admit_memory(
+        memories_legacy_router.AdmitMemoryRequest(
             user_id=user_id,
             memory_key="user.preference.coffee",
             value={"likes": "oat milk"},
             source_event_ids=[uuid4()],
-            open_loop=main_module.AdmitMemoryOpenLoopRequest(
+            open_loop=memories_legacy_router.AdmitMemoryOpenLoopRequest(
                 title="Confirm before reorder",
                 due_at="2026-03-25T10:00:00+00:00",
             ),
@@ -2407,18 +2432,18 @@ def test_admit_memory_returns_bad_request_when_source_validation_fails(monkeypat
     def fake_user_connection(_database_url: str, _current_user_id):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url="postgresql://app"))
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "admit_memory_candidate",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             MemoryAdmissionValidationError("source_event_ids must all reference existing events owned by the user")
         ),
     )
 
-    response = main_module.admit_memory(
-        main_module.AdmitMemoryRequest(
+    response = memories_legacy_router.admit_memory(
+        memories_legacy_router.AdmitMemoryRequest(
             user_id=uuid4(),
             memory_key="user.preference.coffee",
             value={"likes": "black"},
@@ -2518,16 +2543,16 @@ def test_extract_explicit_preferences_returns_payload(monkeypatch) -> None:
             },
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "extract_and_admit_explicit_preferences",
         fake_extract_and_admit_explicit_preferences,
     )
 
-    response = main_module.extract_explicit_preferences(
-        main_module.ExtractExplicitPreferencesRequest(
+    response = memories_legacy_router.extract_explicit_preferences(
+        memories_legacy_router.ExtractExplicitPreferencesRequest(
             user_id=user_id,
             source_event_id=source_event_id,
         )
@@ -2624,20 +2649,20 @@ def test_extract_explicit_preferences_returns_bad_request_when_source_event_is_i
     def fake_user_connection(_database_url: str, _current_user_id):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url="postgresql://app"))
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "extract_and_admit_explicit_preferences",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            main_module.ExplicitPreferenceExtractionValidationError(
+            memories_legacy_router.ExplicitPreferenceExtractionValidationError(
                 "source_event_id must reference an existing message.user event owned by the user"
             )
         ),
     )
 
-    response = main_module.extract_explicit_preferences(
-        main_module.ExtractExplicitPreferencesRequest(
+    response = memories_legacy_router.extract_explicit_preferences(
+        memories_legacy_router.ExtractExplicitPreferencesRequest(
             user_id=uuid4(),
             source_event_id=uuid4(),
         )
@@ -2752,16 +2777,16 @@ def test_extract_explicit_commitments_returns_payload(monkeypatch) -> None:
             },
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "extract_and_admit_explicit_commitments",
         fake_extract_and_admit_explicit_commitments,
     )
 
-    response = main_module.extract_explicit_commitments(
-        main_module.ExtractExplicitCommitmentsRequest(
+    response = memories_legacy_router.extract_explicit_commitments(
+        memories_legacy_router.ExtractExplicitCommitmentsRequest(
             user_id=user_id,
             source_event_id=source_event_id,
         )
@@ -2797,20 +2822,20 @@ def test_extract_explicit_commitments_returns_bad_request_when_source_event_is_i
     def fake_user_connection(_database_url: str, _current_user_id):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url="postgresql://app"))
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "extract_and_admit_explicit_commitments",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            main_module.ExplicitCommitmentExtractionValidationError(
+            memories_legacy_router.ExplicitCommitmentExtractionValidationError(
                 "source_event_id must reference an existing message.user event owned by the user"
             )
         ),
     )
 
-    response = main_module.extract_explicit_commitments(
-        main_module.ExtractExplicitCommitmentsRequest(
+    response = memories_legacy_router.extract_explicit_commitments(
+        memories_legacy_router.ExtractExplicitCommitmentsRequest(
             user_id=uuid4(),
             source_event_id=uuid4(),
         )
@@ -2892,16 +2917,16 @@ def test_capture_explicit_signals_returns_payload(monkeypatch) -> None:
             },
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "extract_and_admit_explicit_signals",
         fake_extract_and_admit_explicit_signals,
     )
 
-    response = main_module.capture_explicit_signals(
-        main_module.CaptureExplicitSignalsRequest(
+    response = memories_legacy_router.capture_explicit_signals(
+        memories_legacy_router.CaptureExplicitSignalsRequest(
             user_id=user_id,
             source_event_id=source_event_id,
         )
@@ -2941,20 +2966,20 @@ def test_capture_explicit_signals_returns_bad_request_when_source_event_is_inval
     def fake_user_connection(_database_url: str, _current_user_id):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url="postgresql://app"))
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "extract_and_admit_explicit_signals",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            main_module.ExplicitSignalCaptureValidationError(
+            memories_legacy_router.ExplicitSignalCaptureValidationError(
                 "source_event_id must reference an existing message.user event owned by the user"
             )
         ),
     )
 
-    response = main_module.capture_explicit_signals(
-        main_module.CaptureExplicitSignalsRequest(
+    response = memories_legacy_router.capture_explicit_signals(
+        memories_legacy_router.CaptureExplicitSignalsRequest(
             user_id=uuid4(),
             source_event_id=uuid4(),
         )
@@ -3003,11 +3028,11 @@ def test_list_memories_returns_review_payload(monkeypatch) -> None:
             },
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "list_memory_review_records", fake_list_memory_review_records)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "list_memory_review_records", fake_list_memory_review_records)
 
-    response = main_module.list_memories(user_id=user_id, status="active", limit=10)
+    response = memories_legacy_router.list_memories(user_id=user_id, status="active", limit=10)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -3100,13 +3125,13 @@ def test_open_loop_routes_return_payload_and_errors(monkeypatch) -> None:
             }
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "list_open_loop_records", fake_list_open_loop_records)
-    monkeypatch.setattr(main_module, "get_open_loop_record", fake_get_open_loop_record)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "list_open_loop_records", fake_list_open_loop_records)
+    monkeypatch.setattr(memories_legacy_router, "get_open_loop_record", fake_get_open_loop_record)
 
-    list_response = main_module.list_open_loops(user_id=user_id, status="open", limit=10)
-    detail_response = main_module.get_open_loop(open_loop_id=open_loop_id, user_id=user_id)
+    list_response = memories_legacy_router.list_open_loops(user_id=user_id, status="open", limit=10)
+    detail_response = memories_legacy_router.get_open_loop(open_loop_id=open_loop_id, user_id=user_id)
 
     assert list_response.status_code == 200
     assert json.loads(list_response.body)["summary"]["status"] == "open"
@@ -3117,11 +3142,11 @@ def test_open_loop_routes_return_payload_and_errors(monkeypatch) -> None:
     assert captured["detail_open_loop_id"] == open_loop_id
 
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "get_open_loop_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OpenLoopNotFoundError("open loop hidden")),
     )
-    not_found_response = main_module.get_open_loop(open_loop_id=open_loop_id, user_id=user_id)
+    not_found_response = memories_legacy_router.get_open_loop(open_loop_id=open_loop_id, user_id=user_id)
     assert not_found_response.status_code == 404
     assert json.loads(not_found_response.body) == {
         "detail": {"code": "not_found", "message": "The requested resource was not found"}
@@ -3177,20 +3202,20 @@ def test_open_loop_mutation_routes_handle_create_and_status_validation(monkeypat
             }
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "create_open_loop_record", fake_create_open_loop_record)
-    monkeypatch.setattr(main_module, "update_open_loop_status_record", fake_update_open_loop_status_record)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "create_open_loop_record", fake_create_open_loop_record)
+    monkeypatch.setattr(memories_legacy_router, "update_open_loop_status_record", fake_update_open_loop_status_record)
 
-    create_response = main_module.create_open_loop(
-        main_module.CreateOpenLoopRequest(
+    create_response = memories_legacy_router.create_open_loop(
+        memories_legacy_router.CreateOpenLoopRequest(
             user_id=user_id,
             title="Follow up",
         )
     )
-    status_response = main_module.update_open_loop_status(
+    status_response = memories_legacy_router.update_open_loop_status(
         open_loop_id=open_loop_id,
-        request=main_module.UpdateOpenLoopStatusRequest(
+        request=memories_legacy_router.UpdateOpenLoopStatusRequest(
             user_id=user_id,
             status="resolved",
             resolution_note="Resolved",
@@ -3204,13 +3229,13 @@ def test_open_loop_mutation_routes_handle_create_and_status_validation(monkeypat
     assert captured["status_request"].status == "resolved"
 
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "update_open_loop_status_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OpenLoopValidationError("status invalid")),
     )
-    bad_status_response = main_module.update_open_loop_status(
+    bad_status_response = memories_legacy_router.update_open_loop_status(
         open_loop_id=open_loop_id,
-        request=main_module.UpdateOpenLoopStatusRequest(user_id=user_id, status="invalid"),
+        request=memories_legacy_router.UpdateOpenLoopStatusRequest(user_id=user_id, status="invalid"),
     )
     assert bad_status_response.status_code == 400
     assert json.loads(bad_status_response.body) == {
@@ -3225,17 +3250,17 @@ def test_get_memory_returns_not_found_when_memory_is_inaccessible(monkeypatch) -
     def fake_user_connection(_database_url: str, _current_user_id):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url="postgresql://app"))
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "get_memory_review_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            main_module.MemoryReviewNotFoundError(f"memory {memory_id} was not found")
+            memories_legacy_router.MemoryReviewNotFoundError(f"memory {memory_id} was not found")
         ),
     )
 
-    response = main_module.get_memory(memory_id=memory_id, user_id=uuid4())
+    response = memories_legacy_router.get_memory(memory_id=memory_id, user_id=uuid4())
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
@@ -3299,11 +3324,13 @@ def test_list_memory_review_queue_returns_unlabeled_active_queue_payload(monkeyp
             },
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "list_memory_review_queue_records", fake_list_memory_review_queue_records)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        memories_legacy_router, "list_memory_review_queue_records", fake_list_memory_review_queue_records
+    )
 
-    response = main_module.list_memory_review_queue(
+    response = memories_legacy_router.list_memory_review_queue(
         user_id=user_id,
         limit=7,
         priority_mode="high_risk_first",
@@ -3393,11 +3420,11 @@ def test_get_memories_evaluation_summary_returns_aggregate_payload(monkeypatch) 
             }
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "get_memory_evaluation_summary", fake_get_memory_evaluation_summary)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_memory_evaluation_summary", fake_get_memory_evaluation_summary)
 
-    response = main_module.get_memories_evaluation_summary(user_id=user_id)
+    response = memories_legacy_router.get_memories_evaluation_summary(user_id=user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -3464,11 +3491,11 @@ def test_get_memories_quality_gate_returns_canonical_payload(monkeypatch) -> Non
             }
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "get_memory_quality_gate_summary", fake_get_memory_quality_gate_summary)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_memory_quality_gate_summary", fake_get_memory_quality_gate_summary)
 
-    response = main_module.get_memories_quality_gate(user_id=user_id)
+    response = memories_legacy_router.get_memories_quality_gate(user_id=user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -3553,15 +3580,15 @@ def test_get_memories_hygiene_dashboard_returns_canonical_payload(monkeypatch) -
             }
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "get_memory_hygiene_dashboard_summary",
         fake_get_memory_hygiene_dashboard_summary,
     )
 
-    response = main_module.get_memories_hygiene_dashboard(user_id=user_id)
+    response = memories_legacy_router.get_memories_hygiene_dashboard(user_id=user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -3705,15 +3732,15 @@ def test_get_threads_health_dashboard_returns_canonical_payload(monkeypatch) -> 
             }
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "get_thread_health_dashboard",
         fake_get_thread_health_dashboard,
     )
 
-    response = main_module.get_threads_health_dashboard(user_id=user_id)
+    response = memories_legacy_router.get_threads_health_dashboard(user_id=user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -3843,15 +3870,15 @@ def test_list_memory_revisions_returns_review_payload(monkeypatch) -> None:
             },
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "list_memory_revision_review_records",
         fake_list_memory_revision_review_records,
     )
 
-    response = main_module.list_memory_revisions(memory_id=memory_id, user_id=user_id, limit=5)
+    response = memories_legacy_router.list_memory_revisions(memory_id=memory_id, user_id=user_id, limit=5)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -3924,17 +3951,17 @@ def test_create_memory_review_label_returns_created_payload(monkeypatch) -> None
             },
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "create_memory_review_label_record",
         fake_create_memory_review_label_record,
     )
 
-    response = main_module.create_memory_review_label(
+    response = memories_legacy_router.create_memory_review_label(
         memory_id,
-        main_module.CreateMemoryReviewLabelRequest(
+        memories_legacy_router.CreateMemoryReviewLabelRequest(
             user_id=user_id,
             label="correct",
             note="Backed by the latest source.",
@@ -3971,22 +3998,22 @@ def test_create_memory_review_label_returns_created_payload(monkeypatch) -> None
 
 
 def test_create_memory_review_label_returns_not_found_for_inaccessible_memory(monkeypatch) -> None:
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url="postgresql://app"))
 
     @contextmanager
     def fake_user_connection(_database_url: str, _current_user_id):
         yield object()
 
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "create_memory_review_label_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(MemoryReviewNotFoundError("memory missing")),
     )
 
-    response = main_module.create_memory_review_label(
+    response = memories_legacy_router.create_memory_review_label(
         uuid4(),
-        main_module.CreateMemoryReviewLabelRequest(user_id=uuid4(), label="incorrect"),
+        memories_legacy_router.CreateMemoryReviewLabelRequest(user_id=uuid4(), label="incorrect"),
     )
 
     assert response.status_code == 404
@@ -4043,15 +4070,15 @@ def test_list_memory_review_labels_returns_deterministic_items_and_summary(monke
             },
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "list_memory_review_label_records",
         fake_list_memory_review_label_records,
     )
 
-    response = main_module.list_memory_review_labels(memory_id=memory_id, user_id=user_id)
+    response = memories_legacy_router.list_memory_review_labels(memory_id=memory_id, user_id=user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -4091,20 +4118,20 @@ def test_list_memory_review_labels_returns_deterministic_items_and_summary(monke
 
 
 def test_list_memory_review_labels_returns_not_found_for_inaccessible_memory(monkeypatch) -> None:
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url="postgresql://app"))
 
     @contextmanager
     def fake_user_connection(_database_url: str, _current_user_id):
         yield object()
 
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "list_memory_review_label_records",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(MemoryReviewNotFoundError("memory hidden")),
     )
 
-    response = main_module.list_memory_review_labels(uuid4(), uuid4())
+    response = memories_legacy_router.list_memory_review_labels(uuid4(), uuid4())
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
@@ -4140,12 +4167,12 @@ def test_create_embedding_config_returns_created_payload(monkeypatch) -> None:
             }
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "create_embedding_config_record", fake_create_embedding_config_record)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "create_embedding_config_record", fake_create_embedding_config_record)
 
-    response = main_module.create_embedding_config(
-        main_module.CreateEmbeddingConfigRequest(
+    response = memories_legacy_router.create_embedding_config(
+        memories_legacy_router.CreateEmbeddingConfigRequest(
             user_id=user_id,
             provider="openai",
             model="text-embedding-3-large",
@@ -4176,15 +4203,15 @@ def test_create_embedding_config_returns_created_payload(monkeypatch) -> None:
 
 
 def test_create_embedding_config_returns_bad_request_for_validation_failure(monkeypatch) -> None:
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url="postgresql://app"))
 
     @contextmanager
     def fake_user_connection(_database_url: str, _current_user_id):
         yield object()
 
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "create_embedding_config_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             EmbeddingConfigValidationError(
@@ -4194,8 +4221,8 @@ def test_create_embedding_config_returns_bad_request_for_validation_failure(monk
         ),
     )
 
-    response = main_module.create_embedding_config(
-        main_module.CreateEmbeddingConfigRequest(
+    response = memories_legacy_router.create_embedding_config(
+        memories_legacy_router.CreateEmbeddingConfigRequest(
             user_id=uuid4(),
             provider="openai",
             model="text-embedding-3-large",
@@ -4240,12 +4267,12 @@ def test_upsert_memory_embedding_routes_success_and_validation_errors(monkeypatc
             "write_mode": "created",
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "upsert_memory_embedding_record", fake_upsert_memory_embedding_record)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "upsert_memory_embedding_record", fake_upsert_memory_embedding_record)
 
-    response = main_module.upsert_memory_embedding(
-        main_module.UpsertMemoryEmbeddingRequest(
+    response = memories_legacy_router.upsert_memory_embedding(
+        memories_legacy_router.UpsertMemoryEmbeddingRequest(
             user_id=user_id,
             memory_id=memory_id,
             embedding_config_id=config_id,
@@ -4261,7 +4288,7 @@ def test_upsert_memory_embedding_routes_success_and_validation_errors(monkeypatc
     assert captured["request"].memory_id == memory_id
 
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "upsert_memory_embedding_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             MemoryEmbeddingValidationError(
@@ -4270,8 +4297,8 @@ def test_upsert_memory_embedding_routes_success_and_validation_errors(monkeypatc
         ),
     )
 
-    error_response = main_module.upsert_memory_embedding(
-        main_module.UpsertMemoryEmbeddingRequest(
+    error_response = memories_legacy_router.upsert_memory_embedding(
+        memories_legacy_router.UpsertMemoryEmbeddingRequest(
             user_id=user_id,
             memory_id=memory_id,
             embedding_config_id=config_id,
@@ -4322,16 +4349,16 @@ def test_retrieve_semantic_memories_routes_success_and_validation_errors(monkeyp
             },
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "retrieve_semantic_memory_records",
         fake_retrieve_semantic_memory_records,
     )
 
-    response = main_module.retrieve_semantic_memories(
-        main_module.RetrieveSemanticMemoriesRequest(
+    response = memories_legacy_router.retrieve_semantic_memories(
+        memories_legacy_router.RetrieveSemanticMemoriesRequest(
             user_id=user_id,
             embedding_config_id=config_id,
             query_vector=[0.1, 0.2, 0.3],
@@ -4354,7 +4381,7 @@ def test_retrieve_semantic_memories_routes_success_and_validation_errors(monkeyp
     assert captured["request"].query_vector == (0.1, 0.2, 0.3)
 
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "retrieve_semantic_memory_records",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             SemanticMemoryRetrievalValidationError(
@@ -4363,8 +4390,8 @@ def test_retrieve_semantic_memories_routes_success_and_validation_errors(monkeyp
         ),
     )
 
-    error_response = main_module.retrieve_semantic_memories(
-        main_module.RetrieveSemanticMemoriesRequest(
+    error_response = memories_legacy_router.retrieve_semantic_memories(
+        memories_legacy_router.RetrieveSemanticMemoriesRequest(
             user_id=user_id,
             embedding_config_id=config_id,
             query_vector=[0.1, 0.2, 0.3],
@@ -4388,10 +4415,10 @@ def test_memory_embedding_read_routes_return_payload_and_not_found(monkeypatch) 
     def fake_user_connection(_database_url: str, _current_user_id):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "list_memory_embedding_records",
         lambda *_args, **_kwargs: {
             "items": [
@@ -4413,7 +4440,7 @@ def test_memory_embedding_read_routes_return_payload_and_not_found(monkeypatch) 
         },
     )
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "get_memory_embedding_record",
         lambda *_args, **_kwargs: {
             "embedding": {
@@ -4428,8 +4455,8 @@ def test_memory_embedding_read_routes_return_payload_and_not_found(monkeypatch) 
         },
     )
 
-    list_response = main_module.list_memory_embeddings(memory_id=memory_id, user_id=user_id)
-    detail_response = main_module.get_memory_embedding(memory_embedding_id=embedding_id, user_id=user_id)
+    list_response = memories_legacy_router.list_memory_embeddings(memory_id=memory_id, user_id=user_id)
+    detail_response = memories_legacy_router.get_memory_embedding(memory_embedding_id=embedding_id, user_id=user_id)
 
     assert list_response.status_code == 200
     assert json.loads(list_response.body)["summary"]["memory_id"] == str(memory_id)
@@ -4437,14 +4464,14 @@ def test_memory_embedding_read_routes_return_payload_and_not_found(monkeypatch) 
     assert json.loads(detail_response.body)["embedding"]["id"] == str(embedding_id)
 
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "get_memory_embedding_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             MemoryEmbeddingNotFoundError(f"memory embedding {embedding_id} was not found")
         ),
     )
 
-    not_found_response = main_module.get_memory_embedding(
+    not_found_response = memories_legacy_router.get_memory_embedding(
         memory_embedding_id=embedding_id,
         user_id=user_id,
     )
@@ -4487,16 +4514,16 @@ def test_task_artifact_chunk_embedding_routes_success_and_validation_errors(monk
             "write_mode": "created",
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "upsert_task_artifact_chunk_embedding_record",
         fake_upsert_task_artifact_chunk_embedding_record,
     )
 
-    response = main_module.upsert_task_artifact_chunk_embedding(
-        main_module.UpsertTaskArtifactChunkEmbeddingRequest(
+    response = memories_legacy_router.upsert_task_artifact_chunk_embedding(
+        memories_legacy_router.UpsertTaskArtifactChunkEmbeddingRequest(
             user_id=user_id,
             task_artifact_chunk_id=chunk_id,
             embedding_config_id=config_id,
@@ -4512,7 +4539,7 @@ def test_task_artifact_chunk_embedding_routes_success_and_validation_errors(monk
     assert captured["request"].task_artifact_chunk_id == chunk_id
 
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "upsert_task_artifact_chunk_embedding_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             TaskArtifactChunkEmbeddingValidationError(
@@ -4521,8 +4548,8 @@ def test_task_artifact_chunk_embedding_routes_success_and_validation_errors(monk
         ),
     )
 
-    error_response = main_module.upsert_task_artifact_chunk_embedding(
-        main_module.UpsertTaskArtifactChunkEmbeddingRequest(
+    error_response = memories_legacy_router.upsert_task_artifact_chunk_embedding(
+        memories_legacy_router.UpsertTaskArtifactChunkEmbeddingRequest(
             user_id=user_id,
             task_artifact_chunk_id=chunk_id,
             embedding_config_id=config_id,
@@ -4547,10 +4574,10 @@ def test_task_artifact_chunk_embedding_read_routes_return_payload_and_not_found(
     def fake_user_connection(_database_url: str, _current_user_id):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "list_task_artifact_chunk_embedding_records_for_artifact",
         lambda *_args, **_kwargs: {
             "items": [],
@@ -4565,7 +4592,7 @@ def test_task_artifact_chunk_embedding_read_routes_return_payload_and_not_found(
         },
     )
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "list_task_artifact_chunk_embedding_records_for_chunk",
         lambda *_args, **_kwargs: {
             "items": [],
@@ -4581,7 +4608,7 @@ def test_task_artifact_chunk_embedding_read_routes_return_payload_and_not_found(
         },
     )
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "get_task_artifact_chunk_embedding_record",
         lambda *_args, **_kwargs: {
             "embedding": {
@@ -4598,15 +4625,15 @@ def test_task_artifact_chunk_embedding_read_routes_return_payload_and_not_found(
         },
     )
 
-    artifact_response = main_module.list_task_artifact_chunk_embeddings_for_artifact(
+    artifact_response = memories_legacy_router.list_task_artifact_chunk_embeddings_for_artifact(
         task_artifact_id=artifact_id,
         user_id=user_id,
     )
-    chunk_response = main_module.list_task_artifact_chunk_embeddings(
+    chunk_response = memories_legacy_router.list_task_artifact_chunk_embeddings(
         task_artifact_chunk_id=chunk_id,
         user_id=user_id,
     )
-    detail_response = main_module.get_task_artifact_chunk_embedding(
+    detail_response = memories_legacy_router.get_task_artifact_chunk_embedding(
         task_artifact_chunk_embedding_id=embedding_id,
         user_id=user_id,
     )
@@ -4619,36 +4646,36 @@ def test_task_artifact_chunk_embedding_read_routes_return_payload_and_not_found(
     assert json.loads(detail_response.body)["embedding"]["id"] == str(embedding_id)
 
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "list_task_artifact_chunk_embedding_records_for_artifact",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             TaskArtifactNotFoundError(f"task artifact {artifact_id} was not found")
         ),
     )
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "list_task_artifact_chunk_embedding_records_for_chunk",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             TaskArtifactChunkEmbeddingNotFoundError(f"task artifact chunk {chunk_id} was not found")
         ),
     )
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "get_task_artifact_chunk_embedding_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             TaskArtifactChunkEmbeddingNotFoundError(f"task artifact chunk embedding {embedding_id} was not found")
         ),
     )
 
-    missing_artifact_response = main_module.list_task_artifact_chunk_embeddings_for_artifact(
+    missing_artifact_response = memories_legacy_router.list_task_artifact_chunk_embeddings_for_artifact(
         task_artifact_id=artifact_id,
         user_id=user_id,
     )
-    missing_chunk_response = main_module.list_task_artifact_chunk_embeddings(
+    missing_chunk_response = memories_legacy_router.list_task_artifact_chunk_embeddings(
         task_artifact_chunk_id=chunk_id,
         user_id=user_id,
     )
-    missing_detail_response = main_module.get_task_artifact_chunk_embedding(
+    missing_detail_response = memories_legacy_router.get_task_artifact_chunk_embedding(
         task_artifact_chunk_embedding_id=embedding_id,
         user_id=user_id,
     )
@@ -4694,12 +4721,12 @@ def test_create_entity_returns_created_payload(monkeypatch) -> None:
             }
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "create_entity_record", fake_create_entity_record)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "create_entity_record", fake_create_entity_record)
 
-    response = main_module.create_entity(
-        main_module.CreateEntityRequest(
+    response = memories_legacy_router.create_entity(
+        memories_legacy_router.CreateEntityRequest(
             user_id=user_id,
             entity_type="project",
             name="AliceBot",
@@ -4729,18 +4756,18 @@ def test_create_entity_returns_bad_request_when_source_memory_validation_fails(m
     def fake_user_connection(_database_url: str, _current_user_id):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url="postgresql://app"))
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "create_entity_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             EntityValidationError("source_memory_ids must all reference existing memories owned by the user")
         ),
     )
 
-    response = main_module.create_entity(
-        main_module.CreateEntityRequest(
+    response = memories_legacy_router.create_entity(
+        memories_legacy_router.CreateEntityRequest(
             user_id=uuid4(),
             entity_type="person",
             name="Alex",
@@ -4783,12 +4810,12 @@ def test_create_entity_edge_returns_created_payload(monkeypatch) -> None:
             }
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "create_entity_edge_record", fake_create_entity_edge_record)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "create_entity_edge_record", fake_create_entity_edge_record)
 
-    response = main_module.create_entity_edge(
-        main_module.CreateEntityEdgeRequest(
+    response = memories_legacy_router.create_entity_edge(
+        memories_legacy_router.CreateEntityEdgeRequest(
             user_id=user_id,
             from_entity_id=from_entity_id,
             to_entity_id=to_entity_id,
@@ -4823,18 +4850,18 @@ def test_create_entity_edge_returns_bad_request_for_validation_failure(monkeypat
     def fake_user_connection(_database_url: str, _current_user_id):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url="postgresql://app"))
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "create_entity_edge_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             EntityEdgeValidationError("valid_to must be greater than or equal to valid_from")
         ),
     )
 
-    response = main_module.create_entity_edge(
-        main_module.CreateEntityEdgeRequest(
+    response = memories_legacy_router.create_entity_edge(
+        memories_legacy_router.CreateEntityEdgeRequest(
             user_id=uuid4(),
             from_entity_id=uuid4(),
             to_entity_id=uuid4(),
@@ -4879,11 +4906,11 @@ def test_list_entities_returns_deterministic_payload(monkeypatch) -> None:
             },
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "list_entity_records", fake_list_entity_records)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "list_entity_records", fake_list_entity_records)
 
-    response = main_module.list_entities(user_id=user_id)
+    response = memories_legacy_router.list_entities(user_id=user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -4942,11 +4969,11 @@ def test_list_entity_edges_returns_deterministic_payload(monkeypatch) -> None:
             },
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "list_entity_edge_records", fake_list_entity_edge_records)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "list_entity_edge_records", fake_list_entity_edge_records)
 
-    response = main_module.list_entity_edges(entity_id=entity_id, user_id=user_id)
+    response = memories_legacy_router.list_entity_edges(entity_id=entity_id, user_id=user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -4981,15 +5008,15 @@ def test_list_entity_edges_returns_not_found_for_inaccessible_entity(monkeypatch
     def fake_user_connection(_database_url: str, _current_user_id):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url="postgresql://app"))
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "list_entity_edge_records",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(EntityNotFoundError(f"entity {entity_id} was not found")),
     )
 
-    response = main_module.list_entity_edges(entity_id=entity_id, user_id=uuid4())
+    response = memories_legacy_router.list_entity_edges(entity_id=entity_id, user_id=uuid4())
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
@@ -5023,11 +5050,11 @@ def test_get_entity_returns_detail_payload(monkeypatch) -> None:
             }
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "get_entity_record", fake_get_entity_record)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_entity_record", fake_get_entity_record)
 
-    response = main_module.get_entity(entity_id=entity_id, user_id=user_id)
+    response = memories_legacy_router.get_entity(entity_id=entity_id, user_id=user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -5052,15 +5079,15 @@ def test_get_entity_returns_not_found_for_inaccessible_entity(monkeypatch) -> No
     def fake_user_connection(_database_url: str, _current_user_id):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url="postgresql://app"))
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "get_entity_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(EntityNotFoundError(f"entity {entity_id} was not found")),
     )
 
-    response = main_module.get_entity(entity_id=entity_id, user_id=uuid4())
+    response = memories_legacy_router.get_entity(entity_id=entity_id, user_id=uuid4())
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
@@ -5135,17 +5162,17 @@ def test_vnext_memory_review_defers_embedding_until_primary_transaction_closes(m
         calls.append("embedding")
 
     store = FakeStore()
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://db"))
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "PostgresVNextStore", lambda _conn: store)
-    monkeypatch.setattr(main_module, "_vnext_authenticated_agent_identity", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(main_module, "_vnext_policy_checked", lambda **_kwargs: AllowedDecision())
-    monkeypatch.setattr(main_module, "VNextMemoryCommitService", FakeMemoryService)
-    monkeypatch.setattr(main_module, "_persist_vnext_deferred_embeddings", fake_persist)
+    monkeypatch.setattr(vnext_memories_router, "get_settings", lambda: Settings(database_url="postgresql://db"))
+    monkeypatch.setattr(vnext_memories_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(vnext_memories_router, "PostgresVNextStore", lambda _conn: store)
+    monkeypatch.setattr(vnext_memories_router, "_vnext_authenticated_agent_identity", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(vnext_memories_router, "_vnext_policy_checked", lambda **_kwargs: AllowedDecision())
+    monkeypatch.setattr(vnext_memories_router, "VNextMemoryCommitService", FakeMemoryService)
+    monkeypatch.setattr(vnext_memories_router, "_persist_vnext_deferred_embeddings", fake_persist)
 
-    response = main_module.review_vnext_memory(
+    response = vnext_memories_router.review_vnext_memory(
         memory_id,
-        main_module.VNextMemoryReviewRequest(user_id=user_id, action="accept"),
+        vnext_memories_router.VNextMemoryReviewRequest(user_id=user_id, action="accept"),
     )
 
     assert response.status_code == 200
@@ -5187,15 +5214,15 @@ def test_vnext_consolidation_defers_embedding_until_primary_transaction_closes(m
         assert kwargs["result"].deferred_embedding_inputs == (deferred_input,)
         calls.append("embedding")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://db"))
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "PostgresVNextStore", lambda _conn: object())
-    monkeypatch.setattr(main_module, "_vnext_authenticated_agent_identity", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(main_module, "VNextMemoryCommitService", FakeMemoryService)
-    monkeypatch.setattr(main_module, "_persist_vnext_deferred_embeddings", fake_persist)
+    monkeypatch.setattr(vnext_memories_router, "get_settings", lambda: Settings(database_url="postgresql://db"))
+    monkeypatch.setattr(vnext_memories_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(vnext_memories_router, "PostgresVNextStore", lambda _conn: object())
+    monkeypatch.setattr(vnext_memories_router, "_vnext_authenticated_agent_identity", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(vnext_memories_router, "VNextMemoryCommitService", FakeMemoryService)
+    monkeypatch.setattr(vnext_memories_router, "_persist_vnext_deferred_embeddings", fake_persist)
 
-    response = main_module.accept_vnext_memory_consolidation(
-        main_module.VNextMemoryAcceptConsolidationRequest(
+    response = vnext_memories_router.accept_vnext_memory_consolidation(
+        vnext_memories_router.VNextMemoryAcceptConsolidationRequest(
             user_id=user_id,
             memory_id=memory_id,
             reason="Merge reviewed duplicates.",
@@ -5248,21 +5275,21 @@ def test_vnext_project_review_defers_embedding_and_preserves_human_attribution(m
         assert kwargs["trace_id"] == "request-trace-1"
         calls.append("embedding")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://db"))
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "PostgresVNextStore", lambda _conn: object())
-    monkeypatch.setattr(main_module, "_vnext_authenticated_agent_identity", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(vnext_review_router, "get_settings", lambda: Settings(database_url="postgresql://db"))
+    monkeypatch.setattr(vnext_review_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(vnext_review_router, "PostgresVNextStore", lambda _conn: object())
+    monkeypatch.setattr(vnext_review_router, "_vnext_authenticated_agent_identity", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        main_module,
+        vnext_review_router,
         "_vnext_authorized_artifact",
         lambda **_kwargs: ({"id": "artifact-1", "status": "needs_review"}, decision),
     )
-    monkeypatch.setattr(main_module, "VNextProjectService", FakeProjectService)
-    monkeypatch.setattr(main_module, "_persist_vnext_deferred_embeddings", fake_persist)
+    monkeypatch.setattr(vnext_review_router, "VNextProjectService", FakeProjectService)
+    monkeypatch.setattr(vnext_review_router, "_persist_vnext_deferred_embeddings", fake_persist)
 
-    response = main_module.review_vnext_project_update_candidate(
+    response = vnext_review_router.review_vnext_project_update_candidate(
         "artifact-1",
-        main_module.VNextProjectUpdateReviewRequest(
+        vnext_review_router.VNextProjectUpdateReviewRequest(
             user_id=user_id,
             action="accept",
             trace_id="request-trace-1",

@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 import anyio
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -129,6 +130,14 @@ def test_task_workspace_endpoints_provision_read_isolate_and_reject_duplicates(
     workspace_root = tmp_path / "task-workspaces"
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],

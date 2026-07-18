@@ -4235,13 +4235,14 @@ def test_utc_now_iso_always_carries_fractional_seconds(monkeypatch) -> None:
     from datetime import datetime as real_datetime
 
     from alicebot_api import sqlite_store
+    from alicebot_api.vnext_stores.sqlite import primitives as sqlite_primitives
 
     class WholeSecondDatetime:
         @staticmethod
         def now(tz):
             return real_datetime(2026, 7, 7, 23, 59, 59, 0, tzinfo=tz)
 
-    monkeypatch.setattr(sqlite_store, "datetime", WholeSecondDatetime)
+    monkeypatch.setattr(sqlite_primitives, "datetime", WholeSecondDatetime)
     stamped = sqlite_store._utc_now_iso()
     assert stamped == "2026-07-07T23:59:59.000000Z"
     assert stamped < "2026-07-07T23:59:59.000001Z"

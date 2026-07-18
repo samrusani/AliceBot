@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import anyio
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.contracts import MemoryCandidateInput
 from alicebot_api.db import user_connection
@@ -193,6 +194,11 @@ def test_embedding_config_endpoints_create_and_list_in_deterministic_order(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     create_status, create_payload = invoke_request(
         "POST",
@@ -235,6 +241,11 @@ def test_embedding_config_create_rejects_duplicate_provider_model_version(
     seeded = seed_user_with_memory(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -295,6 +306,11 @@ def test_memory_embedding_endpoints_persist_and_read_embeddings(
     )
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -395,6 +411,11 @@ def test_memory_embedding_writes_reject_invalid_references_dimension_mismatches_
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     missing_config_status, missing_config_payload = invoke_request(
         "POST",
@@ -475,6 +496,11 @@ def test_embedding_reads_respect_per_user_isolation(
     )
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -568,6 +594,11 @@ def test_semantic_memory_retrieval_returns_deterministic_results_and_excludes_de
     )
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -666,6 +697,11 @@ def test_semantic_memory_retrieval_rejects_invalid_config_dimension_mismatch_and
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     missing_status, missing_payload = invoke_request(
         "POST",
@@ -746,6 +782,11 @@ def test_semantic_memory_retrieval_scopes_results_per_user(
     )
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

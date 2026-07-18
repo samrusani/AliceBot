@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import anyio
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -75,6 +76,9 @@ def seed_user(database_url: str, *, email: str) -> dict[str, UUID]:
 def test_tool_endpoints_create_list_and_get_in_deterministic_order(migrated_database_urls, monkeypatch) -> None:
     seeded = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     second_status, second_payload = invoke_request(
         "POST",
@@ -142,6 +146,9 @@ def test_tool_allowlist_evaluation_returns_allowed_denied_and_approval_required_
 ) -> None:
     seeded = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -315,6 +322,9 @@ def test_tool_route_returns_ready_denied_and_approval_required_with_trace(
 ) -> None:
     seeded = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -515,6 +525,9 @@ def test_tool_route_returns_ready_denied_and_approval_required_with_trace(
 def test_tool_route_validates_invalid_thread_and_tool(migrated_database_urls, monkeypatch) -> None:
     seeded = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
         tool = ContinuityStore(conn).create_tool(
@@ -567,6 +580,9 @@ def test_tool_endpoints_and_allowlist_enforce_per_user_isolation(migrated_databa
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     intruder = seed_user(migrated_database_urls["app"], email="intruder@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         owner_tool = ContinuityStore(conn).create_tool(
@@ -629,6 +645,9 @@ def test_tool_routing_returns_ready_denied_and_approval_required_with_trace(
 ) -> None:
     seeded = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -814,6 +833,9 @@ def test_tool_routing_validates_invalid_references_and_per_user_isolation(
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     intruder = seed_user(migrated_database_urls["app"], email="intruder@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         owner_tool = ContinuityStore(conn).create_tool(
@@ -880,6 +902,9 @@ def test_tool_route_enforces_per_user_isolation(migrated_database_urls, monkeypa
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     intruder = seed_user(migrated_database_urls["app"], email="intruder@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         owner_tool = ContinuityStore(conn).create_tool(

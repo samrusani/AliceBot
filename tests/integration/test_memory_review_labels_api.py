@@ -10,6 +10,7 @@ import psycopg
 import pytest
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.contracts import MemoryCandidateInput
 from alicebot_api.db import user_connection
@@ -110,6 +111,11 @@ def test_memory_review_label_endpoints_create_and_list_labels_with_stable_summar
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     first_status, first_payload = invoke_request(
         "POST",
@@ -185,6 +191,11 @@ def test_memory_review_label_listing_uses_deterministic_created_at_then_id_order
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     with user_connection(migrated_database_urls["app"], UUID(seeded["user_id"])) as conn:
         store = ContinuityStore(conn)
@@ -242,6 +253,11 @@ def test_memory_review_label_list_returns_empty_items_and_zero_filled_summary_fo
     seeded = seed_memory_for_review_labels(migrated_database_urls["app"])
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -304,6 +320,11 @@ def test_memory_review_label_endpoints_enforce_per_user_isolation_and_not_found_
     intruder_id = seed_intruder(migrated_database_urls["app"])
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

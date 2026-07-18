@@ -8,6 +8,8 @@ from uuid import UUID, uuid4
 import anyio
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -54,11 +56,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -114,6 +112,16 @@ def test_mvp_magnesium_reorder_flow_proves_ship_gate_evidence(
     owner = seed_user(migrated_database_urls["app"])
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

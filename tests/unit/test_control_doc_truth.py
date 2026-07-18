@@ -147,16 +147,15 @@ def test_phase2_dependency_handoff_acknowledges_audit_tool_semver_delta() -> Non
     assert "unchanged web graph" not in engineer_handoff
 
 
-def test_active_vnext_status_records_green_builder_boundary() -> None:
+def test_active_vnext_status_records_phase3_structural_boundary() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     vnext_readme = (repo_root / "docs/vnext/README.md").read_text(encoding="utf-8")
     normalized = " ".join(vnext_readme.replace("-\n", "-").split())
 
-    assert "bounded local builder matrix was green at package-input freeze" in normalized
-    assert "final package reproduction" in normalized
-    assert "twice-reproduced superseding receipt" in normalized
-    assert "Exact-SHA external" in normalized
-    assert "verification and independent review remain pending" not in normalized
+    assert "complete, uncommitted Phase 3 carrier targets `v0.12.0`" in normalized
+    assert "Structure only. Zero behavior change." in normalized
+    assert "Governed version sources remain `0.11.1`" in normalized
+    assert "latest published release and remains the install" in normalized
 
 
 def test_phase2_handoff_describes_event_union_and_memory_query_legs_exactly() -> None:
@@ -224,7 +223,6 @@ def test_phase2_docs_scope_ascii_query_parity_and_public_error_vocabularies_exac
         "CHANGELOG.md",
         "CURRENT_STATE.md",
         ".ai/handoff/CURRENT_STATE.md",
-        ".ai/active/SPRINT_PACKET.md",
         "docs/alpha/mcp-tools.md",
         "docs/release/v0.11.1-release-notes.md",
         "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep/README.md",
@@ -241,8 +239,7 @@ def test_phase2_docs_scope_ascii_query_parity_and_public_error_vocabularies_exac
         assert "`list_memories(query=...)`" in document
         assert "`list_resume_memory_events(query=...)`" in document
     for relative_path in relative_paths:
-        if relative_path != ".ai/active/SPRINT_PACKET.md":
-            assert "alice_recall" in documents[relative_path]
+        assert "alice_recall" in documents[relative_path]
     release_notes = documents["docs/release/v0.11.1-release-notes.md"]
     normalized_release_notes = " ".join(release_notes.split())
     assert "stable adapter-specific public vocabularies" in normalized_release_notes
@@ -256,7 +253,7 @@ def test_phase2_docs_scope_ascii_query_parity_and_public_error_vocabularies_exac
     assert all(claim not in document for document in documents.values() for claim in false_parity_claims)
 
 
-def test_phase2_active_docs_time_qualify_package_and_review_status() -> None:
+def test_phase3_active_docs_pin_completed_uncommitted_version_hold() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     relative_paths = (
         "README.md",
@@ -267,25 +264,24 @@ def test_phase2_active_docs_time_qualify_package_and_review_status() -> None:
         "PRODUCT_BRIEF.md",
         ".ai/active/SPRINT_PACKET.md",
         "docs/vnext/README.md",
-        "docs/release/v0.11.1-release-notes.md",
+        "docs/release/v0.12.0-release-notes.md",
     )
     for relative_path in relative_paths:
         document = (repo_root / relative_path).read_text(encoding="utf-8")
         normalized = " ".join(document.replace("-\n", "-").split())
-        assert "package-input freeze" in normalized
-        assert "were still pending" in normalized
-        assert "Exact-SHA external" in normalized
-        assert "release gates remain pending" in normalized or "gates remain pending" in normalized
+        assert "v0.12.0" in normalized
+        assert "Structure only. Zero behavior change." in normalized
+        assert "0.11.1" in normalized
 
     for relative_path in (
         "CURRENT_STATE.md",
         ".ai/handoff/CURRENT_STATE.md",
-        "docs/release/v0.11.1-release-notes.md",
-        "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep/README.md",
+        "docs/release/v0.12.0-release-notes.md",
     ):
         document = (repo_root / relative_path).read_text(encoding="utf-8")
-        assert "3,547" in document
-        assert "3,533" not in document
+        assert "3,804" in document
+        assert "3,793" not in document
+        assert "3,547" not in document
 
 
 def test_memory_operations_and_product_docs_do_not_overclaim_audit_provenance() -> None:
@@ -415,8 +411,8 @@ def test_phase2_post_freeze_docs_point_to_final_reports_and_external_release_wor
     assert "`BUILD_REPORT.md`" in release_notes
     assert "`REVIEW_REPORT.md`" in release_notes
     assert "still follow this\n  documentation freeze" not in release_notes
-    assert "**Verify and publish the completed v0.11.1 handoff.**" in roadmap
-    assert "**Finalize the v0.11.1 debt-sweep carrier.**" not in roadmap
+    assert "**Verify and release the completed v0.12.0 structural handoff.**" in roadmap
+    assert "**Verify and publish the completed v0.11.1 handoff.**" not in roadmap
     assert "final `BUILD_REPORT.md`" in fix_matrix
     assert "reviewer-authored `REVIEW_REPORT.md`" in fix_matrix
     assert "After reviewer approval, the only remaining gates" in fix_matrix
@@ -564,7 +560,7 @@ def test_control_doc_truth_requires_repair_batch_history_marker(tmp_path: Path) 
         ("Repair Batch 16 is the current bounded correction.", "stale live-repair ledger claim"),
         ("The live repair ledger governs this sprint.", "stale live-repair ledger claim"),
         ("Mandatory repair pass is active.", "stale live-repair ledger claim"),
-        ("Phase 3 is\nactive and authorized.", "Phase 3 active-work claim"),
+        ("Phase 4 is\nactive and authorized.", "Phase 4 active-work claim"),
         ("Alice executes OCR and transcription.", "Alice OCR/transcription execution claim"),
         ("Transcription is executed by Alice.", "Alice OCR/transcription execution claim"),
     ),

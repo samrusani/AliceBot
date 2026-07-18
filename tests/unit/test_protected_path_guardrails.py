@@ -6,9 +6,7 @@ from pathlib import Path
 import sys
 
 
-_MODULE_PATH = (
-    Path(__file__).resolve().parents[2] / "scripts" / "check_protected_paths.py"
-)
+_MODULE_PATH = Path(__file__).resolve().parents[2] / "scripts" / "check_protected_paths.py"
 _SPEC = importlib.util.spec_from_file_location("check_protected_paths", _MODULE_PATH)
 assert _SPEC is not None
 assert _SPEC.loader is not None
@@ -32,13 +30,72 @@ def test_categorize_files_tracks_overlapping_protected_areas() -> None:
         "promotion logic",
         "trust rules",
     ]
-    assert touched["promotion logic"] == [
-        "apps/api/src/alicebot_api/trusted_fact_promotions.py"
-    ]
+    assert touched["promotion logic"] == ["apps/api/src/alicebot_api/trusted_fact_promotions.py"]
 
 
 def test_validate_upgrade_overview_skips_non_protected_changes() -> None:
     assert guardrails.validate_upgrade_overview("", {}) == []
+
+
+def test_categorize_files_protects_split_router_modules_as_continuity_apis() -> None:
+    router_path = "apps/api/src/alicebot_api/routers/vnext_retrieval.py"
+
+    touched = guardrails.categorize_files([router_path])
+
+    assert touched == {"continuity APIs": [router_path]}
+
+
+def test_categorize_files_protects_split_mcp_modules_as_continuity_apis() -> None:
+    carrier_path = "apps/api/src/alicebot_api/mcp/registry.py"
+
+    touched = guardrails.categorize_files([carrier_path])
+
+    assert touched == {"continuity APIs": [carrier_path]}
+
+
+def test_categorize_files_protects_split_cli_modules_as_continuity_apis() -> None:
+    cli_paths = [
+        "apps/api/src/alicebot_api/cli.py",
+        "apps/api/src/alicebot_api/cli/runner.py",
+    ]
+
+    touched = guardrails.categorize_files(cli_paths)
+
+    assert touched == {"continuity APIs": cli_paths}
+
+
+def test_categorize_files_protects_split_legacy_store_modules_as_memory_schema() -> None:
+    carrier_path = "apps/api/src/alicebot_api/legacy_store/providers_knowledge.py"
+
+    touched = guardrails.categorize_files([carrier_path])
+
+    assert touched == {"memory schema": [carrier_path]}
+
+
+def test_categorize_files_protects_paired_vnext_store_seams_as_memory_schema() -> None:
+    carrier_paths = [
+        "apps/api/src/alicebot_api/vnext_store.py",
+        "apps/api/src/alicebot_api/sqlite_store.py",
+        "apps/api/src/alicebot_api/vnext_stores/memory_lifecycle_common.py",
+        "apps/api/src/alicebot_api/vnext_stores/postgres/embedding_cas.py",
+        "apps/api/src/alicebot_api/vnext_stores/sqlite/embedding_cas.py",
+    ]
+
+    touched = guardrails.categorize_files(carrier_paths)
+
+    assert touched == {"memory schema": carrier_paths}
+
+
+def test_categorize_files_protects_split_contract_modules_in_all_facade_areas() -> None:
+    carrier_path = "apps/api/src/alicebot_api/_contracts/governance.py"
+
+    touched = guardrails.categorize_files([carrier_path])
+
+    assert touched == {
+        "continuity APIs": [carrier_path],
+        "memory schema": [carrier_path],
+        "trust rules": [carrier_path],
+    }
 
 
 def test_validate_upgrade_overview_requires_checked_areas_and_notes() -> None:
@@ -165,10 +222,9 @@ Revert the change and redeploy to restore the previous behavior.
 
 def _repair_batch_9_upgrade_overview() -> str:
     repo_root = Path(__file__).resolve().parents[2]
-    handoff = (
-        repo_root
-        / "docs/handoff/2026-07-14-v0.10.4-remediation/ENGINEER_HANDOFF.md"
-    ).read_text(encoding="utf-8")
+    handoff = (repo_root / "docs/handoff/2026-07-14-v0.10.4-remediation/ENGINEER_HANDOFF.md").read_text(
+        encoding="utf-8"
+    )
     fence = "```md\n## Upgrade Overview\n"
     start = handoff.index(fence) + len("```md\n")
     end = handoff.index("\n```", start)

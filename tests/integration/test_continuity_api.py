@@ -10,6 +10,7 @@ import anyio
 import psycopg
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -186,6 +187,11 @@ def test_thread_continuity_endpoints_create_list_detail_sessions_and_events(
     seeded = seed_user_with_continuity(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -368,6 +374,11 @@ def test_thread_creation_defaults_agent_profile_id_when_omitted(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status, payload = invoke_request(
         "POST",
@@ -395,6 +406,11 @@ def test_thread_resumption_brief_endpoint_returns_bounded_sections_and_workflow_
     seeded = seed_user_with_continuity(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -627,6 +643,11 @@ def test_thread_continuity_endpoints_enforce_user_isolation_and_not_found(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     list_status, list_payload = invoke_request(
         "GET",
@@ -690,6 +711,11 @@ def test_thread_creation_rejects_invalid_agent_profile_id_with_deterministic_422
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status, payload = invoke_request(
         "POST",
@@ -717,6 +743,11 @@ def test_agent_profiles_endpoint_returns_deterministic_registry_payload(
 ) -> None:
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -763,6 +794,11 @@ def test_context_compile_includes_active_agent_profile_metadata(
 
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

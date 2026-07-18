@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+from pathlib import Path
 
 import pytest
 
@@ -104,42 +105,50 @@ def test_sqlite_cli_parse_failure_is_static_json(capsys: pytest.CaptureFixture[s
 def test_cli_sources_do_not_serialize_caught_exceptions_to_stderr_or_result_payloads(module: object) -> None:
     source_path = module.__file__
     assert source_path is not None
-    source = open(source_path, encoding="utf-8").read()  # noqa: PTH123
-    tree = ast.parse(source)
+    module_path = Path(source_path).resolve()
+    if module is cli_module:
+        assert module_path.name == "__init__.py"
+        assert module_path.parent.name == "cli"
+        source_paths = sorted(module_path.parent.rglob("*.py"))
+    else:
+        source_paths = [module_path]
+    assert source_paths
 
-    exception_names = {
-        handler.name
-        for handler in ast.walk(tree)
-        if isinstance(handler, ast.ExceptHandler) and isinstance(handler.name, str)
-    }
     violations: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "print":
-            writes_stderr = any(
-                keyword.arg == "file"
-                and isinstance(keyword.value, ast.Attribute)
-                and isinstance(keyword.value.value, ast.Name)
-                and keyword.value.value.id == "sys"
-                and keyword.value.attr == "stderr"
-                for keyword in node.keywords
-            )
-            if writes_stderr and any(
-                isinstance(descendant, ast.Name) and descendant.id in exception_names
-                for argument in node.args
-                for descendant in ast.walk(argument)
-            ):
-                violations.append(ast.unparse(node))
-        if isinstance(node, ast.Dict):
-            for value in node.values:
-                if any(
-                    isinstance(descendant, ast.Call)
-                    and isinstance(descendant.func, ast.Name)
-                    and descendant.func.id in {"str", "type"}
-                    and descendant.args
-                    and isinstance(descendant.args[0], ast.Name)
-                    and descendant.args[0].id in exception_names
-                    for descendant in ast.walk(value)
+    for candidate_path in source_paths:
+        tree = ast.parse(candidate_path.read_text(encoding="utf-8"))
+        exception_names = {
+            handler.name
+            for handler in ast.walk(tree)
+            if isinstance(handler, ast.ExceptHandler) and isinstance(handler.name, str)
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "print":
+                writes_stderr = any(
+                    keyword.arg == "file"
+                    and isinstance(keyword.value, ast.Attribute)
+                    and isinstance(keyword.value.value, ast.Name)
+                    and keyword.value.value.id == "sys"
+                    and keyword.value.attr == "stderr"
+                    for keyword in node.keywords
+                )
+                if writes_stderr and any(
+                    isinstance(descendant, ast.Name) and descendant.id in exception_names
+                    for argument in node.args
+                    for descendant in ast.walk(argument)
                 ):
-                    violations.append(ast.unparse(node))
+                    violations.append(f"{candidate_path.name}: {ast.unparse(node)}")
+            if isinstance(node, ast.Dict):
+                for value in node.values:
+                    if any(
+                        isinstance(descendant, ast.Call)
+                        and isinstance(descendant.func, ast.Name)
+                        and descendant.func.id in {"str", "type"}
+                        and descendant.args
+                        and isinstance(descendant.args[0], ast.Name)
+                        and descendant.args[0].id in exception_names
+                        for descendant in ast.walk(value)
+                    ):
+                        violations.append(f"{candidate_path.name}: {ast.unparse(node)}")
 
     assert violations == []

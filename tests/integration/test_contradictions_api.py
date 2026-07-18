@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 import anyio
 import alicebot_api.main as main_module
+from alicebot_api.routers import continuity as continuity_router
 import psycopg
 
 from alicebot_api.config import Settings
@@ -95,6 +96,11 @@ def test_contradictions_api_detects_surfaces_penalties_and_resolves(
 ) -> None:
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        continuity_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -281,6 +287,11 @@ def test_contradictions_api_requires_local_identity(
 ) -> None:
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        continuity_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

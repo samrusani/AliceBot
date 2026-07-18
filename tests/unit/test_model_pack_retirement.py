@@ -3,6 +3,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STORE_PATH = REPO_ROOT / "apps/api/src/alicebot_api/store.py"
+LEGACY_STORE_ROOT = REPO_ROOT / "apps/api/src/alicebot_api/legacy_store"
+PROVIDERS_KNOWLEDGE_PATH = LEGACY_STORE_ROOT / "providers_knowledge.py"
 MODEL_PACK_MODULE = REPO_ROOT / "apps/api/src/alicebot_api/model_packs.py"
 MODEL_PACK_MIGRATIONS = (
     REPO_ROOT
@@ -19,7 +21,10 @@ MODEL_PACK_MIGRATIONS = (
 def test_model_pack_runtime_is_retired_without_rewriting_schema_history() -> None:
     assert not MODEL_PACK_MODULE.exists()
 
-    store_source = STORE_PATH.read_text(encoding="utf-8")
+    store_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (STORE_PATH, *sorted(LEGACY_STORE_ROOT.rglob("*.py")))
+    )
     forbidden_markers = (
         "class ModelPackRow",
         "class WorkspaceModelPackBindingRow",
@@ -48,9 +53,12 @@ def test_model_pack_runtime_is_retired_without_rewriting_schema_history() -> Non
 
 def test_task_brief_store_keeps_historical_model_pack_strategy_column() -> None:
     store_source = STORE_PATH.read_text(encoding="utf-8")
+    providers_source = PROVIDERS_KNOWLEDGE_PATH.read_text(encoding="utf-8")
 
     assert "class TaskBriefRow(TypedDict):" in store_source
     assert "model_pack_strategy: str" in store_source
-    assert "INSERT INTO task_briefs (" in store_source
-    assert "model_pack_strategy," in store_source
-    assert "def create_task_brief(" in store_source
+    assert "INSERT INTO task_briefs (" not in store_source
+    assert "def create_task_brief(" not in store_source
+    assert "INSERT INTO task_briefs (" in providers_source
+    assert "model_pack_strategy," in providers_source
+    assert "def create_task_brief(" in providers_source

@@ -15,12 +15,8 @@ Agent developers — people building or operating AI agents who need durable, ex
 - Local-first: your data stays on your machine; models and embeddings are pluggable via OpenAI-compatible endpoints.
 
 ## Current Posture
-- `v0.11.1` shipped the Phase 2 debt sweep;
-  at package-input freeze, its bounded local builder matrix was green while
-  final package reproduction, a superseding receipt, and independent review
-  were still pending. Exact-SHA external release gates remain pending.
-
-- `v0.11.1` is the latest published release and immutable baseline. Its PyPI
+- `v0.11.1` is the latest published release and immutable baseline. The
+  `v0.12.0` candidate carries the Phase 3 structural refactor. Its PyPI
   wheel and source distribution have Trusted Publishing provenance, with exact
   digests in `docs/release/v0.11.1-checksums.txt`.
 - `v0.11.0` shipped the Phase 1 periphery cut. It removes the Telegram,
@@ -39,10 +35,12 @@ Agent developers — people building or operating AI agents who need durable, ex
 - Alice is public-alpha, pre-1.0, single-user, and self-hosted. `alice-memory`
   is published on PyPI; `uvx alice-memory mcp` serves the core tools against a
   local SQLite file with no Docker or Postgres.
-- The Phase 2 candidate tightens default-surface integration coverage, stable
-  public failures, cross-store list/resume/recent-decision query parity,
-  bounded project-update replay, pending-candidate guards, and coupled true
-  redaction without expanding the local-first product boundary.
+- The complete, uncommitted Phase 3 carrier targets `v0.12.0` with
+  **Structure only. Zero behavior change.** It relocates oversized HTTP, store,
+  contract, MCP, and CLI modules behind stable facades and entrypoints without
+  changing the local-first product boundary. Both governed version sources
+  remain `0.11.1` until the release engineer verifies and cuts the release.
+- Phase 4 has not begun. It is not authorized by the Phase 3 handoff.
 
 ## Non-Goals (Now)
 - Hosted service, multi-tenant control plane, SLA, or managed cloud.

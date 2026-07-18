@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import anyio
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.contracts import MemoryCandidateInput
 from alicebot_api.db import user_connection
@@ -160,6 +161,11 @@ def test_create_entity_edge_endpoint_persists_user_scoped_edge_with_temporal_met
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     status_code, payload = invoke_request(
         "POST",
@@ -210,6 +216,11 @@ def test_entity_edge_list_endpoint_returns_incident_edges_in_deterministic_order
     )
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -281,6 +292,11 @@ def test_entity_edge_endpoints_enforce_per_user_isolation_and_reference_validati
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         ContinuityStore(conn).create_entity_edge(
@@ -340,6 +356,11 @@ def test_create_entity_edge_endpoint_rejects_invalid_temporal_range(
     )
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

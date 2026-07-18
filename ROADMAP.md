@@ -3,52 +3,50 @@
 ## Baseline (Not Roadmap Work)
 
 - `v0.11.1` is the latest published release. Its immutable release record is
-  `docs/release/v0.11.0-release-notes.md`, with artifact digests in
+  `docs/release/v0.11.1-release-notes.md`, with artifact digests in
   `docs/release/v0.11.1-checksums.txt`.
-- `v0.11.0` shipped Phase 1 and narrowed the default product to Alice's agent
-  interface and retrieval/memory-quality core. Its tag and publication are
-  complete and immutable.
-- `v0.11.1` shipped the Phase 2 debt sweep.
-  At package-input freeze, its bounded local Python, PostgreSQL, SQLite,
-  evaluation, web, and static builder matrix was green while final package
-  reproduction, a superseding receipt, and independent review were still
-  pending. Exact-SHA external release gates remain pending; candidate
-  documentation does not authorize publication.
+- `v0.11.0` shipped the Phase 1 periphery cut; `v0.11.1` shipped the Phase 2
+  debt sweep. Their tags, release records, and published artifacts are not
+  changed by the Phase 3 carrier.
+- The Phase 3 structural carrier is complete and uncommitted. It targets
+  `v0.12.0` with **Structure only. Zero behavior change.** Both governed
+  version sources intentionally remain `0.11.1` until the release engineer
+  verifies and cuts the release.
 - The historical **79.4% (397/500)** LongMemEval_s result is one run from
-  2026-07-07 on an older baseline. It is not a repeated estimate or a current-
-  candidate measurement.
-- Detailed v0.10.4 repair-batch chronology is historical evidence archived in
-  `docs/handoff/history/v0.10.4-repair-batches.md`; it is not current roadmap
-  work.
+  2026-07-07 on an older baseline. It is not a repeated estimate or a Phase 3
+  measurement.
+- Detailed v0.10.4 repair-batch chronology is historical evidence under
+  `docs/handoff/history/`; it is not current roadmap work.
 
 ## Next
 
-1. **Verify and publish the completed v0.11.1 handoff.** The release engineer
-   must commit and merge the reviewed carrier through the protected flow, run
-   the required checks and real-provider semantic gate on that exact SHA,
-   verify release identity and artifact checksums, then tag, create the GitHub
-   Release, publish to PyPI, and read back each external result.
-2. **Complete the pre-1.0 structural split after v0.11.1.** In a separate
-   carrier, split the remaining oversized API, store, CLI, and MCP registries
-   along existing domain seams without changing behavior or lowering coverage
-   thresholds.
-3. **Replicate the current benchmark.** Run LongMemEval_s at least three times
+The `v0.12.0` structural-refactor candidate (Phase 3; structure only) is in
+release gating.
+
+1. **Verify and release the completed v0.12.0 structural handoff.** The release
+   engineer must review the uncommitted receipt-bound carrier, commit and merge
+   through the protected flow, bump both governed version sources to `0.12.0`,
+   run every required gate on the exact release SHA, finalize the pending notes
+   and checksums, then tag, create the GitHub Release, publish to PyPI, and read
+   back each external state.
+2. **Replicate the current benchmark.** Run LongMemEval_s at least three times
    on one pinned, non-development manifest; publish variance, exact provider
    configuration, per-question evidence, and honest abstention trade-offs.
-4. **Improve multi-session synthesis.** Measure and improve aggregation-aware
-   retrieval on a held-out slice instead of repeatedly tuning one development
-   set.
-5. **Dogfood the agent interface daily.** Exercise the eleven-tool MCP core and
+3. **Improve multi-session synthesis.** Measure aggregation-aware retrieval on
+   a held-out slice instead of repeatedly tuning one development set.
+4. **Dogfood the agent interface daily.** Exercise the eleven-tool MCP core and
    equivalent HTTP/CLI flows with a live embedding endpoint; measure correction
    quality, review burden, project-scope usability, and end-to-end latency.
-6. **Deepen reference integrations.** Keep examples runnable and CI-smoked
-   against the surviving core surface, without introducing a second runtime or
-   reviving deleted chat/provider-control features.
-7. **Scale SQLite vector search.** Extend the documented 20–30k embedding
-   comfort zone while publishing both latency and recall deltas.
-8. **Build enterprise evidence on the post-cut surface.** Conduct the first
+5. **Deepen reference integrations.** Keep examples runnable and CI-smoked
+   against the surviving core without introducing a second runtime or reviving
+   deleted product surfaces.
+6. **Scale SQLite vector search.** Extend the documented 20-30k embedding
+   comfort zone while publishing latency and recall deltas.
+7. **Build enterprise evidence on the post-cut surface.** Conduct the first
    scoped security review, exercise backup/restore and supported upgrade paths,
    and run one final product-scoped audit before `1.0`.
+
+Phase 4 work has not begun and is not authorized by the Phase 3 handoff.
 
 ## Explicit Non-Goals For Now
 

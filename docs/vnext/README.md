@@ -8,13 +8,17 @@ capture, hardened connector settings/state/secrets, agent-facing context packs
 and context trees, governed agent proposals, and a local scheduler runtime.
 
 The vNext architecture is now the active Alice product line.
-`v0.11.1` is the latest published release. Its
-bounded local builder matrix was green at package-input freeze; final package
-reproduction, the twice-reproduced superseding receipt, and independent review
-were still pending then. Exact-SHA external release gates remain pending.
+`v0.11.1` is the latest published release; the `v0.12.0` candidate is in
+release gating. Its
+tag, release record, and published artifacts remain immutable.
 
 `v0.11.1` is the latest published release and remains the install, checksum,
 and latest-release-notes baseline.
+The complete, uncommitted Phase 3 carrier targets `v0.12.0` with **Structure
+only. Zero behavior change.** It relocates oversized HTTP, store, contract, MCP,
+and CLI carriers behind stable public imports and entrypoints. Governed version
+sources remain `0.11.1` until the release engineer verifies and cuts the
+release.
 Alice remains local-first rather than a hosted launch; install the
 package entrypoints for normal use and use an editable checkout only for
 contributor workflows.
@@ -69,10 +73,10 @@ Alice vNext has three functional layers:
 10. Use the current [release runbook](../../RELEASING.md) before publishing or
     tagging. The older [vNext preview checklist](../release/vnext-public-release-checklist.md)
     is retained only as historical evidence.
-11. Review the [latest published release notes](../release/v0.11.1-release-notes.md)
-    and [known limitations](../alpha/known-limitations.md). The pending
-    [v0.11.1 release notes](../release/v0.11.1-release-notes.md) do not
-    authorize publication.
+11. Review the [latest published release notes](../release/v0.11.1-release-notes.md),
+    [known limitations](../alpha/known-limitations.md), and the pending
+    [v0.12.0 release notes](../release/v0.12.0-release-notes.md). The pending
+    document does not authorize publication.
 12. Review the [dogfood daily checklist](../runbooks/vnext-dogfood-daily-checklist.md) before daily local preview use.
 13. Historical build-process summaries are archived under [docs/archive/process/](../archive/process/README.md).
 

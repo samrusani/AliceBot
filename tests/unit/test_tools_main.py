@@ -4,7 +4,7 @@ import json
 from contextlib import contextmanager
 from uuid import uuid4
 
-import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 from alicebot_api.tools import (
     ToolAllowlistValidationError,
@@ -47,12 +47,12 @@ def test_create_tool_endpoint_translates_request_and_returns_created_status(monk
             }
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "create_tool_record", fake_create_tool_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "create_tool_record", fake_create_tool_record)
 
-    response = main_module.create_tool(
-        main_module.CreateToolRequest(
+    response = legacy_gated_router.create_tool(
+        legacy_gated_router.CreateToolRequest(
             user_id=user_id,
             tool_key="browser.open",
             name="Browser Open",
@@ -89,11 +89,11 @@ def test_get_tool_endpoint_maps_not_found_to_404(monkeypatch) -> None:
     def fake_get_tool_record(*_args, **_kwargs):
         raise ToolNotFoundError(f"tool {tool_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "get_tool_record", fake_get_tool_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_tool_record", fake_get_tool_record)
 
-    response = main_module.get_tool(tool_id, user_id)
+    response = legacy_gated_router.get_tool(tool_id, user_id)
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
@@ -135,12 +135,12 @@ def test_evaluate_tool_allowlist_endpoint_translates_request_and_returns_trace_p
             "trace": {"trace_id": "trace-123", "trace_event_count": 3},
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "evaluate_tool_allowlist", fake_evaluate_tool_allowlist)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "evaluate_tool_allowlist", fake_evaluate_tool_allowlist)
 
-    response = main_module.evaluate_tools_allowlist(
-        main_module.EvaluateToolAllowlistRequest(
+    response = legacy_gated_router.evaluate_tools_allowlist(
+        legacy_gated_router.EvaluateToolAllowlistRequest(
             user_id=user_id,
             thread_id=thread_id,
             action="tool.run",
@@ -174,12 +174,12 @@ def test_evaluate_tool_allowlist_endpoint_maps_validation_errors_to_400(monkeypa
     def fake_evaluate_tool_allowlist(*_args, **_kwargs):
         raise ToolAllowlistValidationError("thread_id must reference an existing thread owned by the user")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "evaluate_tool_allowlist", fake_evaluate_tool_allowlist)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "evaluate_tool_allowlist", fake_evaluate_tool_allowlist)
 
-    response = main_module.evaluate_tools_allowlist(
-        main_module.EvaluateToolAllowlistRequest(
+    response = legacy_gated_router.evaluate_tools_allowlist(
+        legacy_gated_router.EvaluateToolAllowlistRequest(
             user_id=user_id,
             thread_id=uuid4(),
             action="tool.run",
@@ -253,12 +253,12 @@ def test_route_tool_endpoint_translates_request_and_returns_trace_payload(monkey
             "trace": {"trace_id": "trace-123", "trace_event_count": 3},
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "route_tool_invocation", fake_route_tool_invocation)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "route_tool_invocation", fake_route_tool_invocation)
 
-    response = main_module.route_tool(
-        main_module.RouteToolRequest(
+    response = legacy_gated_router.route_tool(
+        legacy_gated_router.RouteToolRequest(
             user_id=user_id,
             thread_id=thread_id,
             tool_id=tool_id,
@@ -294,12 +294,12 @@ def test_route_tool_endpoint_maps_validation_errors_to_400(monkeypatch) -> None:
     def fake_route_tool_invocation(*_args, **_kwargs):
         raise ToolRoutingValidationError("tool_id must reference an existing active tool owned by the user")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "route_tool_invocation", fake_route_tool_invocation)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "route_tool_invocation", fake_route_tool_invocation)
 
-    response = main_module.route_tool(
-        main_module.RouteToolRequest(
+    response = legacy_gated_router.route_tool(
+        legacy_gated_router.RouteToolRequest(
             user_id=user_id,
             thread_id=uuid4(),
             tool_id=uuid4(),
