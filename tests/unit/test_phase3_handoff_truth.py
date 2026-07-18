@@ -78,18 +78,26 @@ def test_phase3_versions_were_cut_to_0120_by_the_release_engineer() -> None:
     ).read_text(encoding="utf-8")
 
 
-def test_v0120_release_notes_are_pending_without_checksum_receipt() -> None:
+def test_v0120_release_notes_are_published_with_recorded_checksum_receipt() -> None:
     notes = (_ROOT / "docs/release/v0.12.0-release-notes.md").read_text(encoding="utf-8")
 
     assert notes.splitlines()[0] == "# Alice v0.12.0 Release Notes"
     assert (
         '<!-- alice-release-state: {"schema_version":"alice_release_document_state_v1",'
-        '"version":"0.12.0","publication_status":"pending","checksums_status":"pending"} -->'
+        '"version":"0.12.0","publication_status":"published","checksums_status":"recorded"} -->'
         in notes
     )
     assert _HEADLINE in notes
     assert "verified identical to the published `v0.11.1`" in notes
-    assert not (_ROOT / "docs/release/v0.12.0-checksums.txt").exists()
+    checksums = (_ROOT / "docs/release/v0.12.0-checksums.txt").read_text(encoding="utf-8")
+    assert (
+        "66c050235d57e65969bd81c2b930e212ec674019196c3b3cb0dd84f0183e0d70"
+        "  alice_memory-0.12.0-py3-none-any.whl"
+    ) in checksums
+    assert (
+        "1e862de80c2e5e9a47ac5b8e9c636fa39ecfed19974a35e2cf3e3f5841927c6d"
+        "  alice_memory-0.12.0.tar.gz"
+    ) in checksums
 
 
 def test_phase3_current_state_is_exact_mirror_and_phase4_is_out_of_scope() -> None:

@@ -2,13 +2,10 @@
 
 
 
-`v0.11.1` is the latest published release and remains the checksum/install
+`v0.12.0` is the latest published release and remains the checksum/install
 baseline.
 Preparing candidate documents does not authorize a tag, PyPI upload, or GitHub
 Release.
-
-The `v0.12.0` structural-refactor candidate (structure only) is currently in
-release gating.
 
 ## One Release Identity
 

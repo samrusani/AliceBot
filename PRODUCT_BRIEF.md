@@ -15,10 +15,10 @@ Agent developers — people building or operating AI agents who need durable, ex
 - Local-first: your data stays on your machine; models and embeddings are pluggable via OpenAI-compatible endpoints.
 
 ## Current Posture
-- `v0.11.1` is the latest published release and immutable baseline. The
-  `v0.12.0` candidate carries the Phase 3 structural refactor. Its PyPI
-  wheel and source distribution have Trusted Publishing provenance, with exact
-  digests in `docs/release/v0.11.1-checksums.txt`.
+- `v0.12.0` is the latest published release and immutable baseline. It
+  carries the Phase 3 structural refactor. Its PyPI wheel and source
+  distribution have Trusted Publishing provenance, with exact digests in
+  `docs/release/v0.12.0-checksums.txt`.
 - `v0.11.0` shipped the Phase 1 periphery cut. It removes the Telegram,
   hosted/control-plane, public chat/response, chief-of-staff, and model-pack
   periphery so the default runtime matches the product described here. The
@@ -35,11 +35,10 @@ Agent developers — people building or operating AI agents who need durable, ex
 - Alice is public-alpha, pre-1.0, single-user, and self-hosted. `alice-memory`
   is published on PyPI; `uvx alice-memory mcp` serves the core tools against a
   local SQLite file with no Docker or Postgres.
-- The complete, uncommitted Phase 3 carrier targets `v0.12.0` with
-  **Structure only. Zero behavior change.** It relocates oversized HTTP, store,
-  contract, MCP, and CLI modules behind stable facades and entrypoints without
-  changing the local-first product boundary. Both governed version sources
-  remain `0.11.1` until the release engineer verifies and cuts the release.
+- `v0.12.0` shipped the Phase 3 structural refactor with **Structure only.
+  Zero behavior change.** It relocates oversized HTTP, store, contract, MCP,
+  and CLI modules behind stable facades and entrypoints without changing the
+  local-first product boundary.
 - Phase 4 has not begun. It is not authorized by the Phase 3 handoff.
 
 ## Non-Goals (Now)

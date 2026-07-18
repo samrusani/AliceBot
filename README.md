@@ -141,17 +141,12 @@ search degrades to full-text only and says so explicitly in the retrieval trace.
 
 ## Status
 
-`v0.11.1` is the latest published release; the `v0.12.0` candidate (structural
-refactor, zero behavior change) is in release gating. Its
-tag, release record, and published artifacts remain immutable.
-
-`v0.11.1` is the latest published release and remains the install, checksum,
-and release-note baseline.
-The uncommitted Phase 3 carrier targets `v0.12.0` with **Structure only. Zero
+`v0.12.0` is the latest published release and remains the install, checksum,
+and release-note baseline. Its tag, release record, and published artifacts
+are immutable.
+`v0.12.0` shipped the Phase 3 structural refactor with **Structure only. Zero
 behavior change.** It splits oversized HTTP, store, contract, MCP, and CLI
-modules behind stable imports and entrypoints. Both governed version sources
-remain `0.11.1` until the release engineer verifies and cuts the release; the
-pending v0.12.0 notes do not authorize tagging or publication.
+modules behind stable imports and entrypoints.
 The published `v0.11.0` runtime narrows the default product to the agent
 interface and retrieval/memory core.
 Alice is a public-alpha, pre-1.0 project.
@@ -183,7 +178,7 @@ What that means in practice:
 - [v0.10.4 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.10.4-release-notes.md)
 - [v0.11.0 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.11.0-release-notes.md)
 - [v0.11.1 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.11.1-release-notes.md)
-- [pending v0.12.0 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.12.0-release-notes.md)
+- [v0.12.0 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.12.0-release-notes.md)
 - [Release procedure](https://github.com/samrusani/AliceBot/blob/main/RELEASING.md)
 - [Architecture](https://github.com/samrusani/AliceBot/blob/main/ARCHITECTURE.md)
 - [Roadmap](https://github.com/samrusani/AliceBot/blob/main/ROADMAP.md)
