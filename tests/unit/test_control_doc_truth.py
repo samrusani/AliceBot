@@ -152,9 +152,8 @@ def test_active_vnext_status_records_phase3_structural_boundary() -> None:
     vnext_readme = (repo_root / "docs/vnext/README.md").read_text(encoding="utf-8")
     normalized = " ".join(vnext_readme.replace("-\n", "-").split())
 
-    assert "complete, uncommitted Phase 3 carrier targets `v0.12.0`" in normalized
+    assert "`v0.12.0` shipped the Phase 3 structural refactor" in normalized
     assert "Structure only. Zero behavior change." in normalized
-    assert "Governed version sources remain `0.11.1`" in normalized
     assert "latest published release and remains the install" in normalized
 
 
@@ -253,7 +252,7 @@ def test_phase2_docs_scope_ascii_query_parity_and_public_error_vocabularies_exac
     assert all(claim not in document for document in documents.values() for claim in false_parity_claims)
 
 
-def test_phase3_active_docs_pin_completed_uncommitted_version_hold() -> None:
+def test_phase3_active_docs_record_published_v0120_boundary() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     relative_paths = (
         "README.md",
@@ -271,7 +270,6 @@ def test_phase3_active_docs_pin_completed_uncommitted_version_hold() -> None:
         normalized = " ".join(document.replace("-\n", "-").split())
         assert "v0.12.0" in normalized
         assert "Structure only. Zero behavior change." in normalized
-        assert "0.11.1" in normalized
 
     for relative_path in (
         "CURRENT_STATE.md",
@@ -411,7 +409,8 @@ def test_phase2_post_freeze_docs_point_to_final_reports_and_external_release_wor
     assert "`BUILD_REPORT.md`" in release_notes
     assert "`REVIEW_REPORT.md`" in release_notes
     assert "still follow this\n  documentation freeze" not in release_notes
-    assert "**Verify and release the completed v0.12.0 structural handoff.**" in roadmap
+    assert "`v0.12.0` is the latest published release." in roadmap
+    assert "**Verify and release the completed v0.12.0 structural handoff.**" not in roadmap
     assert "**Verify and publish the completed v0.11.1 handoff.**" not in roadmap
     assert "final `BUILD_REPORT.md`" in fix_matrix
     assert "reviewer-authored `REVIEW_REPORT.md`" in fix_matrix

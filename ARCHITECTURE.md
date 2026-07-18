@@ -2,24 +2,15 @@
 
 ## Scope Boundary
 
-- **Candidate boundary:** the `v0.12.0` candidate carries the Phase 3
-  structural refactor (structure only; zero behavior change).
-- **Shipped boundary:** `v0.11.1` shipped the Phase 2 debt sweep. It is
+- **Published boundary:** `v0.12.0` is the latest published release. It is
   tagged and immutable, passed the exact-SHA CI, semantic, and
   repository-control gates, and is published on PyPI with Trusted Publishing
-  provenance.
-
-- **Published boundary:** `v0.11.1` is the latest published release. It is
-  tagged and immutable, with artifact digests in
-  `docs/release/v0.11.1-checksums.txt`.
-- **Shipped boundary:** `v0.11.1` is the latest published release. Its
-  default runtime is the continuity/memory layer for external AI agents, not a
-  hosted product, channel platform, or bundled chat runtime.
-- **Candidate boundary:** the complete, uncommitted Phase 3 carrier targets
-  `v0.12.0` with **Structure only. Zero behavior change.** Governed versions
-  remain `0.11.1` until the release engineer cuts the release. The carrier
-  relocates code behind stable imports and entrypoints; it does not authorize
-  a tag or publication.
+  provenance; artifact digests are in `docs/release/v0.12.0-checksums.txt`.
+- **Shipped boundary:** `v0.12.0` shipped the Phase 3 structural refactor
+  with **Structure only. Zero behavior change.** It relocates code behind
+  stable imports and entrypoints. The default runtime is the
+  continuity/memory layer for external AI agents, not a hosted product,
+  channel platform, or bundled chat runtime.
 - **Product priorities:** (1) a small, easy-to-integrate agent interface over
   MCP, HTTP, and CLI; and (2) high-quality retrieval with provenance, review,
   correction, and honest evaluation.
@@ -226,9 +217,9 @@ usage justifies a separately reviewed boundary.
 
 ## Current Architectural Posture
 
-- `v0.11.1` is the latest published release and reconciles runtime and product
+- `v0.12.0` is the latest published release and reconciles runtime and product
   identity around the agent interface plus retrieval/memory quality.
-- The Phase 3 carrier reduces `main.py` to app assembly and shared middleware,
+- Phase 3 reduces `main.py` to app assembly and shared middleware,
   extracts domain routers, mirrors PostgreSQL and SQLite vNext store seams,
   splits the surviving legacy store and pure contracts, and moves MCP/CLI
   implementations into packages behind stable facades. Every production Python

@@ -2,16 +2,14 @@
 
 ## Baseline (Not Roadmap Work)
 
-- `v0.11.1` is the latest published release. Its immutable release record is
-  `docs/release/v0.11.1-release-notes.md`, with artifact digests in
-  `docs/release/v0.11.1-checksums.txt`.
+- `v0.12.0` is the latest published release. Its immutable release record is
+  `docs/release/v0.12.0-release-notes.md`, with artifact digests in
+  `docs/release/v0.12.0-checksums.txt`.
 - `v0.11.0` shipped the Phase 1 periphery cut; `v0.11.1` shipped the Phase 2
   debt sweep. Their tags, release records, and published artifacts are not
   changed by the Phase 3 carrier.
-- The Phase 3 structural carrier is complete and uncommitted. It targets
-  `v0.12.0` with **Structure only. Zero behavior change.** Both governed
-  version sources intentionally remain `0.11.1` until the release engineer
-  verifies and cuts the release.
+- `v0.12.0` shipped the Phase 3 structural refactor with **Structure only.
+  Zero behavior change.** Both governed version sources are `0.12.0`.
 - The historical **79.4% (397/500)** LongMemEval_s result is one run from
   2026-07-07 on an older baseline. It is not a repeated estimate or a Phase 3
   measurement.
@@ -20,29 +18,22 @@
 
 ## Next
 
-The `v0.12.0` structural-refactor candidate (Phase 3; structure only) is in
-release gating.
+`v0.12.0` (Phase 3; structure only) is released; the next phase begins here.
 
-1. **Verify and release the completed v0.12.0 structural handoff.** The release
-   engineer must review the uncommitted receipt-bound carrier, commit and merge
-   through the protected flow, bump both governed version sources to `0.12.0`,
-   run every required gate on the exact release SHA, finalize the pending notes
-   and checksums, then tag, create the GitHub Release, publish to PyPI, and read
-   back each external state.
-2. **Replicate the current benchmark.** Run LongMemEval_s at least three times
+1. **Replicate the current benchmark.** Run LongMemEval_s at least three times
    on one pinned, non-development manifest; publish variance, exact provider
    configuration, per-question evidence, and honest abstention trade-offs.
-3. **Improve multi-session synthesis.** Measure aggregation-aware retrieval on
+2. **Improve multi-session synthesis.** Measure aggregation-aware retrieval on
    a held-out slice instead of repeatedly tuning one development set.
-4. **Dogfood the agent interface daily.** Exercise the eleven-tool MCP core and
+3. **Dogfood the agent interface daily.** Exercise the eleven-tool MCP core and
    equivalent HTTP/CLI flows with a live embedding endpoint; measure correction
    quality, review burden, project-scope usability, and end-to-end latency.
-5. **Deepen reference integrations.** Keep examples runnable and CI-smoked
+4. **Deepen reference integrations.** Keep examples runnable and CI-smoked
    against the surviving core without introducing a second runtime or reviving
    deleted product surfaces.
-6. **Scale SQLite vector search.** Extend the documented 20-30k embedding
+5. **Scale SQLite vector search.** Extend the documented 20-30k embedding
    comfort zone while publishing latency and recall deltas.
-7. **Build enterprise evidence on the post-cut surface.** Conduct the first
+6. **Build enterprise evidence on the post-cut surface.** Conduct the first
    scoped security review, exercise backup/restore and supported upgrade paths,
    and run one final product-scoped audit before `1.0`.
 

@@ -2,20 +2,21 @@
 
 ## Snapshot
 
-- `v0.11.1` is the latest published release. It is tagged and immutable; its
-  authoritative release notes and artifact digests are under `docs/release/`.
-- The `v0.12.0` candidate carries the Phase 3 structural refactor, with the exact release
+- `v0.12.0` is the latest published release. It is available from PyPI and
+  GitHub; exact artifact digests are in
+  `docs/release/v0.12.0-checksums.txt`.
+- `v0.12.0` shipped the Phase 3 structural refactor, with the exact release
   headline **Structure only. Zero behavior change.**
-- Phase 3 implementation and the bounded builder matrix are complete on
+- Phase 3 implementation and the bounded builder matrix completed on
   `codex/v0120-phase3-structural-refactor`, based on
   `f342d45dabe127acca6231f29830ff11d98a340e`. Each code increment received an
   independent GO with no remaining P0-P3 finding. The independent final verdict
-  is owned only by the handoff's `REVIEW_REPORT.md`; exact-SHA external release
-  gates remain pending.
-- Both governed version sources are cut to `0.12.0` by the release engineer
+  is owned only by the handoff's `REVIEW_REPORT.md`; the exact-SHA external
+  release gates passed on the release commit.
+- Both governed version sources were cut to `0.12.0` by the release engineer
   after verifying the handoff.
 - The historical LongMemEval_s result is **79.4% (397/500)** from one run on
-  2026-07-07. It is not a repeated estimate or a measurement of this carrier.
+  2026-07-07. It is not a repeated estimate or a measurement of this release.
 - Alice remains public-alpha, pre-1.0, local-first, single-user, and self-hosted.
 
 ## What `v0.11.1` Shipped
@@ -35,7 +36,7 @@ authoritative description; Phase 3 does not rewrite that history.
   retains shared source/source-chunk evidence for separate source hygiene and
   does not roll back accepted project state.
 
-## What `v0.12.0` Targets
+## What `v0.12.0` Shipped
 
 - A thin `alicebot_api.main:app` assembly module with the HTTP handlers moved
   into domain routers. Default and gated OpenAPI registries remain exactly 182
@@ -68,23 +69,21 @@ authoritative description; Phase 3 does not rewrite that history.
 - The web carrier passed 217 unit tests, core and vNext coverage floors,
   typecheck, lint, build, bundle budgets, and the 17+1+1+1 browser matrix.
 - Final-carrier package reproduction and installed-artifact evidence is owned
-  by the Phase 3 `BUILD_REPORT.md`. Any resulting candidate-version `0.11.1`
-  artifacts are verification inputs only: they are not `v0.12.0` release
-  artifacts and must not be published.
+  by the Phase 3 `BUILD_REPORT.md`. The builder matrix ran before the version
+  cut; its locally produced artifacts were verification inputs only and were
+  never uploaded anywhere.
 - No security or cybersecurity audit was performed in Phase 3.
 
 ## Release Boundary
 
-`v0.11.1` is tagged, published, and immutable. Its authoritative records are:
+`v0.12.0` is tagged, published, and immutable. Its authoritative records are:
 
-- `docs/release/v0.11.1-release-notes.md`
-- `docs/release/v0.11.1-checksums.txt`
+- `docs/release/v0.12.0-release-notes.md`
+- `docs/release/v0.12.0-checksums.txt`
 
-The pending `docs/release/v0.12.0-release-notes.md` is a candidate document,
-not a publication receipt. There is no v0.12.0 checksum file, release SHA, tag,
-GitHub Release, or PyPI publication yet. The release engineer must bind those
-states to the final committed SHA and read them back before declaring v0.12.0
-published.
+`v0.11.1` is the prior published release; its records remain at
+`docs/release/v0.11.1-release-notes.md` and
+`docs/release/v0.11.1-checksums.txt`.
 
 ## Product Boundaries
 
