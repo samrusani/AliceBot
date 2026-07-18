@@ -38,6 +38,53 @@ VNextRow = dict[str, object]
 # unless a method explicitly selects a different lifecycle state.
 _MEMORY_SEARCHABLE_STATUSES_SQL = "('active', 'accepted')"
 
+# Vectorized scan tuning for search_memories_vector. Candidate rows stream in
+# chunks this size so the float32 matrix stays bounded (~48 MiB per chunk).
+_VECTOR_SCAN_CHUNK_ROWS = 8192
+
+#: Bytes in one stored embedding blob (float32 payload at storage width).
+_EMBEDDING_BLOB_BYTES = EMBEDDING_VECTOR_DIMENSIONS * 4
+
+# The vectorized scan ranks candidates with a float64 dot product while the
+# reported distance is recomputed per row with the exact float32 BLAS math the
+# store has always used (``_embedding_blob_distance``). BLAS sdot's worst-case
+# float32 accumulation error over 1536 terms is bounded by ~9.2e-5 relative to
+# ||x||*||y|| (n*u with u=2^-24), so any candidate whose approximate distance
+# exceeds the k-th verified exact distance by more than this epsilon provably
+# cannot belong to the exact top-k. Measured divergence on adversarial
+# cancellation-heavy vectors is ~1e-7; 1e-3 keeps a >10x margin on the proof
+# bound.
+_VECTOR_DISTANCE_REFINE_EPSILON = 1e-3
+
+# Rows whose float32 norm sits near the subnormal range lose the error bound
+# above (squares underflow), so they are scored with the exact per-row math
+# during the scan instead of the vectorized approximation. Real embeddings
+# have O(1) norms; this path exists for adversarial or corrupt blobs.
+_VECTOR_TINY_NORM_THRESHOLD = 1e-30
+
+
+def _embedding_blob_distance(blob: bytes, query_array: np.ndarray, query_norm: float) -> float:
+    """Exact cosine distance for one stored embedding blob.
+
+    This is byte-for-byte the scoring math the per-row implementation of
+    ``search_memories_vector`` always used: float32 parse, pad/truncate to the
+    storage width, float32 BLAS norm and dot, distance 1.0 for zero norms.
+    The vectorized scan ranks with an approximation but every returned row's
+    ``vector_distance`` comes from this function, so results are bit-identical
+    to the historical algorithm.
+    """
+    vector: np.ndarray = np.frombuffer(blob, dtype=np.float32)
+    if vector.size != EMBEDDING_VECTOR_DIMENSIONS:
+        resized: np.ndarray = np.zeros(EMBEDDING_VECTOR_DIMENSIONS, dtype=np.float32)
+        resized[: min(vector.size, EMBEDDING_VECTOR_DIMENSIONS)] = vector[:EMBEDDING_VECTOR_DIMENSIONS]
+        vector = resized
+    vector_norm = float(np.linalg.norm(vector))
+    if query_norm == 0.0 or vector_norm == 0.0:
+        return 1.0
+    similarity = float(np.dot(query_array, vector)) / (query_norm * vector_norm)
+    return 1.0 - similarity
+
+
 def get_memory_by_key(
     self,
     *,
@@ -137,10 +184,10 @@ def list_pending_derived_candidates_for_member(
 ) -> list[VNextRow]:
     """Return pending derived candidates whose reviewed input is member_id.
 
-        ``get_memory_for_update`` acquires SQLite's database writer lock on
-        lifecycle paths before this query runs, so the returned candidates
-        stay stable for the enclosing transaction.
-        """
+    ``get_memory_for_update`` acquires SQLite's database writer lock on
+    lifecycle paths before this query runs, so the returned candidates
+    stay stable for the enclosing transaction.
+    """
     return self._fetch_all(
         f"""
                 SELECT {", ".join(MEMORY_COLUMNS)}
@@ -169,8 +216,8 @@ def list_pending_derived_candidates_for_member(
 
 def get_memory_by_commit_digest(self, commit_digest: str) -> VNextRow | None:
     """Indexed idempotency lookup; without this the commit service falls
-        back to a Python full-table scan (measured: 18ms -> 222ms at 10k
-        memories in the scale benchmark)."""
+    back to a Python full-table scan (measured: 18ms -> 222ms at 10k
+    memories in the scale benchmark)."""
     return self._fetch_optional_one(
         f"""
                 SELECT {", ".join(MEMORY_COLUMNS)}
@@ -188,10 +235,10 @@ def get_memory_by_commit_digest(self, commit_digest: str) -> VNextRow | None:
 def latest_agentic_commit_memory(self, *, agent_id: str | None = None) -> VNextRow | None:
     """Fast lookup for the id-less undo path ("undo my last commit").
 
-        Without this the commit service duck-type falls back to a
-        full-table Python scan. Mirrors the Postgres jsonb path checks via
-        json_extract.
-        """
+    Without this the commit service duck-type falls back to a
+    full-table Python scan. Mirrors the Postgres jsonb path checks via
+    json_extract.
+    """
     return self._fetch_optional_one(
         f"""
                 SELECT {", ".join(MEMORY_COLUMNS)}
@@ -1000,43 +1047,123 @@ def search_memories_vector(
     params.extend(expiry_params)
     params.extend(scope_params)
     params.extend(signature_params)
-    candidates = self._fetch_all(
-        f"""
-                SELECT {", ".join(MEMORY_COLUMNS)}, embedding
-                FROM memories
-                WHERE user_id = ?
+    # Full predicate set shared by BOTH phases. No transaction spans the scan
+    # and the hydrate (autocommit; per-statement snapshots), so a concurrent
+    # writer can commit between them; re-applying every scan predicate --
+    # including ``embedding IS NOT NULL`` -- in the hydrate SELECT means a row
+    # mutated in that window (soft-deleted, lifecycle-demoted, embedding
+    # cleared, re-scoped) simply hydrates to no row and is skipped, exactly as
+    # if the single-SELECT implementation had never seen it.
+    predicate_sql = f"""user_id = ?
                   AND deleted_at IS NULL
                   AND embedding IS NOT NULL
-                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{created_by_sql}{run_sql}{expiry_sql}{scope_sql}{signature_sql}
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{created_by_sql}{run_sql}{expiry_sql}{scope_sql}{signature_sql}"""
+    # Step 1 -- stateless vectorized scan. Only (id, updated_at, embedding)
+    # stream out of SQLite, as raw tuples (no dict/JSON decode per row); the
+    # full rows are hydrated later for just the ranked head.
+    cursor = self._execute(
+        f"""
+                SELECT id, updated_at, embedding
+                FROM memories
+                WHERE {predicate_sql}
                 """,
         tuple(params),
     )
-    scored: list[VNextRow] = []
-    for row in candidates:
-        if signature_sql and not memory_embedding_signature_is_current(row):
+    cursor.row_factory = None  # bypass any installed dict row factory
+    query64: np.ndarray = query_array.astype(np.float64)
+    # (approximate_distance, updated_at_key, id) per candidate row.
+    ranked: list[tuple[float, str, str]] = []
+    while True:
+        chunk = cursor.fetchmany(_VECTOR_SCAN_CHUNK_ROWS)
+        if not chunk:
+            break
+        conforming: list[tuple[object, object, bytes]] = []
+        for memory_id, updated_at, blob in chunk:
+            if isinstance(blob, bytes) and len(blob) == _EMBEDDING_BLOB_BYTES:
+                conforming.append((memory_id, updated_at, blob))
+            else:
+                # Non-storage-width blobs take the exact pad/truncate path.
+                distance = _embedding_blob_distance(cast(bytes, blob), query_array, query_norm)
+                ranked.append((distance, str(updated_at or ""), str(memory_id or "")))
+        if not conforming:
             continue
-        blob = cast(bytes, row.pop("embedding"))
-        vector: np.ndarray = np.frombuffer(blob, dtype=np.float32)
-        if vector.size != EMBEDDING_VECTOR_DIMENSIONS:
-            resized: np.ndarray = np.zeros(EMBEDDING_VECTOR_DIMENSIONS, dtype=np.float32)
-            resized[: min(vector.size, EMBEDDING_VECTOR_DIMENSIONS)] = vector[:EMBEDDING_VECTOR_DIMENSIONS]
-            vector = resized
-        vector_norm = float(np.linalg.norm(vector))
-        if query_norm == 0.0 or vector_norm == 0.0:
-            distance = 1.0
-        else:
-            similarity = float(np.dot(query_array, vector)) / (query_norm * vector_norm)
-            distance = 1.0 - similarity
-        row["vector_distance"] = distance
-        scored.append(row)
-    scored.sort(
-        key=lambda item: (
-            cast(float, item["vector_distance"]),
-            str(item.get("updated_at") or ""),
-            str(item.get("id") or ""),
+        if query_norm == 0.0:
+            ranked.extend(
+                (1.0, str(updated_at or ""), str(memory_id or "")) for memory_id, updated_at, _blob in conforming
+            )
+            continue
+        matrix: np.ndarray = np.frombuffer(
+            b"".join(blob for _memory_id, _updated_at, blob in conforming),
+            dtype=np.float32,
+        ).reshape(-1, EMBEDDING_VECTOR_DIMENSIONS)
+        norms: np.ndarray = np.linalg.norm(matrix, axis=1)
+        dots: np.ndarray = matrix.astype(np.float64) @ query64
+        norms64: np.ndarray = norms.astype(np.float64)
+        for position, (memory_id, updated_at, blob) in enumerate(conforming):
+            if norms[position] < _VECTOR_TINY_NORM_THRESHOLD:
+                # Zero or near-subnormal norms: the vectorized error bound
+                # does not hold, so score with the exact per-row math.
+                distance = _embedding_blob_distance(blob, query_array, query_norm)
+            else:
+                distance = 1.0 - float(dots[position]) / (query_norm * float(norms64[position]))
+            ranked.append((distance, str(updated_at or ""), str(memory_id or "")))
+    ranked.sort()
+    # Step 2 -- hydrate full rows for the ranked head in batches, verify the
+    # embedding signature when signature filtering is active (stale rows are
+    # skipped without consuming limit slots; the walk refills from further
+    # down the ranking), and recompute the exact per-row distance for every
+    # hydrated candidate. The walk stops once ``limit`` verified rows are
+    # collected and the next candidate's approximate distance provably cannot
+    # beat the current k-th exact distance (epsilon-guarded refinement).
+    # Hydration batch: max(4*limit, 32) ids per SELECT, capped under the most
+    # conservative SQLITE_MAX_VARIABLE_NUMBER (999) for legacy builds.
+    batch_size = min(max(4 * limit, 32), 900)
+    collected: list[tuple[float, str, str, VNextRow]] = []
+    index = 0
+    while index < len(ranked):
+        if limit > 0 and len(collected) >= limit:
+            collected.sort(key=lambda item: (item[0], item[1], item[2]))
+            cutoff = collected[limit - 1][0]
+            if ranked[index][0] > cutoff + _VECTOR_DISTANCE_REFINE_EPSILON:
+                break
+        batch = ranked[index : index + batch_size]
+        index += len(batch)
+        batch_ids = [entry[2] for entry in batch]
+        # The hydrate re-applies ``predicate_sql`` (the scan's full WHERE
+        # set), so ``embedding`` here is guaranteed non-NULL and the row still
+        # satisfies every lifecycle/scope/signature gate at hydrate time.
+        hydrated = self._fetch_all(
+            f"""
+                    SELECT {", ".join(MEMORY_COLUMNS)}, embedding
+                    FROM memories
+                    WHERE {predicate_sql}
+                      AND id IN ({self._placeholders(batch_ids)})
+                    """,
+            (*params, *batch_ids),
         )
-    )
-    return scored[:limit]
+        rows_by_id = {str(row.get("id")): row for row in hydrated}
+        for _approx, _updated_key, candidate_id in batch:
+            row = rows_by_id.get(candidate_id)
+            if row is None:
+                # Row vanished or was mutated out of scope between the scan
+                # and this hydrate: skip WITHOUT consuming a limit slot; the
+                # walk refills from further down the ranking.
+                continue
+            if signature_sql and not memory_embedding_signature_is_current(row):
+                continue
+            blob = cast(bytes, row.pop("embedding"))
+            distance = _embedding_blob_distance(blob, query_array, query_norm)
+            row["vector_distance"] = distance
+            collected.append(
+                (
+                    distance,
+                    str(row.get("updated_at") or ""),
+                    str(row.get("id") or ""),
+                    row,
+                )
+            )
+    collected.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [row for _distance, _updated_key, _row_id, row in collected[:limit]]
 
 
 def search_memories_by_time(
@@ -1056,23 +1183,23 @@ def search_memories_by_time(
 ) -> list[VNextRow]:
     """Memories whose event window intersects ``[window_start, window_end)``.
 
-        Event time is ``COALESCE(valid_from, first_seen_at, created_at)``:
-        ``valid_from`` is the explicit event-validity start when a writer
-        recorded one (the honest event signal); ``first_seen_at`` — when
-        the fact was first observed — is the fallback for rows without
-        one, and ``created_at`` (row write time) is the last resort for
-        legacy rows. A row matches when that event time falls inside the
-        window, or when a closed ``[valid_from, valid_to)`` validity
-        interval overlaps it. Results order by proximity of the event
-        time to ``window_center`` (default: the window midpoint; open
-        "before X"/"since X" windows pass their closed edge), so the
-        tightest temporal matches lead the RRF list. Same scoping
-        discipline as the sibling search methods (user scoping,
-        deleted/status gates, domain/sensitivity/scope filters); note the
-        default expiry gate still hides rows whose ``valid_to`` has
-        passed — pass ``include_expired=True`` to recall facts that were
-        only true historically.
-        """
+    Event time is ``COALESCE(valid_from, first_seen_at, created_at)``:
+    ``valid_from`` is the explicit event-validity start when a writer
+    recorded one (the honest event signal); ``first_seen_at`` — when
+    the fact was first observed — is the fallback for rows without
+    one, and ``created_at`` (row write time) is the last resort for
+    legacy rows. A row matches when that event time falls inside the
+    window, or when a closed ``[valid_from, valid_to)`` validity
+    interval overlaps it. Results order by proximity of the event
+    time to ``window_center`` (default: the window midpoint; open
+    "before X"/"since X" windows pass their closed edge), so the
+    tightest temporal matches lead the RRF list. Same scoping
+    discipline as the sibling search methods (user scoping,
+    deleted/status gates, domain/sensitivity/scope filters); note the
+    default expiry gate still hides rows whose ``valid_to`` has
+    passed — pass ``include_expired=True`` to recall facts that were
+    only true historically.
+    """
     start_iso = _iso_or_none(window_start)
     end_iso = _iso_or_none(window_end)
     if window_center is None:

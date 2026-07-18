@@ -36,8 +36,10 @@ SOURCE_RECEIPTS = {
     "apps/api/src/alicebot_api/vnext_stores/sqlite/query_predicates.py": (
         "aada597da76324ec05a118f95c2b26441b076771a0e53b8d45f08eefb656bbb4"
     ),
+    # Re-minted for the Phase 4 Stage 1 vectorized vector-search rewrite
+    # (reviewed carrier change; the receipt guards unreviewed drift).
     "apps/api/src/alicebot_api/vnext_stores/sqlite/memory_access.py": (
-        "08a2a7d301d03fb851fb973db53db1b1f3675d5ae009a3ddd699d7aa4c54f93b"
+        "82ddb9377d7c3df098734084395352b583622227c1d8602cfaf2c26dca220523"
     ),
 }
 

@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
+import numpy as np
 import pytest
 
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
@@ -20,7 +21,10 @@ from alicebot_api.vnext_capture import capture_dedupe_key_for_text
 from alicebot_api.vnext_embeddings import (
     EMBEDDING_SIGNATURE_METADATA_KEY,
     memory_embedding_content_sha256,
+    memory_embedding_signature_is_current,
+    pad_embedding_vector,
 )
+from alicebot_api.vnext_stores.sqlite.columns import MEMORY_COLUMNS
 from alicebot_api.mcp_tools import redact_memory_flow
 from alicebot_api.vnext_memory_commit import VNextMemoryCommitService, VNextMemoryCommitValidationError
 from alicebot_api.vnext_project_update_guard import PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE
@@ -2533,6 +2537,474 @@ def test_vector_search_rejects_embeddings_from_a_different_model_signature() -> 
     assert cleared[0] is None
     assert "_alice_embedding" not in json.loads(cleared[1])
     conn.close()
+
+
+# -- vectorized vector-search equivalence -----------------------------------------------
+#
+# search_memories_vector was rewritten from a per-row Python loop into a
+# vectorized numpy scan plus top-k verify/hydrate. These tests pin exact
+# behavioral equivalence: the oracle below is a literal port of the OLD
+# per-row algorithm (candidate SELECT, signature re-verification, pad/truncate,
+# float32 BLAS scoring, (distance, updated_at, id) sort, [:limit] slice).
+
+
+def _oracle_vector_search_per_row(
+    store: SQLiteVNextStore,
+    *,
+    query_vector: list[float],
+    limit: int = 50,
+    embedding_provider: str | None = None,
+    embedding_model: str | None = None,
+    embedding_endpoint: str | None = None,
+    embedding_signature_version: int | None = None,
+) -> list[dict[str, object]]:
+    """Reference reimplementation of the pre-vectorization algorithm."""
+    padded = pad_embedding_vector(query_vector)
+    query_array = np.asarray(padded, dtype=np.float32)
+    query_norm = float(np.linalg.norm(query_array))
+    signature_sql = ""
+    signature_params: list[object] = []
+    if embedding_provider is not None or embedding_model is not None:
+        signature_sql = " AND json_extract(metadata_json, ?) = ? AND json_extract(metadata_json, ?) = ?"
+        signature_params.extend(
+            (
+                f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.provider",
+                embedding_provider,
+                f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.model",
+                embedding_model,
+            )
+        )
+        if embedding_endpoint is not None:
+            signature_sql += " AND json_extract(metadata_json, ?) = ?"
+            signature_params.extend((f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.endpoint", embedding_endpoint))
+        if embedding_signature_version is not None:
+            signature_sql += " AND json_extract(metadata_json, ?) = ?"
+            signature_params.extend((f"$.{EMBEDDING_SIGNATURE_METADATA_KEY}.version", embedding_signature_version))
+    candidates = store._fetch_all(
+        f"""
+        SELECT {", ".join(MEMORY_COLUMNS)}, embedding
+        FROM memories
+        WHERE user_id = ?
+          AND deleted_at IS NULL
+          AND embedding IS NOT NULL
+          AND status IN ('active', 'accepted'){signature_sql}
+        """,
+        (store.user_id, *signature_params),
+    )
+    scored: list[dict[str, object]] = []
+    for row in candidates:
+        if signature_sql and not memory_embedding_signature_is_current(row):
+            continue
+        blob = row.pop("embedding")
+        vector = np.frombuffer(blob, dtype=np.float32)
+        if vector.size != 1536:
+            resized = np.zeros(1536, dtype=np.float32)
+            resized[: min(vector.size, 1536)] = vector[:1536]
+            vector = resized
+        vector_norm = float(np.linalg.norm(vector))
+        if query_norm == 0.0 or vector_norm == 0.0:
+            distance = 1.0
+        else:
+            similarity = float(np.dot(query_array, vector)) / (query_norm * vector_norm)
+            distance = 1.0 - similarity
+        row["vector_distance"] = distance
+        scored.append(row)
+    scored.sort(
+        key=lambda item: (
+            item["vector_distance"],
+            str(item.get("updated_at") or ""),
+            str(item.get("id") or ""),
+        )
+    )
+    return scored[:limit]
+
+
+def _seed_vector_row(
+    store: SQLiteVNextStore,
+    conn: sqlite3.Connection,
+    *,
+    canonical_text: str,
+    vector: list[float] | None = None,
+    blob: bytes | None = None,
+    status: str = "active",
+    updated_at: str = "2026-07-01T00:00:00+00:00",
+    signature: dict[str, object] | None = None,
+    stale_sha: bool = False,
+) -> str:
+    """Insert a memory with a raw embedding blob, bypassing lifecycle CAS."""
+    memory = _create_memory(store, canonical_text=canonical_text)
+    memory_id = str(memory["id"])
+    if blob is None:
+        blob = np.asarray(pad_embedding_vector(vector), dtype=np.float32).tobytes()
+    metadata: dict[str, object] = {}
+    if signature is not None:
+        current = store.get_memory(memory_id)
+        assert current is not None
+        digest = memory_embedding_content_sha256(current)
+        if stale_sha:
+            digest = "0" * 64
+        metadata[EMBEDDING_SIGNATURE_METADATA_KEY] = {**signature, "content_sha256": digest}
+    conn.execute(
+        "UPDATE memories SET embedding = ?, status = ?, metadata_json = ?, updated_at = ? WHERE id = ?",
+        (blob, status, json.dumps(metadata), updated_at, memory_id),
+    )
+    return memory_id
+
+
+_SIGNATURE_A = {"version": 2, "provider": "prov-a", "model": "model-a", "endpoint": "ep-a"}
+_SIGNATURE_B = {"version": 2, "provider": "prov-b", "model": "model-b", "endpoint": "ep-b"}
+
+
+def test_vector_search_matches_per_row_oracle_on_adversarial_corpus() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    rng = np.random.default_rng(42)
+
+    def _sig_kwargs(signature: dict[str, object]) -> dict[str, object]:
+        return {
+            "embedding_provider": signature["provider"],
+            "embedding_model": signature["model"],
+            "embedding_endpoint": signature["endpoint"],
+            "embedding_signature_version": signature["version"],
+        }
+
+    # Signature population A (12 rows, one of them stale-sha and nearest to
+    # the query so signature-filtered search must refill past it).
+    for position in range(12):
+        _seed_vector_row(
+            store,
+            conn,
+            canonical_text=f"population a row {position}",
+            vector=list(rng.standard_normal(1536)),
+            updated_at=f"2026-07-01T00:00:{position:02d}+00:00",
+            signature=_SIGNATURE_A,
+        )
+    _seed_vector_row(
+        store,
+        conn,
+        canonical_text="population a stale nearest row",
+        vector=[1.0, 0.0, 0.0],
+        updated_at="2026-07-01T00:01:00+00:00",
+        signature=_SIGNATURE_A,
+        stale_sha=True,
+    )
+    # Signature population B (different provider/model/endpoint).
+    for position in range(6):
+        _seed_vector_row(
+            store,
+            conn,
+            canonical_text=f"population b row {position}",
+            vector=list(rng.standard_normal(1536)),
+            updated_at=f"2026-07-01T00:02:{position:02d}+00:00",
+            signature=_SIGNATURE_B,
+        )
+    # Unsigned rows across lifecycle statuses; only active/accepted are
+    # searchable.
+    for position, status in enumerate(
+        ("active", "accepted", "candidate", "superseded", "stale", "rejected", "archived")
+    ):
+        _seed_vector_row(
+            store,
+            conn,
+            canonical_text=f"lifecycle {status} row {position}",
+            vector=list(rng.standard_normal(1536)),
+            status=status,
+            updated_at=f"2026-07-01T00:03:{position:02d}+00:00",
+        )
+    # Zero-norm vector: distance must be exactly 1.0.
+    _seed_vector_row(
+        store,
+        conn,
+        canonical_text="zero norm row",
+        vector=[0.0] * 1536,
+        updated_at="2026-07-01T00:04:00+00:00",
+    )
+    # Non-1536-dim blobs: shorter and longer than the storage width, exercising
+    # the pad/truncate path.
+    _seed_vector_row(
+        store,
+        conn,
+        canonical_text="short blob row",
+        blob=np.asarray([0.5, 0.25, -0.75, 1.5], dtype=np.float32).tobytes(),
+        updated_at="2026-07-01T00:05:00+00:00",
+    )
+    _seed_vector_row(
+        store,
+        conn,
+        canonical_text="long blob row",
+        blob=np.asarray(list(rng.standard_normal(2000)), dtype=np.float32).tobytes(),
+        updated_at="2026-07-01T00:05:01+00:00",
+    )
+    # Equal-distance rows (identical vectors, distinct updated_at/id).
+    for position in range(3):
+        _seed_vector_row(
+            store,
+            conn,
+            canonical_text=f"tie row {position}",
+            vector=[0.0, 1.0, 1.0],
+            updated_at="2026-07-01T00:06:00+00:00" if position < 2 else "2026-07-01T00:06:01+00:00",
+        )
+
+    query = list(rng.standard_normal(64))
+    scenarios: list[dict[str, object]] = [
+        {"query_vector": query, "limit": 100},
+        {"query_vector": query, "limit": 3},
+        {"query_vector": [0.0, 1.0, 1.0], "limit": 5},
+        {"query_vector": [1.0, 0.0, 0.0], "limit": 4, **_sig_kwargs(_SIGNATURE_A)},
+        {"query_vector": query, "limit": 100, **_sig_kwargs(_SIGNATURE_A)},
+        {"query_vector": query, "limit": 2, **_sig_kwargs(_SIGNATURE_B)},
+    ]
+    for scenario in scenarios:
+        expected = _oracle_vector_search_per_row(store, **scenario)
+        actual = store.search_memories_vector(**scenario)
+        assert [(row["id"], row["vector_distance"]) for row in actual] == [
+            (row["id"], row["vector_distance"]) for row in expected
+        ], scenario
+        # Full hydrated rows are identical too (bitwise-equal distances).
+        assert actual == expected, scenario
+    conn.close()
+
+
+def test_vector_search_never_pools_across_signature_populations() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    a_ids = [
+        _seed_vector_row(
+            store,
+            conn,
+            canonical_text=f"pool a {position}",
+            vector=[1.0, float(position) * 0.1],
+            updated_at=f"2026-07-02T00:00:{position:02d}+00:00",
+            signature=_SIGNATURE_A,
+        )
+        for position in range(3)
+    ]
+    b_ids = [
+        _seed_vector_row(
+            store,
+            conn,
+            canonical_text=f"pool b {position}",
+            vector=[1.0, 0.0],
+            updated_at=f"2026-07-02T00:01:{position:02d}+00:00",
+            signature=_SIGNATURE_B,
+        )
+        for position in range(3)
+    ]
+    # Same provider/model as A but a different endpoint fingerprint: the SQL
+    # json_extract clauses must exclude it from endpoint-qualified searches.
+    other_endpoint_id = _seed_vector_row(
+        store,
+        conn,
+        canonical_text="pool a other endpoint",
+        vector=[1.0, 0.0],
+        updated_at="2026-07-02T00:02:00+00:00",
+        signature={**_SIGNATURE_A, "endpoint": "ep-other"},
+    )
+    unsigned_id = _seed_vector_row(
+        store,
+        conn,
+        canonical_text="pool unsigned",
+        vector=[1.0, 0.0],
+        updated_at="2026-07-02T00:03:00+00:00",
+    )
+
+    rows_a = store.search_memories_vector(
+        query_vector=[1.0, 0.0],
+        embedding_provider="prov-a",
+        embedding_model="model-a",
+        embedding_endpoint="ep-a",
+        embedding_signature_version=2,
+    )
+    assert sorted(str(row["id"]) for row in rows_a) == sorted(a_ids)
+    assert {str(row["id"]) for row in rows_a}.isdisjoint({*b_ids, other_endpoint_id, unsigned_id})
+
+    rows_b = store.search_memories_vector(
+        query_vector=[1.0, 0.0],
+        embedding_provider="prov-b",
+        embedding_model="model-b",
+        embedding_endpoint="ep-b",
+        embedding_signature_version=2,
+    )
+    assert sorted(str(row["id"]) for row in rows_b) == sorted(b_ids)
+
+    # Unsigned search pools everything with an embedding, exactly like the
+    # per-row implementation did.
+    unsigned_rows = store.search_memories_vector(query_vector=[1.0, 0.0])
+    assert {str(row["id"]) for row in unsigned_rows} == {*a_ids, *b_ids, other_endpoint_id, unsigned_id}
+    for scenario in (
+        {"query_vector": [1.0, 0.0]},
+        {
+            "query_vector": [1.0, 0.0],
+            "embedding_provider": "prov-a",
+            "embedding_model": "model-a",
+            "embedding_endpoint": "ep-a",
+            "embedding_signature_version": 2,
+        },
+    ):
+        assert store.search_memories_vector(**scenario) == _oracle_vector_search_per_row(store, **scenario)
+    conn.close()
+
+
+def test_vector_search_refills_past_stale_signature_rows_across_batches() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    # 40 rows ranked by increasing distance from the query; the closest 33
+    # are stale-sha, spanning more than one hydration batch (batch size for
+    # limit=2 is 32), so refill must walk into the second batch.
+    ids: list[str] = []
+    for position in range(40):
+        angle = 0.01 * (position + 1)
+        ids.append(
+            _seed_vector_row(
+                store,
+                conn,
+                canonical_text=f"refill row {position:02d}",
+                vector=[float(np.cos(angle)), float(np.sin(angle))],
+                updated_at=f"2026-07-03T00:00:{position:02d}+00:00",
+                signature=_SIGNATURE_A,
+                stale_sha=position < 33,
+            )
+        )
+    kwargs = {
+        "query_vector": [1.0, 0.0],
+        "limit": 2,
+        "embedding_provider": "prov-a",
+        "embedding_model": "model-a",
+        "embedding_endpoint": "ep-a",
+        "embedding_signature_version": 2,
+    }
+    rows = store.search_memories_vector(**kwargs)
+    assert [str(row["id"]) for row in rows] == [ids[33], ids[34]]
+    assert {str(row["id"]) for row in rows}.isdisjoint(set(ids[:33]))
+    assert rows == _oracle_vector_search_per_row(store, **kwargs)
+    conn.close()
+
+
+def test_vector_search_orders_equal_distances_by_updated_at_then_id() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    # Four rows share one embedding (bitwise-equal distances); two of them
+    # also share updated_at so the id tie-break decides. A closer and a
+    # farther row bracket the tie group.
+    tie_ids = [
+        _seed_vector_row(
+            store,
+            conn,
+            canonical_text=f"tiebreak row {position}",
+            vector=[0.6, 0.8],
+            updated_at=updated_at,
+        )
+        for position, updated_at in enumerate(
+            (
+                "2026-07-04T00:00:05+00:00",
+                "2026-07-04T00:00:01+00:00",
+                "2026-07-04T00:00:05+00:00",
+                "2026-07-04T00:00:03+00:00",
+            )
+        )
+    ]
+    closest = _seed_vector_row(
+        store,
+        conn,
+        canonical_text="tiebreak closest",
+        vector=[1.0, 0.05],
+        updated_at="2026-07-04T00:00:09+00:00",
+    )
+    farthest = _seed_vector_row(
+        store,
+        conn,
+        canonical_text="tiebreak farthest",
+        vector=[-1.0, 0.2],
+        updated_at="2026-07-04T00:00:00+00:00",
+    )
+
+    rows = store.search_memories_vector(query_vector=[1.0, 0.0])
+    tie_distances = {row["vector_distance"] for row in rows if str(row["id"]) in set(tie_ids)}
+    assert len(tie_distances) == 1  # bitwise-equal distances
+    shared_updated = [tie_ids[0], tie_ids[2]]
+    expected_tie_order = [tie_ids[1], tie_ids[3], *sorted(shared_updated)]
+    assert [str(row["id"]) for row in rows] == [closest, *expected_tie_order, farthest]
+    assert rows == _oracle_vector_search_per_row(store, query_vector=[1.0, 0.0])
+    # Determinism across repeated calls (stateless scan).
+    assert rows == store.search_memories_vector(query_vector=[1.0, 0.0])
+    conn.close()
+
+
+def _run_vector_hydrate_window_scenario(
+    tmp_path: Path, mutate_sql: str
+) -> tuple[list[dict[str, object]], str, list[str]]:
+    """Run a vector search with a concurrent writer committing between phases.
+
+    ``search_memories_vector`` runs two SQL phases (vectorized scan, then
+    ranked hydrate) with no transaction spanning them (autocommit;
+    per-statement snapshots), so another connection can commit a mutation of a
+    scanned row before it is hydrated. This helper seeds three rows on a
+    file-backed database, then fires ``mutate_sql`` against the nearest row
+    via a SECOND connection after the scan but before the first hydrate SELECT
+    (the first ``_fetch_all`` call; the scan itself uses ``_execute``).
+    Returns (rows, mutated_target_id, surviving_ids_in_rank_order).
+    """
+    db_path = str(tmp_path / f"hydrate-window-{uuid4()}.db")
+    conn = sqlite3.connect(db_path)
+    bootstrap_sqlite_schema(conn)
+    conn.commit()
+    store = _make_store(conn)
+    conn.commit()
+
+    def _seed(text: str, vector: list[float], updated_at: str) -> str:
+        memory_id = _seed_vector_row(store, conn, canonical_text=text, vector=vector, updated_at=updated_at)
+        conn.commit()
+        return memory_id
+
+    target = _seed("hydrate window target nearest", [1.0, 0.0], "2026-07-01T00:00:00+00:00")
+    survivor_near = _seed("hydrate window other a", [0.9, 0.1], "2026-07-01T00:00:01+00:00")
+    survivor_far = _seed("hydrate window other b", [0.5, 0.5], "2026-07-01T00:00:02+00:00")
+
+    writer = sqlite3.connect(db_path)
+    original_fetch_all = store._fetch_all
+    fired = {"done": False}
+
+    def interleaved_fetch_all(query: str, params: tuple[object, ...] = ()):
+        if not fired["done"]:
+            fired["done"] = True
+            writer.execute(mutate_sql, (target,))
+            writer.commit()
+        return original_fetch_all(query, params)
+
+    store._fetch_all = interleaved_fetch_all  # type: ignore[method-assign]
+    try:
+        # limit=2 with 3 candidates: the mutated nearest row must not consume
+        # a limit slot, so both survivors still come back.
+        rows = store.search_memories_vector(query_vector=[1.0, 0.0], limit=2)
+    finally:
+        conn.close()
+        writer.close()
+    return rows, target, [survivor_near, survivor_far]
+
+
+def test_vector_search_excludes_rows_soft_deleted_between_scan_and_hydrate(tmp_path: Path) -> None:
+    rows, target, survivors = _run_vector_hydrate_window_scenario(
+        tmp_path,
+        "UPDATE memories SET deleted_at = '2026-07-01T00:10:00+00:00', status = 'rejected' WHERE id = ?",
+    )
+    # The mutated row is excluded, every returned payload satisfies the read
+    # gates, and the refill fills the freed slot from further down the ranking.
+    assert [str(row["id"]) for row in rows] == survivors
+    for row in rows:
+        assert str(row["id"]) != target
+        assert row.get("deleted_at") is None
+        assert row.get("status") in ("active", "accepted")
+
+
+def test_vector_search_survives_embedding_nulled_between_scan_and_hydrate(tmp_path: Path) -> None:
+    # Same window with the embedding cleared: the exact-recompute step must
+    # never see a NULL blob (historically a TypeError in np.frombuffer).
+    rows, target, survivors = _run_vector_hydrate_window_scenario(
+        tmp_path,
+        "UPDATE memories SET embedding = NULL WHERE id = ?",
+    )
+    assert [str(row["id"]) for row in rows] == survivors
+    assert target not in {str(row["id"]) for row in rows}
 
 
 # -- open loops -------------------------------------------------------------------------
