@@ -8,6 +8,7 @@ import pytest
 import alicebot_api.main as main_module
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
+from alicebot_api.routers import vnext_memories as vnext_memories_router
 from alicebot_api.vnext_store import PostgresVNextStore
 from tests.integration.test_vnext_live_workspace_api import invoke_request, seed_user
 
@@ -58,6 +59,7 @@ def test_public_http_terminal_reviews_close_postgres_confirmation_metadata(
     database_url = migrated_database_urls["app"]
     user_id = seed_user(database_url, email="http-review-confirmation@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=database_url))
+    monkeypatch.setattr(vnext_memories_router, "get_settings", lambda: Settings(database_url=database_url))
 
     memory_id = _seed_pending_confirmation(database_url, user_id, label=action)
     payload: dict[str, object] = {

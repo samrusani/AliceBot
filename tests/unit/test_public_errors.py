@@ -18,6 +18,24 @@ from alicebot_api.public_errors import public_exception_response
 
 ROOT = Path(__file__).resolve().parents[2]
 MAIN_PATH = ROOT / "apps/api/src/alicebot_api/main.py"
+ROUTERS_PATH = ROOT / "apps/api/src/alicebot_api/routers"
+PUBLIC_EXCEPTION_RESPONSE_CALL_MANIFEST = {
+    "apps/api/src/alicebot_api/main.py": 2,
+    "apps/api/src/alicebot_api/routers/__init__.py": 0,
+    "apps/api/src/alicebot_api/routers/_api_shared.py": 0,
+    "apps/api/src/alicebot_api/routers/_vnext_automation.py": 0,
+    "apps/api/src/alicebot_api/routers/_vnext_embeddings.py": 0,
+    "apps/api/src/alicebot_api/routers/_vnext_shared.py": 1,
+    "apps/api/src/alicebot_api/routers/continuity.py": 57,
+    "apps/api/src/alicebot_api/routers/legacy_gated.py": 76,
+    "apps/api/src/alicebot_api/routers/memories_legacy.py": 52,
+    "apps/api/src/alicebot_api/routers/providers.py": 59,
+    "apps/api/src/alicebot_api/routers/vnext_memories.py": 24,
+    "apps/api/src/alicebot_api/routers/vnext_projects.py": 10,
+    "apps/api/src/alicebot_api/routers/vnext_retrieval.py": 2,
+    "apps/api/src/alicebot_api/routers/vnext_review.py": 9,
+    "apps/api/src/alicebot_api/routers/workspaces.py": 4,
+}
 
 
 def _payload(response: object) -> dict[str, object]:
@@ -87,10 +105,7 @@ def test_public_exception_response_fails_closed_for_unregistered_status(caplog: 
     assert sentinel in caplog.text  # type: ignore[attr-defined]
 
 
-def test_main_has_no_exception_text_to_public_response_conversion() -> None:
-    """Fail on the old direct and delayed exception-to-detail response patterns."""
-
-    source = MAIN_PATH.read_text()
+def _exception_text_response_violations(source: str) -> list[int]:
     tree = ast.parse(source)
     exception_names = {
         handler.name
@@ -98,6 +113,32 @@ def test_main_has_no_exception_text_to_public_response_conversion() -> None:
         if isinstance(handler, ast.ExceptHandler) and handler.name is not None
     }
     exception_names.update({"resolution_error", "execution_error", "lifecycle_error"})
+
+    tainted_names = set(exception_names)
+    changed = True
+    while changed:
+        changed = False
+        for assignment in (
+            node for node in ast.walk(tree) if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+        ):
+            value = assignment.value
+            if value is None:
+                continue
+            if not any(
+                isinstance(descendant, ast.Call)
+                and isinstance(descendant.func, ast.Name)
+                and descendant.func.id == "str"
+                and descendant.args
+                and isinstance(descendant.args[0], ast.Name)
+                and descendant.args[0].id in tainted_names
+                for descendant in ast.walk(value)
+            ):
+                continue
+            targets = assignment.targets if isinstance(assignment, ast.Assign) else [assignment.target]
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in tainted_names:
+                    tainted_names.add(target.id)
+                    changed = True
 
     violations: list[int] = []
     for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
@@ -113,13 +154,43 @@ def test_main_has_no_exception_text_to_public_response_conversion() -> None:
                 and descendant.func.id == "str"
                 and descendant.args
                 and isinstance(descendant.args[0], ast.Name)
-                and descendant.args[0].id in exception_names
+                and descendant.args[0].id in tainted_names
             ):
                 violations.append(call.lineno)
+            if isinstance(descendant, ast.Name) and descendant.id in tainted_names:
+                violations.append(call.lineno)
+    return sorted(set(violations))
 
-    assert violations == []
-    assert "public_exception_response(" in source
-    assert source.count("public_exception_response(") == 296
+
+def test_http_modules_have_no_exception_text_to_public_response_conversion() -> None:
+    """Fail on the old direct and delayed exception-to-detail response patterns."""
+
+    source_paths = [MAIN_PATH, *sorted(ROUTERS_PATH.rglob("*.py"))]
+    relative_paths = {str(path.relative_to(ROOT)) for path in source_paths}
+    assert relative_paths == set(PUBLIC_EXCEPTION_RESPONSE_CALL_MANIFEST)
+
+    sources = {str(path.relative_to(ROOT)): path.read_text() for path in source_paths}
+    violations = {
+        relative_path: _exception_text_response_violations(source)
+        for relative_path, source in sources.items()
+        if _exception_text_response_violations(source)
+    }
+
+    assert violations == {}
+    call_counts = {
+        relative_path: sum(
+            1
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "public_exception_response"
+        )
+        for relative_path, source in sources.items()
+    }
+    assert call_counts == PUBLIC_EXCEPTION_RESPONSE_CALL_MANIFEST
+    assert sum(call_counts.values()) == 296
+
+    source = "\n".join(sources.values())
     assert 'content={"detail": f"thread {thread_id} was not found"}' not in source
     assert 'content={"detail": f"provider {provider_id} was not found"}' not in source
     assert 'content={"detail": f"provider {body.provider_id} was not found"}' not in source
@@ -129,6 +200,18 @@ def test_main_has_no_exception_text_to_public_response_conversion() -> None:
     assert 'error_code="conflict"' in source
     assert '"code": result.error_code' in source
     assert '"message": result.detail' in source
+
+
+def test_exception_text_hygiene_detects_delayed_response_conversion() -> None:
+    source = """
+try:
+    raise ValueError("private")
+except ValueError as exc:
+    message = str(exc)
+    response = JSONResponse(status_code=400, content={"detail": message})
+"""
+
+    assert _exception_text_response_violations(source) == [6]
 
 
 def test_openapi_error_schema_requires_stable_code_and_message() -> None:
@@ -157,7 +240,7 @@ def test_openapi_error_schema_requires_stable_code_and_message() -> None:
 
 
 def test_default_vnext_handler_keeps_exception_sentinel_private(monkeypatch: object, caplog: object) -> None:
-    from alicebot_api import main as main_module
+    from alicebot_api.routers import vnext_memories as vnext_memories_router
     from alicebot_api.vnext_agent_control import AgentIdentityValidationError
 
     sentinel = "VNEXT-PRIVATE-SENTINEL-e1cb"
@@ -165,10 +248,10 @@ def test_default_vnext_handler_keeps_exception_sentinel_private(monkeypatch: obj
     def fail_identity(_request: object) -> object:
         raise AgentIdentityValidationError(sentinel)
 
-    monkeypatch.setattr(main_module, "_vnext_agent_identity", fail_identity)  # type: ignore[attr-defined]
+    monkeypatch.setattr(vnext_memories_router, "_vnext_agent_identity", fail_identity)  # type: ignore[attr-defined]
     with caplog.at_level(logging.ERROR, logger="alicebot_api.public_errors"):  # type: ignore[attr-defined]
-        response = main_module.create_vnext_source(
-            main_module.VNextSourceCaptureRequest(user_id=uuid4(), raw_text="Fact")
+        response = vnext_memories_router.create_vnext_source(
+            vnext_memories_router.VNextSourceCaptureRequest(user_id=uuid4(), raw_text="Fact")
         )
 
     _assert_private_error(
@@ -182,16 +265,16 @@ def test_default_vnext_handler_keeps_exception_sentinel_private(monkeypatch: obj
 
 
 def test_provider_handler_keeps_exception_sentinel_private(monkeypatch: object, caplog: object) -> None:
-    from alicebot_api import main as main_module
+    from alicebot_api.routers import providers as providers_router
 
     sentinel = "PROVIDER-PRIVATE-SENTINEL-58a7"
 
     def fail_auth(_settings: object, _request: object) -> object:
         raise ValueError(sentinel)
 
-    monkeypatch.setattr(main_module, "_resolve_authenticated_v1_user_id", fail_auth)  # type: ignore[attr-defined]
+    monkeypatch.setattr(providers_router, "_resolve_authenticated_v1_user_id", fail_auth)  # type: ignore[attr-defined]
     with caplog.at_level(logging.ERROR, logger="alicebot_api.public_errors"):  # type: ignore[attr-defined]
-        response = main_module.get_v1_provider(uuid4(), _request("/v1/providers/example"))
+        response = providers_router.get_v1_provider(uuid4(), _request("/v1/providers/example"))
 
     _assert_private_error(
         response,
@@ -204,25 +287,25 @@ def test_provider_handler_keeps_exception_sentinel_private(monkeypatch: object, 
 
 
 def test_runtime_handler_keeps_exception_sentinel_private(monkeypatch: object, caplog: object) -> None:
-    from alicebot_api import main as main_module
+    from alicebot_api.routers import providers as providers_router
 
     sentinel = "RUNTIME-PRIVATE-SENTINEL-3d91"
 
     def fail_auth(_settings: object, _request: object) -> object:
         raise ValueError(sentinel)
 
-    monkeypatch.setattr(main_module, "_resolve_authenticated_v1_user_id", fail_auth)  # type: ignore[attr-defined]
+    monkeypatch.setattr(providers_router, "_resolve_authenticated_v1_user_id", fail_auth)  # type: ignore[attr-defined]
     request = _request(
         "/v1/runtime/invoke",
         headers=[(b"idempotency-key", b"http-hygiene-test")],
     )
-    body = main_module.RuntimeInvokeRequest(
+    body = providers_router.RuntimeInvokeRequest(
         provider_id=uuid4(),
         thread_id=uuid4(),
         message="Hello",
     )
     with caplog.at_level(logging.ERROR, logger="alicebot_api.public_errors"):  # type: ignore[attr-defined]
-        response = main_module.invoke_v1_runtime(request, body)
+        response = providers_router.invoke_v1_runtime(request, body)
 
     _assert_private_error(
         response,
@@ -235,7 +318,7 @@ def test_runtime_handler_keeps_exception_sentinel_private(monkeypatch: object, c
 
 
 def test_runtime_provider_value_error_keeps_exception_sentinel_private(caplog: object) -> None:
-    from alicebot_api import main as main_module
+    from alicebot_api.routers import providers as providers_router
 
     sentinel = "RUNTIME-PROVIDER-PRIVATE-SENTINEL-1c72"
 
@@ -244,7 +327,7 @@ def test_runtime_provider_value_error_keeps_exception_sentinel_private(caplog: o
             raise ValueError(sentinel)
 
     with caplog.at_level(logging.ERROR, logger="alicebot_api.main"):  # type: ignore[attr-defined]
-        outcome = main_module._attempt_runtime_provider_model(
+        outcome = providers_router._attempt_runtime_provider_model(
             adapter=RejectingAdapter(),  # type: ignore[arg-type]
             runtime_provider=object(),  # type: ignore[arg-type]
             settings=object(),  # type: ignore[arg-type]
@@ -262,7 +345,7 @@ def test_runtime_provider_value_error_keeps_exception_sentinel_private(caplog: o
 
 
 def test_runtime_model_invocation_error_keeps_exception_sentinel_private(caplog: object) -> None:
-    from alicebot_api import main as main_module
+    from alicebot_api.routers import providers as providers_router
     from alicebot_api.response_generation import ModelInvocationError
 
     sentinel = "RUNTIME-MODEL-PRIVATE-SENTINEL-845d"
@@ -272,7 +355,7 @@ def test_runtime_model_invocation_error_keeps_exception_sentinel_private(caplog:
             raise ModelInvocationError(sentinel)
 
     with caplog.at_level(logging.ERROR, logger="alicebot_api.main"):  # type: ignore[attr-defined]
-        outcome = main_module._attempt_runtime_provider_model(
+        outcome = providers_router._attempt_runtime_provider_model(
             adapter=RejectingAdapter(),  # type: ignore[arg-type]
             runtime_provider=object(),  # type: ignore[arg-type]
             settings=object(),  # type: ignore[arg-type]
@@ -330,21 +413,22 @@ import json
 from uuid import uuid4
 from alicebot_api import main
 from alicebot_api.config import Settings
-from alicebot_api.memory import OpenLoopValidationError
+from alicebot_api.routers import legacy_gated
+from alicebot_api.tools import ToolNotFoundError
 
 @contextmanager
 def connection(*_args, **_kwargs):
     yield object()
 
 def fail(*_args, **_kwargs):
-    raise OpenLoopValidationError({sentinel!r})
+    raise ToolNotFoundError({sentinel!r})
 
 assert main.LEGACY_SURFACES_ENABLED is True
-assert '/v0/open-loops' in {{route.path for route in main.app.routes}}
-main.get_settings = lambda: Settings(database_url='postgresql://app')
-main.user_connection = connection
-main.create_open_loop_record = fail
-response = main.create_open_loop(main.CreateOpenLoopRequest(user_id=uuid4(), title='Open loop'))
+assert '/v0/tools' in main.app.openapi()['paths']
+legacy_gated.get_settings = lambda: Settings(database_url='postgresql://app')
+legacy_gated.user_connection = connection
+legacy_gated.get_tool_record = fail
+response = legacy_gated.get_tool(uuid4(), uuid4())
 print(json.dumps({{'status_code': response.status_code, 'body': json.loads(response.body)}}))
 """
 
@@ -358,8 +442,8 @@ print(json.dumps({{'status_code': response.status_code, 'body': json.loads(respo
     )
 
     assert json.loads(completed.stdout) == {
-        "status_code": 400,
-        "body": {"detail": {"code": "invalid_request", "message": "The request is invalid"}},
+        "status_code": 404,
+        "body": {"detail": {"code": "not_found", "message": "The requested resource was not found"}},
     }
     assert sentinel not in completed.stdout
     assert sentinel in completed.stderr

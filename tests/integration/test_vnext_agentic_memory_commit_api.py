@@ -4,6 +4,8 @@ from typing import Any
 
 import alicebot_api.main as main_module
 from alicebot_api.config import Settings
+from alicebot_api.routers import vnext_memories as vnext_memories_router
+from alicebot_api.routers import vnext_retrieval as vnext_retrieval_router
 
 from tests.integration.test_vnext_live_workspace_api import invoke_request, seed_user
 
@@ -20,6 +22,16 @@ def _agent(profile: str = "trusted_local_agent", *, agent_id: str = "hermes") ->
 def test_agentic_memory_commit_correct_undo_and_audit_api(migrated_database_urls, monkeypatch) -> None:
     user_id = seed_user(migrated_database_urls["app"], email="agentic-memory-api@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        vnext_retrieval_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
     user_id_text = str(user_id)
 
     commit_status, commit_payload = invoke_request(
@@ -115,6 +127,16 @@ def test_agentic_memory_commit_correct_undo_and_audit_api(migrated_database_urls
 def test_agentic_memory_commit_confirmation_review_and_rejection_api(migrated_database_urls, monkeypatch) -> None:
     user_id = seed_user(migrated_database_urls["app"], email="agentic-memory-policy-api@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        vnext_retrieval_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
     user_id_text = str(user_id)
 
     confirmation_status, confirmation_payload = invoke_request(
@@ -187,6 +209,16 @@ def test_agentic_memory_commit_confirmation_review_and_rejection_api(migrated_da
 def test_unknown_domain_agentic_memory_selected_by_keyword_context_pack(migrated_database_urls, monkeypatch) -> None:
     user_id = seed_user(migrated_database_urls["app"], email="agentic-memory-unknown-domain@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        vnext_retrieval_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
     user_id_text = str(user_id)
 
     commit_status, commit_payload = invoke_request(

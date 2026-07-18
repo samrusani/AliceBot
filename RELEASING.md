@@ -7,6 +7,9 @@ baseline.
 Preparing candidate documents does not authorize a tag, PyPI upload, or GitHub
 Release.
 
+The `v0.12.0` structural-refactor candidate (structure only) is currently in
+release gating.
+
 ## One Release Identity
 
 `pyproject.toml` is the canonical package-version source. The API and Python

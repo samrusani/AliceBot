@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from uuid import uuid4
 
 import pytest
-import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 from alicebot_api.gmail import (
     GmailAccountAlreadyExistsError,
@@ -37,10 +37,10 @@ def test_list_gmail_accounts_endpoint_returns_payload(monkeypatch) -> None:
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "list_gmail_account_records",
         lambda *_args, **_kwargs: {
             "items": [],
@@ -48,7 +48,7 @@ def test_list_gmail_accounts_endpoint_returns_payload(monkeypatch) -> None:
         },
     )
 
-    response = main_module.list_gmail_accounts(user_id)
+    response = legacy_gated_router.list_gmail_accounts(user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -68,12 +68,12 @@ def test_connect_gmail_account_endpoint_maps_duplicate_to_409(monkeypatch) -> No
     def fake_create_gmail_account_record(*_args, **_kwargs):
         raise GmailAccountAlreadyExistsError("gmail account acct-001 is already connected")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "create_gmail_account_record", fake_create_gmail_account_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "create_gmail_account_record", fake_create_gmail_account_record)
 
-    response = main_module.connect_gmail_account(
-        main_module.ConnectGmailAccountRequest(
+    response = legacy_gated_router.connect_gmail_account(
+        legacy_gated_router.ConnectGmailAccountRequest(
             user_id=user_id,
             provider_account_id="acct-001",
             email_address="owner@example.com",
@@ -90,7 +90,7 @@ def test_connect_gmail_account_endpoint_maps_duplicate_to_409(monkeypatch) -> No
 
 def test_connect_gmail_account_request_requires_complete_refresh_bundle() -> None:
     with pytest.raises(ValueError, match="gmail refresh credentials must include refresh_token"):
-        main_module.ConnectGmailAccountRequest(
+        legacy_gated_router.ConnectGmailAccountRequest(
             user_id=uuid4(),
             provider_account_id="acct-001",
             email_address="owner@example.com",
@@ -114,12 +114,12 @@ def test_connect_gmail_account_endpoint_maps_invalid_refresh_bundle_to_400(monke
             "and access_token_expires_at"
         )
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "create_gmail_account_record", fake_create_gmail_account_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "create_gmail_account_record", fake_create_gmail_account_record)
 
-    response = main_module.connect_gmail_account(
-        main_module.ConnectGmailAccountRequest(
+    response = legacy_gated_router.connect_gmail_account(
+        legacy_gated_router.ConnectGmailAccountRequest(
             user_id=user_id,
             provider_account_id="acct-001",
             email_address="owner@example.com",
@@ -143,12 +143,12 @@ def test_connect_gmail_account_endpoint_maps_secret_persistence_failure_to_409(m
     def fake_create_gmail_account_record(*_args, **_kwargs):
         raise GmailCredentialPersistenceError("gmail protected credentials could not be persisted")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "create_gmail_account_record", fake_create_gmail_account_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "create_gmail_account_record", fake_create_gmail_account_record)
 
-    response = main_module.connect_gmail_account(
-        main_module.ConnectGmailAccountRequest(
+    response = legacy_gated_router.connect_gmail_account(
+        legacy_gated_router.ConnectGmailAccountRequest(
             user_id=user_id,
             provider_account_id="acct-001",
             email_address="owner@example.com",
@@ -175,11 +175,11 @@ def test_get_gmail_account_endpoint_maps_not_found_to_404(monkeypatch) -> None:
     def fake_get_gmail_account_record(*_args, **_kwargs):
         raise GmailAccountNotFoundError(f"gmail account {gmail_account_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "get_gmail_account_record", fake_get_gmail_account_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_gmail_account_record", fake_get_gmail_account_record)
 
-    response = main_module.get_gmail_account(gmail_account_id, user_id)
+    response = legacy_gated_router.get_gmail_account(gmail_account_id, user_id)
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
@@ -200,14 +200,14 @@ def test_ingest_gmail_message_endpoint_maps_workspace_not_found_to_404(monkeypat
     def fake_ingest_gmail_message_record(*_args, **_kwargs):
         raise TaskWorkspaceNotFoundError(f"task workspace {task_workspace_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "ingest_gmail_message_record", fake_ingest_gmail_message_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "ingest_gmail_message_record", fake_ingest_gmail_message_record)
 
-    response = main_module.ingest_gmail_message(
+    response = legacy_gated_router.ingest_gmail_message(
         gmail_account_id,
         "msg-001",
-        main_module.IngestGmailMessageRequest(
+        legacy_gated_router.IngestGmailMessageRequest(
             user_id=user_id,
             task_workspace_id=task_workspace_id,
         ),
@@ -229,17 +229,17 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
 
     def fake_missing(*_args, **_kwargs):
         raise GmailMessageNotFoundError("gmail message msg-001 was not found")
 
-    monkeypatch.setattr(main_module, "ingest_gmail_message_record", fake_missing)
-    response = main_module.ingest_gmail_message(
+    monkeypatch.setattr(legacy_gated_router, "ingest_gmail_message_record", fake_missing)
+    response = legacy_gated_router.ingest_gmail_message(
         gmail_account_id,
         "msg-001",
-        main_module.IngestGmailMessageRequest(
+        legacy_gated_router.IngestGmailMessageRequest(
             user_id=user_id,
             task_workspace_id=task_workspace_id,
         ),
@@ -252,11 +252,11 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
     def fake_unsupported(*_args, **_kwargs):
         raise GmailMessageUnsupportedError("gmail message msg-001 is not a supported RFC822 email")
 
-    monkeypatch.setattr(main_module, "ingest_gmail_message_record", fake_unsupported)
-    response = main_module.ingest_gmail_message(
+    monkeypatch.setattr(legacy_gated_router, "ingest_gmail_message_record", fake_unsupported)
+    response = legacy_gated_router.ingest_gmail_message(
         gmail_account_id,
         "msg-001",
-        main_module.IngestGmailMessageRequest(
+        legacy_gated_router.IngestGmailMessageRequest(
             user_id=user_id,
             task_workspace_id=task_workspace_id,
         ),
@@ -267,11 +267,11 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
     def fake_missing_credentials(*_args, **_kwargs):
         raise GmailCredentialNotFoundError(f"gmail account {gmail_account_id} is missing protected credentials")
 
-    monkeypatch.setattr(main_module, "ingest_gmail_message_record", fake_missing_credentials)
-    response = main_module.ingest_gmail_message(
+    monkeypatch.setattr(legacy_gated_router, "ingest_gmail_message_record", fake_missing_credentials)
+    response = legacy_gated_router.ingest_gmail_message(
         gmail_account_id,
         "msg-001",
-        main_module.IngestGmailMessageRequest(
+        legacy_gated_router.IngestGmailMessageRequest(
             user_id=user_id,
             task_workspace_id=task_workspace_id,
         ),
@@ -287,11 +287,11 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
     def fake_invalid_credentials(*_args, **_kwargs):
         raise GmailCredentialInvalidError(f"gmail account {gmail_account_id} has invalid protected credentials")
 
-    monkeypatch.setattr(main_module, "ingest_gmail_message_record", fake_invalid_credentials)
-    response = main_module.ingest_gmail_message(
+    monkeypatch.setattr(legacy_gated_router, "ingest_gmail_message_record", fake_invalid_credentials)
+    response = legacy_gated_router.ingest_gmail_message(
         gmail_account_id,
         "msg-001",
-        main_module.IngestGmailMessageRequest(
+        legacy_gated_router.IngestGmailMessageRequest(
             user_id=user_id,
             task_workspace_id=task_workspace_id,
         ),
@@ -309,11 +309,11 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
             f"gmail account {gmail_account_id} renewed protected credentials could not be persisted"
         )
 
-    monkeypatch.setattr(main_module, "ingest_gmail_message_record", fake_persistence_error)
-    response = main_module.ingest_gmail_message(
+    monkeypatch.setattr(legacy_gated_router, "ingest_gmail_message_record", fake_persistence_error)
+    response = legacy_gated_router.ingest_gmail_message(
         gmail_account_id,
         "msg-001",
-        main_module.IngestGmailMessageRequest(
+        legacy_gated_router.IngestGmailMessageRequest(
             user_id=user_id,
             task_workspace_id=task_workspace_id,
         ),
@@ -329,11 +329,11 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
     def fake_fetch_error(*_args, **_kwargs):
         raise GmailMessageFetchError("gmail message msg-001 could not be fetched")
 
-    monkeypatch.setattr(main_module, "ingest_gmail_message_record", fake_fetch_error)
-    response = main_module.ingest_gmail_message(
+    monkeypatch.setattr(legacy_gated_router, "ingest_gmail_message_record", fake_fetch_error)
+    response = legacy_gated_router.ingest_gmail_message(
         gmail_account_id,
         "msg-001",
-        main_module.IngestGmailMessageRequest(
+        legacy_gated_router.IngestGmailMessageRequest(
             user_id=user_id,
             task_workspace_id=task_workspace_id,
         ),
@@ -346,11 +346,11 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
     def fake_refresh_error(*_args, **_kwargs):
         raise GmailCredentialRefreshError(f"gmail account {gmail_account_id} access token could not be renewed")
 
-    monkeypatch.setattr(main_module, "ingest_gmail_message_record", fake_refresh_error)
-    response = main_module.ingest_gmail_message(
+    monkeypatch.setattr(legacy_gated_router, "ingest_gmail_message_record", fake_refresh_error)
+    response = legacy_gated_router.ingest_gmail_message(
         gmail_account_id,
         "msg-001",
-        main_module.IngestGmailMessageRequest(
+        legacy_gated_router.IngestGmailMessageRequest(
             user_id=user_id,
             task_workspace_id=task_workspace_id,
         ),

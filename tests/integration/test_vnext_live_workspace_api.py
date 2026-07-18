@@ -14,6 +14,11 @@ import alicebot_api.main as main_module
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.mcp_tools import redact_memory_flow
+from alicebot_api.routers import vnext_memories as vnext_memories_router
+from alicebot_api.routers import vnext_projects as vnext_projects_router
+from alicebot_api.routers import vnext_retrieval as vnext_retrieval_router
+from alicebot_api.routers import vnext_review as vnext_review_router
+from alicebot_api.routers import workspaces as workspaces_router
 from alicebot_api.store import ContinuityStore
 from alicebot_api.vnext_agent_keys import create_agent_key
 from alicebot_api.vnext_dogfooding import VNextDogfoodingService
@@ -1088,6 +1093,31 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        workspaces_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        vnext_projects_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        vnext_retrieval_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        vnext_review_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
     user_id_text = str(user_id)
     generated_for = datetime.now(timezone.utc).date().isoformat()
 
@@ -1616,6 +1646,26 @@ def test_assign_project_replaces_postgres_scope_for_memory_and_source_retrieval(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        vnext_projects_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        vnext_retrieval_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        vnext_review_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
     user_id_text = str(user_id)
     old_project = "release-project-old"
     new_project = "release-project-new"
@@ -1731,6 +1781,26 @@ def test_vnext_artifact_routes_enforce_persisted_scope_with_live_postgres(
     user_id = seed_user(migrated_database_urls["app"], email="artifact-scope@example.com")
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        vnext_projects_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        vnext_retrieval_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        vnext_review_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

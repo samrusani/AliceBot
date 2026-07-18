@@ -4,7 +4,7 @@ import json
 from contextlib import contextmanager
 from uuid import uuid4
 
-import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 from alicebot_api.tasks import (
     TaskNotFoundError,
@@ -20,8 +20,8 @@ def test_task_step_http_models_convert_to_typed_storage_snapshots() -> None:
     approval_id = uuid4()
     execution_id = uuid4()
 
-    request_record = main_module._task_step_request_record(
-        main_module.TaskStepRequestSnapshot(
+    request_record = legacy_gated_router._task_step_request_record(
+        legacy_gated_router.TaskStepRequestSnapshot(
             thread_id=thread_id,
             tool_id=tool_id,
             action="tool.run",
@@ -31,8 +31,8 @@ def test_task_step_http_models_convert_to_typed_storage_snapshots() -> None:
             attributes={"retries": 2, "nested": {"enabled": True}},
         )
     )
-    outcome_record = main_module._task_step_outcome_snapshot(
-        main_module.TaskStepOutcomeRequest(
+    outcome_record = legacy_gated_router._task_step_outcome_snapshot(
+        legacy_gated_router.TaskStepOutcomeRequest(
             routing_decision="approval_required",
             approval_id=approval_id,
             approval_status="approved",
@@ -70,10 +70,10 @@ def test_list_task_steps_endpoint_returns_payload(monkeypatch) -> None:
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "list_task_step_records",
         lambda *_args, **_kwargs: {
             "items": [],
@@ -89,7 +89,7 @@ def test_list_task_steps_endpoint_returns_payload(monkeypatch) -> None:
         },
     )
 
-    response = main_module.list_task_steps(task_id, user_id)
+    response = legacy_gated_router.list_task_steps(task_id, user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -118,11 +118,11 @@ def test_list_task_steps_endpoint_maps_task_not_found_to_404(monkeypatch) -> Non
     def fake_list_task_step_records(*_args, **_kwargs):
         raise TaskNotFoundError(f"task {task_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "list_task_step_records", fake_list_task_step_records)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "list_task_step_records", fake_list_task_step_records)
 
-    response = main_module.list_task_steps(task_id, user_id)
+    response = legacy_gated_router.list_task_steps(task_id, user_id)
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
@@ -142,11 +142,11 @@ def test_get_task_step_endpoint_maps_not_found_to_404(monkeypatch) -> None:
     def fake_get_task_step_record(*_args, **_kwargs):
         raise TaskStepNotFoundError(f"task step {task_step_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "get_task_step_record", fake_get_task_step_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_task_step_record", fake_get_task_step_record)
 
-    response = main_module.get_task_step(task_step_id, user_id)
+    response = legacy_gated_router.get_task_step(task_step_id, user_id)
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
@@ -166,28 +166,28 @@ def test_create_next_task_step_endpoint_maps_sequence_conflict_to_409(monkeypatc
     def fake_create_next_task_step_record(*_args, **_kwargs):
         raise TaskStepSequenceError(f"task {task_id} latest step blocked append")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "create_next_task_step_record", fake_create_next_task_step_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "create_next_task_step_record", fake_create_next_task_step_record)
 
-    response = main_module.create_next_task_step(
+    response = legacy_gated_router.create_next_task_step(
         task_id,
-        main_module.CreateNextTaskStepRequest(
+        legacy_gated_router.CreateNextTaskStepRequest(
             user_id=user_id,
             kind="governed_request",
             status="created",
-            request=main_module.TaskStepRequestSnapshot(
+            request=legacy_gated_router.TaskStepRequestSnapshot(
                 thread_id=uuid4(),
                 tool_id=uuid4(),
                 action="tool.run",
                 scope="workspace",
                 attributes={},
             ),
-            outcome=main_module.TaskStepOutcomeRequest(
+            outcome=legacy_gated_router.TaskStepOutcomeRequest(
                 routing_decision="approval_required",
                 approval_status="pending",
             ),
-            lineage=main_module.TaskStepLineageRequest(parent_step_id=uuid4()),
+            lineage=legacy_gated_router.TaskStepLineageRequest(parent_step_id=uuid4()),
         ),
     )
 
@@ -209,16 +209,16 @@ def test_transition_task_step_endpoint_maps_transition_conflict_to_409(monkeypat
     def fake_transition_task_step_record(*_args, **_kwargs):
         raise TaskStepTransitionError(f"task step {task_step_id} is created and cannot transition")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "transition_task_step_record", fake_transition_task_step_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "transition_task_step_record", fake_transition_task_step_record)
 
-    response = main_module.transition_task_step(
+    response = legacy_gated_router.transition_task_step(
         task_step_id,
-        main_module.TransitionTaskStepRequest(
+        legacy_gated_router.TransitionTaskStepRequest(
             user_id=user_id,
             status="approved",
-            outcome=main_module.TaskStepOutcomeRequest(
+            outcome=legacy_gated_router.TaskStepOutcomeRequest(
                 routing_decision="approval_required",
                 approval_status="approved",
             ),

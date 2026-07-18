@@ -4,7 +4,7 @@ import json
 from contextlib import contextmanager
 from uuid import uuid4
 
-import alicebot_api.main as main_module
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.policy import PolicyEvaluationValidationError, PolicyNotFoundError
 
@@ -36,12 +36,12 @@ def test_upsert_consent_endpoint_translates_request_and_returns_created_status(m
             "write_mode": "created",
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "upsert_consent_record", fake_upsert_consent_record)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "upsert_consent_record", fake_upsert_consent_record)
 
-    response = main_module.upsert_consent(
-        main_module.UpsertConsentRequest(
+    response = memories_legacy_router.upsert_consent(
+        memories_legacy_router.UpsertConsentRequest(
             user_id=user_id,
             consent_key="email_marketing",
             status="granted",
@@ -82,11 +82,11 @@ def test_get_policy_endpoint_maps_not_found_to_404(monkeypatch) -> None:
     def fake_get_policy_record(*_args, **_kwargs):
         raise PolicyNotFoundError(f"policy {policy_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "get_policy_record", fake_get_policy_record)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_policy_record", fake_get_policy_record)
 
-    response = main_module.get_policy(policy_id, user_id)
+    response = memories_legacy_router.get_policy(policy_id, user_id)
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
@@ -151,12 +151,12 @@ def test_evaluate_policy_endpoint_translates_request_and_returns_trace_payload(m
             "trace": {"trace_id": "trace-123", "trace_event_count": 3},
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "evaluate_policy_request", fake_evaluate_policy_request)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "evaluate_policy_request", fake_evaluate_policy_request)
 
-    response = main_module.evaluate_policy(
-        main_module.EvaluatePolicyRequest(
+    response = memories_legacy_router.evaluate_policy(
+        memories_legacy_router.EvaluatePolicyRequest(
             user_id=user_id,
             thread_id=thread_id,
             action="memory.export",
@@ -188,12 +188,12 @@ def test_evaluate_policy_endpoint_maps_validation_errors_to_400(monkeypatch) -> 
     def fake_evaluate_policy_request(*_args, **_kwargs):
         raise PolicyEvaluationValidationError("thread_id must reference an existing thread owned by the user")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "evaluate_policy_request", fake_evaluate_policy_request)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "evaluate_policy_request", fake_evaluate_policy_request)
 
-    response = main_module.evaluate_policy(
-        main_module.EvaluatePolicyRequest(
+    response = memories_legacy_router.evaluate_policy(
+        memories_legacy_router.EvaluatePolicyRequest(
             user_id=user_id,
             thread_id=uuid4(),
             action="memory.export",

@@ -16,6 +16,30 @@ from alicebot_api.migrations import make_alembic_config
 
 DEFAULT_ADMIN_URL = "postgresql://alicebot_admin:alicebot_admin@localhost:5432/alicebot"
 DEFAULT_APP_URL = "postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot"
+_EXECUTED_TEST_COUNT = 0
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--require-executed-tests",
+        action="store_true",
+        help="fail when every selected integration test is skipped",
+    )
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    global _EXECUTED_TEST_COUNT
+    if report.when == "call" and not report.skipped:
+        _EXECUTED_TEST_COUNT += 1
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    if (
+        session.config.getoption("--require-executed-tests")
+        and exitstatus == pytest.ExitCode.OK
+        and _EXECUTED_TEST_COUNT == 0
+    ):
+        session.exitstatus = pytest.ExitCode.NO_TESTS_COLLECTED
 
 
 def swap_database_name(database_url: str, database_name: str) -> str:

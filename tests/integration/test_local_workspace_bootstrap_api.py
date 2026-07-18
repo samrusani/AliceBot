@@ -11,6 +11,7 @@ import alicebot_api.main as main_module
 from alicebot_api.config import Settings
 from alicebot_api.db import set_current_user_account, user_connection
 from alicebot_api.local_workspace import LOCAL_WORKSPACE_NAME, local_workspace_id
+from alicebot_api.routers import workspaces as workspaces_router
 from alicebot_api.store import ContinuityStore
 
 
@@ -67,6 +68,7 @@ def configure_local_api(monkeypatch: Any, database_urls: dict[str, str]) -> None
         database_admin_url=database_urls["admin"],
     )
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(workspaces_router, "get_settings", lambda: settings)
 
 
 def seed_user(database_url: str, *, email: str) -> UUID:
@@ -78,6 +80,7 @@ def seed_user(database_url: str, *, email: str) -> UUID:
 
 def test_local_workspace_bootstrap_requires_a_valid_identity_header(monkeypatch: Any) -> None:
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(app_env="test"))
+    monkeypatch.setattr(workspaces_router, "get_settings", lambda: Settings(app_env="test"))
 
     missing_status, missing_payload = invoke_request("POST", "/v1/workspaces/bootstrap")
     assert missing_status == 400

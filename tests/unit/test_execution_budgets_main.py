@@ -4,7 +4,7 @@ import json
 from contextlib import contextmanager
 from uuid import uuid4
 
-import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 from alicebot_api.execution_budgets import (
     ExecutionBudgetLifecycleError,
@@ -44,12 +44,12 @@ def test_create_execution_budget_endpoint_returns_payload(monkeypatch) -> None:
             }
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "create_execution_budget_record", fake_create_execution_budget_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "create_execution_budget_record", fake_create_execution_budget_record)
 
-    response = main_module.create_execution_budget(
-        main_module.CreateExecutionBudgetRequest(
+    response = legacy_gated_router.create_execution_budget(
+        legacy_gated_router.CreateExecutionBudgetRequest(
             user_id=user_id,
             agent_profile_id="assistant_default",
             tool_key="proxy.echo",
@@ -81,12 +81,12 @@ def test_create_execution_budget_endpoint_maps_validation_error_to_400(monkeypat
     def fake_create_execution_budget_record(*_args, **_kwargs):
         raise ExecutionBudgetValidationError("execution budget requires at least one selector: tool_key or domain_hint")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "create_execution_budget_record", fake_create_execution_budget_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "create_execution_budget_record", fake_create_execution_budget_record)
 
-    response = main_module.create_execution_budget(
-        main_module.CreateExecutionBudgetRequest(
+    response = legacy_gated_router.create_execution_budget(
+        legacy_gated_router.CreateExecutionBudgetRequest(
             user_id=user_id,
             tool_key=None,
             domain_hint="docs",
@@ -131,11 +131,11 @@ def test_list_execution_budgets_endpoint_returns_payload(monkeypatch) -> None:
             "summary": {"total_count": 1, "order": ["created_at_asc", "id_asc"]},
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "list_execution_budget_records", fake_list_execution_budget_records)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "list_execution_budget_records", fake_list_execution_budget_records)
 
-    response = main_module.list_execution_budgets(user_id)
+    response = legacy_gated_router.list_execution_budgets(user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body)["summary"] == {
@@ -182,11 +182,11 @@ def test_get_execution_budget_endpoint_returns_payload(monkeypatch) -> None:
             }
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "get_execution_budget_record", fake_get_execution_budget_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_execution_budget_record", fake_get_execution_budget_record)
 
-    response = main_module.get_execution_budget(execution_budget_id, user_id)
+    response = legacy_gated_router.get_execution_budget(execution_budget_id, user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body)["execution_budget"]["id"] == str(execution_budget_id)
@@ -211,11 +211,11 @@ def test_get_execution_budget_endpoint_maps_missing_record_to_404(monkeypatch) -
     def fake_get_execution_budget_record(*_args, **_kwargs):
         raise ExecutionBudgetNotFoundError(f"execution budget {execution_budget_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "get_execution_budget_record", fake_get_execution_budget_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_execution_budget_record", fake_get_execution_budget_record)
 
-    response = main_module.get_execution_budget(execution_budget_id, user_id)
+    response = legacy_gated_router.get_execution_budget(execution_budget_id, user_id)
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
@@ -257,13 +257,15 @@ def test_deactivate_execution_budget_endpoint_returns_payload(monkeypatch) -> No
             "trace": {"trace_id": "trace-123", "trace_event_count": 3},
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "deactivate_execution_budget_record", fake_deactivate_execution_budget_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        legacy_gated_router, "deactivate_execution_budget_record", fake_deactivate_execution_budget_record
+    )
 
-    response = main_module.deactivate_execution_budget(
+    response = legacy_gated_router.deactivate_execution_budget(
         execution_budget_id,
-        main_module.DeactivateExecutionBudgetRequest(
+        legacy_gated_router.DeactivateExecutionBudgetRequest(
             user_id=user_id,
             thread_id=thread_id,
         ),
@@ -290,13 +292,15 @@ def test_deactivate_execution_budget_endpoint_maps_lifecycle_error_to_409(monkey
             f"execution budget {execution_budget_id} is inactive and cannot be deactivated"
         )
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "deactivate_execution_budget_record", fake_deactivate_execution_budget_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        legacy_gated_router, "deactivate_execution_budget_record", fake_deactivate_execution_budget_record
+    )
 
-    response = main_module.deactivate_execution_budget(
+    response = legacy_gated_router.deactivate_execution_budget(
         execution_budget_id,
-        main_module.DeactivateExecutionBudgetRequest(
+        legacy_gated_router.DeactivateExecutionBudgetRequest(
             user_id=user_id,
             thread_id=thread_id,
         ),
@@ -355,13 +359,15 @@ def test_supersede_execution_budget_endpoint_returns_payload(monkeypatch) -> Non
             "trace": {"trace_id": "trace-456", "trace_event_count": 3},
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "supersede_execution_budget_record", fake_supersede_execution_budget_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        legacy_gated_router, "supersede_execution_budget_record", fake_supersede_execution_budget_record
+    )
 
-    response = main_module.supersede_execution_budget(
+    response = legacy_gated_router.supersede_execution_budget(
         execution_budget_id,
-        main_module.SupersedeExecutionBudgetRequest(
+        legacy_gated_router.SupersedeExecutionBudgetRequest(
             user_id=user_id,
             thread_id=thread_id,
             max_completed_executions=3,

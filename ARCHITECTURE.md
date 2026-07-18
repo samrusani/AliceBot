@@ -2,6 +2,8 @@
 
 ## Scope Boundary
 
+- **Candidate boundary:** the `v0.12.0` candidate carries the Phase 3
+  structural refactor (structure only; zero behavior change).
 - **Shipped boundary:** `v0.11.1` shipped the Phase 2 debt sweep. It is
   tagged and immutable, passed the exact-SHA CI, semantic, and
   repository-control gates, and is published on PyPI with Trusted Publishing
@@ -13,6 +15,11 @@
 - **Shipped boundary:** `v0.11.1` is the latest published release. Its
   default runtime is the continuity/memory layer for external AI agents, not a
   hosted product, channel platform, or bundled chat runtime.
+- **Candidate boundary:** the complete, uncommitted Phase 3 carrier targets
+  `v0.12.0` with **Structure only. Zero behavior change.** Governed versions
+  remain `0.11.1` until the release engineer cuts the release. The carrier
+  relocates code behind stable imports and entrypoints; it does not authorize
+  a tag or publication.
 - **Product priorities:** (1) a small, easy-to-integrate agent interface over
   MCP, HTTP, and CLI; and (2) high-quality retrieval with provenance, review,
   correction, and honest evaluation.
@@ -219,13 +226,21 @@ usage justifies a separately reviewed boundary.
 
 ## Current Architectural Posture
 
-- `v0.11.1` shipped the Phase 2 debt sweep. At package-input
-  freeze, the bounded local builder matrix was green while final packages, a
-  superseding receipt, and independent review were still pending. Exact-SHA
-  external release gates remain pending.
-
 - `v0.11.1` is the latest published release and reconciles runtime and product
   identity around the agent interface plus retrieval/memory quality.
+- The Phase 3 carrier reduces `main.py` to app assembly and shared middleware,
+  extracts domain routers, mirrors PostgreSQL and SQLite vNext store seams,
+  splits the surviving legacy store and pure contracts, and moves MCP/CLI
+  implementations into packages behind stable facades. Every production Python
+  file is below 4,000 lines; the largest is 3,803 lines.
+- HTTP route paths, operation IDs, dependencies, error behavior, store SQL,
+  MCP and CLI registries, compatibility imports, and console entrypoints remain
+  unchanged. Exact closure, SQL-shape, namespace, and installed-artifact tests
+  enforce those boundaries.
+- The carrier is uncommitted and targets `v0.12.0`; its independent final
+  verdict is owned only by the handoff's `REVIEW_REPORT.md`. The version cut,
+  exact-SHA gates, checksums, tag, GitHub Release, and PyPI readback remain
+  outside the local structural freeze. Phase 4 has not begun.
 - `v0.10.4` is the prior published release; later changes were not part of its
   immutable artifacts.
 - The default deployment is local-first and single-workspace. A future hosted

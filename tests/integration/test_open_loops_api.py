@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 import anyio
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.contracts import MemoryCandidateInput
 from alicebot_api.db import user_connection
@@ -104,6 +105,11 @@ def test_open_loop_endpoints_create_list_detail_and_isolation(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     create_status, create_payload = invoke_request(
         "POST",
@@ -188,6 +194,11 @@ def test_open_loop_status_endpoint_rejects_invalid_values_and_persists_audit_fie
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     create_status, create_payload = invoke_request(
         "POST",
@@ -248,6 +259,11 @@ def test_open_loop_status_endpoint_supports_open_to_dismissed_with_audit_fields(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     create_status, create_payload = invoke_request(
         "POST",
@@ -284,6 +300,11 @@ def test_memory_admission_can_create_open_loop_when_requested(
     seeded = seed_user_with_memory(migrated_database_urls["app"])
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
@@ -325,6 +346,11 @@ def test_context_compile_includes_bounded_open_loop_slice_when_present(
     seeded = seed_user_with_memory(migrated_database_urls["app"])
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )

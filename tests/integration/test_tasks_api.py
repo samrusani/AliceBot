@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import anyio
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -79,6 +80,9 @@ def test_task_endpoints_list_detail_lifecycle_and_user_isolation(
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     intruder = seed_user(migrated_database_urls["app"], email="intruder@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -341,6 +345,9 @@ def test_task_step_sequence_and_transition_endpoints_preserve_parent_consistency
     owner = seed_user(migrated_database_urls["app"], email="owner-sequence@example.com")
     intruder = seed_user(migrated_database_urls["app"], email="intruder-sequence@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -726,6 +733,9 @@ def test_task_step_mutations_reject_visible_links_from_other_task_lineages(
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner-lineage@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         store = ContinuityStore(conn)

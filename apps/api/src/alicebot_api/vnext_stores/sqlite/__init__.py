@@ -1,0 +1,1 @@
+"""SQLite vNext store seams."""

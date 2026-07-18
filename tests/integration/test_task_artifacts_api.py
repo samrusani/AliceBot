@@ -14,6 +14,8 @@ import anyio
 import psycopg
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.artifacts import TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE
 from alicebot_api.db import user_connection
@@ -378,6 +380,22 @@ def test_task_artifact_endpoints_register_list_detail_isolate_and_reject_duplica
             task_workspace_root=str(workspace_root),
         ),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
 
     workspace_status, workspace_payload = invoke_request(
         "POST",
@@ -543,6 +561,22 @@ def test_task_artifact_ingestion_and_chunk_endpoints_are_deterministic_and_isola
             task_workspace_root=str(workspace_root),
         ),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
 
     workspace_status, workspace_payload = invoke_request(
         "POST",
@@ -691,6 +725,22 @@ def test_task_artifact_pdf_ingestion_and_chunk_endpoints_are_deterministic_and_i
             task_workspace_root=str(workspace_root),
         ),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
 
     workspace_status, workspace_payload = invoke_request(
         "POST",
@@ -818,6 +868,22 @@ def test_task_artifact_docx_ingestion_and_chunk_endpoints_are_deterministic_and_
             task_workspace_root=str(workspace_root),
         ),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
 
     workspace_status, workspace_payload = invoke_request(
         "POST",
@@ -939,6 +1005,22 @@ def test_task_artifact_rfc822_ingestion_and_chunk_endpoints_are_deterministic_an
     workspace_root = tmp_path / "task-workspaces"
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
@@ -1076,6 +1158,22 @@ def test_task_artifact_rfc822_ingestion_excludes_nested_email_bodies(
             task_workspace_root=str(workspace_root),
         ),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
 
     workspace_status, workspace_payload = invoke_request(
         "POST",
@@ -1185,6 +1283,22 @@ def test_task_artifact_ingestion_supports_markdown_and_reingest_is_idempotent(
             task_workspace_root=str(workspace_root),
         ),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
 
     workspace_status, workspace_payload = invoke_request(
         "POST",
@@ -1287,6 +1401,22 @@ def test_task_artifact_ingestion_rejects_invalid_utf8_content(
             task_workspace_root=str(workspace_root),
         ),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
 
     workspace_status, workspace_payload = invoke_request(
         "POST",
@@ -1336,6 +1466,22 @@ def test_task_artifact_ingestion_rejects_textless_pdf_content(
             task_workspace_root=str(workspace_root),
         ),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
 
     workspace_status, workspace_payload = invoke_request(
         "POST",
@@ -1379,6 +1525,22 @@ def test_task_artifact_ingestion_rejects_textless_or_malformed_docx(
     workspace_root = tmp_path / "task-workspaces"
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
@@ -1453,6 +1615,22 @@ def test_task_artifact_ingestion_rejects_textless_or_malformed_rfc822_email(
             task_workspace_root=str(workspace_root),
         ),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
 
     workspace_status, workspace_payload = invoke_request(
         "POST",
@@ -1515,6 +1693,22 @@ def test_task_artifact_ingestion_enforces_rooted_workspace_paths(
     workspace_root = tmp_path / "task-workspaces"
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
@@ -1584,6 +1778,22 @@ def test_task_artifact_docx_ingestion_enforces_rooted_workspace_paths(
             task_workspace_root=str(workspace_root),
         ),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
 
     workspace_status, workspace_payload = invoke_request(
         "POST",
@@ -1641,6 +1851,22 @@ def test_task_artifact_rfc822_ingestion_enforces_rooted_workspace_paths(
     workspace_root = tmp_path / "task-workspaces"
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
@@ -1705,6 +1931,22 @@ def test_task_artifact_chunk_retrieval_endpoints_are_scoped_deterministic_and_is
     workspace_root = tmp_path / "task-workspaces"
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    monkeypatch.setattr(
+        memories_legacy_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],

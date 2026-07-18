@@ -2,5914 +2,1963 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from types import FunctionType as _FunctionType
 from typing import Literal, NotRequired, TypeAlias, TypedDict
 from uuid import UUID
 
 from alicebot_api.store import JsonObject, JsonValue
 
-DecisionKind = Literal["included", "excluded"]
-AdmissionAction = Literal["NOOP", "ADD", "UPDATE", "DELETE"]
-MemoryStatus = Literal["active", "deleted"]
-OpenLoopStatus = Literal["open", "resolved", "dismissed"]
-OpenLoopStatusFilter = Literal["open", "resolved", "dismissed", "all"]
-MemoryType = Literal[
-    "preference",
-    "identity_fact",
-    "relationship_fact",
-    "project_fact",
-    "decision",
-    "commitment",
-    "routine",
-    "procedure",
-    "constraint",
-    "working_style",
-]
-MemoryConfirmationStatus = Literal["unconfirmed", "confirmed", "contested"]
-MemoryTrustClass = Literal[
-    "deterministic",
-    "llm_single_source",
-    "llm_corroborated",
-    "human_curated",
-]
-MemoryPromotionEligibility = Literal["promotable", "not_promotable"]
-ContinuityPreservationStatus = Literal["preserved", "not_preserved"]
-ContinuitySearchabilityStatus = Literal["searchable", "not_searchable"]
-ContinuityPromotionStatus = Literal["promotable", "not_promotable"]
-ContinuityRecallFreshnessPosture = Literal["fresh", "aging", "stale", "superseded", "unknown"]
-ContinuityRecallProvenancePosture = Literal["strong", "partial", "weak", "missing"]
-ContinuityRecallSupersessionPosture = Literal["current", "historical", "superseded", "deleted"]
-RetrievalEvaluationStatus = Literal["pass", "fail"]
-MemoryReviewStatusFilter = Literal["active", "deleted", "all"]
-MemoryReviewLabelValue = Literal["correct", "incorrect", "outdated", "insufficient_evidence"]
-MemoryQualityGateStatus = Literal["healthy", "needs_review", "insufficient_sample", "degraded"]
-MemoryQualityReviewAction = Literal[
-    "adjudicate_minimum_sample",
-    "review_high_risk_queue",
-    "review_stale_truth_queue",
-    "drain_unlabeled_queue",
-    "investigate_correction_recurrence",
-    "remediate_freshness_drift",
-    "monitor_quality_posture",
-]
-MemoryReviewQueuePriorityMode = Literal[
-    "oldest_first",
-    "recent_first",
-    "high_risk_first",
-    "stale_truth_first",
-]
-EntityType = Literal["person", "merchant", "product", "project", "routine"]
-EmbeddingConfigStatus = Literal["active", "deprecated", "disabled"]
-ConsentStatus = Literal["granted", "revoked"]
-ApprovalStatus = Literal["pending", "approved", "rejected"]
-ApprovalResolutionAction = Literal["approve", "reject"]
-ApprovalResolutionOutcome = Literal["resolved", "duplicate_rejected", "conflict_rejected"]
-TaskStatus = Literal["pending_approval", "approved", "executed", "denied", "blocked"]
-TaskRunStatus = Literal[
-    "queued",
-    "running",
-    "waiting_approval",
-    "waiting_user",
-    "paused",
-    "failed",
-    "done",
-    "cancelled",
-]
-TaskRunStopReason = Literal[
-    "waiting_approval",
-    "waiting_user",
-    "paused",
-    "budget_exhausted",
-    "approval_rejected",
-    "policy_blocked",
-    "retry_exhausted",
-    "fatal_error",
-    "done",
-    "cancelled",
-]
-TaskRunFailureClass = Literal["transient", "policy", "approval", "budget", "fatal"]
-TaskRunRetryPosture = Literal[
-    "none",
-    "retryable",
-    "exhausted",
-    "terminal",
-    "paused",
-    "awaiting_approval",
-    "awaiting_user",
-]
-TaskWorkspaceStatus = Literal["active"]
-TaskArtifactStatus = Literal["registered"]
-TaskArtifactIngestionStatus = Literal["pending", "ingested"]
-TaskArtifactChunkRetrievalScopeKind = Literal["task", "artifact"]
-TaskArtifactChunkEmbeddingListScopeKind = Literal["artifact", "chunk"]
-TaskLifecycleSource = Literal[
-    "approval_request",
-    "approval_resolution",
-    "proxy_execution",
-    "task_step_continuation",
-    "task_step_sequence",
-    "task_step_transition",
-]
-TaskStepKind = Literal["governed_request"]
-TaskStepStatus = Literal["created", "approved", "executed", "blocked", "denied"]
-ProxyExecutionStatus = Literal["completed", "blocked"]
-ExecutionBudgetStatus = Literal["active", "inactive", "superseded"]
-ExecutionBudgetDecision = Literal["allow", "block"]
-ExecutionBudgetDecisionReason = Literal[
-    "no_matching_budget",
-    "within_budget",
-    "budget_exceeded",
-    "invalid_request_context",
-]
-ExecutionBudgetContextResolution = Literal["resolved", "invalid"]
-ExecutionBudgetCountScope = Literal["lifetime", "rolling_window"]
-ExecutionBudgetLifecycleAction = Literal["deactivate", "supersede"]
-ExecutionBudgetLifecycleOutcome = Literal["deactivated", "superseded", "rejected"]
-PolicyEffect = Literal["allow", "deny", "require_approval"]
-PolicyEvaluationReasonCode = Literal[
-    "matched_policy",
-    "policy_effect_allow",
-    "policy_effect_deny",
-    "policy_effect_require_approval",
-    "consent_missing",
-    "consent_revoked",
-    "no_matching_policy",
-]
-ToolMetadataVersion = Literal["tool_metadata_v0"]
-ToolAllowlistReasonCode = Literal[
-    "tool_metadata_matched",
-    "tool_action_unsupported",
-    "tool_scope_unsupported",
-    "tool_domain_mismatch",
-    "tool_risk_mismatch",
-    "matched_policy",
-    "policy_effect_allow",
-    "policy_effect_deny",
-    "policy_effect_require_approval",
-    "consent_missing",
-    "consent_revoked",
-    "no_matching_policy",
-]
-ToolAllowlistDecision = Literal["allowed", "denied", "approval_required"]
-ToolRoutingDecision = Literal["ready", "denied", "approval_required"]
-PromptSectionName = Literal["system", "developer", "context", "conversation"]
-ModelProvider = Literal["openai_responses"]
-ProviderAdapterKey = Literal["openai_compatible", "ollama", "llamacpp", "vllm", "azure"]
-ModelProviderStatus = Literal["active"]
-ProviderCapabilityDiscoveryStatus = Literal["ready", "failed"]
-ModelFinishReason = Literal["completed", "incomplete"]
-TaskBriefMode = Literal["user_recall", "resume", "worker_subtask", "agent_handoff"]
-TaskBriefingStrategy = Literal["balanced", "compact", "detailed"]
-ContinuityBriefType = Literal[
-    "general",
-    "resume",
-    "agent_handoff",
-    "coding_context",
-    "operator_context",
-]
-ExplicitPreferencePattern = Literal[
-    "i_like",
-    "i_dont_like",
-    "i_prefer",
-    "remember_that_i_like",
-    "remember_that_i_dont_like",
-    "remember_that_i_prefer",
-]
-ExplicitCommitmentPattern = Literal[
-    "remind_me_to",
-    "i_need_to",
-    "dont_let_me_forget_to",
-    "remember_to",
-]
-ContinuityObjectType = Literal[
-    "Note",
-    "MemoryFact",
-    "Decision",
-    "Commitment",
-    "WaitingFor",
-    "Blocker",
-    "NextAction",
-]
-ContinuityCaptureExplicitSignal = Literal[
-    "remember_this",
-    "task",
-    "decision",
-    "commitment",
-    "waiting_for",
-    "blocker",
-    "next_action",
-    "note",
-]
-ContinuityCaptureAdmissionPosture = Literal["DERIVED", "TRIAGE"]
-ContinuityCaptureCandidateType = Literal[
-    "decision",
-    "commitment",
-    "waiting_for",
-    "blocker",
-    "preference",
-    "correction",
-    "note",
-    "no_op",
-]
-ContinuityCaptureCommitMode = Literal["manual", "assist", "auto"]
-ContinuityCaptureCommitDecision = Literal[
-    "auto_saved",
-    "queued_for_review",
-    "no_op",
-    "duplicate_noop",
-]
-ContinuityCaptureProposedAction = Literal["auto_save_candidate", "queue_for_review", "no_op"]
-MemoryOperationType = Literal["ADD", "UPDATE", "SUPERSEDE", "DELETE", "NOOP"]
-MemoryOperationPolicyAction = Literal["auto_apply", "review_required", "skip"]
-MemoryOperationStatus = Literal["applied", "no_op", "skipped", "duplicate"]
-ContinuityRecallScopeKind = Literal["thread", "task", "project", "person"]
-ContinuityCorrectionAction = Literal["confirm", "edit", "delete", "supersede", "mark_stale"]
-ContinuityReviewStatus = Literal["active", "stale", "superseded", "deleted"]
-ContinuityReviewStatusFilter = Literal["correction_ready", "active", "stale", "superseded", "deleted", "all"]
-ContradictionKind = Literal[
-    "direct_fact_conflict",
-    "preference_conflict",
-    "temporal_conflict",
-    "source_hierarchy_conflict",
-]
-ContradictionStatus = Literal["open", "resolved", "dismissed"]
-ContradictionResolutionAction = Literal[
-    "confirm_primary",
-    "confirm_counterpart",
-    "mark_historical",
-    "dismiss_false_positive",
-    "auto_resolved",
-]
-TrustSignalType = Literal["correction", "corroboration", "contradiction", "weak_inference"]
-TrustSignalState = Literal["active", "inactive"]
-TrustSignalDirection = Literal["positive", "negative", "neutral"]
-ContinuityOpenLoopPosture = Literal["waiting_for", "blocker", "stale", "next_action"]
-ContinuityOpenLoopReviewAction = Literal["done", "deferred", "still_blocked"]
-RecommendationConfidencePosture = Literal["high", "medium", "low"]
-ExplicitCommitmentOpenLoopDecision = Literal[
-    "CREATED",
-    "NOOP_ACTIVE_EXISTS",
-    "NOOP_MEMORY_NOT_PERSISTED",
-]
-MemorySelectionSource = Literal["symbolic", "semantic"]
-ArtifactSelectionSource = Literal["lexical", "semantic"]
-
-DEFAULT_MAX_SESSIONS = 3
-DEFAULT_MAX_EVENTS = 8
-DEFAULT_MAX_MEMORIES = 5
-DEFAULT_MAX_ENTITIES = 5
-DEFAULT_MAX_ENTITY_EDGES = 10
-DEFAULT_MEMORY_REVIEW_LIMIT = 20
-MAX_MEMORY_REVIEW_LIMIT = 100
-DEFAULT_OPEN_LOOP_LIMIT = 20
-MAX_OPEN_LOOP_LIMIT = 100
-DEFAULT_RESUMPTION_BRIEF_EVENT_LIMIT = 8
-MAX_RESUMPTION_BRIEF_EVENT_LIMIT = 50
-DEFAULT_RESUMPTION_BRIEF_OPEN_LOOP_LIMIT = 5
-MAX_RESUMPTION_BRIEF_OPEN_LOOP_LIMIT = 20
-DEFAULT_RESUMPTION_BRIEF_MEMORY_LIMIT = 5
-MAX_RESUMPTION_BRIEF_MEMORY_LIMIT = 20
-DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT = 5
-MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT = 50
-DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT = 5
-MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT = 50
-DEFAULT_CONTINUITY_CAPTURE_LIMIT = 20
-MAX_CONTINUITY_CAPTURE_LIMIT = 100
-DEFAULT_CONTINUITY_REVIEW_LIMIT = 20
-MAX_CONTINUITY_REVIEW_LIMIT = 100
-DEFAULT_CONTINUITY_RECALL_LIMIT = 20
-MAX_CONTINUITY_RECALL_LIMIT = 100
-DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT = 5
-MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT = 20
-DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT = 5
-MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT = 20
-DEFAULT_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT = 6
-MAX_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT = 20
-DEFAULT_CONTINUITY_BRIEF_CONFLICT_LIMIT = 5
-MAX_CONTINUITY_BRIEF_CONFLICT_LIMIT = 20
-DEFAULT_CONTINUITY_BRIEF_TIMELINE_LIMIT = 5
-MAX_CONTINUITY_BRIEF_TIMELINE_LIMIT = 20
-DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT = 20
-MAX_CONTINUITY_OPEN_LOOP_LIMIT = 100
-DEFAULT_CONTINUITY_DAILY_BRIEF_LIMIT = 3
-MAX_CONTINUITY_DAILY_BRIEF_LIMIT = 20
-DEFAULT_CONTINUITY_WEEKLY_REVIEW_LIMIT = 5
-MAX_CONTINUITY_WEEKLY_REVIEW_LIMIT = 50
-DEFAULT_CALENDAR_EVENT_LIST_LIMIT = 20
-MAX_CALENDAR_EVENT_LIST_LIMIT = 50
-COMPILER_VERSION_V0 = "continuity_v0"
-PROMPT_ASSEMBLY_VERSION_V0 = "prompt_assembly_v0"
-RESPONSE_GENERATION_VERSION_V0 = "response_generation_v0"
-PROVIDER_CAPABILITY_VERSION_V1 = "provider_capability_v1"
-TRACE_KIND_CONTEXT_COMPILE = "context.compile"
-TRACE_KIND_RESPONSE_GENERATE = "response.generate"
-TRACE_REVIEW_LIST_ORDER = ["created_at_desc", "id_desc"]
-TRACE_REVIEW_EVENT_LIST_ORDER = ["sequence_no_asc", "id_asc"]
-THREAD_LIST_ORDER = ["created_at_desc", "id_desc"]
-AGENT_PROFILE_LIST_ORDER = ["id_asc"]
-THREAD_SESSION_LIST_ORDER = ["started_at_asc", "created_at_asc", "id_asc"]
-THREAD_EVENT_LIST_ORDER = ["sequence_no_asc"]
-PROVIDER_LIST_ORDER = ["created_at_asc", "id_asc"]
-DEFAULT_AGENT_PROFILE_ID = "assistant_default"
-RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "resumption_brief_v0"
-CONTINUITY_RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_resumption_brief_v0"
-TASK_BRIEF_ASSEMBLY_VERSION_V0 = "task_brief_v0"
-TASK_BRIEF_COMPARISON_VERSION_V0 = "task_brief_comparison_v0"
-CONTINUITY_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_brief_v0"
-CONTINUITY_DAILY_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_daily_brief_v0"
-CONTINUITY_WEEKLY_REVIEW_ASSEMBLY_VERSION_V0 = "continuity_weekly_review_v0"
-RESUMPTION_BRIEF_CONVERSATION_EVENT_KINDS = ["message.user", "message.assistant"]
-RESUMPTION_BRIEF_CONVERSATION_ORDER = ["sequence_no_asc"]
-RESUMPTION_BRIEF_MEMORY_ORDER = ["updated_at_asc", "created_at_asc", "id_asc"]
-MEMORY_REVIEW_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
-MEMORY_REVIEW_QUEUE_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
-DEFAULT_MEMORY_REVIEW_QUEUE_PRIORITY_MODE: MemoryReviewQueuePriorityMode = "recent_first"
-MEMORY_REVIEW_QUEUE_PRIORITY_MODES: list[MemoryReviewQueuePriorityMode] = [
-    "oldest_first",
-    "recent_first",
-    "high_risk_first",
-    "stale_truth_first",
-]
-DEFAULT_TASK_BRIEF_TOKEN_BUDGET = 220
-MAX_TASK_BRIEF_TOKEN_BUDGET = 4000
-TASK_BRIEF_MODE_ORDER: list[TaskBriefMode] = [
-    "user_recall",
-    "resume",
-    "worker_subtask",
-    "agent_handoff",
-]
-CONTINUITY_BRIEF_TYPE_ORDER: list[ContinuityBriefType] = [
-    "general",
-    "resume",
-    "agent_handoff",
-    "coding_context",
-    "operator_context",
-]
-TASK_BRIEF_SECTION_ITEM_ORDER = ["created_at_desc", "id_desc"]
-TASK_BRIEFING_STRATEGIES: list[TaskBriefingStrategy] = [
-    "balanced",
-    "compact",
-    "detailed",
-]
-MEMORY_REVIEW_QUEUE_ORDER_BY_PRIORITY_MODE: dict[MemoryReviewQueuePriorityMode, list[str]] = {
-    "oldest_first": ["updated_at_asc", "created_at_asc", "id_asc"],
-    "recent_first": ["updated_at_desc", "created_at_desc", "id_desc"],
-    "high_risk_first": [
-        "is_high_risk_desc",
-        "confidence_asc_nulls_first",
-        "updated_at_desc",
-        "created_at_desc",
-        "id_desc",
-    ],
-    "stale_truth_first": [
-        "is_stale_truth_desc",
-        "valid_to_asc_nulls_last",
-        "updated_at_desc",
-        "created_at_desc",
-        "id_desc",
-    ],
-}
-MEMORY_QUALITY_PRECISION_TARGET = 0.8
-MEMORY_QUALITY_MIN_ADJUDICATED_SAMPLE = 10
-MEMORY_QUALITY_HIGH_RISK_CONFIDENCE_THRESHOLD = 0.7
-MEMORY_REVISION_REVIEW_ORDER = ["sequence_no_asc"]
-MEMORY_REVIEW_LABEL_VALUES = [
-    "correct",
-    "incorrect",
-    "outdated",
-    "insufficient_evidence",
-]
-MEMORY_REVIEW_LABEL_ORDER = ["created_at_asc", "id_asc"]
-OPEN_LOOP_REVIEW_ORDER = ["opened_at_desc", "created_at_desc", "id_desc"]
-MEMORY_TYPES = [
-    "preference",
-    "identity_fact",
-    "relationship_fact",
-    "project_fact",
-    "decision",
-    "commitment",
-    "routine",
-    "constraint",
-    "working_style",
-]
-MEMORY_CONFIRMATION_STATUSES = [
-    "unconfirmed",
-    "confirmed",
-    "contested",
-]
-MEMORY_TRUST_CLASSES = [
-    "deterministic",
-    "llm_single_source",
-    "llm_corroborated",
-    "human_curated",
-]
-MEMORY_PROMOTION_ELIGIBILITIES = [
-    "promotable",
-    "not_promotable",
-]
-OPEN_LOOP_STATUSES = [
-    "open",
-    "resolved",
-    "dismissed",
-]
-DEFAULT_MEMORY_TYPE: MemoryType = "preference"
-DEFAULT_MEMORY_CONFIRMATION_STATUS: MemoryConfirmationStatus = "unconfirmed"
-DEFAULT_MEMORY_TRUST_CLASS: MemoryTrustClass = "deterministic"
-DEFAULT_MEMORY_PROMOTION_ELIGIBILITY: MemoryPromotionEligibility = "promotable"
-DEFAULT_CONTINUITY_LIFECYCLE_LIMIT = 50
-MAX_CONTINUITY_LIFECYCLE_LIMIT = 200
-DEFAULT_RETRIEVAL_RUN_LIST_LIMIT = 20
-MAX_RETRIEVAL_RUN_LIST_LIMIT = 100
-DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT = 50
-MAX_TRUSTED_FACT_PROMOTION_LIMIT = 200
-ENTITY_TYPES = [
-    "person",
-    "merchant",
-    "product",
-    "project",
-    "routine",
-]
-ENTITY_LIST_ORDER = ["created_at_asc", "id_asc"]
-ENTITY_EDGE_LIST_ORDER = ["created_at_asc", "id_asc"]
-TEMPORAL_TIMELINE_ORDER = ["occurred_at_asc", "event_type_asc", "id_asc"]
-TRUSTED_FACT_PATTERN_ORDER = ["memory_type_asc", "namespace_key_asc", "title_asc", "id_asc"]
-TRUSTED_FACT_PLAYBOOK_ORDER = ["memory_type_asc", "pattern_key_asc", "title_asc", "id_asc"]
-EMBEDDING_CONFIG_LIST_ORDER = ["created_at_asc", "id_asc"]
-MEMORY_EMBEDDING_LIST_ORDER = ["created_at_asc", "id_asc"]
-SEMANTIC_MEMORY_RETRIEVAL_ORDER = ["score_desc", "created_at_asc", "id_asc"]
-RETRIEVAL_EVALUATION_FIXTURE_ORDER = ["fixture_id_asc"]
-RETRIEVAL_EVALUATION_RESULT_ORDER = [
-    "precision_at_k_desc",
-    "precision_lift_at_k_desc",
-    "fixture_id_asc",
-]
-RETRIEVAL_RUN_LIST_ORDER = ["created_at_desc", "id_desc"]
-RETRIEVAL_TRACE_CANDIDATE_ORDER = [
-    "selected_desc",
-    "rank_asc",
-    "relevance_desc",
-    "id_asc",
-]
-EMBEDDING_CONFIG_STATUSES = ["active", "deprecated", "disabled"]
-CONSENT_STATUSES = ["granted", "revoked"]
-CONSENT_LIST_ORDER = ["consent_key_asc", "created_at_asc", "id_asc"]
-POLICY_EFFECTS = ["allow", "deny", "require_approval"]
-POLICY_LIST_ORDER = ["priority_asc", "created_at_asc", "id_asc"]
-POLICY_EVALUATION_VERSION_V0 = "policy_evaluation_v0"
-TRACE_KIND_POLICY_EVALUATE = "policy.evaluate"
-TOOL_METADATA_VERSION_V0: ToolMetadataVersion = "tool_metadata_v0"
-TOOL_LIST_ORDER = ["tool_key_asc", "version_asc", "created_at_asc", "id_asc"]
-TOOL_ALLOWLIST_EVALUATION_VERSION_V0 = "tool_allowlist_evaluation_v0"
-TRACE_KIND_TOOL_ALLOWLIST_EVALUATE = "tool.allowlist.evaluate"
-TOOL_ROUTING_VERSION_V0 = "tool_routing_v0"
-TRACE_KIND_TOOL_ROUTE = "tool.route"
-APPROVAL_LIST_ORDER = ["created_at_asc", "id_asc"]
-TASK_LIST_ORDER = ["created_at_asc", "id_asc"]
-TASK_WORKSPACE_LIST_ORDER = ["created_at_asc", "id_asc"]
-GMAIL_ACCOUNT_LIST_ORDER = ["created_at_asc", "id_asc"]
-CALENDAR_ACCOUNT_LIST_ORDER = ["created_at_asc", "id_asc"]
-CALENDAR_EVENT_LIST_ORDER = ["start_time_asc", "provider_event_id_asc"]
-TASK_ARTIFACT_LIST_ORDER = ["created_at_asc", "id_asc"]
-TASK_ARTIFACT_CHUNK_LIST_ORDER = ["sequence_no_asc", "id_asc"]
-TASK_ARTIFACT_CHUNK_EMBEDDING_LIST_ORDER = [
-    "task_artifact_chunk_sequence_no_asc",
-    "created_at_asc",
-    "id_asc",
-]
-TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER = [
-    "matched_query_term_count_desc",
-    "first_match_char_start_asc",
-    "relative_path_asc",
-    "sequence_no_asc",
-    "id_asc",
-]
-TASK_ARTIFACT_CHUNK_SEMANTIC_RETRIEVAL_ORDER = [
-    "score_desc",
-    "relative_path_asc",
-    "sequence_no_asc",
-    "id_asc",
-]
-TASK_STEP_LIST_ORDER = ["sequence_no_asc", "created_at_asc", "id_asc"]
-TOOL_EXECUTION_LIST_ORDER = ["executed_at_asc", "id_asc"]
-EXECUTION_BUDGET_LIST_ORDER = ["created_at_asc", "id_asc"]
-EXECUTION_BUDGET_MATCH_ORDER = ["specificity_desc", "created_at_asc", "id_asc"]
-EXECUTION_BUDGET_STATUSES = ["active", "inactive", "superseded"]
-TASK_STATUSES = ["pending_approval", "approved", "executed", "denied", "blocked"]
-TASK_RUN_STATUSES = [
-    "queued",
-    "running",
-    "waiting_approval",
-    "waiting_user",
-    "paused",
-    "failed",
-    "done",
-    "cancelled",
-]
-TASK_RUN_STOP_REASONS = [
-    "waiting_approval",
-    "waiting_user",
-    "paused",
-    "budget_exhausted",
-    "approval_rejected",
-    "policy_blocked",
-    "retry_exhausted",
-    "fatal_error",
-    "done",
-    "cancelled",
-]
-TASK_RUN_FAILURE_CLASSES = ["transient", "policy", "approval", "budget", "fatal"]
-TASK_RUN_RETRY_POSTURES = [
-    "none",
-    "retryable",
-    "exhausted",
-    "terminal",
-    "paused",
-    "awaiting_approval",
-    "awaiting_user",
-]
-TASK_RUN_LIST_ORDER = ["created_at_asc", "id_asc"]
-CONTINUITY_CAPTURE_LIST_ORDER = ["created_at_desc", "id_desc"]
-CONTINUITY_OBJECT_LIST_ORDER = ["created_at_desc", "id_desc"]
-CONTINUITY_REVIEW_QUEUE_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
-CONTINUITY_CORRECTION_EVENT_ORDER = ["created_at_desc", "id_desc"]
-CONTRADICTION_CASE_LIST_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
-TRUST_SIGNAL_LIST_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
-CONTINUITY_RECALL_LIST_ORDER = ["relevance_desc", "created_at_desc", "id_desc"]
-CONTINUITY_LIFECYCLE_LIST_ORDER = ["updated_at_desc", "id_desc"]
-CONTINUITY_RESUMPTION_RECENT_CHANGE_ORDER = ["created_at_desc", "id_desc"]
-CONTINUITY_RESUMPTION_OPEN_LOOP_ORDER = ["created_at_desc", "id_desc"]
-CONTINUITY_OPEN_LOOP_POSTURE_ORDER = ["waiting_for", "blocker", "stale", "next_action"]
-CONTINUITY_OPEN_LOOP_ITEM_ORDER = ["created_at_desc", "id_desc"]
-TASK_WORKSPACE_STATUSES = ["active"]
-TASK_ARTIFACT_STATUSES = ["registered"]
-TASK_ARTIFACT_INGESTION_STATUSES = ["pending", "ingested"]
-TASK_STEP_KINDS = ["governed_request"]
-TASK_STEP_STATUSES = ["created", "approved", "executed", "blocked", "denied"]
-APPROVAL_REQUEST_VERSION_V0 = "approval_request_v0"
-TRACE_KIND_APPROVAL_REQUEST = "approval.request"
-APPROVAL_RESOLUTION_VERSION_V0 = "approval_resolution_v0"
-TRACE_KIND_APPROVAL_RESOLUTION = "approval.resolve"
-TRACE_KIND_APPROVAL_RESOLVE = TRACE_KIND_APPROVAL_RESOLUTION
-PROXY_EXECUTION_VERSION_V0 = "proxy_execution_v0"
-TRACE_KIND_PROXY_EXECUTE = "tool.proxy.execute"
-GMAIL_PROVIDER = "gmail"
-GMAIL_AUTH_KIND_OAUTH_ACCESS_TOKEN = "oauth_access_token"
-GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
-GMAIL_PROTECTED_CREDENTIAL_KIND = "gmail_oauth_access_token_v1"
-GMAIL_REFRESHABLE_PROTECTED_CREDENTIAL_KIND = "gmail_oauth_refresh_token_v2"
-CALENDAR_PROVIDER = "google_calendar"
-CALENDAR_AUTH_KIND_OAUTH_ACCESS_TOKEN = "oauth_access_token"
-CALENDAR_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
-CALENDAR_PROTECTED_CREDENTIAL_KIND = "calendar_oauth_access_token_v1"
-TASK_STEP_SEQUENCE_VERSION_V0 = "task_step_sequence_v0"
-TRACE_KIND_TASK_STEP_SEQUENCE = "task.step.sequence"
-TASK_STEP_CONTINUATION_VERSION_V0 = "task_step_continuation_v0"
-TRACE_KIND_TASK_STEP_CONTINUATION = "task.step.continuation"
-TASK_STEP_TRANSITION_VERSION_V0 = "task_step_transition_v0"
-TRACE_KIND_TASK_STEP_TRANSITION = "task.step.transition"
-EXECUTION_BUDGET_LIFECYCLE_VERSION_V0 = "execution_budget_lifecycle_v0"
-TRACE_KIND_EXECUTION_BUDGET_LIFECYCLE = "execution_budget.lifecycle"
-CONTINUITY_OBJECT_TYPES = [
-    "Note",
-    "MemoryFact",
-    "Decision",
-    "Commitment",
-    "WaitingFor",
-    "Blocker",
-    "NextAction",
-]
-CONTINUITY_CAPTURE_EXPLICIT_SIGNALS = [
-    "remember_this",
-    "task",
-    "decision",
-    "commitment",
-    "waiting_for",
-    "blocker",
-    "next_action",
-    "note",
-]
-CONTINUITY_CAPTURE_CANDIDATE_TYPES = [
-    "decision",
-    "commitment",
-    "waiting_for",
-    "blocker",
-    "preference",
-    "correction",
-    "note",
-    "no_op",
-]
-CONTINUITY_CAPTURE_COMMIT_MODES = ["manual", "assist", "auto"]
-CONTINUITY_CAPTURE_ASSIST_AUTOSAVE_TYPES = [
-    "correction",
-    "preference",
-    "decision",
-    "commitment",
-    "waiting_for",
-    "blocker",
-]
-CONTINUITY_CAPTURE_REVIEW_REQUIRED_TYPES = ["note"]
-MEMORY_OPERATION_TYPES = ["ADD", "UPDATE", "SUPERSEDE", "DELETE", "NOOP"]
-MEMORY_OPERATION_POLICY_ACTIONS = ["auto_apply", "review_required", "skip"]
-MEMORY_OPERATION_STATUSES = ["applied", "no_op", "skipped", "duplicate"]
-CONTINUITY_CORRECTION_ACTIONS = [
-    "confirm",
-    "edit",
-    "delete",
-    "supersede",
-    "mark_stale",
-]
-CONTINUITY_PRESERVATION_STATUSES = [
-    "preserved",
-    "not_preserved",
-]
-CONTINUITY_SEARCHABILITY_STATUSES = [
-    "searchable",
-    "not_searchable",
-]
-CONTINUITY_PROMOTION_STATUSES = [
-    "promotable",
-    "not_promotable",
-]
-CONTINUITY_REVIEW_STATUSES = [
-    "active",
-    "stale",
-    "superseded",
-    "deleted",
-]
-CONTRADICTION_KINDS = [
-    "direct_fact_conflict",
-    "preference_conflict",
-    "temporal_conflict",
-    "source_hierarchy_conflict",
-]
-CONTRADICTION_STATUSES = [
-    "open",
-    "resolved",
-    "dismissed",
-]
-CONTRADICTION_RESOLUTION_ACTIONS = [
-    "confirm_primary",
-    "confirm_counterpart",
-    "mark_historical",
-    "dismiss_false_positive",
-    "auto_resolved",
-]
-TRUST_SIGNAL_TYPES = [
-    "correction",
-    "corroboration",
-    "contradiction",
-    "weak_inference",
-]
-TRUST_SIGNAL_STATES = [
-    "active",
-    "inactive",
-]
-TRUST_SIGNAL_DIRECTIONS = [
-    "positive",
-    "negative",
-    "neutral",
-]
-CONTINUITY_OPEN_LOOP_POSTURES = [
-    "waiting_for",
-    "blocker",
-    "stale",
-    "next_action",
-]
-CONTINUITY_OPEN_LOOP_REVIEW_ACTIONS = [
-    "done",
-    "deferred",
-    "still_blocked",
-]
-
-DEFAULT_TEMPORAL_TIMELINE_LIMIT = 100
-MAX_TEMPORAL_TIMELINE_LIMIT = 500
+from alicebot_api._contracts.common import (
+    DecisionKind,
+    AdmissionAction,
+    MemoryStatus,
+    OpenLoopStatus,
+    OpenLoopStatusFilter,
+    MemoryType,
+    MemoryConfirmationStatus,
+    MemoryTrustClass,
+    MemoryPromotionEligibility,
+    ContinuityPreservationStatus,
+    ContinuitySearchabilityStatus,
+    ContinuityPromotionStatus,
+    ContinuityRecallFreshnessPosture,
+    ContinuityRecallProvenancePosture,
+    ContinuityRecallSupersessionPosture,
+    RetrievalEvaluationStatus,
+    MemoryReviewStatusFilter,
+    MemoryReviewLabelValue,
+    MemoryQualityGateStatus,
+    MemoryQualityReviewAction,
+    MemoryReviewQueuePriorityMode,
+    EntityType,
+    EmbeddingConfigStatus,
+    ConsentStatus,
+    ApprovalStatus,
+    ApprovalResolutionAction,
+    ApprovalResolutionOutcome,
+    TaskStatus,
+    TaskRunStatus,
+    TaskRunStopReason,
+    TaskRunFailureClass,
+    TaskRunRetryPosture,
+    TaskWorkspaceStatus,
+    TaskArtifactStatus,
+    TaskArtifactIngestionStatus,
+    TaskArtifactChunkRetrievalScopeKind,
+    TaskArtifactChunkEmbeddingListScopeKind,
+    TaskLifecycleSource,
+    TaskStepKind,
+    TaskStepStatus,
+    ProxyExecutionStatus,
+    ExecutionBudgetStatus,
+    ExecutionBudgetDecision,
+    ExecutionBudgetDecisionReason,
+    ExecutionBudgetContextResolution,
+    ExecutionBudgetCountScope,
+    ExecutionBudgetLifecycleAction,
+    ExecutionBudgetLifecycleOutcome,
+    PolicyEffect,
+    PolicyEvaluationReasonCode,
+    ToolMetadataVersion,
+    ToolAllowlistReasonCode,
+    ToolAllowlistDecision,
+    ToolRoutingDecision,
+    PromptSectionName,
+    ModelProvider,
+    ProviderAdapterKey,
+    ModelProviderStatus,
+    ProviderCapabilityDiscoveryStatus,
+    ModelFinishReason,
+    TaskBriefMode,
+    TaskBriefingStrategy,
+    ContinuityBriefType,
+    ExplicitPreferencePattern,
+    ExplicitCommitmentPattern,
+    ContinuityObjectType,
+    ContinuityCaptureExplicitSignal,
+    ContinuityCaptureAdmissionPosture,
+    ContinuityCaptureCandidateType,
+    ContinuityCaptureCommitMode,
+    ContinuityCaptureCommitDecision,
+    ContinuityCaptureProposedAction,
+    MemoryOperationType,
+    MemoryOperationPolicyAction,
+    MemoryOperationStatus,
+    ContinuityRecallScopeKind,
+    ContinuityCorrectionAction,
+    ContinuityReviewStatus,
+    ContinuityReviewStatusFilter,
+    ContradictionKind,
+    ContradictionStatus,
+    ContradictionResolutionAction,
+    TrustSignalType,
+    TrustSignalState,
+    TrustSignalDirection,
+    ContinuityOpenLoopPosture,
+    ContinuityOpenLoopReviewAction,
+    RecommendationConfidencePosture,
+    ExplicitCommitmentOpenLoopDecision,
+    MemorySelectionSource,
+    ArtifactSelectionSource,
+    DEFAULT_MAX_SESSIONS,
+    DEFAULT_MAX_EVENTS,
+    DEFAULT_MAX_MEMORIES,
+    DEFAULT_MAX_ENTITIES,
+    DEFAULT_MAX_ENTITY_EDGES,
+    DEFAULT_MEMORY_REVIEW_LIMIT,
+    MAX_MEMORY_REVIEW_LIMIT,
+    DEFAULT_OPEN_LOOP_LIMIT,
+    MAX_OPEN_LOOP_LIMIT,
+    DEFAULT_RESUMPTION_BRIEF_EVENT_LIMIT,
+    MAX_RESUMPTION_BRIEF_EVENT_LIMIT,
+    DEFAULT_RESUMPTION_BRIEF_OPEN_LOOP_LIMIT,
+    MAX_RESUMPTION_BRIEF_OPEN_LOOP_LIMIT,
+    DEFAULT_RESUMPTION_BRIEF_MEMORY_LIMIT,
+    MAX_RESUMPTION_BRIEF_MEMORY_LIMIT,
+    DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
+    MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
+    DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
+    MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
+    DEFAULT_CONTINUITY_CAPTURE_LIMIT,
+    MAX_CONTINUITY_CAPTURE_LIMIT,
+    DEFAULT_CONTINUITY_REVIEW_LIMIT,
+    MAX_CONTINUITY_REVIEW_LIMIT,
+    DEFAULT_CONTINUITY_RECALL_LIMIT,
+    MAX_CONTINUITY_RECALL_LIMIT,
+    DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+    MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+    DEFAULT_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
+    MAX_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
+    DEFAULT_CONTINUITY_BRIEF_CONFLICT_LIMIT,
+    MAX_CONTINUITY_BRIEF_CONFLICT_LIMIT,
+    DEFAULT_CONTINUITY_BRIEF_TIMELINE_LIMIT,
+    MAX_CONTINUITY_BRIEF_TIMELINE_LIMIT,
+    DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT,
+    MAX_CONTINUITY_OPEN_LOOP_LIMIT,
+    DEFAULT_CONTINUITY_DAILY_BRIEF_LIMIT,
+    MAX_CONTINUITY_DAILY_BRIEF_LIMIT,
+    DEFAULT_CONTINUITY_WEEKLY_REVIEW_LIMIT,
+    MAX_CONTINUITY_WEEKLY_REVIEW_LIMIT,
+    DEFAULT_CALENDAR_EVENT_LIST_LIMIT,
+    MAX_CALENDAR_EVENT_LIST_LIMIT,
+    COMPILER_VERSION_V0,
+    PROMPT_ASSEMBLY_VERSION_V0,
+    RESPONSE_GENERATION_VERSION_V0,
+    PROVIDER_CAPABILITY_VERSION_V1,
+    TRACE_KIND_CONTEXT_COMPILE,
+    TRACE_KIND_RESPONSE_GENERATE,
+    TRACE_REVIEW_LIST_ORDER,
+    TRACE_REVIEW_EVENT_LIST_ORDER,
+    THREAD_LIST_ORDER,
+    AGENT_PROFILE_LIST_ORDER,
+    THREAD_SESSION_LIST_ORDER,
+    THREAD_EVENT_LIST_ORDER,
+    PROVIDER_LIST_ORDER,
+    DEFAULT_AGENT_PROFILE_ID,
+    RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0,
+    CONTINUITY_RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0,
+    TASK_BRIEF_ASSEMBLY_VERSION_V0,
+    TASK_BRIEF_COMPARISON_VERSION_V0,
+    CONTINUITY_BRIEF_ASSEMBLY_VERSION_V0,
+    CONTINUITY_DAILY_BRIEF_ASSEMBLY_VERSION_V0,
+    CONTINUITY_WEEKLY_REVIEW_ASSEMBLY_VERSION_V0,
+    RESUMPTION_BRIEF_CONVERSATION_EVENT_KINDS,
+    RESUMPTION_BRIEF_CONVERSATION_ORDER,
+    RESUMPTION_BRIEF_MEMORY_ORDER,
+    MEMORY_REVIEW_ORDER,
+    MEMORY_REVIEW_QUEUE_ORDER,
+    DEFAULT_MEMORY_REVIEW_QUEUE_PRIORITY_MODE,
+    MEMORY_REVIEW_QUEUE_PRIORITY_MODES,
+    DEFAULT_TASK_BRIEF_TOKEN_BUDGET,
+    MAX_TASK_BRIEF_TOKEN_BUDGET,
+    TASK_BRIEF_MODE_ORDER,
+    CONTINUITY_BRIEF_TYPE_ORDER,
+    TASK_BRIEF_SECTION_ITEM_ORDER,
+    TASK_BRIEFING_STRATEGIES,
+    MEMORY_REVIEW_QUEUE_ORDER_BY_PRIORITY_MODE,
+    MEMORY_QUALITY_PRECISION_TARGET,
+    MEMORY_QUALITY_MIN_ADJUDICATED_SAMPLE,
+    MEMORY_QUALITY_HIGH_RISK_CONFIDENCE_THRESHOLD,
+    MEMORY_REVISION_REVIEW_ORDER,
+    MEMORY_REVIEW_LABEL_VALUES,
+    MEMORY_REVIEW_LABEL_ORDER,
+    OPEN_LOOP_REVIEW_ORDER,
+    MEMORY_TYPES,
+    MEMORY_CONFIRMATION_STATUSES,
+    MEMORY_TRUST_CLASSES,
+    MEMORY_PROMOTION_ELIGIBILITIES,
+    OPEN_LOOP_STATUSES,
+    DEFAULT_MEMORY_TYPE,
+    DEFAULT_MEMORY_CONFIRMATION_STATUS,
+    DEFAULT_MEMORY_TRUST_CLASS,
+    DEFAULT_MEMORY_PROMOTION_ELIGIBILITY,
+    DEFAULT_CONTINUITY_LIFECYCLE_LIMIT,
+    MAX_CONTINUITY_LIFECYCLE_LIMIT,
+    DEFAULT_RETRIEVAL_RUN_LIST_LIMIT,
+    MAX_RETRIEVAL_RUN_LIST_LIMIT,
+    DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT,
+    MAX_TRUSTED_FACT_PROMOTION_LIMIT,
+    ENTITY_TYPES,
+    ENTITY_LIST_ORDER,
+    ENTITY_EDGE_LIST_ORDER,
+    TEMPORAL_TIMELINE_ORDER,
+    TRUSTED_FACT_PATTERN_ORDER,
+    TRUSTED_FACT_PLAYBOOK_ORDER,
+    EMBEDDING_CONFIG_LIST_ORDER,
+    MEMORY_EMBEDDING_LIST_ORDER,
+    SEMANTIC_MEMORY_RETRIEVAL_ORDER,
+    RETRIEVAL_EVALUATION_FIXTURE_ORDER,
+    RETRIEVAL_EVALUATION_RESULT_ORDER,
+    RETRIEVAL_RUN_LIST_ORDER,
+    RETRIEVAL_TRACE_CANDIDATE_ORDER,
+    EMBEDDING_CONFIG_STATUSES,
+    CONSENT_STATUSES,
+    CONSENT_LIST_ORDER,
+    POLICY_EFFECTS,
+    POLICY_LIST_ORDER,
+    POLICY_EVALUATION_VERSION_V0,
+    TRACE_KIND_POLICY_EVALUATE,
+    TOOL_METADATA_VERSION_V0,
+    TOOL_LIST_ORDER,
+    TOOL_ALLOWLIST_EVALUATION_VERSION_V0,
+    TRACE_KIND_TOOL_ALLOWLIST_EVALUATE,
+    TOOL_ROUTING_VERSION_V0,
+    TRACE_KIND_TOOL_ROUTE,
+    APPROVAL_LIST_ORDER,
+    TASK_LIST_ORDER,
+    TASK_WORKSPACE_LIST_ORDER,
+    GMAIL_ACCOUNT_LIST_ORDER,
+    CALENDAR_ACCOUNT_LIST_ORDER,
+    CALENDAR_EVENT_LIST_ORDER,
+    TASK_ARTIFACT_LIST_ORDER,
+    TASK_ARTIFACT_CHUNK_LIST_ORDER,
+    TASK_ARTIFACT_CHUNK_EMBEDDING_LIST_ORDER,
+    TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER,
+    TASK_ARTIFACT_CHUNK_SEMANTIC_RETRIEVAL_ORDER,
+    TASK_STEP_LIST_ORDER,
+    TOOL_EXECUTION_LIST_ORDER,
+    EXECUTION_BUDGET_LIST_ORDER,
+    EXECUTION_BUDGET_MATCH_ORDER,
+    EXECUTION_BUDGET_STATUSES,
+    TASK_STATUSES,
+    TASK_RUN_STATUSES,
+    TASK_RUN_STOP_REASONS,
+    TASK_RUN_FAILURE_CLASSES,
+    TASK_RUN_RETRY_POSTURES,
+    TASK_RUN_LIST_ORDER,
+    CONTINUITY_CAPTURE_LIST_ORDER,
+    CONTINUITY_OBJECT_LIST_ORDER,
+    CONTINUITY_REVIEW_QUEUE_ORDER,
+    CONTINUITY_CORRECTION_EVENT_ORDER,
+    CONTRADICTION_CASE_LIST_ORDER,
+    TRUST_SIGNAL_LIST_ORDER,
+    CONTINUITY_RECALL_LIST_ORDER,
+    CONTINUITY_LIFECYCLE_LIST_ORDER,
+    CONTINUITY_RESUMPTION_RECENT_CHANGE_ORDER,
+    CONTINUITY_RESUMPTION_OPEN_LOOP_ORDER,
+    CONTINUITY_OPEN_LOOP_POSTURE_ORDER,
+    CONTINUITY_OPEN_LOOP_ITEM_ORDER,
+    TASK_WORKSPACE_STATUSES,
+    TASK_ARTIFACT_STATUSES,
+    TASK_ARTIFACT_INGESTION_STATUSES,
+    TASK_STEP_KINDS,
+    TASK_STEP_STATUSES,
+    APPROVAL_REQUEST_VERSION_V0,
+    TRACE_KIND_APPROVAL_REQUEST,
+    APPROVAL_RESOLUTION_VERSION_V0,
+    TRACE_KIND_APPROVAL_RESOLUTION,
+    TRACE_KIND_APPROVAL_RESOLVE,
+    PROXY_EXECUTION_VERSION_V0,
+    TRACE_KIND_PROXY_EXECUTE,
+    GMAIL_PROVIDER,
+    GMAIL_AUTH_KIND_OAUTH_ACCESS_TOKEN,
+    GMAIL_READONLY_SCOPE,
+    GMAIL_PROTECTED_CREDENTIAL_KIND,
+    GMAIL_REFRESHABLE_PROTECTED_CREDENTIAL_KIND,
+    CALENDAR_PROVIDER,
+    CALENDAR_AUTH_KIND_OAUTH_ACCESS_TOKEN,
+    CALENDAR_READONLY_SCOPE,
+    CALENDAR_PROTECTED_CREDENTIAL_KIND,
+    TASK_STEP_SEQUENCE_VERSION_V0,
+    TRACE_KIND_TASK_STEP_SEQUENCE,
+    TASK_STEP_CONTINUATION_VERSION_V0,
+    TRACE_KIND_TASK_STEP_CONTINUATION,
+    TASK_STEP_TRANSITION_VERSION_V0,
+    TRACE_KIND_TASK_STEP_TRANSITION,
+    EXECUTION_BUDGET_LIFECYCLE_VERSION_V0,
+    TRACE_KIND_EXECUTION_BUDGET_LIFECYCLE,
+    CONTINUITY_OBJECT_TYPES,
+    CONTINUITY_CAPTURE_EXPLICIT_SIGNALS,
+    CONTINUITY_CAPTURE_CANDIDATE_TYPES,
+    CONTINUITY_CAPTURE_COMMIT_MODES,
+    CONTINUITY_CAPTURE_ASSIST_AUTOSAVE_TYPES,
+    CONTINUITY_CAPTURE_REVIEW_REQUIRED_TYPES,
+    MEMORY_OPERATION_TYPES,
+    MEMORY_OPERATION_POLICY_ACTIONS,
+    MEMORY_OPERATION_STATUSES,
+    CONTINUITY_CORRECTION_ACTIONS,
+    CONTINUITY_PRESERVATION_STATUSES,
+    CONTINUITY_SEARCHABILITY_STATUSES,
+    CONTINUITY_PROMOTION_STATUSES,
+    CONTINUITY_REVIEW_STATUSES,
+    CONTRADICTION_KINDS,
+    CONTRADICTION_STATUSES,
+    CONTRADICTION_RESOLUTION_ACTIONS,
+    TRUST_SIGNAL_TYPES,
+    TRUST_SIGNAL_STATES,
+    TRUST_SIGNAL_DIRECTIONS,
+    CONTINUITY_OPEN_LOOP_POSTURES,
+    CONTINUITY_OPEN_LOOP_REVIEW_ACTIONS,
+    DEFAULT_TEMPORAL_TIMELINE_LIMIT,
+    MAX_TEMPORAL_TIMELINE_LIMIT,
+)
+from alicebot_api._contracts.common import isoformat_or_none as _common_isoformat_or_none
 
 
-@dataclass(frozen=True, slots=True)
-class ContextCompilerLimits:
-    max_sessions: int = DEFAULT_MAX_SESSIONS
-    max_events: int = DEFAULT_MAX_EVENTS
-    max_memories: int = DEFAULT_MAX_MEMORIES
-    max_entities: int = DEFAULT_MAX_ENTITIES
-    max_entity_edges: int = DEFAULT_MAX_ENTITY_EDGES
+def _clone_contract_function(
+    source: _FunctionType,
+    *,
+    qualname: str,
+) -> _FunctionType:
+    rebound = _FunctionType(
+        source.__code__.replace(co_qualname=qualname),
+        globals(),
+        source.__name__,
+        source.__defaults__,
+        source.__closure__,
+    )
+    rebound.__kwdefaults__ = source.__kwdefaults__
+    rebound.__dict__.update(source.__dict__)
+    rebound.__doc__ = source.__doc__
+    rebound.__module__ = __name__
+    rebound.__qualname__ = qualname
 
-    def as_payload(self) -> JsonObject:
-        return {
-            "max_sessions": self.max_sessions,
-            "max_events": self.max_events,
-            "max_memories": self.max_memories,
-            "max_entities": self.max_entities,
-            "max_entity_edges": self.max_entity_edges,
-        }
+    type_params = getattr(source, "__type_params__", None)
+    if type_params is not None:
+        setattr(rebound, "__type_params__", type_params)
 
-
-@dataclass(frozen=True, slots=True)
-class CompileContextSemanticRetrievalInput:
-    embedding_config_id: UUID
-    query_vector: tuple[float, ...]
-    limit: int = DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "embedding_config_id": str(self.embedding_config_id),
-            "query_vector": [float(value) for value in self.query_vector],
-            "limit": self.limit,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class CompileContextTaskScopedArtifactRetrievalInput:
-    task_id: UUID
-    query: str
-    limit: int = DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "kind": "task",
-            "task_id": str(self.task_id),
-            "query": self.query,
-            "limit": self.limit,
-        }
+    source_annotate = getattr(source, "__annotate__", None)
+    if isinstance(source_annotate, _FunctionType):
+        rebound_annotate = _FunctionType(
+            source_annotate.__code__.replace(
+                co_qualname=source_annotate.__code__.co_qualname,
+            ),
+            globals(),
+            source_annotate.__name__,
+            source_annotate.__defaults__,
+            source_annotate.__closure__,
+        )
+        rebound_annotate.__kwdefaults__ = source_annotate.__kwdefaults__
+        rebound_annotate.__dict__.update(source_annotate.__dict__)
+        rebound_annotate.__doc__ = source_annotate.__doc__
+        rebound_annotate.__module__ = __name__
+        rebound_annotate.__qualname__ = source_annotate.__qualname__
+        setattr(rebound, "__annotate__", rebound_annotate)
+    else:
+        rebound.__annotations__ = source.__annotations__
+    return rebound
 
 
-@dataclass(frozen=True, slots=True)
-class CompileContextArtifactScopedArtifactRetrievalInput:
-    task_artifact_id: UUID
-    query: str
-    limit: int = DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT
+def _clone_generated_contract_function(source: _FunctionType) -> _FunctionType:
+    rebound = _FunctionType(
+        source.__code__,
+        globals(),
+        source.__name__,
+        source.__defaults__,
+        source.__closure__,
+    )
+    rebound.__kwdefaults__ = source.__kwdefaults__
+    rebound.__dict__.update(source.__dict__)
+    rebound.__doc__ = source.__doc__
+    rebound.__module__ = source.__module__
+    rebound.__qualname__ = source.__qualname__
 
-    def as_payload(self) -> JsonObject:
-        return {
-            "kind": "artifact",
-            "task_artifact_id": str(self.task_artifact_id),
-            "query": self.query,
-            "limit": self.limit,
-        }
+    type_params = getattr(source, "__type_params__", None)
+    if type_params is not None:
+        setattr(rebound, "__type_params__", type_params)
+
+    source_annotate = getattr(source, "__annotate__", None)
+    if isinstance(source_annotate, _FunctionType):
+        setattr(rebound, "__annotate__", source_annotate)
+    else:
+        rebound.__annotations__ = source.__annotations__
+    return rebound
 
 
-CompileContextArtifactRetrievalInput: TypeAlias = (
-    CompileContextTaskScopedArtifactRetrievalInput
-    | CompileContextArtifactScopedArtifactRetrievalInput
+from alicebot_api._contracts.runtime import (
+    ContextCompilerLimits,
+    CompileContextSemanticRetrievalInput,
+    CompileContextTaskScopedArtifactRetrievalInput,
+    CompileContextArtifactScopedArtifactRetrievalInput,
+    CompileContextArtifactRetrievalInput,
+    CompileContextTaskScopedSemanticArtifactRetrievalInput,
+    CompileContextArtifactScopedSemanticArtifactRetrievalInput,
+    CompileContextSemanticArtifactRetrievalInput,
+    TraceCreate,
+    TraceEventRecord,
+    AgentProfileRecord,
+    AgentProfileListSummary,
+    AgentProfileListResponse,
+    ThreadCreateInput,
+    ThreadRecord,
+    ThreadCreateResponse,
+    ThreadListSummary,
+    ThreadListResponse,
+    ThreadActivityPosture,
+    ThreadRiskPosture,
+    ThreadHealthPosture,
+    ThreadHealthThresholdsRecord,
+    ThreadHealthRecord,
+    ThreadHealthDashboardSummary,
+    ThreadHealthDashboardResponse,
+    ThreadDetailResponse,
+    ThreadSessionRecord,
+    ThreadSessionListSummary,
+    ThreadSessionListResponse,
+    ThreadEventRecord,
+    ThreadEventListSummary,
+    ThreadEventListResponse,
+    ResumptionBriefRequestInput,
+    TraceReviewSummaryRecord,
+    TraceReviewRecord,
+    TraceReviewListSummary,
+    TraceReviewListResponse,
+    TraceReviewDetailResponse,
+    TraceReviewEventRecord,
+    TraceReviewEventListSummary,
+    TraceReviewEventListResponse,
+    CompilerDecision,
+    ContextPackScope,
+    ContextPackLimits,
+    ContextPackUser,
+    ContextPackThread,
+    ContextPackSession,
+    ContextPackEvent,
+    ContextPackMemory,
+    ContextPackMemorySourceProvenance,
+    ContextPackHybridMemorySummary,
+    ContextPackArtifactChunk,
+    ContextPackArtifactChunkSourceProvenance,
+    ContextPackArtifactChunkSummary,
+    ArtifactRetrievalDecisionTracePayload,
+    HybridArtifactRetrievalDecisionTracePayload,
+    ContextPackMemorySummary,
+    ContextPackOpenLoop,
+    ContextPackOpenLoopSummary,
+    HybridMemoryDecisionTracePayload,
+    ContextPackEntity,
+    ContextPackEntitySummary,
+    EntityDecisionTracePayload,
+    ContextPackEntityEdge,
+    ContextPackEntityEdgeSummary,
+    EntityEdgeDecisionTracePayload,
+    CompiledContextPack,
+    CompilerRunResult,
+    PromptAssemblyInput,
+    PromptSection,
+    PromptAssemblyTracePayload,
+    PromptAssemblyResult,
+    ModelInvocationRequestPayload,
+    ModelInvocationRequest,
+    ModelUsagePayload,
+    ModelInvocationTracePayload,
+    ModelInvocationResponse,
+    AssistantResponseModelRecord,
+    AssistantResponsePromptRecord,
+    AssistantResponseEventPayload,
+    GeneratedAssistantRecord,
+    ResponseTraceSummary,
+    GenerateResponseSuccess,
+    ProviderCapabilityRecord,
+    ModelProviderRecord,
+    ProviderRegistrationResponse,
+    ProviderListSummary,
+    ProviderListResponse,
+    ProviderDetailResponse,
+    ProviderTestResultRecord,
+    ProviderTestResponse,
+    RuntimeInvokeAssistantRecord,
+    RuntimeInvokeResponse,
+)
+
+_RUNTIME_CONTRACT_CLASS_NAMES = (
+    "ContextCompilerLimits",
+    "CompileContextSemanticRetrievalInput",
+    "CompileContextTaskScopedArtifactRetrievalInput",
+    "CompileContextArtifactScopedArtifactRetrievalInput",
+    "CompileContextTaskScopedSemanticArtifactRetrievalInput",
+    "CompileContextArtifactScopedSemanticArtifactRetrievalInput",
+    "TraceCreate",
+    "TraceEventRecord",
+    "AgentProfileRecord",
+    "AgentProfileListSummary",
+    "AgentProfileListResponse",
+    "ThreadCreateInput",
+    "ThreadRecord",
+    "ThreadCreateResponse",
+    "ThreadListSummary",
+    "ThreadListResponse",
+    "ThreadHealthThresholdsRecord",
+    "ThreadHealthRecord",
+    "ThreadHealthDashboardSummary",
+    "ThreadHealthDashboardResponse",
+    "ThreadDetailResponse",
+    "ThreadSessionRecord",
+    "ThreadSessionListSummary",
+    "ThreadSessionListResponse",
+    "ThreadEventRecord",
+    "ThreadEventListSummary",
+    "ThreadEventListResponse",
+    "ResumptionBriefRequestInput",
+    "TraceReviewSummaryRecord",
+    "TraceReviewRecord",
+    "TraceReviewListSummary",
+    "TraceReviewListResponse",
+    "TraceReviewDetailResponse",
+    "TraceReviewEventRecord",
+    "TraceReviewEventListSummary",
+    "TraceReviewEventListResponse",
+    "CompilerDecision",
+    "ContextPackScope",
+    "ContextPackLimits",
+    "ContextPackUser",
+    "ContextPackThread",
+    "ContextPackSession",
+    "ContextPackEvent",
+    "ContextPackMemory",
+    "ContextPackMemorySourceProvenance",
+    "ContextPackHybridMemorySummary",
+    "ContextPackArtifactChunk",
+    "ContextPackArtifactChunkSourceProvenance",
+    "ContextPackArtifactChunkSummary",
+    "ArtifactRetrievalDecisionTracePayload",
+    "HybridArtifactRetrievalDecisionTracePayload",
+    "ContextPackMemorySummary",
+    "ContextPackOpenLoop",
+    "ContextPackOpenLoopSummary",
+    "HybridMemoryDecisionTracePayload",
+    "ContextPackEntity",
+    "ContextPackEntitySummary",
+    "EntityDecisionTracePayload",
+    "ContextPackEntityEdge",
+    "ContextPackEntityEdgeSummary",
+    "EntityEdgeDecisionTracePayload",
+    "CompiledContextPack",
+    "CompilerRunResult",
+    "PromptAssemblyInput",
+    "PromptSection",
+    "PromptAssemblyTracePayload",
+    "PromptAssemblyResult",
+    "ModelInvocationRequestPayload",
+    "ModelInvocationRequest",
+    "ModelUsagePayload",
+    "ModelInvocationTracePayload",
+    "ModelInvocationResponse",
+    "AssistantResponseModelRecord",
+    "AssistantResponsePromptRecord",
+    "AssistantResponseEventPayload",
+    "GeneratedAssistantRecord",
+    "ResponseTraceSummary",
+    "GenerateResponseSuccess",
+    "ProviderCapabilityRecord",
+    "ModelProviderRecord",
+    "ProviderRegistrationResponse",
+    "ProviderListSummary",
+    "ProviderListResponse",
+    "ProviderDetailResponse",
+    "ProviderTestResultRecord",
+    "ProviderTestResponse",
+    "RuntimeInvokeAssistantRecord",
+    "RuntimeInvokeResponse",
+)
+_RUNTIME_EXPLICIT_METHODS = (
+    ("ContextCompilerLimits", "as_payload"),
+    ("CompileContextSemanticRetrievalInput", "as_payload"),
+    ("CompileContextTaskScopedArtifactRetrievalInput", "as_payload"),
+    ("CompileContextArtifactScopedArtifactRetrievalInput", "as_payload"),
+    ("CompileContextTaskScopedSemanticArtifactRetrievalInput", "as_payload"),
+    ("CompileContextArtifactScopedSemanticArtifactRetrievalInput", "as_payload"),
+    ("CompilerDecision", "to_trace_event"),
+    ("ModelInvocationRequest", "as_payload"),
+    ("ModelInvocationResponse", "to_trace_payload"),
+)
+
+for _runtime_class_name, _runtime_method_name in _RUNTIME_EXPLICIT_METHODS:
+    _runtime_class = globals()[_runtime_class_name]
+    _runtime_method = getattr(_runtime_class, _runtime_method_name)
+    setattr(
+        _runtime_class,
+        _runtime_method_name,
+        _clone_contract_function(
+            _runtime_method,
+            qualname=_runtime_method.__qualname__,
+        ),
+    )
+
+for _runtime_class_name in _RUNTIME_CONTRACT_CLASS_NAMES:
+    _runtime_class = globals()[_runtime_class_name]
+    if not hasattr(_runtime_class, "__dataclass_fields__"):
+        continue
+    for _runtime_generated_name, _runtime_generated_method in vars(_runtime_class).items():
+        if (
+            isinstance(_runtime_generated_method, _FunctionType)
+            and _runtime_generated_method.__globals__.get("__name__")
+            == "alicebot_api._contracts.runtime"
+        ):
+            setattr(
+                _runtime_class,
+                _runtime_generated_name,
+                _clone_generated_contract_function(_runtime_generated_method),
+            )
+
+del _runtime_class
+del _runtime_class_name
+del _runtime_generated_method
+del _runtime_generated_name
+del _runtime_method
+del _runtime_method_name
+
+
+import alicebot_api._contracts.continuity as _continuity_contracts
+from alicebot_api._contracts.continuity import (
+    OpenLoopCandidateInput,
+    MemoryCandidateInput,
+    ExplicitPreferenceExtractionRequestInput,
+    ExplicitCommitmentExtractionRequestInput,
+    ExplicitSignalCaptureRequestInput,
+    ContinuityCaptureCreateInput,
+    ContinuityCaptureCandidatesInput,
+    ContinuityCaptureCommitInput,
+    MemoryOperationGenerateInput,
+    MemoryOperationCommitInput,
+    MemoryOperationListInput,
+    ContinuityReviewQueueQueryInput,
+    ContinuityCorrectionInput,
+    ContradictionCaseListQueryInput,
+    ContradictionSyncInput,
+    ContradictionResolveInput,
+    TrustSignalListQueryInput,
+    ContinuityRecallQueryInput,
+    ContinuityResumptionBriefRequestInput,
+    ContinuityBriefRequestInput,
+    TaskBriefCompileRequestInput,
+    TaskBriefComparisonRequestInput,
+    ContinuityLifecycleQueryInput,
+    ContinuityOpenLoopDashboardQueryInput,
+    ContinuityDailyBriefRequestInput,
+    ContinuityWeeklyReviewRequestInput,
+    ContinuityOpenLoopReviewActionInput,
+    OpenLoopCreateInput,
+    OpenLoopStatusUpdateInput,
+    ExtractedPreferenceCandidateRecord,
+    ExtractedCommitmentCandidateRecord,
+)
+
+_CONTINUITY_CONTRACT_CLASS_NAMES = (
+    "OpenLoopCandidateInput",
+    "MemoryCandidateInput",
+    "ExplicitPreferenceExtractionRequestInput",
+    "ExplicitCommitmentExtractionRequestInput",
+    "ExplicitSignalCaptureRequestInput",
+    "ContinuityCaptureCreateInput",
+    "ContinuityCaptureCandidatesInput",
+    "ContinuityCaptureCommitInput",
+    "MemoryOperationGenerateInput",
+    "MemoryOperationCommitInput",
+    "MemoryOperationListInput",
+    "ContinuityReviewQueueQueryInput",
+    "ContinuityCorrectionInput",
+    "ContradictionCaseListQueryInput",
+    "ContradictionSyncInput",
+    "ContradictionResolveInput",
+    "TrustSignalListQueryInput",
+    "ContinuityRecallQueryInput",
+    "ContinuityResumptionBriefRequestInput",
+    "ContinuityBriefRequestInput",
+    "TaskBriefCompileRequestInput",
+    "TaskBriefComparisonRequestInput",
+    "ContinuityLifecycleQueryInput",
+    "ContinuityOpenLoopDashboardQueryInput",
+    "ContinuityDailyBriefRequestInput",
+    "ContinuityWeeklyReviewRequestInput",
+    "ContinuityOpenLoopReviewActionInput",
+    "OpenLoopCreateInput",
+    "OpenLoopStatusUpdateInput",
+    "ExtractedPreferenceCandidateRecord",
+    "ExtractedCommitmentCandidateRecord",
+    "PersistedMemoryRecord",
+    "PersistedMemoryRevisionRecord",
+    "AdmissionDecisionOutput",
+    "ExplicitPreferenceAdmissionRecord",
+    "ExplicitPreferenceExtractionSummary",
+    "ExplicitPreferenceExtractionResponse",
+    "ExplicitCommitmentOpenLoopOutcome",
+    "ExplicitCommitmentAdmissionRecord",
+    "ExplicitCommitmentExtractionSummary",
+    "ExplicitCommitmentExtractionResponse",
+    "ExplicitSignalCaptureSummary",
+    "ExplicitSignalCaptureResponse",
+    "ContinuityCaptureEventRecord",
+    "ContinuityCaptureCandidateRecord",
+    "ContinuityCaptureCandidatesSummary",
+    "ContinuityCaptureCandidatesResponse",
+    "ContinuityCaptureCommitRecord",
+    "ContinuityCaptureCommitSummary",
+    "ContinuityCaptureCommitResponse",
+    "MemoryOperationCandidateRecord",
+    "MemoryOperationRecord",
+    "MemoryOperationCandidateGenerateSummary",
+    "MemoryOperationCandidateGenerateResponse",
+    "MemoryOperationCommitSummary",
+    "MemoryOperationCommitResponse",
+    "MemoryOperationListSummary",
+    "MemoryOperationCandidateListResponse",
+    "MemoryOperationListResponse",
+    "ContinuityLifecycleStateRecord",
+    "ContinuityObjectRecord",
+    "ContinuityReviewObjectRecord",
+    "ContinuityCorrectionEventRecord",
+    "ContinuityCaptureInboxItem",
+    "ContinuityCaptureInboxSummary",
+    "ContinuityCaptureCreateResponse",
+    "ContinuityCaptureInboxResponse",
+    "ContinuityCaptureDetailResponse",
+    "ContinuityReviewQueueSummary",
+    "ContinuityReviewQueueResponse",
+    "ContinuitySupersessionChain",
+    "ContinuityReviewDetail",
+    "ContinuityReviewDetailResponse",
+    "ContradictionCaseRecord",
+    "ContradictionCaseListSummary",
+    "ContradictionCaseListResponse",
+    "ContradictionCaseDetailResponse",
+    "ContradictionSyncSummary",
+    "ContradictionSyncResponse",
+    "ContradictionResolveResponse",
+    "TrustSignalRecord",
+    "TrustSignalListSummary",
+    "TrustSignalListResponse",
+    "ContinuityEvidenceArtifactRecord",
+    "ContinuityEvidenceArtifactCopyRecord",
+    "ContinuityEvidenceArtifactSegmentRecord",
+    "ContinuityEvidenceLinkRecord",
+    "ContinuityExplanationSourceFactRecord",
+    "ContinuityExplanationEvidenceSegmentRecord",
+    "ContinuityExplanationSupersessionNoteRecord",
+    "ContinuityExplanationContradictionRecord",
+    "ContinuityExplanationTrustRecord",
+    "ContinuityExplanationTimestampsRecord",
+    "ContinuityExplanationRecord",
+    "ContinuityExplainRecord",
+    "ContinuityExplainResponse",
+    "ContinuityArtifactDetailRecord",
+    "ContinuityArtifactDetailResponse",
+    "ContinuityRecallScopeFilters",
+    "ContinuityRecallScopeMatch",
+    "ContinuityRecallProvenanceReference",
+    "ContinuityRecallOrderingMetadata",
+    "ContinuityRetrievalStageScoreRecord",
+    "ContinuityRetrievalDebugCandidateRecord",
+    "ContinuityRetrievalDebugRecord",
+    "ContinuityRecallResultRecord",
+    "ContinuityRecallSummary",
+    "ContinuityRecallResponse",
+    "ContinuityLifecycleCounts",
+    "ContinuityLifecycleListSummary",
+    "ContinuityLifecycleListResponse",
+    "ContinuityLifecycleDetailResponse",
+    "ContinuityResumptionEmptyState",
+    "ContinuityResumptionSingleSection",
+    "ContinuityResumptionListSection",
+    "ContinuityResumptionBriefRecord",
+    "ContinuityResumptionDebugRecord",
+    "ContinuityResumptionBriefResponse",
+    "ContinuityBriefRelevantFactsSummary",
+    "ContinuityBriefRelevantFactsSection",
+    "ContinuityBriefConflictSummary",
+    "ContinuityBriefConflictSection",
+    "ContinuityBriefTimelineHighlightRecord",
+    "ContinuityBriefTimelineSection",
+    "ContinuityBriefSuggestedActionRecord",
+    "ContinuityBriefSelectionStrategyRecord",
+    "ContinuityBriefProvenanceSummary",
+    "ContinuityBriefProvenanceBundle",
+    "ContinuityBriefTrustPostureRecord",
+    "ContinuityBriefRecord",
+    "ContinuityBriefResponse",
+    "TaskBriefEmptyState",
+    "TaskBriefSectionSummary",
+    "TaskBriefSectionRecord",
+    "TaskBriefStrategyRecord",
+    "TaskBriefSummary",
+    "TaskBriefRecord",
+    "TaskBriefPersistenceRecord",
+    "TaskBriefResponse",
+    "TaskBriefComparisonStats",
+    "TaskBriefComparisonResponse",
+    "ContinuityOpenLoopSectionSummary",
+    "ContinuityOpenLoopSection",
+    "ContinuityOpenLoopDashboardSummary",
+    "ContinuityOpenLoopDashboardRecord",
+    "ContinuityOpenLoopDashboardResponse",
+    "ContinuityDailyBriefRecord",
+    "ContinuityDailyBriefResponse",
+    "ContinuityWeeklyReviewRollup",
+    "ContinuityWeeklyReviewRecord",
+    "ContinuityWeeklyReviewResponse",
+    "ContinuityOpenLoopReviewActionResponse",
+    "ContinuityCorrectionApplyResponse",
+    "MemoryReviewRecord",
+    "MemoryReviewListSummary",
+    "MemoryReviewListResponse",
+    "MemoryReviewDetailResponse",
+    "OpenLoopRecord",
+    "OpenLoopListSummary",
+    "OpenLoopListResponse",
+    "OpenLoopDetailResponse",
+    "OpenLoopCreateResponse",
+    "OpenLoopStatusUpdateResponse",
+    "MemoryRevisionReviewRecord",
+    "MemoryRevisionReviewListSummary",
+    "MemoryRevisionReviewListResponse",
+    "MemoryReviewLabelCounts",
+    "MemoryReviewLabelRecord",
+    "MemoryReviewLabelSummary",
+    "MemoryReviewLabelCreateResponse",
+    "MemoryReviewLabelListResponse",
+    "MemoryReviewQueueItem",
+    "MemoryReviewQueueSummary",
+    "MemoryReviewQueueResponse",
+    "MemoryQualityGateComputationCounts",
+    "MemoryQualityGateSummary",
+    "MemoryQualityGateResponse",
+    "MemoryTrustQueueAgingSummary",
+    "MemoryTrustQueuePostureSummary",
+    "MemoryTrustCorrectionFreshnessSummary",
+    "MemoryTrustRecommendedReview",
+    "MemoryDuplicateGroupRecord",
+    "MemoryReviewQueuePressureSummary",
+    "MemoryHygieneFocusRecord",
+    "MemoryHygieneDashboardSummary",
+    "MemoryHygieneDashboardResponse",
+    "MemoryTrustDashboardSummary",
+    "MemoryTrustDashboardResponse",
+    "MemoryEvaluationSummary",
+    "MemoryEvaluationSummaryResponse",
+)
+_CONTINUITY_EXPLICIT_METHODS = (
+    ("OpenLoopCandidateInput", "as_payload"),
+    ("MemoryCandidateInput", "as_payload"),
+    ("ExplicitPreferenceExtractionRequestInput", "as_payload"),
+    ("ExplicitCommitmentExtractionRequestInput", "as_payload"),
+    ("ExplicitSignalCaptureRequestInput", "as_payload"),
+    ("ContinuityCaptureCreateInput", "as_payload"),
+    ("ContinuityCaptureCandidatesInput", "as_payload"),
+    ("ContinuityCaptureCommitInput", "as_payload"),
+    ("MemoryOperationGenerateInput", "as_payload"),
+    ("MemoryOperationCommitInput", "as_payload"),
+    ("MemoryOperationListInput", "as_payload"),
+    ("ContinuityReviewQueueQueryInput", "as_payload"),
+    ("ContinuityCorrectionInput", "as_payload"),
+    ("ContradictionCaseListQueryInput", "as_payload"),
+    ("ContradictionSyncInput", "as_payload"),
+    ("ContradictionResolveInput", "as_payload"),
+    ("TrustSignalListQueryInput", "as_payload"),
+    ("ContinuityRecallQueryInput", "as_payload"),
+    ("ContinuityResumptionBriefRequestInput", "as_payload"),
+    ("ContinuityBriefRequestInput", "as_payload"),
+    ("TaskBriefCompileRequestInput", "as_payload"),
+    ("TaskBriefComparisonRequestInput", "as_payload"),
+    ("ContinuityLifecycleQueryInput", "as_payload"),
+    ("ContinuityOpenLoopDashboardQueryInput", "as_payload"),
+    ("ContinuityDailyBriefRequestInput", "as_payload"),
+    ("ContinuityWeeklyReviewRequestInput", "as_payload"),
+    ("ContinuityOpenLoopReviewActionInput", "as_payload"),
+    ("OpenLoopCreateInput", "as_payload"),
+    ("OpenLoopStatusUpdateInput", "as_payload"),
+)
+
+for _continuity_class_name, _continuity_method_name in _CONTINUITY_EXPLICIT_METHODS:
+    _continuity_class = getattr(_continuity_contracts, _continuity_class_name)
+    _continuity_method = getattr(_continuity_class, _continuity_method_name)
+    setattr(
+        _continuity_class,
+        _continuity_method_name,
+        _clone_contract_function(
+            _continuity_method,
+            qualname=_continuity_method.__qualname__,
+        ),
+    )
+
+for _continuity_class_name in _CONTINUITY_CONTRACT_CLASS_NAMES:
+    _continuity_class = getattr(_continuity_contracts, _continuity_class_name)
+    if not hasattr(_continuity_class, "__dataclass_fields__"):
+        continue
+    for _continuity_generated_name, _continuity_generated_method in vars(
+        _continuity_class
+    ).items():
+        if (
+            isinstance(_continuity_generated_method, _FunctionType)
+            and _continuity_generated_method.__globals__.get("__name__")
+            == "alicebot_api._contracts.continuity"
+        ):
+            setattr(
+                _continuity_class,
+                _continuity_generated_name,
+                _clone_generated_contract_function(_continuity_generated_method),
+            )
+
+del _continuity_class
+del _continuity_class_name
+del _continuity_generated_method
+del _continuity_generated_name
+del _continuity_method
+del _continuity_method_name
+
+
+import alicebot_api._contracts.knowledge as _knowledge_contracts
+from alicebot_api._contracts.knowledge import (
+    EntityCreateInput,
+    EntityEdgeCreateInput,
+    TemporalStateAtQueryInput,
+    TemporalTimelineQueryInput,
+    TemporalExplainQueryInput,
+    TrustedFactPatternListQueryInput,
+    TrustedFactPlaybookListQueryInput,
+)
+
+_KNOWLEDGE_CONTRACT_CLASS_NAMES = (
+    "EntityCreateInput",
+    "EntityEdgeCreateInput",
+    "TemporalStateAtQueryInput",
+    "TemporalTimelineQueryInput",
+    "TemporalExplainQueryInput",
+    "TrustedFactPatternListQueryInput",
+    "TrustedFactPlaybookListQueryInput",
+    "EntityRecord",
+    "EntityCreateResponse",
+    "EntityListSummary",
+    "EntityListResponse",
+    "EntityDetailResponse",
+    "EntityEdgeRecord",
+    "EntityEdgeCreateResponse",
+    "EntityEdgeListSummary",
+    "EntityEdgeListResponse",
+    "TemporalValidityRecord",
+    "TemporalStateFactRecord",
+    "TemporalStateEdgeRecord",
+    "TemporalStateSummary",
+    "TemporalStateAtRecord",
+    "TemporalStateAtResponse",
+    "TemporalTimelineEventRecord",
+    "TemporalTimelineSummary",
+    "TemporalTimelineRecord",
+    "TemporalTimelineResponse",
+    "TemporalTrustRecord",
+    "TemporalProvenanceRecord",
+    "TemporalFactSupersessionRecord",
+    "TemporalFactExplainRecord",
+    "TemporalEdgeSupersessionRecord",
+    "TemporalEdgeExplainRecord",
+    "TemporalExplainSummary",
+    "TemporalExplainRecord",
+    "TemporalExplainResponse",
+    "TrustedFactEvidenceLinkRecord",
+    "TrustedFactPatternRecord",
+    "TrustedFactPatternListSummary",
+    "TrustedFactPatternListResponse",
+    "TrustedFactPatternExplainResponse",
+    "TrustedFactPlaybookStepRecord",
+    "TrustedFactPlaybookRecord",
+    "TrustedFactPlaybookListSummary",
+    "TrustedFactPlaybookListResponse",
+    "TrustedFactPlaybookExplainResponse",
+)
+_KNOWLEDGE_EXPLICIT_METHODS = (
+    ("EntityCreateInput", "as_payload"),
+    ("EntityEdgeCreateInput", "as_payload"),
+    ("TemporalStateAtQueryInput", "as_payload"),
+    ("TemporalTimelineQueryInput", "as_payload"),
+    ("TemporalExplainQueryInput", "as_payload"),
+    ("TrustedFactPatternListQueryInput", "as_payload"),
+    ("TrustedFactPlaybookListQueryInput", "as_payload"),
+)
+
+for _knowledge_class_name, _knowledge_method_name in _KNOWLEDGE_EXPLICIT_METHODS:
+    _knowledge_class = getattr(_knowledge_contracts, _knowledge_class_name)
+    _knowledge_method = getattr(_knowledge_class, _knowledge_method_name)
+    setattr(
+        _knowledge_class,
+        _knowledge_method_name,
+        _clone_contract_function(
+            _knowledge_method,
+            qualname=_knowledge_method.__qualname__,
+        ),
+    )
+
+for _knowledge_class_name in _KNOWLEDGE_CONTRACT_CLASS_NAMES:
+    _knowledge_class = getattr(_knowledge_contracts, _knowledge_class_name)
+    if not hasattr(_knowledge_class, "__dataclass_fields__"):
+        continue
+    for _knowledge_generated_name, _knowledge_generated_method in vars(
+        _knowledge_class
+    ).items():
+        if (
+            isinstance(_knowledge_generated_method, _FunctionType)
+            and _knowledge_generated_method.__globals__.get("__name__")
+            == "alicebot_api._contracts.knowledge"
+        ):
+            setattr(
+                _knowledge_class,
+                _knowledge_generated_name,
+                _clone_generated_contract_function(_knowledge_generated_method),
+            )
+
+del _knowledge_class
+del _knowledge_class_name
+del _knowledge_generated_method
+del _knowledge_generated_name
+del _knowledge_method
+del _knowledge_method_name
+
+
+import alicebot_api._contracts.retrieval as _retrieval_contracts
+from alicebot_api._contracts.retrieval import (
+    EmbeddingConfigCreateInput,
+    MemoryEmbeddingUpsertInput,
+)
+
+_RETRIEVAL_CONTRACT_CLASS_NAMES = (
+    "EmbeddingConfigCreateInput",
+    "MemoryEmbeddingUpsertInput",
+    "SemanticMemoryRetrievalRequestInput",
+    "RetrievalRunRecord",
+    "RetrievalRunListSummary",
+    "RetrievalRunListResponse",
+    "RetrievalTraceSummary",
+    "RetrievalTraceResponse",
+    "EmbeddingConfigRecord",
+    "EmbeddingConfigCreateResponse",
+    "EmbeddingConfigListSummary",
+    "EmbeddingConfigListResponse",
+    "MemoryEmbeddingRecord",
+    "MemoryEmbeddingUpsertResponse",
+    "MemoryEmbeddingDetailResponse",
+    "MemoryEmbeddingListSummary",
+    "MemoryEmbeddingListResponse",
+    "SemanticMemoryRetrievalResultItem",
+    "SemanticMemoryRetrievalSummary",
+    "SemanticMemoryRetrievalResponse",
+    "RetrievalEvaluationFixtureResult",
+    "RetrievalEvaluationSummary",
+    "RetrievalEvaluationResponse",
+    "PublicEvalSuiteDefinitionRecord",
+    "PublicEvalSuiteDefinitionListResponse",
+    "PublicEvalRunRecord",
+    "PublicEvalResultRecord",
+    "PublicEvalRunListResponse",
+    "PublicEvalRunDetailResponse",
+)
+_RETRIEVAL_EXPLICIT_METHODS = (
+    ("EmbeddingConfigCreateInput", "as_payload"),
+    ("MemoryEmbeddingUpsertInput", "as_payload"),
+    ("SemanticMemoryRetrievalRequestInput", "as_payload"),
+)
+
+for _retrieval_class_name, _retrieval_method_name in _RETRIEVAL_EXPLICIT_METHODS:
+    _retrieval_class = getattr(_retrieval_contracts, _retrieval_class_name)
+    _retrieval_method = getattr(_retrieval_class, _retrieval_method_name)
+    setattr(
+        _retrieval_class,
+        _retrieval_method_name,
+        _clone_contract_function(
+            _retrieval_method,
+            qualname=_retrieval_method.__qualname__,
+        ),
+    )
+
+for _retrieval_class_name in _RETRIEVAL_CONTRACT_CLASS_NAMES:
+    _retrieval_class = getattr(_retrieval_contracts, _retrieval_class_name)
+    if not hasattr(_retrieval_class, "__dataclass_fields__"):
+        continue
+    for _retrieval_generated_name, _retrieval_generated_method in vars(
+        _retrieval_class
+    ).items():
+        if (
+            isinstance(_retrieval_generated_method, _FunctionType)
+            and _retrieval_generated_method.__globals__.get("__name__")
+            == "alicebot_api._contracts.retrieval"
+        ):
+            setattr(
+                _retrieval_class,
+                _retrieval_generated_name,
+                _clone_generated_contract_function(_retrieval_generated_method),
+            )
+
+del _retrieval_class
+del _retrieval_class_name
+del _retrieval_generated_method
+del _retrieval_generated_name
+del _retrieval_method
+del _retrieval_method_name
+
+
+import alicebot_api._contracts.tasks as _task_contracts
+from alicebot_api._contracts.tasks import TaskArtifactChunkEmbeddingUpsertInput
+
+_TASK_CONTRACT_CLASS_NAMES = (
+    "TaskArtifactChunkEmbeddingUpsertInput",
+    "TaskCreateInput",
+    "TaskRecord",
+    "TaskCreateResponse",
+    "TaskStepCreateInput",
+    "TaskStepNextCreateInput",
+    "TaskStepTransitionInput",
+    "TaskStepLineageInput",
+    "TaskListSummary",
+    "TaskListResponse",
+    "TaskDetailResponse",
+    "TaskRunCreateInput",
+    "TaskRunTickInput",
+    "TaskRunPauseInput",
+    "TaskRunResumeInput",
+    "TaskRunCancelInput",
+    "TaskRunRecord",
+    "TaskRunCreateResponse",
+    "TaskRunListSummary",
+    "TaskRunListResponse",
+    "TaskRunDetailResponse",
+    "TaskRunMutationResponse",
+    "TaskWorkspaceCreateInput",
+    "TaskWorkspaceRecord",
+    "TaskWorkspaceCreateResponse",
+    "TaskWorkspaceListSummary",
+    "TaskWorkspaceListResponse",
+    "TaskWorkspaceDetailResponse",
+    "TaskArtifactRegisterInput",
+    "TaskArtifactIngestInput",
+    "TaskScopedArtifactChunkRetrievalInput",
+    "ArtifactScopedArtifactChunkRetrievalInput",
+    "TaskScopedSemanticArtifactChunkRetrievalInput",
+    "ArtifactScopedSemanticArtifactChunkRetrievalInput",
+    "TaskArtifactRecord",
+    "TaskArtifactCreateResponse",
+    "TaskArtifactListSummary",
+    "TaskArtifactListResponse",
+    "TaskArtifactDetailResponse",
+    "TaskArtifactChunkRecord",
+    "TaskArtifactChunkListSummary",
+    "TaskArtifactChunkListResponse",
+    "TaskArtifactChunkEmbeddingRecord",
+    "TaskArtifactChunkEmbeddingWriteResponse",
+    "TaskArtifactChunkEmbeddingDetailResponse",
+    "TaskArtifactChunkEmbeddingListScope",
+    "TaskArtifactChunkEmbeddingListSummary",
+    "TaskArtifactChunkEmbeddingListResponse",
+    "TaskArtifactIngestionResponse",
+    "TaskArtifactChunkRetrievalMatch",
+    "TaskArtifactChunkRetrievalItem",
+    "TaskArtifactChunkRetrievalScope",
+    "TaskArtifactChunkRetrievalSummary",
+    "TaskArtifactChunkRetrievalResponse",
+    "TaskArtifactChunkSemanticRetrievalItem",
+    "TaskArtifactChunkSemanticRetrievalSummary",
+    "TaskArtifactChunkSemanticRetrievalResponse",
+    "TaskStepTraceLink",
+    "TaskStepOutcomeSnapshot",
+    "TaskStepLineageRecord",
+    "TaskStepRecord",
+    "TaskStepCreateResponse",
+    "TaskStepSequencingSummary",
+    "TaskStepListSummary",
+    "TaskStepListResponse",
+    "TaskStepDetailResponse",
+    "TaskStepMutationTraceSummary",
+    "TaskStepNextCreateResponse",
+    "TaskStepTransitionResponse",
+    "ResumptionBriefSectionSummary",
+    "ResumptionBriefConversationSummary",
+    "ResumptionBriefConversationSection",
+    "ResumptionBriefOpenLoopSection",
+    "ResumptionBriefMemoryHighlightSection",
+    "ResumptionBriefWorkflowSummary",
+    "ResumptionBriefWorkflowPosture",
+    "ResumptionBriefRecord",
+    "ResumptionBriefResponse",
+    "TaskLifecycleStateTracePayload",
+    "TaskLifecycleSummaryTracePayload",
+    "TaskStepLifecycleStateTracePayload",
+    "TaskStepLifecycleSummaryTracePayload",
+    "TaskStepSequenceRequestTracePayload",
+    "TaskStepSequenceStateTracePayload",
+    "TaskStepSequenceSummaryTracePayload",
+    "TaskStepContinuationRequestTracePayload",
+    "TaskStepContinuationLineageTracePayload",
+    "TaskStepContinuationSummaryTracePayload",
+    "TaskStepTransitionRequestTracePayload",
+    "TaskStepTransitionStateTracePayload",
+    "TaskStepTransitionSummaryTracePayload",
+)
+_TASK_EXPLICIT_METHODS = (
+    ("TaskArtifactChunkEmbeddingUpsertInput", "as_payload"),
+    ("TaskScopedSemanticArtifactChunkRetrievalInput", "as_payload"),
+    ("ArtifactScopedSemanticArtifactChunkRetrievalInput", "as_payload"),
+)
+
+for _task_class_name, _task_method_name in _TASK_EXPLICIT_METHODS:
+    _task_class = getattr(_task_contracts, _task_class_name)
+    _task_method = getattr(_task_class, _task_method_name)
+    setattr(
+        _task_class,
+        _task_method_name,
+        _clone_contract_function(
+            _task_method,
+            qualname=_task_method.__qualname__,
+        ),
+    )
+
+for _task_class_name in _TASK_CONTRACT_CLASS_NAMES:
+    _task_class = getattr(_task_contracts, _task_class_name)
+    if not hasattr(_task_class, "__dataclass_fields__"):
+        continue
+    for _task_generated_name, _task_generated_method in vars(_task_class).items():
+        if (
+            isinstance(_task_generated_method, _FunctionType)
+            and _task_generated_method.__globals__.get("__name__")
+            == "alicebot_api._contracts.tasks"
+        ):
+            setattr(
+                _task_class,
+                _task_generated_name,
+                _clone_generated_contract_function(_task_generated_method),
+            )
+
+del _task_class
+del _task_class_name
+del _task_generated_method
+del _task_generated_name
+del _task_method
+del _task_method_name
+
+
+from alicebot_api._contracts.retrieval import SemanticMemoryRetrievalRequestInput
+
+
+import alicebot_api._contracts.governance as _governance_contracts
+from alicebot_api._contracts.governance import (
+    ConsentUpsertInput,
+    PolicyCreateInput,
+    PolicyEvaluationRequestInput,
+    ToolCreateInput,
+    ToolAllowlistEvaluationRequestInput,
+    ToolRoutingRequestInput,
+    ApprovalRequestCreateInput,
+    ApprovalApproveInput,
+    ApprovalRejectInput,
+)
+
+_GOVERNANCE_CONTRACT_CLASS_NAMES = (
+    "ConsentUpsertInput",
+    "PolicyCreateInput",
+    "PolicyEvaluationRequestInput",
+    "ToolCreateInput",
+    "ToolAllowlistEvaluationRequestInput",
+    "ToolRoutingRequestInput",
+    "ApprovalRequestCreateInput",
+    "ApprovalApproveInput",
+    "ApprovalRejectInput",
+    "ConsentRecord",
+    "ConsentUpsertResponse",
+    "ConsentListSummary",
+    "ConsentListResponse",
+    "PolicyRecord",
+    "PolicyCreateResponse",
+    "PolicyListSummary",
+    "PolicyListResponse",
+    "PolicyDetailResponse",
+    "PolicyEvaluationReason",
+    "PolicyEvaluationSummary",
+    "PolicyEvaluationTraceSummary",
+    "PolicyEvaluationResponse",
+    "ToolRecord",
+    "ToolCreateResponse",
+    "ToolListSummary",
+    "ToolListResponse",
+    "ToolDetailResponse",
+    "ToolAllowlistReason",
+    "ToolAllowlistDecisionRecord",
+    "ToolAllowlistEvaluationSummary",
+    "ToolAllowlistTraceSummary",
+    "ToolAllowlistEvaluationResponse",
+    "ToolRoutingRequestRecord",
+    "ToolRoutingRequestTracePayload",
+    "ToolRoutingDecisionTracePayload",
+    "ToolRoutingSummaryTracePayload",
+    "ToolRoutingSummary",
+    "ToolRoutingTraceSummary",
+    "ToolRoutingResponse",
+    "ApprovalRoutingRecord",
+    "ApprovalResolutionRecord",
+    "ApprovalRecord",
+    "ApprovalRequestTraceSummary",
+    "ApprovalResolutionTraceSummary",
+    "ApprovalResolutionRequestTracePayload",
+    "ApprovalResolutionStateTracePayload",
+    "ApprovalResolutionSummaryTracePayload",
+    "ApprovalRequestCreateResponse",
+    "ApprovalListSummary",
+    "ApprovalListResponse",
+    "ApprovalDetailResponse",
+    "ApprovalResolutionResponse",
+)
+_GOVERNANCE_EXPLICIT_METHODS = (
+    ("ConsentUpsertInput", "as_payload"),
+    ("PolicyCreateInput", "as_payload"),
+    ("PolicyEvaluationRequestInput", "as_payload"),
+    ("ToolCreateInput", "as_payload"),
+    ("ToolAllowlistEvaluationRequestInput", "as_payload"),
+    ("ToolRoutingRequestInput", "as_payload"),
+    ("ApprovalRequestCreateInput", "as_payload"),
+    ("ApprovalApproveInput", "as_payload"),
+    ("ApprovalRejectInput", "as_payload"),
+)
+
+for _governance_class_name, _governance_method_name in _GOVERNANCE_EXPLICIT_METHODS:
+    _governance_class = getattr(_governance_contracts, _governance_class_name)
+    _governance_method = getattr(_governance_class, _governance_method_name)
+    setattr(
+        _governance_class,
+        _governance_method_name,
+        _clone_contract_function(
+            _governance_method,
+            qualname=_governance_method.__qualname__,
+        ),
+    )
+
+for _governance_class_name in _GOVERNANCE_CONTRACT_CLASS_NAMES:
+    _governance_class = getattr(_governance_contracts, _governance_class_name)
+    if not hasattr(_governance_class, "__dataclass_fields__"):
+        continue
+    for _governance_generated_name, _governance_generated_method in vars(
+        _governance_class
+    ).items():
+        if (
+            isinstance(_governance_generated_method, _FunctionType)
+            and _governance_generated_method.__globals__.get("__name__")
+            == "alicebot_api._contracts.governance"
+        ):
+            setattr(
+                _governance_class,
+                _governance_generated_name,
+                _clone_generated_contract_function(_governance_generated_method),
+            )
+
+del _governance_class
+del _governance_class_name
+del _governance_generated_method
+del _governance_generated_name
+del _governance_method
+del _governance_method_name
+
+
+import alicebot_api._contracts.execution as _execution_contracts
+from alicebot_api._contracts.execution import (
+    ProxyExecutionRequestInput,
+    ExecutionBudgetCreateInput,
+    ExecutionBudgetDeactivateInput,
+    ExecutionBudgetSupersedeInput,
 )
 
 
-@dataclass(frozen=True, slots=True)
-class CompileContextTaskScopedSemanticArtifactRetrievalInput:
-    task_id: UUID
-    embedding_config_id: UUID
-    query_vector: tuple[float, ...]
-    limit: int = DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "kind": "task",
-            "task_id": str(self.task_id),
-            "embedding_config_id": str(self.embedding_config_id),
-            "query_vector": [float(value) for value in self.query_vector],
-            "limit": self.limit,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class CompileContextArtifactScopedSemanticArtifactRetrievalInput:
-    task_artifact_id: UUID
-    embedding_config_id: UUID
-    query_vector: tuple[float, ...]
-    limit: int = DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "kind": "artifact",
-            "task_artifact_id": str(self.task_artifact_id),
-            "embedding_config_id": str(self.embedding_config_id),
-            "query_vector": [float(value) for value in self.query_vector],
-            "limit": self.limit,
-        }
-
-
-CompileContextSemanticArtifactRetrievalInput: TypeAlias = (
-    CompileContextTaskScopedSemanticArtifactRetrievalInput
-    | CompileContextArtifactScopedSemanticArtifactRetrievalInput
+from alicebot_api._contracts.continuity import (
+    PersistedMemoryRecord,
+    PersistedMemoryRevisionRecord,
+    AdmissionDecisionOutput,
+    ExplicitPreferenceAdmissionRecord,
+    ExplicitPreferenceExtractionSummary,
+    ExplicitPreferenceExtractionResponse,
+    ExplicitCommitmentOpenLoopOutcome,
+    ExplicitCommitmentAdmissionRecord,
+    ExplicitCommitmentExtractionSummary,
+    ExplicitCommitmentExtractionResponse,
+    ExplicitSignalCaptureSummary,
+    ExplicitSignalCaptureResponse,
+    ContinuityCaptureEventRecord,
+    ContinuityCaptureCandidateRecord,
+    ContinuityCaptureCandidatesSummary,
+    ContinuityCaptureCandidatesResponse,
+    ContinuityCaptureCommitRecord,
+    ContinuityCaptureCommitSummary,
+    ContinuityCaptureCommitResponse,
+    MemoryOperationCandidateRecord,
+    MemoryOperationRecord,
+    MemoryOperationCandidateGenerateSummary,
+    MemoryOperationCandidateGenerateResponse,
+    MemoryOperationCommitSummary,
+    MemoryOperationCommitResponse,
+    MemoryOperationListSummary,
+    MemoryOperationCandidateListResponse,
+    MemoryOperationListResponse,
+    ContinuityLifecycleStateRecord,
+    ContinuityObjectRecord,
+    ContinuityReviewObjectRecord,
+    ContinuityCorrectionEventRecord,
+    ContinuityCaptureInboxItem,
+    ContinuityCaptureInboxSummary,
+    ContinuityCaptureCreateResponse,
+    ContinuityCaptureInboxResponse,
+    ContinuityCaptureDetailResponse,
+    ContinuityReviewQueueSummary,
+    ContinuityReviewQueueResponse,
+    ContinuitySupersessionChain,
+    ContinuityReviewDetail,
+    ContinuityReviewDetailResponse,
+    ContradictionCaseRecord,
+    ContradictionCaseListSummary,
+    ContradictionCaseListResponse,
+    ContradictionCaseDetailResponse,
+    ContradictionSyncSummary,
+    ContradictionSyncResponse,
+    ContradictionResolveResponse,
+    TrustSignalRecord,
+    TrustSignalListSummary,
+    TrustSignalListResponse,
+    ContinuityEvidenceArtifactRecord,
+    ContinuityEvidenceArtifactCopyRecord,
+    ContinuityEvidenceArtifactSegmentRecord,
+    ContinuityEvidenceLinkRecord,
+    ContinuityExplanationSourceFactRecord,
+    ContinuityExplanationEvidenceSegmentRecord,
+    ContinuityExplanationSupersessionNoteRecord,
+    ContinuityExplanationContradictionRecord,
+    ContinuityExplanationTrustRecord,
+    ContinuityExplanationTimestampsRecord,
+    ContinuityExplanationRecord,
+    ContinuityExplainRecord,
+    ContinuityExplainResponse,
+    ContinuityArtifactDetailRecord,
+    ContinuityArtifactDetailResponse,
+    ContinuityRecallScopeFilters,
+    ContinuityRecallScopeMatch,
+    ContinuityRecallProvenanceReference,
+    ContinuityRecallOrderingMetadata,
+    ContinuityRetrievalStageScoreRecord,
+    ContinuityRetrievalDebugCandidateRecord,
+    ContinuityRetrievalDebugRecord,
+    ContinuityRecallResultRecord,
+    ContinuityRecallSummary,
+    ContinuityRecallResponse,
+    ContinuityLifecycleCounts,
+    ContinuityLifecycleListSummary,
+    ContinuityLifecycleListResponse,
+    ContinuityLifecycleDetailResponse,
+    ContinuityResumptionEmptyState,
+    ContinuityResumptionSingleSection,
+    ContinuityResumptionListSection,
+    ContinuityResumptionBriefRecord,
+    ContinuityResumptionDebugRecord,
+    ContinuityResumptionBriefResponse,
+    ContinuityBriefRelevantFactsSummary,
+    ContinuityBriefRelevantFactsSection,
+    ContinuityBriefConflictSummary,
+    ContinuityBriefConflictSection,
+    ContinuityBriefTimelineHighlightRecord,
+    ContinuityBriefTimelineSection,
+    ContinuityBriefSuggestedActionRecord,
+    ContinuityBriefSelectionStrategyRecord,
+    ContinuityBriefProvenanceSummary,
+    ContinuityBriefProvenanceBundle,
+    ContinuityBriefTrustPostureRecord,
+    ContinuityBriefRecord,
+    ContinuityBriefResponse,
+    TaskBriefEmptyState,
+    TaskBriefSectionSummary,
+    TaskBriefSectionRecord,
+    TaskBriefStrategyRecord,
+    TaskBriefSummary,
+    TaskBriefRecord,
+    TaskBriefPersistenceRecord,
+    TaskBriefResponse,
+    TaskBriefComparisonStats,
+    TaskBriefComparisonResponse,
 )
 
 
-@dataclass(frozen=True, slots=True)
-class TraceCreate:
-    user_id: UUID
-    thread_id: UUID
-    kind: str
-    compiler_version: str
-    status: str
-    limits: ContextCompilerLimits
-
-
-@dataclass(frozen=True, slots=True)
-class TraceEventRecord:
-    kind: str
-    payload: JsonObject
-
-
-class AgentProfileRecord(TypedDict):
-    id: str
-    name: str
-    description: str
-    model_provider: ModelProvider | None
-    model_name: str | None
-
-
-class AgentProfileListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class AgentProfileListResponse(TypedDict):
-    items: list[AgentProfileRecord]
-    summary: AgentProfileListSummary
-
-
-@dataclass(frozen=True, slots=True)
-class ThreadCreateInput:
-    title: str
-    agent_profile_id: str = DEFAULT_AGENT_PROFILE_ID
-
-
-class ThreadRecord(TypedDict):
-    id: str
-    title: str
-    agent_profile_id: str
-    created_at: str
-    updated_at: str
-
-
-class ThreadCreateResponse(TypedDict):
-    thread: ThreadRecord
-
-
-class ThreadListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class ThreadListResponse(TypedDict):
-    items: list[ThreadRecord]
-    summary: ThreadListSummary
-
-
-ThreadActivityPosture = Literal["recent", "current", "stale"]
-ThreadRiskPosture = Literal["normal", "watch", "risky"]
-ThreadHealthPosture = Literal["healthy", "watch", "critical"]
-
-
-class ThreadHealthThresholdsRecord(TypedDict):
-    recent_window_hours: float
-    stale_window_hours: float
-    risky_score_threshold: int
-
-
-class ThreadHealthRecord(TypedDict):
-    thread: ThreadRecord
-    health_posture: ThreadHealthPosture
-    activity_posture: ThreadActivityPosture
-    risk_posture: ThreadRiskPosture
-    risk_score: int
-    last_activity_at: str | None
-    last_conversation_at: str | None
-    hours_since_last_activity: float | None
-    conversation_event_count: int
-    operational_event_count: int
-    active_session_count: int
-    open_loop_count: int
-    stale_open_loop_count: int
-    unresolved_contradiction_count: int
-    weak_trust_signal_count: int
-    reasons: list[str]
-    recommended_action: str
-
-
-class ThreadHealthDashboardSummary(TypedDict):
-    posture: ThreadHealthPosture
-    total_thread_count: int
-    recent_thread_count: int
-    stale_thread_count: int
-    risky_thread_count: int
-    watch_thread_count: int
-    thresholds: ThreadHealthThresholdsRecord
-    recent_threads: list[ThreadHealthRecord]
-    stale_threads: list[ThreadHealthRecord]
-    risky_threads: list[ThreadHealthRecord]
-    items: list[ThreadHealthRecord]
-    sources: list[str]
-
-
-class ThreadHealthDashboardResponse(TypedDict):
-    dashboard: ThreadHealthDashboardSummary
-
-
-class ThreadDetailResponse(TypedDict):
-    thread: ThreadRecord
-
-
-class ThreadSessionRecord(TypedDict):
-    id: str
-    thread_id: str
-    status: str
-    started_at: str | None
-    ended_at: str | None
-    created_at: str
-
-
-class ThreadSessionListSummary(TypedDict):
-    thread_id: str
-    total_count: int
-    order: list[str]
-
-
-class ThreadSessionListResponse(TypedDict):
-    items: list[ThreadSessionRecord]
-    summary: ThreadSessionListSummary
-
-
-class ThreadEventRecord(TypedDict):
-    id: str
-    thread_id: str
-    session_id: str | None
-    sequence_no: int
-    kind: str
-    payload: JsonObject
-    created_at: str
-
-
-class ThreadEventListSummary(TypedDict):
-    thread_id: str
-    total_count: int
-    order: list[str]
-
-
-class ThreadEventListResponse(TypedDict):
-    items: list[ThreadEventRecord]
-    summary: ThreadEventListSummary
-
-
-@dataclass(frozen=True, slots=True)
-class ResumptionBriefRequestInput:
-    thread_id: UUID
-    max_events: int = DEFAULT_RESUMPTION_BRIEF_EVENT_LIMIT
-    max_open_loops: int = DEFAULT_RESUMPTION_BRIEF_OPEN_LOOP_LIMIT
-    max_memories: int = DEFAULT_RESUMPTION_BRIEF_MEMORY_LIMIT
-
-
-class TraceReviewSummaryRecord(TypedDict):
-    id: str
-    thread_id: str
-    kind: str
-    compiler_version: str
-    status: str
-    created_at: str
-    trace_event_count: int
-
-
-class TraceReviewRecord(TraceReviewSummaryRecord):
-    limits: JsonObject
-
-
-class TraceReviewListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class TraceReviewListResponse(TypedDict):
-    items: list[TraceReviewSummaryRecord]
-    summary: TraceReviewListSummary
-
-
-class TraceReviewDetailResponse(TypedDict):
-    trace: TraceReviewRecord
-
-
-class TraceReviewEventRecord(TypedDict):
-    id: str
-    trace_id: str
-    sequence_no: int
-    kind: str
-    payload: JsonObject
-    created_at: str
-
-
-class TraceReviewEventListSummary(TypedDict):
-    trace_id: str
-    total_count: int
-    order: list[str]
-
-
-class TraceReviewEventListResponse(TypedDict):
-    items: list[TraceReviewEventRecord]
-    summary: TraceReviewEventListSummary
-
-
-@dataclass(frozen=True, slots=True)
-class CompilerDecision:
-    kind: DecisionKind
-    entity_type: str
-    entity_id: UUID
-    reason: str
-    position: int
-    metadata: JsonObject | None = None
-
-    def to_trace_event(self) -> TraceEventRecord:
-        payload: JsonObject = {
-            "entity_type": self.entity_type,
-            "entity_id": str(self.entity_id),
-            "reason": self.reason,
-            "position": self.position,
-        }
-        if self.metadata is not None:
-            payload.update(self.metadata)
-        return TraceEventRecord(kind=f"context.{self.kind}", payload=payload)
-
-
-class ContextPackScope(TypedDict):
-    user_id: str
-    thread_id: str
-
-
-class ContextPackLimits(TypedDict):
-    max_sessions: int
-    max_events: int
-    max_memories: int
-    max_entities: int
-    max_entity_edges: int
-
-
-class ContextPackUser(TypedDict):
-    id: str
-    email: str
-    display_name: str | None
-    created_at: str
-
-
-class ContextPackThread(TypedDict):
-    id: str
-    title: str
-    created_at: str
-    updated_at: str
-
-
-class ContextPackSession(TypedDict):
-    id: str
-    status: str
-    started_at: str | None
-    ended_at: str | None
-    created_at: str
-
-
-class ContextPackEvent(TypedDict):
-    id: str
-    session_id: str | None
-    sequence_no: int
-    kind: str
-    payload: JsonObject
-    created_at: str
-
-
-class ContextPackMemory(TypedDict):
-    id: str
-    memory_key: str
-    value: JsonValue
-    status: MemoryStatus
-    source_event_ids: list[str]
-    memory_type: NotRequired[MemoryType]
-    confidence: NotRequired[float | None]
-    salience: NotRequired[float | None]
-    confirmation_status: NotRequired[MemoryConfirmationStatus]
-    trust_class: NotRequired[MemoryTrustClass]
-    promotion_eligibility: NotRequired[MemoryPromotionEligibility]
-    evidence_count: NotRequired[int | None]
-    independent_source_count: NotRequired[int | None]
-    extracted_by_model: NotRequired[str | None]
-    trust_reason: NotRequired[str | None]
-    valid_from: NotRequired[str | None]
-    valid_to: NotRequired[str | None]
-    last_confirmed_at: NotRequired[str | None]
-    created_at: str
-    updated_at: str
-    source_provenance: "ContextPackMemorySourceProvenance"
-
-
-class ContextPackMemorySourceProvenance(TypedDict):
-    sources: list[MemorySelectionSource]
-    semantic_score: float | None
-
-
-class ContextPackHybridMemorySummary(TypedDict):
-    requested: bool
-    embedding_config_id: str | None
-    query_vector_dimensions: int
-    semantic_limit: int
-    symbolic_selected_count: int
-    semantic_selected_count: int
-    merged_candidate_count: int
-    deduplicated_count: int
-    included_symbolic_only_count: int
-    included_semantic_only_count: int
-    included_dual_source_count: int
-    similarity_metric: Literal["cosine_similarity"] | None
-    source_precedence: list[MemorySelectionSource]
-    symbolic_order: list[str]
-    semantic_order: list[str]
-
-
-class ContextPackArtifactChunk(TypedDict):
-    id: str
-    task_id: str
-    task_artifact_id: str
-    relative_path: str
-    media_type: str
-    sequence_no: int
-    char_start: int
-    char_end_exclusive: int
-    text: str
-    source_provenance: "ContextPackArtifactChunkSourceProvenance"
-
-
-class ContextPackArtifactChunkSourceProvenance(TypedDict):
-    sources: list[ArtifactSelectionSource]
-    lexical_match: "TaskArtifactChunkRetrievalMatch | None"
-    semantic_score: float | None
-
-
-class ContextPackArtifactChunkSummary(TypedDict):
-    requested: bool
-    lexical_requested: bool
-    semantic_requested: bool
-    scope: TaskArtifactChunkRetrievalScope | None
-    query: str | None
-    query_terms: list[str]
-    embedding_config_id: str | None
-    query_vector_dimensions: int
-    limit: int
-    lexical_limit: int
-    semantic_limit: int
-    searched_artifact_count: int
-    lexical_candidate_count: int
-    semantic_candidate_count: int
-    merged_candidate_count: int
-    deduplicated_count: int
-    included_count: int
-    included_lexical_only_count: int
-    included_semantic_only_count: int
-    included_dual_source_count: int
-    excluded_uningested_artifact_count: int
-    excluded_limit_count: int
-    matching_rule: str | None
-    similarity_metric: Literal["cosine_similarity"] | None
-    source_precedence: list[ArtifactSelectionSource]
-    lexical_order: list[str]
-    semantic_order: list[str]
-    merged_order: list[str]
-
-
-class ArtifactRetrievalDecisionTracePayload(TypedDict):
-    scope_kind: TaskArtifactChunkRetrievalScopeKind
-    task_id: str
-    task_artifact_id: str
-    relative_path: str
-    media_type: str | None
-    ingestion_status: TaskArtifactIngestionStatus
-    limit: int
-    matched_query_terms: NotRequired[list[str]]
-    matched_query_term_count: NotRequired[int]
-    first_match_char_start: NotRequired[int]
-    sequence_no: NotRequired[int]
-    char_start: NotRequired[int]
-    char_end_exclusive: NotRequired[int]
-
-
-class HybridArtifactRetrievalDecisionTracePayload(TypedDict):
-    scope_kind: TaskArtifactChunkRetrievalScopeKind
-    task_id: str
-    task_artifact_id: str
-    relative_path: str
-    media_type: str | None
-    ingestion_status: TaskArtifactIngestionStatus
-    limit: int
-    selected_sources: list[ArtifactSelectionSource]
-    embedding_config_id: str | None
-    query_vector_dimensions: int
-    matched_query_terms: NotRequired[list[str]]
-    matched_query_term_count: NotRequired[int]
-    first_match_char_start: NotRequired[int]
-    score: NotRequired[float]
-    similarity_metric: NotRequired[Literal["cosine_similarity"]]
-    sequence_no: NotRequired[int]
-    char_start: NotRequired[int]
-    char_end_exclusive: NotRequired[int]
-
-
-class ContextPackMemorySummary(TypedDict):
-    candidate_count: int
-    included_count: int
-    excluded_deleted_count: int
-    excluded_limit_count: int
-    hybrid_retrieval: ContextPackHybridMemorySummary
-
-
-class ContextPackOpenLoop(TypedDict):
-    id: str
-    memory_id: str | None
-    title: str
-    status: OpenLoopStatus
-    opened_at: str
-    due_at: str | None
-    resolved_at: str | None
-    resolution_note: str | None
-    created_at: str
-    updated_at: str
-
-
-class ContextPackOpenLoopSummary(TypedDict):
-    candidate_count: int
-    included_count: int
-    excluded_limit_count: int
-    order: list[str]
-
-
-class HybridMemoryDecisionTracePayload(TypedDict):
-    embedding_config_id: str | None
-    memory_key: str
-    status: MemoryStatus
-    source_event_ids: list[str]
-    selected_sources: list[MemorySelectionSource]
-    semantic_score: float | None
-    trust_class: NotRequired[MemoryTrustClass]
-    promotion_eligibility: NotRequired[MemoryPromotionEligibility]
-
-
-class ContextPackEntity(TypedDict):
-    id: str
-    entity_type: EntityType
-    name: str
-    source_memory_ids: list[str]
-    created_at: str
-
-
-class ContextPackEntitySummary(TypedDict):
-    candidate_count: int
-    included_count: int
-    excluded_limit_count: int
-
-
-class EntityDecisionTracePayload(TypedDict):
-    entity_type: str
-    entity_id: str
-    reason: str
-    position: int
-    record_entity_type: EntityType
-    name: str
-    source_memory_ids: list[str]
-
-
-class ContextPackEntityEdge(TypedDict):
-    id: str
-    from_entity_id: str
-    to_entity_id: str
-    relationship_type: str
-    valid_from: str | None
-    valid_to: str | None
-    source_memory_ids: list[str]
-    created_at: str
-
-
-class ContextPackEntityEdgeSummary(TypedDict):
-    anchor_entity_count: int
-    candidate_count: int
-    included_count: int
-    excluded_limit_count: int
-
-
-class EntityEdgeDecisionTracePayload(TypedDict):
-    entity_type: str
-    entity_id: str
-    reason: str
-    position: int
-    from_entity_id: str
-    to_entity_id: str
-    relationship_type: str
-    valid_from: str | None
-    valid_to: str | None
-    source_memory_ids: list[str]
-    attached_included_entity_ids: list[str]
-
-
-class CompiledContextPack(TypedDict):
-    compiler_version: str
-    scope: ContextPackScope
-    limits: ContextPackLimits
-    user: ContextPackUser
-    thread: ContextPackThread
-    sessions: list[ContextPackSession]
-    events: list[ContextPackEvent]
-    memories: list[ContextPackMemory]
-    memory_summary: ContextPackMemorySummary
-    open_loops: NotRequired[list[ContextPackOpenLoop]]
-    open_loop_summary: NotRequired[ContextPackOpenLoopSummary]
-    artifact_chunks: list[ContextPackArtifactChunk]
-    artifact_chunk_summary: ContextPackArtifactChunkSummary
-    entities: list[ContextPackEntity]
-    entity_summary: ContextPackEntitySummary
-    entity_edges: list[ContextPackEntityEdge]
-    entity_edge_summary: ContextPackEntityEdgeSummary
-
-
-@dataclass(frozen=True, slots=True)
-class CompilerRunResult:
-    context_pack: CompiledContextPack
-    trace_events: list[TraceEventRecord]
-
-
-@dataclass(frozen=True, slots=True)
-class PromptAssemblyInput:
-    context_pack: CompiledContextPack
-    system_instruction: str
-    developer_instruction: str
-
-
-@dataclass(frozen=True, slots=True)
-class PromptSection:
-    name: PromptSectionName
-    content: str
-
-
-class PromptAssemblyTracePayload(TypedDict):
-    version: str
-    compile_trace_id: str
-    compiler_version: str
-    prompt_sha256: str
-    prompt_char_count: int
-    section_order: list[PromptSectionName]
-    section_characters: dict[PromptSectionName, int]
-    included_session_count: int
-    included_event_count: int
-    included_memory_count: int
-    included_entity_count: int
-    included_entity_edge_count: int
-
-
-@dataclass(frozen=True, slots=True)
-class PromptAssemblyResult:
-    sections: tuple[PromptSection, ...]
-    prompt_text: str
-    prompt_sha256: str
-    trace_payload: PromptAssemblyTracePayload
-
-
-class ModelInvocationRequestPayload(TypedDict):
-    provider: ModelProvider
-    model: str
-    tool_choice: Literal["none"]
-    tools: list[JsonObject]
-    store: bool
-    sections: list[PromptSectionName]
-    prompt: str
-
-
-@dataclass(frozen=True, slots=True)
-class ModelInvocationRequest:
-    provider: ModelProvider
-    model: str
-    prompt: PromptAssemblyResult
-    tool_choice: Literal["none"] = "none"
-    store: bool = False
-
-    def as_payload(self) -> ModelInvocationRequestPayload:
-        return {
-            "provider": self.provider,
-            "model": self.model,
-            "tool_choice": self.tool_choice,
-            "tools": [],
-            "store": self.store,
-            "sections": [section.name for section in self.prompt.sections],
-            "prompt": self.prompt.prompt_text,
-        }
-
-
-class ModelUsagePayload(TypedDict):
-    input_tokens: int | None
-    output_tokens: int | None
-    total_tokens: int | None
-    cached_input_tokens: NotRequired[int | None]
-
-
-class ModelInvocationTracePayload(TypedDict):
-    provider: ModelProvider
-    model: str
-    tool_choice: Literal["none"]
-    tools_enabled: Literal[False]
-    response_id: str | None
-    finish_reason: ModelFinishReason
-    output_text_char_count: int
-    usage: ModelUsagePayload
-    error_message: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class ModelInvocationResponse:
-    provider: ModelProvider
-    model: str
-    response_id: str | None
-    finish_reason: ModelFinishReason
-    output_text: str
-    usage: ModelUsagePayload
-
-    def to_trace_payload(self, *, error_message: str | None = None) -> ModelInvocationTracePayload:
-        return {
-            "provider": self.provider,
-            "model": self.model,
-            "tool_choice": "none",
-            "tools_enabled": False,
-            "response_id": self.response_id,
-            "finish_reason": self.finish_reason,
-            "output_text_char_count": len(self.output_text),
-            "usage": self.usage,
-            "error_message": error_message,
-        }
-
-
-class AssistantResponseModelRecord(TypedDict):
-    provider: ModelProvider
-    model: str
-    response_id: str | None
-    finish_reason: ModelFinishReason
-    usage: ModelUsagePayload
-
-
-class AssistantResponsePromptRecord(TypedDict):
-    assembly_version: str
-    prompt_sha256: str
-    section_order: list[PromptSectionName]
-
-
-class AssistantResponseEventPayload(TypedDict):
-    text: str
-    model: AssistantResponseModelRecord
-    prompt: AssistantResponsePromptRecord
-
-
-class GeneratedAssistantRecord(TypedDict):
-    event_id: str
-    sequence_no: int
-    text: str
-    model_provider: ModelProvider
-    model: str
-
-
-class ResponseTraceSummary(TypedDict):
-    compile_trace_id: str
-    compile_trace_event_count: int
-    response_trace_id: str
-    response_trace_event_count: int
-
-
-class GenerateResponseSuccess(TypedDict):
-    assistant: GeneratedAssistantRecord
-    trace: ResponseTraceSummary
-
-
-class ProviderCapabilityRecord(TypedDict):
-    provider_id: str
-    adapter_key: ProviderAdapterKey
-    discovery_status: ProviderCapabilityDiscoveryStatus
-    capability_version: str
-    snapshot: JsonObject
-    discovery_error: str | None
-    discovered_at: str
-
-
-class ModelProviderRecord(TypedDict):
-    id: str
-    workspace_id: str
-    created_by_user_account_id: str
-    provider_key: ProviderAdapterKey
-    model_provider: ModelProvider
-    display_name: str
-    base_url: str
-    auth_mode: str
-    default_model: str
-    status: ModelProviderStatus
-    model_list_path: str
-    healthcheck_path: str
-    invoke_path: str
-    azure_api_version: str
-    metadata: JsonObject
-    created_at: str
-    updated_at: str
-
-
-class ProviderRegistrationResponse(TypedDict):
-    provider: ModelProviderRecord
-    capabilities: ProviderCapabilityRecord
-
-
-class ProviderListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class ProviderListResponse(TypedDict):
-    items: list[ModelProviderRecord]
-    summary: ProviderListSummary
-
-
-class ProviderDetailResponse(TypedDict):
-    provider: ModelProviderRecord
-    capabilities: ProviderCapabilityRecord | None
-
-
-class ProviderTestResultRecord(TypedDict):
-    provider: ModelProvider
-    model: str
-    response_id: str | None
-    finish_reason: ModelFinishReason
-    text: str
-    usage: ModelUsagePayload
-
-
-class ProviderTestResponse(TypedDict):
-    provider: ModelProviderRecord
-    capabilities: ProviderCapabilityRecord | None
-    result: ProviderTestResultRecord
-
-
-class RuntimeInvokeAssistantRecord(TypedDict):
-    event_id: str
-    sequence_no: int
-    provider_id: str
-    provider_key: ProviderAdapterKey
-    model_provider: ModelProvider
-    model: str
-    response_id: str | None
-    finish_reason: ModelFinishReason
-    text: str
-    usage: ModelUsagePayload
-
-
-class RuntimeInvokeResponse(TypedDict):
-    assistant: RuntimeInvokeAssistantRecord
-    trace: ResponseTraceSummary
-
-
-@dataclass(frozen=True, slots=True)
-class OpenLoopCandidateInput:
-    title: str
-    due_at: datetime | None = None
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "title": self.title,
-        }
-        payload["due_at"] = isoformat_or_none(self.due_at)
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class MemoryCandidateInput:
-    memory_key: str
-    value: JsonValue | None
-    source_event_ids: tuple[UUID, ...]
-    agent_profile_id: str | None = None
-    delete_requested: bool = False
-    memory_type: str | None = None
-    confidence: float | None = None
-    salience: float | None = None
-    confirmation_status: str | None = None
-    trust_class: str | None = None
-    promotion_eligibility: str | None = None
-    evidence_count: int | None = None
-    independent_source_count: int | None = None
-    extracted_by_model: str | None = None
-    trust_reason: str | None = None
-    valid_from: datetime | None = None
-    valid_to: datetime | None = None
-    last_confirmed_at: datetime | None = None
-    open_loop: OpenLoopCandidateInput | None = None
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "memory_key": self.memory_key,
-            "source_event_ids": [str(source_event_id) for source_event_id in self.source_event_ids],
-            "delete_requested": self.delete_requested,
-        }
-        if self.agent_profile_id is not None:
-            payload["agent_profile_id"] = self.agent_profile_id
-        payload["value"] = self.value
-        if self.memory_type is not None:
-            payload["memory_type"] = self.memory_type
-        if self.confidence is not None:
-            payload["confidence"] = self.confidence
-        if self.salience is not None:
-            payload["salience"] = self.salience
-        if self.confirmation_status is not None:
-            payload["confirmation_status"] = self.confirmation_status
-        if self.trust_class is not None:
-            payload["trust_class"] = self.trust_class
-        if self.promotion_eligibility is not None:
-            payload["promotion_eligibility"] = self.promotion_eligibility
-        if self.evidence_count is not None:
-            payload["evidence_count"] = self.evidence_count
-        if self.independent_source_count is not None:
-            payload["independent_source_count"] = self.independent_source_count
-        if self.extracted_by_model is not None:
-            payload["extracted_by_model"] = self.extracted_by_model
-        if self.trust_reason is not None:
-            payload["trust_reason"] = self.trust_reason
-        if self.valid_from is not None:
-            payload["valid_from"] = isoformat_or_none(self.valid_from)
-        if self.valid_to is not None:
-            payload["valid_to"] = isoformat_or_none(self.valid_to)
-        if self.last_confirmed_at is not None:
-            payload["last_confirmed_at"] = isoformat_or_none(self.last_confirmed_at)
-        if self.open_loop is not None:
-            payload["open_loop"] = self.open_loop.as_payload()
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class ExplicitPreferenceExtractionRequestInput:
-    source_event_id: UUID
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "source_event_id": str(self.source_event_id),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ExplicitCommitmentExtractionRequestInput:
-    source_event_id: UUID
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "source_event_id": str(self.source_event_id),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ExplicitSignalCaptureRequestInput:
-    source_event_id: UUID
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "source_event_id": str(self.source_event_id),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ContinuityCaptureCreateInput:
-    raw_content: str
-    explicit_signal: ContinuityCaptureExplicitSignal | None = None
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "raw_content": self.raw_content,
-        }
-        payload["explicit_signal"] = self.explicit_signal
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class ContinuityCaptureCandidatesInput:
-    user_content: str
-    assistant_content: str
-    session_id: str | None = None
-    source_kind: str = "sync_turn"
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "user_content": self.user_content,
-            "assistant_content": self.assistant_content,
-            "session_id": self.session_id,
-            "source_kind": self.source_kind,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ContinuityCaptureCommitInput:
-    mode: ContinuityCaptureCommitMode = "assist"
-    candidates: list[JsonObject] = field(default_factory=list)
-    sync_fingerprint: str | None = None
-    source_kind: str = "sync_turn"
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "mode": self.mode,
-            "candidates": [dict(candidate) for candidate in self.candidates],
-            "sync_fingerprint": self.sync_fingerprint,
-            "source_kind": self.source_kind,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class MemoryOperationGenerateInput:
-    user_content: str
-    assistant_content: str
-    mode: ContinuityCaptureCommitMode = "assist"
-    sync_fingerprint: str | None = None
-    source_kind: str = "sync_turn"
-    session_id: str | None = None
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = None
-    person: str | None = None
-    target_continuity_object_id: UUID | None = None
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "user_content": self.user_content,
-            "assistant_content": self.assistant_content,
-            "mode": self.mode,
-            "sync_fingerprint": self.sync_fingerprint,
-            "source_kind": self.source_kind,
-            "session_id": self.session_id,
-            "thread_id": None if self.thread_id is None else str(self.thread_id),
-            "task_id": None if self.task_id is None else str(self.task_id),
-            "project": self.project,
-            "person": self.person,
-            "target_continuity_object_id": (
-                None if self.target_continuity_object_id is None else str(self.target_continuity_object_id)
-            ),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class MemoryOperationCommitInput:
-    candidate_ids: list[UUID] = field(default_factory=list)
-    sync_fingerprint: str | None = None
-    include_review_required: bool = False
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "candidate_ids": [str(candidate_id) for candidate_id in self.candidate_ids],
-            "sync_fingerprint": self.sync_fingerprint,
-            "include_review_required": self.include_review_required,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class MemoryOperationListInput:
-    limit: int = DEFAULT_CONTINUITY_CAPTURE_LIMIT
-    policy_action: MemoryOperationPolicyAction | None = None
-    operation_type: MemoryOperationType | None = None
-    sync_fingerprint: str | None = None
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "limit": self.limit,
-            "policy_action": self.policy_action,
-            "operation_type": self.operation_type,
-            "sync_fingerprint": self.sync_fingerprint,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ContinuityReviewQueueQueryInput:
-    status: ContinuityReviewStatusFilter = "correction_ready"
-    limit: int = DEFAULT_CONTINUITY_REVIEW_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "status": self.status,
-            "limit": self.limit,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ContinuityCorrectionInput:
-    action: ContinuityCorrectionAction
-    reason: str | None = None
-    title: str | None = None
-    body: JsonObject | None = None
-    provenance: JsonObject | None = None
-    confidence: float | None = None
-    replacement_title: str | None = None
-    replacement_body: JsonObject | None = None
-    replacement_provenance: JsonObject | None = None
-    replacement_confidence: float | None = None
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "action": self.action,
-            "reason": self.reason,
-            "title": self.title,
-            "body": self.body,
-            "provenance": self.provenance,
-            "confidence": self.confidence,
-            "replacement_title": self.replacement_title,
-            "replacement_body": self.replacement_body,
-            "replacement_provenance": self.replacement_provenance,
-            "replacement_confidence": self.replacement_confidence,
-        }
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class ContradictionCaseListQueryInput:
-    status: ContradictionStatus = "open"
-    limit: int = DEFAULT_CONTINUITY_REVIEW_LIMIT
-    continuity_object_id: UUID | None = None
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "status": self.status,
-            "limit": self.limit,
-            "continuity_object_id": (
-                None if self.continuity_object_id is None else str(self.continuity_object_id)
-            ),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ContradictionSyncInput:
-    continuity_object_id: UUID | None = None
-    limit: int = DEFAULT_CONTINUITY_REVIEW_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "continuity_object_id": (
-                None if self.continuity_object_id is None else str(self.continuity_object_id)
-            ),
-            "limit": self.limit,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ContradictionResolveInput:
-    action: ContradictionResolutionAction
-    note: str | None = None
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "action": self.action,
-            "note": self.note,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class TrustSignalListQueryInput:
-    limit: int = DEFAULT_CONTINUITY_REVIEW_LIMIT
-    continuity_object_id: UUID | None = None
-    signal_state: TrustSignalState = "active"
-    signal_type: TrustSignalType | None = None
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "limit": self.limit,
-            "continuity_object_id": (
-                None if self.continuity_object_id is None else str(self.continuity_object_id)
-            ),
-            "signal_state": self.signal_state,
-            "signal_type": self.signal_type,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ContinuityRecallQueryInput:
-    query: str | None = None
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = None
-    person: str | None = None
-    since: datetime | None = None
-    until: datetime | None = None
-    limit: int = DEFAULT_CONTINUITY_RECALL_LIMIT
-    debug: bool = False
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "query": self.query,
-            "thread_id": None if self.thread_id is None else str(self.thread_id),
-            "task_id": None if self.task_id is None else str(self.task_id),
-            "project": self.project,
-            "person": self.person,
-            "limit": self.limit,
-            "debug": self.debug,
-        }
-        payload["since"] = isoformat_or_none(self.since)
-        payload["until"] = isoformat_or_none(self.until)
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class ContinuityResumptionBriefRequestInput:
-    query: str | None = None
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = None
-    person: str | None = None
-    since: datetime | None = None
-    until: datetime | None = None
-    max_recent_changes: int = DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT
-    max_open_loops: int = DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT
-    include_non_promotable_facts: bool = False
-    debug: bool = False
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "query": self.query,
-            "thread_id": None if self.thread_id is None else str(self.thread_id),
-            "task_id": None if self.task_id is None else str(self.task_id),
-            "project": self.project,
-            "person": self.person,
-            "max_recent_changes": self.max_recent_changes,
-            "max_open_loops": self.max_open_loops,
-            "include_non_promotable_facts": self.include_non_promotable_facts,
-            "debug": self.debug,
-        }
-        payload["since"] = isoformat_or_none(self.since)
-        payload["until"] = isoformat_or_none(self.until)
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class ContinuityBriefRequestInput:
-    brief_type: ContinuityBriefType = "general"
-    query: str | None = None
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = None
-    person: str | None = None
-    since: datetime | None = None
-    until: datetime | None = None
-    max_relevant_facts: int = DEFAULT_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT
-    max_recent_changes: int = DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT
-    max_open_loops: int = DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT
-    max_conflicts: int = DEFAULT_CONTINUITY_BRIEF_CONFLICT_LIMIT
-    max_timeline_highlights: int = DEFAULT_CONTINUITY_BRIEF_TIMELINE_LIMIT
-    include_non_promotable_facts: bool = False
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "brief_type": self.brief_type,
-            "query": self.query,
-            "thread_id": None if self.thread_id is None else str(self.thread_id),
-            "task_id": None if self.task_id is None else str(self.task_id),
-            "project": self.project,
-            "person": self.person,
-            "max_relevant_facts": self.max_relevant_facts,
-            "max_recent_changes": self.max_recent_changes,
-            "max_open_loops": self.max_open_loops,
-            "max_conflicts": self.max_conflicts,
-            "max_timeline_highlights": self.max_timeline_highlights,
-            "include_non_promotable_facts": self.include_non_promotable_facts,
-        }
-        payload["since"] = isoformat_or_none(self.since)
-        payload["until"] = isoformat_or_none(self.until)
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class TaskBriefCompileRequestInput:
-    mode: TaskBriefMode
-    query: str | None = None
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = None
-    person: str | None = None
-    since: datetime | None = None
-    until: datetime | None = None
-    include_non_promotable_facts: bool = False
-    provider_strategy: str | None = None
-    briefing_strategy: TaskBriefingStrategy | None = None
-    token_budget: int | None = None
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "mode": self.mode,
-            "query": self.query,
-            "thread_id": None if self.thread_id is None else str(self.thread_id),
-            "task_id": None if self.task_id is None else str(self.task_id),
-            "project": self.project,
-            "person": self.person,
-            "include_non_promotable_facts": self.include_non_promotable_facts,
-            "provider_strategy": self.provider_strategy,
-            "briefing_strategy": self.briefing_strategy,
-            "token_budget": self.token_budget,
-        }
-        payload["since"] = isoformat_or_none(self.since)
-        payload["until"] = isoformat_or_none(self.until)
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class TaskBriefComparisonRequestInput:
-    primary: TaskBriefCompileRequestInput
-    secondary: TaskBriefCompileRequestInput
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "primary": self.primary.as_payload(),
-            "secondary": self.secondary.as_payload(),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ContinuityLifecycleQueryInput:
-    limit: int = DEFAULT_CONTINUITY_LIFECYCLE_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "limit": self.limit,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ContinuityOpenLoopDashboardQueryInput:
-    query: str | None = None
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = None
-    person: str | None = None
-    since: datetime | None = None
-    until: datetime | None = None
-    limit: int = DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "query": self.query,
-            "thread_id": None if self.thread_id is None else str(self.thread_id),
-            "task_id": None if self.task_id is None else str(self.task_id),
-            "project": self.project,
-            "person": self.person,
-            "limit": self.limit,
-        }
-        payload["since"] = isoformat_or_none(self.since)
-        payload["until"] = isoformat_or_none(self.until)
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class ContinuityDailyBriefRequestInput:
-    query: str | None = None
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = None
-    person: str | None = None
-    since: datetime | None = None
-    until: datetime | None = None
-    limit: int = DEFAULT_CONTINUITY_DAILY_BRIEF_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "query": self.query,
-            "thread_id": None if self.thread_id is None else str(self.thread_id),
-            "task_id": None if self.task_id is None else str(self.task_id),
-            "project": self.project,
-            "person": self.person,
-            "limit": self.limit,
-        }
-        payload["since"] = isoformat_or_none(self.since)
-        payload["until"] = isoformat_or_none(self.until)
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class ContinuityWeeklyReviewRequestInput:
-    query: str | None = None
-    thread_id: UUID | None = None
-    task_id: UUID | None = None
-    project: str | None = None
-    person: str | None = None
-    since: datetime | None = None
-    until: datetime | None = None
-    limit: int = DEFAULT_CONTINUITY_WEEKLY_REVIEW_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "query": self.query,
-            "thread_id": None if self.thread_id is None else str(self.thread_id),
-            "task_id": None if self.task_id is None else str(self.task_id),
-            "project": self.project,
-            "person": self.person,
-            "limit": self.limit,
-        }
-        payload["since"] = isoformat_or_none(self.since)
-        payload["until"] = isoformat_or_none(self.until)
-        return payload
-
-
-
-
-
-
-
-
-
-
-
-
-@dataclass(frozen=True, slots=True)
-class ContinuityOpenLoopReviewActionInput:
-    action: ContinuityOpenLoopReviewAction
-    note: str | None = None
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "action": self.action,
-            "note": self.note,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class OpenLoopCreateInput:
-    title: str
-    memory_id: UUID | None = None
-    due_at: datetime | None = None
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "title": self.title,
-            "memory_id": None if self.memory_id is None else str(self.memory_id),
-        }
-        payload["due_at"] = isoformat_or_none(self.due_at)
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class OpenLoopStatusUpdateInput:
-    status: OpenLoopStatus
-    resolution_note: str | None = None
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "status": self.status,
-        }
-        payload["resolution_note"] = self.resolution_note
-        return payload
-
-
-class ExtractedPreferenceCandidateRecord(TypedDict):
-    memory_key: str
-    value: JsonValue
-    source_event_ids: list[str]
-    delete_requested: bool
-    pattern: ExplicitPreferencePattern
-    subject_text: str
-
-
-class ExtractedCommitmentCandidateRecord(TypedDict):
-    memory_key: str
-    value: JsonValue
-    source_event_ids: list[str]
-    delete_requested: bool
-    pattern: ExplicitCommitmentPattern
-    commitment_text: str
-    open_loop_title: str
-
-
-@dataclass(frozen=True, slots=True)
-class EntityCreateInput:
-    entity_type: EntityType
-    name: str
-    source_memory_ids: tuple[UUID, ...]
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "entity_type": self.entity_type,
-            "name": self.name,
-            "source_memory_ids": [str(source_memory_id) for source_memory_id in self.source_memory_ids],
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class EntityEdgeCreateInput:
-    from_entity_id: UUID
-    to_entity_id: UUID
-    relationship_type: str
-    valid_from: datetime | None
-    valid_to: datetime | None
-    source_memory_ids: tuple[UUID, ...]
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "from_entity_id": str(self.from_entity_id),
-            "to_entity_id": str(self.to_entity_id),
-            "relationship_type": self.relationship_type,
-            "source_memory_ids": [str(source_memory_id) for source_memory_id in self.source_memory_ids],
-        }
-        payload["valid_from"] = isoformat_or_none(self.valid_from)
-        payload["valid_to"] = isoformat_or_none(self.valid_to)
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class TemporalStateAtQueryInput:
-    entity_id: UUID
-    at: datetime | None = None
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "entity_id": str(self.entity_id),
-            "at": isoformat_or_none(self.at),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class TemporalTimelineQueryInput:
-    entity_id: UUID
-    since: datetime | None = None
-    until: datetime | None = None
-    limit: int = DEFAULT_TEMPORAL_TIMELINE_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "entity_id": str(self.entity_id),
-            "since": isoformat_or_none(self.since),
-            "until": isoformat_or_none(self.until),
-            "limit": self.limit,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class TemporalExplainQueryInput:
-    entity_id: UUID
-    at: datetime | None = None
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "entity_id": str(self.entity_id),
-            "at": isoformat_or_none(self.at),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class TrustedFactPatternListQueryInput:
-    limit: int = DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "limit": self.limit,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class TrustedFactPlaybookListQueryInput:
-    limit: int = DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "limit": self.limit,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class EmbeddingConfigCreateInput:
-    provider: str
-    model: str
-    version: str
-    dimensions: int
-    status: EmbeddingConfigStatus
-    metadata: JsonObject
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "provider": self.provider,
-            "model": self.model,
-            "version": self.version,
-            "dimensions": self.dimensions,
-            "status": self.status,
-            "metadata": self.metadata,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class MemoryEmbeddingUpsertInput:
-    memory_id: UUID
-    embedding_config_id: UUID
-    vector: tuple[float, ...]
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "memory_id": str(self.memory_id),
-            "embedding_config_id": str(self.embedding_config_id),
-            "vector": [float(value) for value in self.vector],
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class TaskArtifactChunkEmbeddingUpsertInput:
-    task_artifact_chunk_id: UUID
-    embedding_config_id: UUID
-    vector: tuple[float, ...]
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "task_artifact_chunk_id": str(self.task_artifact_chunk_id),
-            "embedding_config_id": str(self.embedding_config_id),
-            "vector": [float(value) for value in self.vector],
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class SemanticMemoryRetrievalRequestInput:
-    embedding_config_id: UUID
-    query_vector: tuple[float, ...]
-    limit: int = DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "embedding_config_id": str(self.embedding_config_id),
-            "query_vector": [float(value) for value in self.query_vector],
-            "limit": self.limit,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ConsentUpsertInput:
-    consent_key: str
-    status: ConsentStatus
-    metadata: JsonObject
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "consent_key": self.consent_key,
-            "status": self.status,
-            "metadata": self.metadata,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class PolicyCreateInput:
-    name: str
-    action: str
-    scope: str
-    effect: PolicyEffect
-    priority: int
-    active: bool
-    conditions: JsonObject
-    required_consents: tuple[str, ...]
-    agent_profile_id: str | None = None
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "name": self.name,
-            "action": self.action,
-            "scope": self.scope,
-            "effect": self.effect,
-            "priority": self.priority,
-            "active": self.active,
-            "conditions": self.conditions,
-            "required_consents": list(self.required_consents),
-        }
-        if self.agent_profile_id is not None:
-            payload["agent_profile_id"] = self.agent_profile_id
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class PolicyEvaluationRequestInput:
-    thread_id: UUID
-    action: str
-    scope: str
-    attributes: JsonObject
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "thread_id": str(self.thread_id),
-            "action": self.action,
-            "scope": self.scope,
-            "attributes": self.attributes,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ToolCreateInput:
-    tool_key: str
-    name: str
-    description: str
-    version: str
-    metadata_version: ToolMetadataVersion = TOOL_METADATA_VERSION_V0
-    active: bool = True
-    tags: tuple[str, ...] = field(default_factory=tuple)
-    action_hints: tuple[str, ...] = field(default_factory=tuple)
-    scope_hints: tuple[str, ...] = field(default_factory=tuple)
-    domain_hints: tuple[str, ...] = field(default_factory=tuple)
-    risk_hints: tuple[str, ...] = field(default_factory=tuple)
-    metadata: JsonObject = field(default_factory=dict)
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "tool_key": self.tool_key,
-            "name": self.name,
-            "description": self.description,
-            "version": self.version,
-            "metadata_version": self.metadata_version,
-            "active": self.active,
-            "tags": list(self.tags),
-            "action_hints": list(self.action_hints),
-            "scope_hints": list(self.scope_hints),
-            "domain_hints": list(self.domain_hints),
-            "risk_hints": list(self.risk_hints),
-            "metadata": self.metadata,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ToolAllowlistEvaluationRequestInput:
-    thread_id: UUID
-    action: str
-    scope: str
-    domain_hint: str | None = None
-    risk_hint: str | None = None
-    attributes: JsonObject = field(default_factory=dict)
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "thread_id": str(self.thread_id),
-            "action": self.action,
-            "scope": self.scope,
-            "attributes": self.attributes,
-        }
-        payload["domain_hint"] = self.domain_hint
-        payload["risk_hint"] = self.risk_hint
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class ToolRoutingRequestInput:
-    thread_id: UUID
-    tool_id: UUID
-    action: str
-    scope: str
-    domain_hint: str | None = None
-    risk_hint: str | None = None
-    attributes: JsonObject = field(default_factory=dict)
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "thread_id": str(self.thread_id),
-            "tool_id": str(self.tool_id),
-            "action": self.action,
-            "scope": self.scope,
-            "attributes": self.attributes,
-        }
-        payload["domain_hint"] = self.domain_hint
-        payload["risk_hint"] = self.risk_hint
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class ApprovalRequestCreateInput:
-    thread_id: UUID
-    tool_id: UUID
-    action: str
-    scope: str
-    task_run_id: UUID | None = None
-    domain_hint: str | None = None
-    risk_hint: str | None = None
-    attributes: JsonObject = field(default_factory=dict)
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "thread_id": str(self.thread_id),
-            "tool_id": str(self.tool_id),
-            "action": self.action,
-            "scope": self.scope,
-            "attributes": self.attributes,
-        }
-        payload["task_run_id"] = None if self.task_run_id is None else str(self.task_run_id)
-        payload["domain_hint"] = self.domain_hint
-        payload["risk_hint"] = self.risk_hint
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class ApprovalApproveInput:
-    approval_id: UUID
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "approval_id": str(self.approval_id),
-            "requested_action": "approve",
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ApprovalRejectInput:
-    approval_id: UUID
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "approval_id": str(self.approval_id),
-            "requested_action": "reject",
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ProxyExecutionRequestInput:
-    approval_id: UUID
-    task_run_id: UUID | None = None
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "approval_id": str(self.approval_id),
-        }
-        payload["task_run_id"] = None if self.task_run_id is None else str(self.task_run_id)
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutionBudgetCreateInput:
-    max_completed_executions: int
-    tool_key: str | None = None
-    domain_hint: str | None = None
-    rolling_window_seconds: int | None = None
-    agent_profile_id: str | None = None
-
-    def as_payload(self) -> JsonObject:
-        payload: JsonObject = {
-            "max_completed_executions": self.max_completed_executions,
-        }
-        payload["tool_key"] = self.tool_key
-        payload["domain_hint"] = self.domain_hint
-        payload["rolling_window_seconds"] = self.rolling_window_seconds
-        payload["agent_profile_id"] = self.agent_profile_id
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutionBudgetDeactivateInput:
-    thread_id: UUID
-    execution_budget_id: UUID
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "thread_id": str(self.thread_id),
-            "execution_budget_id": str(self.execution_budget_id),
-            "requested_action": "deactivate",
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutionBudgetSupersedeInput:
-    thread_id: UUID
-    execution_budget_id: UUID
-    max_completed_executions: int
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "thread_id": str(self.thread_id),
-            "execution_budget_id": str(self.execution_budget_id),
-            "requested_action": "supersede",
-            "max_completed_executions": self.max_completed_executions,
-        }
-
-
-class PersistedMemoryRecord(TypedDict):
-    id: str
-    user_id: str
-    memory_key: str
-    value: JsonValue
-    status: MemoryStatus
-    source_event_ids: list[str]
-    memory_type: NotRequired[MemoryType]
-    confidence: NotRequired[float | None]
-    salience: NotRequired[float | None]
-    confirmation_status: NotRequired[MemoryConfirmationStatus]
-    trust_class: NotRequired[MemoryTrustClass]
-    promotion_eligibility: NotRequired[MemoryPromotionEligibility]
-    evidence_count: NotRequired[int | None]
-    independent_source_count: NotRequired[int | None]
-    extracted_by_model: NotRequired[str | None]
-    trust_reason: NotRequired[str | None]
-    valid_from: NotRequired[str | None]
-    valid_to: NotRequired[str | None]
-    last_confirmed_at: NotRequired[str | None]
-    created_at: str
-    updated_at: str
-    deleted_at: str | None
-
-
-class PersistedMemoryRevisionRecord(TypedDict):
-    id: str
-    user_id: str
-    memory_id: str
-    sequence_no: int
-    action: AdmissionAction
-    memory_key: str
-    previous_value: JsonValue | None
-    new_value: JsonValue | None
-    source_event_ids: list[str]
-    candidate: JsonObject
-    created_at: str
-
-
-@dataclass(frozen=True, slots=True)
-class AdmissionDecisionOutput:
-    action: AdmissionAction
-    reason: str
-    memory: PersistedMemoryRecord | None
-    revision: PersistedMemoryRevisionRecord | None
-    open_loop: OpenLoopRecord | None = None
-
-
-class ExplicitPreferenceAdmissionRecord(TypedDict):
-    decision: AdmissionAction
-    reason: str
-    memory: PersistedMemoryRecord | None
-    revision: PersistedMemoryRevisionRecord | None
-
-
-class ExplicitPreferenceExtractionSummary(TypedDict):
-    source_event_id: str
-    source_event_kind: str
-    candidate_count: int
-    admission_count: int
-    persisted_change_count: int
-    noop_count: int
-
-
-class ExplicitPreferenceExtractionResponse(TypedDict):
-    candidates: list[ExtractedPreferenceCandidateRecord]
-    admissions: list[ExplicitPreferenceAdmissionRecord]
-    summary: ExplicitPreferenceExtractionSummary
-
-
-class ExplicitCommitmentOpenLoopOutcome(TypedDict):
-    decision: ExplicitCommitmentOpenLoopDecision
-    reason: str
-    open_loop: OpenLoopRecord | None
-
-
-class ExplicitCommitmentAdmissionRecord(TypedDict):
-    decision: AdmissionAction
-    reason: str
-    memory: PersistedMemoryRecord | None
-    revision: PersistedMemoryRevisionRecord | None
-    open_loop: ExplicitCommitmentOpenLoopOutcome
-
-
-class ExplicitCommitmentExtractionSummary(TypedDict):
-    source_event_id: str
-    source_event_kind: str
-    candidate_count: int
-    admission_count: int
-    persisted_change_count: int
-    noop_count: int
-    open_loop_created_count: int
-    open_loop_noop_count: int
-
-
-class ExplicitCommitmentExtractionResponse(TypedDict):
-    candidates: list[ExtractedCommitmentCandidateRecord]
-    admissions: list[ExplicitCommitmentAdmissionRecord]
-    summary: ExplicitCommitmentExtractionSummary
-
-
-class ExplicitSignalCaptureSummary(TypedDict):
-    source_event_id: str
-    source_event_kind: str
-    candidate_count: int
-    admission_count: int
-    persisted_change_count: int
-    noop_count: int
-    open_loop_created_count: int
-    open_loop_noop_count: int
-    preference_candidate_count: int
-    preference_admission_count: int
-    commitment_candidate_count: int
-    commitment_admission_count: int
-
-
-class ExplicitSignalCaptureResponse(TypedDict):
-    preferences: ExplicitPreferenceExtractionResponse
-    commitments: ExplicitCommitmentExtractionResponse
-    summary: ExplicitSignalCaptureSummary
-
-
-class ContinuityCaptureEventRecord(TypedDict):
-    id: str
-    raw_content: str
-    explicit_signal: ContinuityCaptureExplicitSignal | None
-    admission_posture: ContinuityCaptureAdmissionPosture
-    admission_reason: str
-    created_at: str
-
-
-class ContinuityCaptureCandidateRecord(TypedDict):
-    candidate_id: str
-    candidate_type: ContinuityCaptureCandidateType
-    object_type: ContinuityObjectType | None
-    normalized_text: str
-    confidence: float
-    trust_class: MemoryTrustClass
-    evidence_snippet: str
-    explicit: bool
-    source_role: str
-    admission_reason: str
-    proposed_action: ContinuityCaptureProposedAction
-
-
-class ContinuityCaptureCandidatesSummary(TypedDict):
-    candidate_count: int
-    explicit_count: int
-    high_confidence_count: int
-    no_op_count: int
-
-
-class ContinuityCaptureCandidatesResponse(TypedDict):
-    candidates: list[ContinuityCaptureCandidateRecord]
-    summary: ContinuityCaptureCandidatesSummary
-
-
-class ContinuityCaptureCommitRecord(TypedDict):
-    candidate_id: str
-    candidate_type: ContinuityCaptureCandidateType
-    decision: ContinuityCaptureCommitDecision
-    reason: str
-    persistence_target: str
-    capture_event: ContinuityCaptureEventRecord | None
-    continuity_object: ContinuityObjectRecord | None
-
-
-class ContinuityCaptureCommitSummary(TypedDict):
-    mode: ContinuityCaptureCommitMode
-    candidate_count: int
-    auto_saved_count: int
-    review_queued_count: int
-    noop_count: int
-    duplicate_noop_count: int
-    auto_saved_types: list[str]
-    review_queued_types: list[str]
-
-
-class ContinuityCaptureCommitResponse(TypedDict):
-    commits: list[ContinuityCaptureCommitRecord]
-    summary: ContinuityCaptureCommitSummary
-
-
-class MemoryOperationCandidateRecord(TypedDict):
-    id: str
-    sync_fingerprint: str
-    source_kind: str
-    source_candidate_id: str
-    source_candidate_type: str
-    candidate_payload: JsonObject
-    source_scope: JsonObject
-    operation_type: MemoryOperationType
-    operation_reason: str
-    policy_action: MemoryOperationPolicyAction
-    policy_reason: str
-    target_continuity_object_id: str | None
-    target_snapshot: JsonObject
-    applied_operation_id: str | None
-    created_at: str
-    applied_at: str | None
-
-
-class MemoryOperationRecord(TypedDict):
-    id: str
-    candidate_id: str
-    operation_type: MemoryOperationType
-    status: MemoryOperationStatus
-    sync_fingerprint: str
-    target_continuity_object_id: str | None
-    resulting_continuity_object_id: str | None
-    correction_event_id: str | None
-    before_snapshot: JsonObject
-    after_snapshot: JsonObject
-    details: JsonObject
-    created_at: str
-
-
-class MemoryOperationCandidateGenerateSummary(TypedDict):
-    candidate_count: int
-    auto_apply_count: int
-    review_required_count: int
-    noop_count: int
-    operation_types: list[str]
-
-
-class MemoryOperationCandidateGenerateResponse(TypedDict):
-    items: list[MemoryOperationCandidateRecord]
-    summary: MemoryOperationCandidateGenerateSummary
-
-
-class MemoryOperationCommitSummary(TypedDict):
-    requested_count: int
-    applied_count: int
-    no_op_count: int
-    skipped_count: int
-    duplicate_count: int
-    operation_types: list[str]
-
-
-class MemoryOperationCommitResponse(TypedDict):
-    candidates: list[MemoryOperationCandidateRecord]
-    operations: list[MemoryOperationRecord]
-    summary: MemoryOperationCommitSummary
-
-
-class MemoryOperationListSummary(TypedDict):
-    limit: int
-    returned_count: int
-    total_count: int
-    policy_action: MemoryOperationPolicyAction | None
-    operation_type: MemoryOperationType | None
-    sync_fingerprint: str | None
-
-
-class MemoryOperationCandidateListResponse(TypedDict):
-    items: list[MemoryOperationCandidateRecord]
-    summary: MemoryOperationListSummary
-
-
-class MemoryOperationListResponse(TypedDict):
-    items: list[MemoryOperationRecord]
-    summary: MemoryOperationListSummary
-
-
-class ContinuityLifecycleStateRecord(TypedDict):
-    is_preserved: bool
-    preservation_status: ContinuityPreservationStatus
-    is_searchable: bool
-    searchability_status: ContinuitySearchabilityStatus
-    is_promotable: bool
-    promotion_status: ContinuityPromotionStatus
-
-
-class ContinuityObjectRecord(TypedDict):
-    id: str
-    capture_event_id: str
-    object_type: ContinuityObjectType
-    status: str
-    lifecycle: ContinuityLifecycleStateRecord
-    title: str
-    body: JsonObject
-    provenance: JsonObject
-    confidence: float
-    created_at: str
-    updated_at: str
-
-
-class ContinuityReviewObjectRecord(TypedDict):
-    id: str
-    capture_event_id: str
-    object_type: ContinuityObjectType
-    status: str
-    lifecycle: ContinuityLifecycleStateRecord
-    title: str
-    body: JsonObject
-    provenance: JsonObject
-    confidence: float
-    last_confirmed_at: str | None
-    supersedes_object_id: str | None
-    superseded_by_object_id: str | None
-    created_at: str
-    updated_at: str
-    explanation: NotRequired["ContinuityExplanationRecord"]
-
-
-class ContinuityCorrectionEventRecord(TypedDict):
-    id: str
-    continuity_object_id: str
-    action: ContinuityCorrectionAction
-    reason: str | None
-    before_snapshot: JsonObject
-    after_snapshot: JsonObject
-    payload: JsonObject
-    created_at: str
-
-
-class ContinuityCaptureInboxItem(TypedDict):
-    capture_event: ContinuityCaptureEventRecord
-    derived_object: ContinuityObjectRecord | None
-
-
-class ContinuityCaptureInboxSummary(TypedDict):
-    limit: int
-    returned_count: int
-    total_count: int
-    derived_count: int
-    triage_count: int
-    order: list[str]
-
-
-class ContinuityCaptureCreateResponse(TypedDict):
-    capture: ContinuityCaptureInboxItem
-
-
-class ContinuityCaptureInboxResponse(TypedDict):
-    items: list[ContinuityCaptureInboxItem]
-    summary: ContinuityCaptureInboxSummary
-
-
-class ContinuityCaptureDetailResponse(TypedDict):
-    capture: ContinuityCaptureInboxItem
-
-
-class ContinuityReviewQueueSummary(TypedDict):
-    status: ContinuityReviewStatusFilter
-    limit: int
-    returned_count: int
-    total_count: int
-    order: list[str]
-
-
-class ContinuityReviewQueueResponse(TypedDict):
-    items: list[ContinuityReviewObjectRecord]
-    summary: ContinuityReviewQueueSummary
-
-
-class ContinuitySupersessionChain(TypedDict):
-    supersedes: ContinuityReviewObjectRecord | None
-    superseded_by: ContinuityReviewObjectRecord | None
-
-
-class ContinuityReviewDetail(TypedDict):
-    continuity_object: ContinuityReviewObjectRecord
-    correction_events: list[ContinuityCorrectionEventRecord]
-    supersession_chain: ContinuitySupersessionChain
-
-
-class ContinuityReviewDetailResponse(TypedDict):
-    review: ContinuityReviewDetail
-
-
-class ContradictionCaseRecord(TypedDict):
-    id: str
-    canonical_key: str
-    status: ContradictionStatus
-    kind: ContradictionKind
-    rationale: str
-    detection_payload: JsonObject
-    resolution_action: ContradictionResolutionAction | None
-    resolution_note: str | None
-    resolved_at: str | None
-    continuity_object_updated_at: str
-    counterpart_object_updated_at: str
-    created_at: str
-    updated_at: str
-    continuity_object: ContinuityReviewObjectRecord
-    counterpart_object: ContinuityReviewObjectRecord
-
-
-class ContradictionCaseListSummary(TypedDict):
-    status: ContradictionStatus
-    limit: int
-    returned_count: int
-    total_count: int
-    order: list[str]
-
-
-class ContradictionCaseListResponse(TypedDict):
-    items: list[ContradictionCaseRecord]
-    summary: ContradictionCaseListSummary
-
-
-class ContradictionCaseDetailResponse(TypedDict):
-    contradiction_case: ContradictionCaseRecord
-
-
-class ContradictionSyncSummary(TypedDict):
-    continuity_object_id: str | None
-    scanned_object_count: int
-    open_case_count: int
-    resolved_case_count: int
-    updated_case_count: int
-
-
-class ContradictionSyncResponse(TypedDict):
-    items: list[ContradictionCaseRecord]
-    summary: ContradictionSyncSummary
-
-
-class ContradictionResolveResponse(TypedDict):
-    contradiction_case: ContradictionCaseRecord
-
-
-class TrustSignalRecord(TypedDict):
-    id: str
-    continuity_object_id: str
-    signal_key: str
-    signal_type: TrustSignalType
-    signal_state: TrustSignalState
-    direction: TrustSignalDirection
-    magnitude: float
-    reason: str
-    contradiction_case_id: str | None
-    related_continuity_object_id: str | None
-    payload: JsonObject
-    created_at: str
-    updated_at: str
-
-
-class TrustSignalListSummary(TypedDict):
-    continuity_object_id: str | None
-    signal_state: TrustSignalState
-    signal_type: TrustSignalType | None
-    limit: int
-    returned_count: int
-    total_count: int
-    order: list[str]
-
-
-class TrustSignalListResponse(TypedDict):
-    items: list[TrustSignalRecord]
-    summary: TrustSignalListSummary
-
-
-class ContinuityEvidenceArtifactRecord(TypedDict):
-    id: str
-    source_kind: str
-    import_source_path: str
-    relative_path: str
-    display_name: str
-    media_type: str
-    created_at: str
-
-
-class ContinuityEvidenceArtifactCopyRecord(TypedDict):
-    id: str
-    checksum_sha256: str
-    content_length_bytes: int
-    content_encoding: str
-    content_text: str
-    created_at: str
-
-
-class ContinuityEvidenceArtifactSegmentRecord(TypedDict):
-    id: str
-    source_item_id: str
-    sequence_no: int
-    segment_kind: str
-    locator: JsonObject
-    raw_content: str
-    checksum_sha256: str
-    created_at: str
-
-
-class ContinuityEvidenceLinkRecord(TypedDict):
-    id: str
-    relationship: str
-    created_at: str
-    artifact: ContinuityEvidenceArtifactRecord
-    artifact_copy: ContinuityEvidenceArtifactCopyRecord
-    artifact_segment: ContinuityEvidenceArtifactSegmentRecord | None
-
-
-class ContinuityExplanationSourceFactRecord(TypedDict):
-    kind: str
-    label: str
-    value: str
-
-
-class ContinuityExplanationEvidenceSegmentRecord(TypedDict):
-    relationship: str
-    source_kind: str
-    source_id: str
-    display_name: str
-    relative_path: str | None
-    segment_kind: str | None
-    locator: JsonObject | None
-    snippet: str
-    created_at: str | None
-
-
-class ContinuityExplanationSupersessionNoteRecord(TypedDict):
-    kind: str
-    note: str
-    action: str | None
-    related_object_id: str | None
-    created_at: str | None
-
-
-class ContinuityExplanationContradictionRecord(TypedDict):
-    open_case_count: int
-    resolved_case_count: int
-    open_case_ids: list[str]
-    kinds: list[ContradictionKind]
-    counterpart_object_ids: list[str]
-    penalty_score: float
-
-
-class ContinuityExplanationTrustRecord(TypedDict):
-    trust_class: MemoryTrustClass
-    trust_reason: str
-    confirmation_status: MemoryConfirmationStatus
-    confidence: float
-    provenance_posture: ContinuityRecallProvenancePosture
-    evidence_segment_count: int
-    correction_count: int
-    active_signal_count: int
-
-
-class ContinuityExplanationTimestampsRecord(TypedDict):
-    capture_created_at: str | None
-    created_at: str
-    updated_at: str
-    last_confirmed_at: str | None
-
-
-class ContinuityExplanationRecord(TypedDict):
-    source_facts: list[ContinuityExplanationSourceFactRecord]
-    trust: ContinuityExplanationTrustRecord
-    contradictions: ContinuityExplanationContradictionRecord
-    evidence_segments: list[ContinuityExplanationEvidenceSegmentRecord]
-    supersession_notes: list[ContinuityExplanationSupersessionNoteRecord]
-    timestamps: ContinuityExplanationTimestampsRecord
-    proposal_rationale: NotRequired[str]
-
-
-class ContinuityExplainRecord(TypedDict):
-    continuity_object: ContinuityReviewObjectRecord
-    explanation: ContinuityExplanationRecord
-    evidence_chain: list[ContinuityEvidenceLinkRecord]
-
-
-class ContinuityExplainResponse(TypedDict):
-    explain: ContinuityExplainRecord
-
-
-class ContinuityArtifactDetailRecord(TypedDict):
-    artifact: ContinuityEvidenceArtifactRecord
-    copies: list[ContinuityEvidenceArtifactCopyRecord]
-    segments: list[ContinuityEvidenceArtifactSegmentRecord]
-
-
-class ContinuityArtifactDetailResponse(TypedDict):
-    artifact_detail: ContinuityArtifactDetailRecord
-
-
-class ContinuityRecallScopeFilters(TypedDict):
-    thread_id: NotRequired[str]
-    task_id: NotRequired[str]
-    project: NotRequired[str]
-    person: NotRequired[str]
-    since: str | None
-    until: str | None
-
-
-class ContinuityRecallScopeMatch(TypedDict):
-    kind: ContinuityRecallScopeKind
-    value: str
-
-
-class ContinuityRecallProvenanceReference(TypedDict):
-    source_kind: str
-    source_id: str
-
-
-class ContinuityRecallOrderingMetadata(TypedDict):
-    scope_match_count: int
-    query_term_match_count: int
-    semantic_similarity_score: float
-    exact_match_score: float
-    recency_score: float
-    temporal_overlap_score: float
-    entity_match_count: int
-    confirmation_rank: int
-    trust_class: MemoryTrustClass
-    trust_rank: int
-    freshness_posture: ContinuityRecallFreshnessPosture
-    freshness_rank: int
-    provenance_posture: ContinuityRecallProvenancePosture
-    provenance_rank: int
-    supersession_posture: ContinuityRecallSupersessionPosture
-    supersession_rank: int
-    supersession_freshness_score: float
-    posture_rank: int
-    lifecycle_rank: int
-    open_contradiction_count: int
-    contradiction_penalty_score: float
-    confidence: float
-
-
-class ContinuityRetrievalStageScoreRecord(TypedDict):
-    raw_score: float
-    normalized_score: float
-    matched: bool
-    reason: str
-
-
-class ContinuityRetrievalDebugCandidateRecord(TypedDict):
-    object_id: str
-    title: str
-    object_type: ContinuityObjectType
-    status: str
-    selected: bool
-    rank: int | None
-    exclusion_reason: str | None
-    scope_matches: list[ContinuityRecallScopeMatch]
-    ordering: ContinuityRecallOrderingMetadata
-    stage_scores: dict[str, ContinuityRetrievalStageScoreRecord]
-    relevance: float
-
-
-class ContinuityRetrievalDebugRecord(TypedDict):
-    retrieval_run_id: str | None
-    source_surface: str
-    ranking_strategy: str
-    query_terms: list[str]
-    entity_anchor_names: list[str]
-    entity_expansion_names: list[str]
-    candidate_count: int
-    selected_count: int
-    candidates: list[ContinuityRetrievalDebugCandidateRecord]
-
-
-class ContinuityRecallResultRecord(TypedDict):
-    id: str
-    capture_event_id: str
-    object_type: ContinuityObjectType
-    status: str
-    lifecycle: ContinuityLifecycleStateRecord
-    title: str
-    body: JsonObject
-    provenance: JsonObject
-    confirmation_status: MemoryConfirmationStatus
-    admission_posture: ContinuityCaptureAdmissionPosture
-    confidence: float
-    relevance: float
-    last_confirmed_at: str | None
-    supersedes_object_id: str | None
-    superseded_by_object_id: str | None
-    scope_matches: list[ContinuityRecallScopeMatch]
-    provenance_references: list[ContinuityRecallProvenanceReference]
-    ordering: ContinuityRecallOrderingMetadata
-    explanation: ContinuityExplanationRecord
-    created_at: str
-    updated_at: str
-
-
-class ContinuityRecallSummary(TypedDict):
-    query: str | None
-    filters: ContinuityRecallScopeFilters
-    limit: int
-    returned_count: int
-    total_count: int
-    order: list[str]
-
-
-class ContinuityRecallResponse(TypedDict):
-    items: list[ContinuityRecallResultRecord]
-    summary: ContinuityRecallSummary
-    debug: NotRequired[ContinuityRetrievalDebugRecord]
-
-
-class ContinuityLifecycleCounts(TypedDict):
-    preserved_count: int
-    searchable_count: int
-    promotable_count: int
-    not_searchable_count: int
-    not_promotable_count: int
-
-
-class ContinuityLifecycleListSummary(TypedDict):
-    limit: int
-    returned_count: int
-    total_count: int
-    counts: ContinuityLifecycleCounts
-    order: list[str]
-
-
-class ContinuityLifecycleListResponse(TypedDict):
-    items: list[ContinuityReviewObjectRecord]
-    summary: ContinuityLifecycleListSummary
-
-
-class ContinuityLifecycleDetailResponse(TypedDict):
-    continuity_object: ContinuityReviewObjectRecord
-
-
-class ContinuityResumptionEmptyState(TypedDict):
-    is_empty: bool
-    message: str
-
-
-class ContinuityResumptionSingleSection(TypedDict):
-    item: ContinuityRecallResultRecord | None
-    empty_state: ContinuityResumptionEmptyState
-
-
-class ContinuityResumptionListSection(TypedDict):
-    items: list[ContinuityRecallResultRecord]
-    summary: ResumptionBriefSectionSummary
-    empty_state: ContinuityResumptionEmptyState
-
-
-class ContinuityResumptionBriefRecord(TypedDict):
-    assembly_version: str
-    scope: ContinuityRecallScopeFilters
-    last_decision: ContinuityResumptionSingleSection
-    open_loops: ContinuityResumptionListSection
-    recent_changes: ContinuityResumptionListSection
-    next_action: ContinuityResumptionSingleSection
-    sources: list[str]
-
-
-class ContinuityResumptionDebugRecord(TypedDict):
-    retrieval: ContinuityRetrievalDebugRecord
-
-
-class ContinuityResumptionBriefResponse(TypedDict):
-    brief: ContinuityResumptionBriefRecord
-    debug: NotRequired[ContinuityResumptionDebugRecord]
-
-
-class ContinuityBriefRelevantFactsSummary(TypedDict):
-    limit: int
-    returned_count: int
-    total_count: int
-    order: list[str]
-    task_brief_mode: TaskBriefMode
-
-
-class ContinuityBriefRelevantFactsSection(TypedDict):
-    items: list[ContinuityRecallResultRecord]
-    summary: ContinuityBriefRelevantFactsSummary
-    empty_state: ContinuityResumptionEmptyState
-
-
-class ContinuityBriefConflictSummary(TypedDict):
-    limit: int
-    returned_count: int
-    total_count: int
-    order: list[str]
-
-
-class ContinuityBriefConflictSection(TypedDict):
-    items: list[ContradictionCaseRecord]
-    summary: ContinuityBriefConflictSummary
-    empty_state: ContinuityResumptionEmptyState
-
-
-class ContinuityBriefTimelineHighlightRecord(TypedDict):
-    continuity_object_id: str
-    title: str
-    object_type: ContinuityObjectType
-    status: str
-    created_at: str
-    source_section: str
-
-
-class ContinuityBriefTimelineSection(TypedDict):
-    items: list[ContinuityBriefTimelineHighlightRecord]
-    summary: ResumptionBriefSectionSummary
-    empty_state: ContinuityResumptionEmptyState
-
-
-class ContinuityBriefSuggestedActionRecord(TypedDict):
-    continuity_object_id: str | None
-    title: str
-    object_type: ContinuityObjectType | None
-    reason: str
-    confidence_posture: RecommendationConfidencePosture
-    provenance_references: list[ContinuityRecallProvenanceReference]
-
-
-class ContinuityBriefSelectionStrategyRecord(TypedDict):
-    task_brief_mode: TaskBriefMode
-    provider_strategy: str
-    briefing_strategy: TaskBriefingStrategy
-    token_budget: int
-    budget_source: str
-
-
-class ContinuityBriefProvenanceSummary(TypedDict):
-    source_object_count: int
-    reference_count: int
-    reference_kind_count: int
-
-
-class ContinuityBriefProvenanceBundle(TypedDict):
-    source_object_ids: list[str]
-    references: list[ContinuityRecallProvenanceReference]
-    summary: ContinuityBriefProvenanceSummary
-
-
-class ContinuityBriefTrustPostureRecord(TypedDict):
-    confidence_posture: RecommendationConfidencePosture
-    average_confidence: float
-    strongest_trust_class: MemoryTrustClass | None
-    weakest_provenance_posture: ContinuityRecallProvenancePosture | None
-    active_signal_count: int
-    positive_signal_count: int
-    negative_signal_count: int
-    neutral_signal_count: int
-    open_conflict_count: int
-    rationale: str
-
-
-class ContinuityBriefRecord(TypedDict):
-    assembly_version: str
-    brief_type: ContinuityBriefType
-    scope: ContinuityRecallScopeFilters
-    summary: str
-    selection_strategy: ContinuityBriefSelectionStrategyRecord
-    relevant_facts: ContinuityBriefRelevantFactsSection
-    recent_changes: ContinuityResumptionListSection
-    open_loops: ContinuityResumptionListSection
-    conflicts: ContinuityBriefConflictSection
-    timeline_highlights: ContinuityBriefTimelineSection
-    next_suggested_action: ContinuityBriefSuggestedActionRecord
-    provenance_bundle: ContinuityBriefProvenanceBundle
-    trust_posture: ContinuityBriefTrustPostureRecord
-    sources: list[str]
-
-
-class ContinuityBriefResponse(TypedDict):
-    brief: ContinuityBriefRecord
-
-
-class TaskBriefEmptyState(TypedDict):
-    is_empty: bool
-    message: str
-
-
-class TaskBriefSectionSummary(TypedDict):
-    candidate_count: int
-    selected_count: int
-    truncated_count: int
-    token_budget: int
-    estimated_tokens: int
-    order: list[str]
-
-
-class TaskBriefSectionRecord(TypedDict):
-    section_key: str
-    title: str
-    intent: str
-    selection_rule: str
-    items: list[ContinuityRecallResultRecord]
-    summary: TaskBriefSectionSummary
-    empty_state: TaskBriefEmptyState
-
-
-class TaskBriefStrategyRecord(TypedDict):
-    provider_strategy: str
-    briefing_strategy: TaskBriefingStrategy
-    token_budget: int
-    budget_source: str
-
-
-class TaskBriefSummary(TypedDict):
-    candidate_count: int
-    selected_item_count: int
-    estimated_tokens: int
-    token_budget: int
-    truncated: bool
-    deterministic_key: str
-    section_order: list[str]
-    mode_order: list[str]
-
-
-class TaskBriefRecord(TypedDict):
-    assembly_version: str
-    mode: TaskBriefMode
-    scope: ContinuityRecallScopeFilters
-    strategy: TaskBriefStrategyRecord
-    summary: TaskBriefSummary
-    sections: list[TaskBriefSectionRecord]
-    sources: list[str]
-
-
-class TaskBriefPersistenceRecord(TypedDict):
-    task_brief_id: str
-    created_at: str
-
-
-class TaskBriefResponse(TypedDict):
-    task_brief: TaskBriefRecord
-    persistence: TaskBriefPersistenceRecord
-
-
-class TaskBriefComparisonStats(TypedDict):
-    primary_mode: TaskBriefMode
-    secondary_mode: TaskBriefMode
-    smaller_mode: TaskBriefMode | None
-    estimated_token_delta: int
-    selected_item_delta: int
-    shared_item_ids: list[str]
-    primary_is_smaller: bool
-
-
-class TaskBriefComparisonResponse(TypedDict):
-    comparison_version: str
-    primary: TaskBriefRecord
-    secondary: TaskBriefRecord
-    comparison: TaskBriefComparisonStats
-
-
-class RetrievalRunRecord(TypedDict):
-    id: str
-    source_surface: str
-    ranking_strategy: str
-    query_text: str | None
-    request_scope: JsonObject
-    result_ids: list[str]
-    exclusion_summary: JsonObject
-    candidate_count: int
-    selected_count: int
-    debug_enabled: bool
-    retention_until: str
-    created_at: str
-
-
-class RetrievalRunListSummary(TypedDict):
-    limit: int
-    returned_count: int
-    total_count: int
-    order: list[str]
-
-
-class RetrievalRunListResponse(TypedDict):
-    items: list[RetrievalRunRecord]
-    summary: RetrievalRunListSummary
-
-
-class RetrievalTraceSummary(TypedDict):
-    candidate_count: int
-    selected_count: int
-    order: list[str]
-
-
-class RetrievalTraceResponse(TypedDict):
-    retrieval_run: RetrievalRunRecord
-    candidates: list[ContinuityRetrievalDebugCandidateRecord]
-    summary: RetrievalTraceSummary
-
-
-class ContinuityOpenLoopSectionSummary(TypedDict):
-    limit: int
-    returned_count: int
-    total_count: int
-    order: list[str]
-
-
-class ContinuityOpenLoopSection(TypedDict):
-    items: list[ContinuityRecallResultRecord]
-    summary: ContinuityOpenLoopSectionSummary
-    empty_state: ContinuityResumptionEmptyState
-
-
-class ContinuityOpenLoopDashboardSummary(TypedDict):
-    limit: int
-    total_count: int
-    posture_order: list[ContinuityOpenLoopPosture]
-    item_order: list[str]
-
-
-class ContinuityOpenLoopDashboardRecord(TypedDict):
-    scope: ContinuityRecallScopeFilters
-    waiting_for: ContinuityOpenLoopSection
-    blocker: ContinuityOpenLoopSection
-    stale: ContinuityOpenLoopSection
-    next_action: ContinuityOpenLoopSection
-    summary: ContinuityOpenLoopDashboardSummary
-    sources: list[str]
-
-
-class ContinuityOpenLoopDashboardResponse(TypedDict):
-    dashboard: ContinuityOpenLoopDashboardRecord
-
-
-class ContinuityDailyBriefRecord(TypedDict):
-    assembly_version: str
-    scope: ContinuityRecallScopeFilters
-    waiting_for_highlights: ContinuityOpenLoopSection
-    blocker_highlights: ContinuityOpenLoopSection
-    stale_items: ContinuityOpenLoopSection
-    next_suggested_action: ContinuityResumptionSingleSection
-    sources: list[str]
-
-
-class ContinuityDailyBriefResponse(TypedDict):
-    brief: ContinuityDailyBriefRecord
-
-
-class ContinuityWeeklyReviewRollup(TypedDict):
-    total_count: int
-    waiting_for_count: int
-    blocker_count: int
-    stale_count: int
-    correction_recurrence_count: int
-    freshness_drift_count: int
-    next_action_count: int
-    posture_order: list[ContinuityOpenLoopPosture]
-
-
-class ContinuityWeeklyReviewRecord(TypedDict):
-    assembly_version: str
-    scope: ContinuityRecallScopeFilters
-    rollup: ContinuityWeeklyReviewRollup
-    waiting_for: ContinuityOpenLoopSection
-    blocker: ContinuityOpenLoopSection
-    stale: ContinuityOpenLoopSection
-    next_action: ContinuityOpenLoopSection
-    sources: list[str]
-
-
-class ContinuityWeeklyReviewResponse(TypedDict):
-    review: ContinuityWeeklyReviewRecord
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-class ContinuityOpenLoopReviewActionResponse(TypedDict):
-    continuity_object: ContinuityReviewObjectRecord
-    correction_event: ContinuityCorrectionEventRecord
-    review_action: ContinuityOpenLoopReviewAction
-    lifecycle_outcome: str
-
-
-class ContinuityCorrectionApplyResponse(TypedDict):
-    continuity_object: ContinuityReviewObjectRecord
-    correction_event: ContinuityCorrectionEventRecord
-    replacement_object: ContinuityReviewObjectRecord | None
-
-
-class MemoryReviewRecord(TypedDict):
-    id: str
-    memory_key: str
-    value: JsonValue
-    status: MemoryStatus
-    source_event_ids: list[str]
-    memory_type: NotRequired[MemoryType]
-    confidence: NotRequired[float | None]
-    salience: NotRequired[float | None]
-    confirmation_status: NotRequired[MemoryConfirmationStatus]
-    trust_class: NotRequired[MemoryTrustClass]
-    promotion_eligibility: NotRequired[MemoryPromotionEligibility]
-    evidence_count: NotRequired[int | None]
-    independent_source_count: NotRequired[int | None]
-    extracted_by_model: NotRequired[str | None]
-    trust_reason: NotRequired[str | None]
-    valid_from: NotRequired[str | None]
-    valid_to: NotRequired[str | None]
-    last_confirmed_at: NotRequired[str | None]
-    created_at: str
-    updated_at: str
-    deleted_at: str | None
-
-
-class MemoryReviewListSummary(TypedDict):
-    status: MemoryReviewStatusFilter
-    limit: int
-    returned_count: int
-    total_count: int
-    has_more: bool
-    order: list[str]
-
-
-class MemoryReviewListResponse(TypedDict):
-    items: list[MemoryReviewRecord]
-    summary: MemoryReviewListSummary
-
-
-class MemoryReviewDetailResponse(TypedDict):
-    memory: MemoryReviewRecord
-
-
-class OpenLoopRecord(TypedDict):
-    id: str
-    memory_id: str | None
-    title: str
-    status: OpenLoopStatus
-    opened_at: str
-    due_at: str | None
-    resolved_at: str | None
-    resolution_note: str | None
-    created_at: str
-    updated_at: str
-
-
-class OpenLoopListSummary(TypedDict):
-    status: OpenLoopStatusFilter
-    limit: int
-    returned_count: int
-    total_count: int
-    has_more: bool
-    order: list[str]
-
-
-class OpenLoopListResponse(TypedDict):
-    items: list[OpenLoopRecord]
-    summary: OpenLoopListSummary
-
-
-class OpenLoopDetailResponse(TypedDict):
-    open_loop: OpenLoopRecord
-
-
-class OpenLoopCreateResponse(TypedDict):
-    open_loop: OpenLoopRecord
-
-
-class OpenLoopStatusUpdateResponse(TypedDict):
-    open_loop: OpenLoopRecord
-
-
-class MemoryRevisionReviewRecord(TypedDict):
-    id: str
-    memory_id: str
-    sequence_no: int
-    action: AdmissionAction
-    memory_key: str
-    previous_value: JsonValue | None
-    new_value: JsonValue | None
-    source_event_ids: list[str]
-    created_at: str
-
-
-class MemoryRevisionReviewListSummary(TypedDict):
-    memory_id: str
-    limit: int
-    returned_count: int
-    total_count: int
-    has_more: bool
-    order: list[str]
-
-
-class MemoryRevisionReviewListResponse(TypedDict):
-    items: list[MemoryRevisionReviewRecord]
-    summary: MemoryRevisionReviewListSummary
-
-
-class MemoryReviewLabelCounts(TypedDict):
-    correct: int
-    incorrect: int
-    outdated: int
-    insufficient_evidence: int
-
-
-class MemoryReviewLabelRecord(TypedDict):
-    id: str
-    memory_id: str
-    reviewer_user_id: str
-    label: MemoryReviewLabelValue
-    note: str | None
-    created_at: str
-
-
-class MemoryReviewLabelSummary(TypedDict):
-    memory_id: str
-    total_count: int
-    counts_by_label: MemoryReviewLabelCounts
-    order: list[str]
-
-
-class MemoryReviewLabelCreateResponse(TypedDict):
-    label: MemoryReviewLabelRecord
-    summary: MemoryReviewLabelSummary
-
-
-class MemoryReviewLabelListResponse(TypedDict):
-    items: list[MemoryReviewLabelRecord]
-    summary: MemoryReviewLabelSummary
-
-
-class MemoryReviewQueueItem(TypedDict):
-    id: str
-    memory_key: str
-    value: JsonValue
-    status: Literal["active"]
-    source_event_ids: list[str]
-    memory_type: NotRequired[MemoryType]
-    confidence: NotRequired[float | None]
-    salience: NotRequired[float | None]
-    confirmation_status: NotRequired[MemoryConfirmationStatus]
-    trust_class: NotRequired[MemoryTrustClass]
-    promotion_eligibility: NotRequired[MemoryPromotionEligibility]
-    evidence_count: NotRequired[int | None]
-    independent_source_count: NotRequired[int | None]
-    extracted_by_model: NotRequired[str | None]
-    trust_reason: NotRequired[str | None]
-    valid_from: NotRequired[str | None]
-    valid_to: NotRequired[str | None]
-    last_confirmed_at: NotRequired[str | None]
-    is_high_risk: bool
-    is_stale_truth: bool
-    is_promotable: bool
-    queue_priority_mode: MemoryReviewQueuePriorityMode
-    priority_reason: str
-    created_at: str
-    updated_at: str
-
-
-class MemoryReviewQueueSummary(TypedDict):
-    memory_status: Literal["active"]
-    review_state: Literal["unlabeled"]
-    priority_mode: MemoryReviewQueuePriorityMode
-    available_priority_modes: list[MemoryReviewQueuePriorityMode]
-    limit: int
-    returned_count: int
-    total_count: int
-    has_more: bool
-    order: list[str]
-
-
-class MemoryReviewQueueResponse(TypedDict):
-    items: list[MemoryReviewQueueItem]
-    summary: MemoryReviewQueueSummary
-
-
-class MemoryQualityGateComputationCounts(TypedDict):
-    active_memory_count: int
-    labeled_active_memory_count: int
-    adjudicated_correct_count: int
-    adjudicated_incorrect_count: int
-    outdated_label_count: int
-    insufficient_evidence_label_count: int
-
-
-class MemoryQualityGateSummary(TypedDict):
-    status: MemoryQualityGateStatus
-    precision: float | None
-    precision_target: float
-    adjudicated_sample_count: int
-    minimum_adjudicated_sample: int
-    remaining_to_minimum_sample: int
-    unlabeled_memory_count: int
-    high_risk_memory_count: int
-    stale_truth_count: int
-    superseded_active_conflict_count: int
-    counts: MemoryQualityGateComputationCounts
-
-
-class MemoryQualityGateResponse(TypedDict):
-    summary: MemoryQualityGateSummary
-
-
-class MemoryTrustQueueAgingSummary(TypedDict):
-    anchor_updated_at: str | None
-    newest_updated_at: str | None
-    oldest_updated_at: str | None
-    backlog_span_hours: float
-    fresh_within_24h_count: int
-    aging_24h_to_72h_count: int
-    stale_over_72h_count: int
-
-
-class MemoryTrustQueuePostureSummary(TypedDict):
-    priority_mode: MemoryReviewQueuePriorityMode
-    total_count: int
-    high_risk_count: int
-    stale_truth_count: int
-    priority_reason_counts: dict[str, int]
-    order: list[str]
-    aging: MemoryTrustQueueAgingSummary
-
-
-class MemoryTrustCorrectionFreshnessSummary(TypedDict):
-    total_open_loop_count: int
-    stale_open_loop_count: int
-    correction_recurrence_count: int
-    freshness_drift_count: int
-
-
-class MemoryTrustRecommendedReview(TypedDict):
-    priority_mode: MemoryReviewQueuePriorityMode
-    action: MemoryQualityReviewAction
-    reason: str
-
-
-MemoryHygienePosture = Literal["healthy", "watch", "critical"]
-MemoryHygieneFocusKind = Literal[
-    "duplicates",
-    "stale_facts",
-    "unresolved_contradictions",
-    "weak_trust",
-    "review_queue_pressure",
-]
-
-
-class MemoryDuplicateGroupRecord(TypedDict):
-    group_key: str
-    memory_type: str
-    normalized_value: str
-    count: int
-    memory_ids: list[str]
-    memory_keys: list[str]
-    latest_updated_at: str
-
-
-class MemoryReviewQueuePressureSummary(TypedDict):
-    posture: MemoryHygienePosture
-    total_count: int
-    stale_over_72h_count: int
-    aging_24h_to_72h_count: int
-    reason: str
-
-
-class MemoryHygieneFocusRecord(TypedDict):
-    kind: MemoryHygieneFocusKind
-    posture: MemoryHygienePosture
-    count: int
-    reason: str
-    action: str
-    sample_ids: list[str]
-
-
-class MemoryHygieneDashboardSummary(TypedDict):
-    posture: MemoryHygienePosture
-    reason: str
-    duplicate_group_count: int
-    duplicate_memory_count: int
-    stale_fact_count: int
-    unresolved_contradiction_count: int
-    weak_trust_count: int
-    review_queue_pressure: MemoryReviewQueuePressureSummary
-    duplicate_groups: list[MemoryDuplicateGroupRecord]
-    focus: list[MemoryHygieneFocusRecord]
-    sources: list[str]
-
-
-class MemoryHygieneDashboardResponse(TypedDict):
-    dashboard: MemoryHygieneDashboardSummary
-
-
-class MemoryTrustDashboardSummary(TypedDict):
-    quality_gate: MemoryQualityGateSummary
-    queue_posture: MemoryTrustQueuePostureSummary
-    retrieval_quality: RetrievalEvaluationSummary
-    correction_freshness: MemoryTrustCorrectionFreshnessSummary
-    recommended_review: MemoryTrustRecommendedReview
-    sources: list[str]
-
-
-class MemoryTrustDashboardResponse(TypedDict):
-    dashboard: MemoryTrustDashboardSummary
-
-
-class MemoryEvaluationSummary(TypedDict):
-    total_memory_count: int
-    active_memory_count: int
-    deleted_memory_count: int
-    labeled_memory_count: int
-    unlabeled_memory_count: int
-    total_label_row_count: int
-    label_row_counts_by_value: MemoryReviewLabelCounts
-    label_value_order: list[MemoryReviewLabelValue]
-
-
-class MemoryEvaluationSummaryResponse(TypedDict):
-    summary: MemoryEvaluationSummary
-
-
-class EntityRecord(TypedDict):
-    id: str
-    entity_type: EntityType
-    name: str
-    source_memory_ids: list[str]
-    created_at: str
-
-
-class EntityCreateResponse(TypedDict):
-    entity: EntityRecord
-
-
-class EntityListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class EntityListResponse(TypedDict):
-    items: list[EntityRecord]
-    summary: EntityListSummary
-
-
-class EntityDetailResponse(TypedDict):
-    entity: EntityRecord
-
-
-class EntityEdgeRecord(ContextPackEntityEdge):
-    pass
-
-
-class EntityEdgeCreateResponse(TypedDict):
-    edge: EntityEdgeRecord
-
-
-class EntityEdgeListSummary(TypedDict):
-    entity_id: str
-    total_count: int
-    order: list[str]
-
-
-class EntityEdgeListResponse(TypedDict):
-    items: list[EntityEdgeRecord]
-    summary: EntityEdgeListSummary
-
-
-class TemporalValidityRecord(TypedDict):
-    valid_from: str | None
-    valid_to: str | None
-    effective_at: bool
-
-
-class TemporalStateFactRecord(TypedDict):
-    memory_id: str
-    memory_key: str
-    value: JsonValue | None
-    status: str
-    validity: TemporalValidityRecord
-    created_at: str
-
-
-class TemporalStateEdgeRecord(TypedDict):
-    id: str
-    from_entity_id: str
-    to_entity_id: str
-    relationship_type: str
-    validity: TemporalValidityRecord
-    source_memory_ids: list[str]
-    created_at: str
-
-
-class TemporalStateSummary(TypedDict):
-    entity_id: str
-    entity_name: str
-    entity_type: EntityType
-    as_of: str
-    fact_count: int
-    edge_count: int
-
-
-class TemporalStateAtRecord(TypedDict):
-    entity: EntityRecord
-    facts: list[TemporalStateFactRecord]
-    edges: list[TemporalStateEdgeRecord]
-    summary: TemporalStateSummary
-
-
-class TemporalStateAtResponse(TypedDict):
-    state_at: TemporalStateAtRecord
-
-
-class TemporalTimelineEventRecord(TypedDict):
-    id: str
-    event_type: str
-    object_kind: str
-    object_id: str
-    occurred_at: str
-    summary: str
-    payload: JsonObject
-
-
-class TemporalTimelineSummary(TypedDict):
-    entity_id: str
-    entity_name: str
-    entity_type: EntityType
-    since: str | None
-    until: str | None
-    returned_count: int
-    total_count: int
-    limit: int
-    order: list[str]
-
-
-class TemporalTimelineRecord(TypedDict):
-    entity: EntityRecord
-    events: list[TemporalTimelineEventRecord]
-    summary: TemporalTimelineSummary
-
-
-class TemporalTimelineResponse(TypedDict):
-    timeline: TemporalTimelineRecord
-
-
-class TemporalTrustRecord(TypedDict):
-    trust_class: str | None
-    trust_reason: str | None
-    confirmation_status: str | None
-    confidence: float | None
-
-
-class TemporalProvenanceRecord(TypedDict):
-    source_memory_ids: list[str]
-    source_event_ids: list[str]
-    revision_sequence_no: int | None
-    revision_action: str | None
-    revision_created_at: str | None
-
-
-class TemporalFactSupersessionRecord(TypedDict):
-    revision_id: str
-    sequence_no: int
-    action: str
-    created_at: str
-    value: JsonValue | None
-    status: str
-    validity: TemporalValidityRecord
-    source_event_ids: list[str]
-    effective_at_as_of: bool
-
-
-class TemporalFactExplainRecord(TemporalStateFactRecord):
-    trust: TemporalTrustRecord
-    provenance: TemporalProvenanceRecord
-    supersession_chain: list[TemporalFactSupersessionRecord]
-
-
-class TemporalEdgeSupersessionRecord(TypedDict):
-    id: str
-    created_at: str
-    validity: TemporalValidityRecord
-    source_memory_ids: list[str]
-    effective_at_as_of: bool
-
-
-class TemporalEdgeExplainRecord(TemporalStateEdgeRecord):
-    trust: TemporalTrustRecord
-    provenance: TemporalProvenanceRecord
-    supersession_chain: list[TemporalEdgeSupersessionRecord]
-
-
-class TemporalExplainSummary(TypedDict):
-    entity_id: str
-    entity_name: str
-    entity_type: EntityType
-    as_of: str
-    fact_count: int
-    edge_count: int
-
-
-class TemporalExplainRecord(TypedDict):
-    entity: EntityRecord
-    facts: list[TemporalFactExplainRecord]
-    edges: list[TemporalEdgeExplainRecord]
-    summary: TemporalExplainSummary
-
-
-class TemporalExplainResponse(TypedDict):
-    explain: TemporalExplainRecord
-
-
-class TrustedFactEvidenceLinkRecord(TypedDict):
-    fact_id: str
-    memory_key: str
-    memory_type: str
-    value: JsonValue
-    trust: TemporalTrustRecord
-    promotion_eligibility: MemoryPromotionEligibility
-    evidence_count: int | None
-    independent_source_count: int | None
-    extracted_by_model: str | None
-    source_event_ids: list[str]
-    revision_sequence_no: int | None
-    revision_action: str | None
-    revision_created_at: str | None
-
-
-class TrustedFactPatternRecord(TypedDict):
-    id: str
-    pattern_key: str
-    title: str
-    memory_type: str
-    namespace_key: str
-    fact_count: int
-    source_fact_ids: list[str]
-    evidence_chain: list[TrustedFactEvidenceLinkRecord]
-    explanation: str
-    created_at: str
-    updated_at: str
-
-
-class TrustedFactPatternListSummary(TypedDict):
-    returned_count: int
-    total_count: int
-    limit: int
-    order: list[str]
-
-
-class TrustedFactPatternListResponse(TypedDict):
-    items: list[TrustedFactPatternRecord]
-    summary: TrustedFactPatternListSummary
-
-
-class TrustedFactPatternExplainResponse(TypedDict):
-    pattern: TrustedFactPatternRecord
-
-
-class TrustedFactPlaybookStepRecord(TypedDict):
-    step_no: int
-    fact_id: str
-    memory_key: str
-    action_type: str
-    instruction: str
-    value: JsonValue
-    trust: TemporalTrustRecord
-
-
-class TrustedFactPlaybookRecord(TypedDict):
-    id: str
-    playbook_key: str
-    pattern_id: str
-    pattern_key: str
-    title: str
-    memory_type: str
-    source_fact_ids: list[str]
-    source_pattern_ids: list[str]
-    steps: list[TrustedFactPlaybookStepRecord]
-    explanation: str
-    created_at: str
-    updated_at: str
-
-
-class TrustedFactPlaybookListSummary(TypedDict):
-    returned_count: int
-    total_count: int
-    limit: int
-    order: list[str]
-
-
-class TrustedFactPlaybookListResponse(TypedDict):
-    items: list[TrustedFactPlaybookRecord]
-    summary: TrustedFactPlaybookListSummary
-
-
-class TrustedFactPlaybookExplainResponse(TypedDict):
-    playbook: TrustedFactPlaybookRecord
-
-
-class EmbeddingConfigRecord(TypedDict):
-    id: str
-    provider: str
-    model: str
-    version: str
-    dimensions: int
-    status: EmbeddingConfigStatus
-    metadata: JsonObject
-    created_at: str
-
-
-class EmbeddingConfigCreateResponse(TypedDict):
-    embedding_config: EmbeddingConfigRecord
-
-
-class EmbeddingConfigListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class EmbeddingConfigListResponse(TypedDict):
-    items: list[EmbeddingConfigRecord]
-    summary: EmbeddingConfigListSummary
-
-
-class MemoryEmbeddingRecord(TypedDict):
-    id: str
-    memory_id: str
-    embedding_config_id: str
-    dimensions: int
-    vector: list[float]
-    created_at: str
-    updated_at: str
-
-
-class MemoryEmbeddingUpsertResponse(TypedDict):
-    embedding: MemoryEmbeddingRecord
-    write_mode: Literal["created", "updated"]
-
-
-class MemoryEmbeddingDetailResponse(TypedDict):
-    embedding: MemoryEmbeddingRecord
-
-
-class MemoryEmbeddingListSummary(TypedDict):
-    memory_id: str
-    total_count: int
-    order: list[str]
-
-
-class MemoryEmbeddingListResponse(TypedDict):
-    items: list[MemoryEmbeddingRecord]
-    summary: MemoryEmbeddingListSummary
-
-
-class SemanticMemoryRetrievalResultItem(TypedDict):
-    memory_id: str
-    memory_key: str
-    value: JsonValue
-    source_event_ids: list[str]
-    memory_type: NotRequired[MemoryType]
-    confidence: NotRequired[float | None]
-    salience: NotRequired[float | None]
-    confirmation_status: NotRequired[MemoryConfirmationStatus]
-    trust_class: NotRequired[MemoryTrustClass]
-    promotion_eligibility: NotRequired[MemoryPromotionEligibility]
-    evidence_count: NotRequired[int | None]
-    independent_source_count: NotRequired[int | None]
-    extracted_by_model: NotRequired[str | None]
-    trust_reason: NotRequired[str | None]
-    valid_from: NotRequired[str | None]
-    valid_to: NotRequired[str | None]
-    last_confirmed_at: NotRequired[str | None]
-    created_at: str
-    updated_at: str
-    score: float
-
-
-class SemanticMemoryRetrievalSummary(TypedDict):
-    embedding_config_id: str
-    limit: int
-    returned_count: int
-    similarity_metric: Literal["cosine_similarity"]
-    order: list[str]
-
-
-class SemanticMemoryRetrievalResponse(TypedDict):
-    items: list[SemanticMemoryRetrievalResultItem]
-    summary: SemanticMemoryRetrievalSummary
-
-
-class RetrievalEvaluationFixtureResult(TypedDict):
-    fixture_id: str
-    title: str
-    query: str
-    top_k: int
-    expected_relevant_ids: list[str]
-    baseline_returned_ids: list[str]
-    returned_ids: list[str]
-    hit_count: int
-    baseline_hit_count: int
-    baseline_precision_at_k: float
-    precision_at_k: float
-    precision_lift_at_k: float
-    baseline_top_result_id: str | None
-    top_result_id: str | None
-    baseline_top_result_ordering: ContinuityRecallOrderingMetadata | None
-    top_result_ordering: ContinuityRecallOrderingMetadata | None
-
-
-class RetrievalEvaluationSummary(TypedDict):
-    fixture_count: int
-    evaluated_fixture_count: int
-    passing_fixture_count: int
-    baseline_passing_fixture_count: int
-    baseline_precision_at_k_mean: float
-    precision_at_k_mean: float
-    precision_at_k_lift: float
-    baseline_precision_at_1_mean: float
-    precision_at_1_mean: float
-    precision_target: float
-    status: RetrievalEvaluationStatus
-    fixture_order: list[str]
-    result_order: list[str]
-
-
-class RetrievalEvaluationResponse(TypedDict):
-    fixtures: list[RetrievalEvaluationFixtureResult]
-    summary: RetrievalEvaluationSummary
-
-
-class PublicEvalSuiteDefinitionRecord(TypedDict):
-    suite_key: str
-    title: str
-    description: str
-    evaluator_kind: str
-    case_count: int
-    fixture_schema_version: str
-    fixture_source_path: str
-    case_keys: list[str]
-
-
-class PublicEvalSuiteDefinitionListResponse(TypedDict):
-    items: list[PublicEvalSuiteDefinitionRecord]
-    summary: JsonObject
-
-
-class PublicEvalRunRecord(TypedDict):
-    id: str
-    status: str
-    report_digest: str
-    summary: JsonObject
-    created_at: str
-
-
-class PublicEvalResultRecord(TypedDict):
-    id: str
-    suite_key: str
-    case_key: str
-    status: str
-    score: float
-    summary: JsonObject
-    details: JsonObject
-    created_at: str
-
-
-class PublicEvalRunListResponse(TypedDict):
-    items: list[PublicEvalRunRecord]
-    summary: JsonObject
-
-
-class PublicEvalRunDetailResponse(TypedDict):
-    run: PublicEvalRunRecord
-    report: JsonObject
-    results: list[PublicEvalResultRecord]
-
-
-class ConsentRecord(TypedDict):
-    id: str
-    consent_key: str
-    status: ConsentStatus
-    metadata: JsonObject
-    created_at: str
-    updated_at: str
-
-
-class ConsentUpsertResponse(TypedDict):
-    consent: ConsentRecord
-    write_mode: Literal["created", "updated"]
-
-
-class ConsentListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class ConsentListResponse(TypedDict):
-    items: list[ConsentRecord]
-    summary: ConsentListSummary
-
-
-class PolicyRecord(TypedDict):
-    id: str
-    agent_profile_id: str | None
-    name: str
-    action: str
-    scope: str
-    effect: PolicyEffect
-    priority: int
-    active: bool
-    conditions: JsonObject
-    required_consents: list[str]
-    created_at: str
-    updated_at: str
-
-
-class PolicyCreateResponse(TypedDict):
-    policy: PolicyRecord
-
-
-class PolicyListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class PolicyListResponse(TypedDict):
-    items: list[PolicyRecord]
-    summary: PolicyListSummary
-
-
-class PolicyDetailResponse(TypedDict):
-    policy: PolicyRecord
-
-
-class PolicyEvaluationReason(TypedDict):
-    code: PolicyEvaluationReasonCode
-    source: Literal["policy", "consent", "system"]
-    message: str
-    policy_id: str | None
-    consent_key: str | None
-
-
-class PolicyEvaluationSummary(TypedDict):
-    action: str
-    scope: str
-    evaluated_policy_count: int
-    matched_policy_id: str | None
-    order: list[str]
-
-
-class PolicyEvaluationTraceSummary(TypedDict):
-    trace_id: str
-    trace_event_count: int
-
-
-class PolicyEvaluationResponse(TypedDict):
-    decision: PolicyEffect
-    matched_policy: PolicyRecord | None
-    reasons: list[PolicyEvaluationReason]
-    evaluation: PolicyEvaluationSummary
-    trace: PolicyEvaluationTraceSummary
-
-
-class ToolRecord(TypedDict):
-    id: str
-    tool_key: str
-    name: str
-    description: str
-    version: str
-    metadata_version: ToolMetadataVersion
-    active: bool
-    tags: list[str]
-    action_hints: list[str]
-    scope_hints: list[str]
-    domain_hints: list[str]
-    risk_hints: list[str]
-    metadata: JsonObject
-    created_at: str
-
-
-class ToolCreateResponse(TypedDict):
-    tool: ToolRecord
-
-
-class ToolListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class ToolListResponse(TypedDict):
-    items: list[ToolRecord]
-    summary: ToolListSummary
-
-
-class ToolDetailResponse(TypedDict):
-    tool: ToolRecord
-
-
-class ToolAllowlistReason(TypedDict):
-    code: ToolAllowlistReasonCode
-    source: Literal["tool", "policy", "consent", "system"]
-    message: str
-    tool_id: str | None
-    policy_id: str | None
-    consent_key: str | None
-
-
-class ToolAllowlistDecisionRecord(TypedDict):
-    decision: ToolAllowlistDecision
-    tool: ToolRecord
-    reasons: list[ToolAllowlistReason]
-
-
-class ToolAllowlistEvaluationSummary(TypedDict):
-    action: str
-    scope: str
-    domain_hint: str | None
-    risk_hint: str | None
-    evaluated_tool_count: int
-    allowed_count: int
-    denied_count: int
-    approval_required_count: int
-    order: list[str]
-
-
-class ToolAllowlistTraceSummary(TypedDict):
-    trace_id: str
-    trace_event_count: int
-
-
-class ToolAllowlistEvaluationResponse(TypedDict):
-    allowed: list[ToolAllowlistDecisionRecord]
-    denied: list[ToolAllowlistDecisionRecord]
-    approval_required: list[ToolAllowlistDecisionRecord]
-    summary: ToolAllowlistEvaluationSummary
-    trace: ToolAllowlistTraceSummary
-
-
-class ToolRoutingRequestRecord(TypedDict):
-    thread_id: str
-    tool_id: str
-    action: str
-    scope: str
-    domain_hint: str | None
-    risk_hint: str | None
-    attributes: JsonObject
-
-
-class ToolRoutingRequestTracePayload(TypedDict):
-    thread_id: str
-    tool_id: str
-    action: str
-    scope: str
-    domain_hint: str | None
-    risk_hint: str | None
-    attributes: JsonObject
-
-
-class ToolRoutingDecisionTracePayload(TypedDict):
-    tool_id: str
-    tool_key: str
-    tool_version: str
-    allowlist_decision: ToolAllowlistDecision
-    routing_decision: ToolRoutingDecision
-    matched_policy_id: str | None
-    reasons: list[ToolAllowlistReason]
-
-
-class ToolRoutingSummaryTracePayload(TypedDict):
-    decision: ToolRoutingDecision
-    evaluated_tool_count: int
-    active_policy_count: int
-    consent_count: int
-
-
-class ToolRoutingSummary(TypedDict):
-    thread_id: str
-    tool_id: str
-    action: str
-    scope: str
-    domain_hint: str | None
-    risk_hint: str | None
-    decision: ToolRoutingDecision
-    evaluated_tool_count: int
-    active_policy_count: int
-    consent_count: int
-    order: list[str]
-
-
-class ToolRoutingTraceSummary(TypedDict):
-    trace_id: str
-    trace_event_count: int
-
-
-class ToolRoutingResponse(TypedDict):
-    request: ToolRoutingRequestRecord
-    decision: ToolRoutingDecision
-    tool: ToolRecord
-    reasons: list[ToolAllowlistReason]
-    summary: ToolRoutingSummary
-    trace: ToolRoutingTraceSummary
-
-
-class ApprovalRoutingRecord(TypedDict):
-    decision: ToolRoutingDecision
-    reasons: list[ToolAllowlistReason]
-    trace: ToolRoutingTraceSummary
-
-
-class ApprovalResolutionRecord(TypedDict):
-    resolved_at: str
-    resolved_by_user_id: str
-
-
-class ApprovalRecord(TypedDict):
-    id: str
-    thread_id: str
-    task_run_id: NotRequired[str | None]
-    task_step_id: str | None
-    status: ApprovalStatus
-    request: ToolRoutingRequestRecord
-    tool: ToolRecord
-    routing: ApprovalRoutingRecord
-    created_at: str
-    resolution: ApprovalResolutionRecord | None
-
-
-class ApprovalRequestTraceSummary(TypedDict):
-    trace_id: str
-    trace_event_count: int
-
-
-class ApprovalResolutionTraceSummary(TypedDict):
-    trace_id: str
-    trace_event_count: int
-
-
-class ApprovalResolutionRequestTracePayload(TypedDict):
-    approval_id: str
-    task_step_id: str | None
-    requested_action: ApprovalResolutionAction
-
-
-class ApprovalResolutionStateTracePayload(TypedDict):
-    approval_id: str
-    task_step_id: str | None
-    requested_action: ApprovalResolutionAction
-    previous_status: ApprovalStatus
-    outcome: ApprovalResolutionOutcome
-    current_status: ApprovalStatus
-    resolved_at: str | None
-    resolved_by_user_id: str | None
-
-
-class ApprovalResolutionSummaryTracePayload(TypedDict):
-    approval_id: str
-    task_step_id: str | None
-    requested_action: ApprovalResolutionAction
-    outcome: ApprovalResolutionOutcome
-    final_status: ApprovalStatus
-
-
-@dataclass(frozen=True, slots=True)
-class TaskCreateInput:
-    thread_id: UUID
-    tool_id: UUID
-    status: TaskStatus
-    request: ToolRoutingRequestRecord
-    tool: ToolRecord
-    latest_approval_id: UUID | None = None
-    latest_execution_id: UUID | None = None
-
-
-class TaskRecord(TypedDict):
-    id: str
-    thread_id: str
-    tool_id: str
-    status: TaskStatus
-    request: ToolRoutingRequestRecord
-    tool: ToolRecord
-    latest_approval_id: str | None
-    latest_execution_id: str | None
-    created_at: str
-    updated_at: str
-
-
-class TaskCreateResponse(TypedDict):
-    task: TaskRecord
-
-
-@dataclass(frozen=True, slots=True)
-class TaskStepCreateInput:
-    task_id: UUID
-    sequence_no: int
-    kind: TaskStepKind
-    status: TaskStepStatus
-    request: ToolRoutingRequestRecord
-    outcome: "TaskStepOutcomeSnapshot"
-    trace_id: UUID
-    trace_kind: str
-
-
-@dataclass(frozen=True, slots=True)
-class TaskStepNextCreateInput:
-    task_id: UUID
-    kind: TaskStepKind
-    status: TaskStepStatus
-    request: ToolRoutingRequestRecord
-    outcome: "TaskStepOutcomeSnapshot"
-    lineage: "TaskStepLineageInput"
-
-
-@dataclass(frozen=True, slots=True)
-class TaskStepTransitionInput:
-    task_step_id: UUID
-    status: TaskStepStatus
-    outcome: "TaskStepOutcomeSnapshot"
-
-
-@dataclass(frozen=True, slots=True)
-class TaskStepLineageInput:
-    parent_step_id: UUID
-    source_approval_id: UUID | None = None
-    source_execution_id: UUID | None = None
-
-
-class TaskListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class TaskListResponse(TypedDict):
-    items: list[TaskRecord]
-    summary: TaskListSummary
-
-
-class TaskDetailResponse(TypedDict):
-    task: TaskRecord
-
-
-@dataclass(frozen=True, slots=True)
-class TaskRunCreateInput:
-    task_id: UUID
-    checkpoint: JsonObject = field(default_factory=dict)
-    max_ticks: int = 1
-    retry_cap: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class TaskRunTickInput:
-    task_run_id: UUID
-
-
-@dataclass(frozen=True, slots=True)
-class TaskRunPauseInput:
-    task_run_id: UUID
-
-
-@dataclass(frozen=True, slots=True)
-class TaskRunResumeInput:
-    task_run_id: UUID
-
-
-@dataclass(frozen=True, slots=True)
-class TaskRunCancelInput:
-    task_run_id: UUID
-
-
-class TaskRunRecord(TypedDict):
-    id: str
-    task_id: str
-    status: TaskRunStatus
-    checkpoint: JsonObject
-    tick_count: int
-    step_count: int
-    max_ticks: int
-    retry_count: int
-    retry_cap: int
-    retry_posture: TaskRunRetryPosture
-    failure_class: TaskRunFailureClass | None
-    stop_reason: TaskRunStopReason | None
-    last_transitioned_at: str
-    created_at: str
-    updated_at: str
-
-
-class TaskRunCreateResponse(TypedDict):
-    task_run: TaskRunRecord
-
-
-class TaskRunListSummary(TypedDict):
-    task_id: str
-    total_count: int
-    order: list[str]
-
-
-class TaskRunListResponse(TypedDict):
-    items: list[TaskRunRecord]
-    summary: TaskRunListSummary
-
-
-class TaskRunDetailResponse(TypedDict):
-    task_run: TaskRunRecord
-
-
-class TaskRunMutationResponse(TypedDict):
-    task_run: TaskRunRecord
-    previous_status: TaskRunStatus
-
-
-@dataclass(frozen=True, slots=True)
-class GmailAccountConnectInput:
-    provider_account_id: str
-    email_address: str
-    display_name: str | None
-    scope: str
-    access_token: str
-    refresh_token: str | None = None
-    client_id: str | None = None
-    client_secret: str | None = None
-    access_token_expires_at: datetime | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class GmailMessageIngestInput:
-    gmail_account_id: UUID
-    task_workspace_id: UUID
-    provider_message_id: str
-
-
-class GmailAccountRecord(TypedDict):
-    id: str
-    provider: str
-    auth_kind: str
-    provider_account_id: str
-    email_address: str
-    display_name: str | None
-    scope: str
-    created_at: str
-    updated_at: str
-
-
-class GmailAccountConnectResponse(TypedDict):
-    account: GmailAccountRecord
-
-
-class GmailAccountListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class GmailAccountListResponse(TypedDict):
-    items: list[GmailAccountRecord]
-    summary: GmailAccountListSummary
-
-
-class GmailAccountDetailResponse(TypedDict):
-    account: GmailAccountRecord
-
-
-class GmailMessageIngestionRecord(TypedDict):
-    provider_message_id: str
-    artifact_relative_path: str
-    media_type: str
-
-
-class GmailMessageIngestionResponse(TypedDict):
-    account: GmailAccountRecord
-    message: GmailMessageIngestionRecord
-    artifact: TaskArtifactRecord
-    summary: TaskArtifactChunkListSummary
-
-
-@dataclass(frozen=True, slots=True)
-class CalendarAccountConnectInput:
-    provider_account_id: str
-    email_address: str
-    display_name: str | None
-    scope: str
-    access_token: str
-
-
-@dataclass(frozen=True, slots=True)
-class CalendarEventIngestInput:
-    calendar_account_id: UUID
-    task_workspace_id: UUID
-    provider_event_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class CalendarEventListInput:
-    calendar_account_id: UUID
-    limit: int = DEFAULT_CALENDAR_EVENT_LIST_LIMIT
-    time_min: datetime | None = None
-    time_max: datetime | None = None
-
-
-class CalendarAccountRecord(TypedDict):
-    id: str
-    provider: str
-    auth_kind: str
-    provider_account_id: str
-    email_address: str
-    display_name: str | None
-    scope: str
-    created_at: str
-    updated_at: str
-
-
-class CalendarAccountConnectResponse(TypedDict):
-    account: CalendarAccountRecord
-
-
-class CalendarAccountListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class CalendarAccountListResponse(TypedDict):
-    items: list[CalendarAccountRecord]
-    summary: CalendarAccountListSummary
-
-
-class CalendarAccountDetailResponse(TypedDict):
-    account: CalendarAccountRecord
-
-
-class CalendarEventIngestionRecord(TypedDict):
-    provider_event_id: str
-    artifact_relative_path: str
-    media_type: str
-
-
-class CalendarEventIngestionResponse(TypedDict):
-    account: CalendarAccountRecord
-    event: CalendarEventIngestionRecord
-    artifact: TaskArtifactRecord
-    summary: TaskArtifactChunkListSummary
-
-
-class CalendarEventSummaryRecord(TypedDict):
-    provider_event_id: str
-    status: str | None
-    summary: str | None
-    start_time: str | None
-    end_time: str | None
-    html_link: str | None
-    updated_at: str | None
-
-
-class CalendarEventListSummary(TypedDict):
-    total_count: int
-    limit: int
-    order: list[str]
-    time_min: str | None
-    time_max: str | None
-
-
-class CalendarEventListResponse(TypedDict):
-    account: CalendarAccountRecord
-    items: list[CalendarEventSummaryRecord]
-    summary: CalendarEventListSummary
-
-
-@dataclass(frozen=True, slots=True)
-class TaskWorkspaceCreateInput:
-    task_id: UUID
-    status: TaskWorkspaceStatus
-
-
-class TaskWorkspaceRecord(TypedDict):
-    id: str
-    task_id: str
-    status: TaskWorkspaceStatus
-    local_path: str
-    created_at: str
-    updated_at: str
-
-
-class TaskWorkspaceCreateResponse(TypedDict):
-    workspace: TaskWorkspaceRecord
-
-
-class TaskWorkspaceListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class TaskWorkspaceListResponse(TypedDict):
-    items: list[TaskWorkspaceRecord]
-    summary: TaskWorkspaceListSummary
-
-
-class TaskWorkspaceDetailResponse(TypedDict):
-    workspace: TaskWorkspaceRecord
-
-
-@dataclass(frozen=True, slots=True)
-class TaskArtifactRegisterInput:
-    task_workspace_id: UUID
-    local_path: str
-    media_type_hint: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class TaskArtifactIngestInput:
-    task_artifact_id: UUID
-
-
-@dataclass(frozen=True, slots=True)
-class TaskScopedArtifactChunkRetrievalInput:
-    task_id: UUID
-    query: str
-
-
-@dataclass(frozen=True, slots=True)
-class ArtifactScopedArtifactChunkRetrievalInput:
-    task_artifact_id: UUID
-    query: str
-
-
-@dataclass(frozen=True, slots=True)
-class TaskScopedSemanticArtifactChunkRetrievalInput:
-    task_id: UUID
-    embedding_config_id: UUID
-    query_vector: tuple[float, ...]
-    limit: int = DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "task_id": str(self.task_id),
-            "embedding_config_id": str(self.embedding_config_id),
-            "query_vector": [float(value) for value in self.query_vector],
-            "limit": self.limit,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ArtifactScopedSemanticArtifactChunkRetrievalInput:
-    task_artifact_id: UUID
-    embedding_config_id: UUID
-    query_vector: tuple[float, ...]
-    limit: int = DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT
-
-    def as_payload(self) -> JsonObject:
-        return {
-            "task_artifact_id": str(self.task_artifact_id),
-            "embedding_config_id": str(self.embedding_config_id),
-            "query_vector": [float(value) for value in self.query_vector],
-            "limit": self.limit,
-        }
-
-
-class TaskArtifactRecord(TypedDict):
-    id: str
-    task_id: str
-    task_workspace_id: str
-    status: TaskArtifactStatus
-    ingestion_status: TaskArtifactIngestionStatus
-    relative_path: str
-    media_type_hint: str | None
-    created_at: str
-    updated_at: str
-
-
-class TaskArtifactCreateResponse(TypedDict):
-    artifact: TaskArtifactRecord
-
-
-class TaskArtifactListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class TaskArtifactListResponse(TypedDict):
-    items: list[TaskArtifactRecord]
-    summary: TaskArtifactListSummary
-
-
-class TaskArtifactDetailResponse(TypedDict):
-    artifact: TaskArtifactRecord
-
-
-class TaskArtifactChunkRecord(TypedDict):
-    id: str
-    task_artifact_id: str
-    sequence_no: int
-    char_start: int
-    char_end_exclusive: int
-    text: str
-    created_at: str
-    updated_at: str
-
-
-class TaskArtifactChunkListSummary(TypedDict):
-    total_count: int
-    total_characters: int
-    media_type: str
-    chunking_rule: str
-    order: list[str]
-
-
-class TaskArtifactChunkListResponse(TypedDict):
-    items: list[TaskArtifactChunkRecord]
-    summary: TaskArtifactChunkListSummary
-
-
-class TaskArtifactChunkEmbeddingRecord(TypedDict):
-    id: str
-    task_artifact_id: str
-    task_artifact_chunk_id: str
-    task_artifact_chunk_sequence_no: int
-    embedding_config_id: str
-    dimensions: int
-    vector: list[float]
-    created_at: str
-    updated_at: str
-
-
-class TaskArtifactChunkEmbeddingWriteResponse(TypedDict):
-    embedding: TaskArtifactChunkEmbeddingRecord
-    write_mode: Literal["created", "updated"]
-
-
-class TaskArtifactChunkEmbeddingDetailResponse(TypedDict):
-    embedding: TaskArtifactChunkEmbeddingRecord
-
-
-class TaskArtifactChunkEmbeddingListScope(TypedDict):
-    kind: TaskArtifactChunkEmbeddingListScopeKind
-    task_artifact_id: str
-    task_artifact_chunk_id: NotRequired[str]
-
-
-class TaskArtifactChunkEmbeddingListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-    scope: TaskArtifactChunkEmbeddingListScope
-
-
-class TaskArtifactChunkEmbeddingListResponse(TypedDict):
-    items: list[TaskArtifactChunkEmbeddingRecord]
-    summary: TaskArtifactChunkEmbeddingListSummary
-
-
-class TaskArtifactIngestionResponse(TypedDict):
-    artifact: TaskArtifactRecord
-    summary: TaskArtifactChunkListSummary
-
-
-class TaskArtifactChunkRetrievalMatch(TypedDict):
-    matched_query_terms: list[str]
-    matched_query_term_count: int
-    first_match_char_start: int
-
-
-class TaskArtifactChunkRetrievalItem(TypedDict):
-    id: str
-    task_id: str
-    task_artifact_id: str
-    relative_path: str
-    media_type: str
-    sequence_no: int
-    char_start: int
-    char_end_exclusive: int
-    text: str
-    match: TaskArtifactChunkRetrievalMatch
-
-
-class TaskArtifactChunkRetrievalScope(TypedDict):
-    kind: TaskArtifactChunkRetrievalScopeKind
-    task_id: str
-    task_artifact_id: NotRequired[str]
-
-
-class TaskArtifactChunkRetrievalSummary(TypedDict):
-    total_count: int
-    searched_artifact_count: int
-    query: str
-    query_terms: list[str]
-    matching_rule: str
-    order: list[str]
-    scope: TaskArtifactChunkRetrievalScope
-
-
-class TaskArtifactChunkRetrievalResponse(TypedDict):
-    items: list[TaskArtifactChunkRetrievalItem]
-    summary: TaskArtifactChunkRetrievalSummary
-
-
-class TaskArtifactChunkSemanticRetrievalItem(TypedDict):
-    id: str
-    task_id: str
-    task_artifact_id: str
-    relative_path: str
-    media_type: str
-    sequence_no: int
-    char_start: int
-    char_end_exclusive: int
-    text: str
-    score: float
-
-
-class TaskArtifactChunkSemanticRetrievalSummary(TypedDict):
-    embedding_config_id: str
-    query_vector_dimensions: int
-    limit: int
-    returned_count: int
-    searched_artifact_count: int
-    similarity_metric: Literal["cosine_similarity"]
-    order: list[str]
-    scope: TaskArtifactChunkRetrievalScope
-
-
-class TaskArtifactChunkSemanticRetrievalResponse(TypedDict):
-    items: list[TaskArtifactChunkSemanticRetrievalItem]
-    summary: TaskArtifactChunkSemanticRetrievalSummary
-
-
-class TaskStepTraceLink(TypedDict):
-    trace_id: str
-    trace_kind: str
-
-
-class TaskStepOutcomeSnapshot(TypedDict):
-    routing_decision: ToolRoutingDecision
-    approval_id: str | None
-    approval_status: ApprovalStatus | None
-    execution_id: str | None
-    execution_status: ProxyExecutionStatus | None
-    blocked_reason: str | None
-
-
-class TaskStepLineageRecord(TypedDict):
-    parent_step_id: str | None
-    source_approval_id: str | None
-    source_execution_id: str | None
-
-
-class TaskStepRecord(TypedDict):
-    id: str
-    task_id: str
-    sequence_no: int
-    kind: TaskStepKind
-    status: TaskStepStatus
-    request: ToolRoutingRequestRecord
-    outcome: TaskStepOutcomeSnapshot
-    lineage: TaskStepLineageRecord
-    trace: TaskStepTraceLink
-    created_at: str
-    updated_at: str
-
-
-class TaskStepCreateResponse(TypedDict):
-    task_step: TaskStepRecord
-
-
-class TaskStepSequencingSummary(TypedDict):
-    task_id: str
-    total_count: int
-    latest_sequence_no: int | None
-    latest_status: TaskStepStatus | None
-    next_sequence_no: int
-    append_allowed: bool
-    order: list[str]
-
-
-class TaskStepListSummary(TaskStepSequencingSummary):
-    pass
-
-
-class TaskStepListResponse(TypedDict):
-    items: list[TaskStepRecord]
-    summary: TaskStepListSummary
-
-
-class TaskStepDetailResponse(TypedDict):
-    task_step: TaskStepRecord
-
-
-class TaskStepMutationTraceSummary(TypedDict):
-    trace_id: str
-    trace_event_count: int
-
-
-class TaskStepNextCreateResponse(TypedDict):
-    task: TaskRecord
-    task_step: TaskStepRecord
-    sequencing: TaskStepSequencingSummary
-    trace: TaskStepMutationTraceSummary
-
-
-class TaskStepTransitionResponse(TypedDict):
-    task: TaskRecord
-    task_step: TaskStepRecord
-    sequencing: TaskStepSequencingSummary
-    trace: TaskStepMutationTraceSummary
-
-
-class ResumptionBriefSectionSummary(TypedDict):
-    limit: int
-    returned_count: int
-    total_count: int
-    order: list[str]
-
-
-class ResumptionBriefConversationSummary(ResumptionBriefSectionSummary):
-    kinds: list[str]
-
-
-class ResumptionBriefConversationSection(TypedDict):
-    items: list[ThreadEventRecord]
-    summary: ResumptionBriefConversationSummary
-
-
-class ResumptionBriefOpenLoopSection(TypedDict):
-    items: list[OpenLoopRecord]
-    summary: ResumptionBriefSectionSummary
-
-
-class ResumptionBriefMemoryHighlightSection(TypedDict):
-    items: list[ContextPackMemory]
-    summary: ResumptionBriefSectionSummary
-
-
-class ResumptionBriefWorkflowSummary(TypedDict):
-    present: bool
-    task_order: list[str]
-    task_step_order: list[str]
-
-
-class ResumptionBriefWorkflowPosture(TypedDict):
-    task: TaskRecord
-    latest_task_step: TaskStepRecord | None
-    summary: ResumptionBriefWorkflowSummary
-
-
-class ResumptionBriefRecord(TypedDict):
-    assembly_version: str
-    thread: ThreadRecord
-    conversation: ResumptionBriefConversationSection
-    open_loops: ResumptionBriefOpenLoopSection
-    memory_highlights: ResumptionBriefMemoryHighlightSection
-    workflow: ResumptionBriefWorkflowPosture | None
-    sources: list[str]
-
-
-class ResumptionBriefResponse(TypedDict):
-    brief: ResumptionBriefRecord
-
-
-class TaskLifecycleStateTracePayload(TypedDict):
-    task_id: str
-    source: TaskLifecycleSource
-    previous_status: TaskStatus | None
-    current_status: TaskStatus
-    latest_approval_id: str | None
-    latest_execution_id: str | None
-
-
-class TaskLifecycleSummaryTracePayload(TypedDict):
-    task_id: str
-    source: TaskLifecycleSource
-    final_status: TaskStatus
-    latest_approval_id: str | None
-    latest_execution_id: str | None
-
-
-class TaskStepLifecycleStateTracePayload(TypedDict):
-    task_id: str
-    task_step_id: str
-    source: TaskLifecycleSource
-    sequence_no: int
-    kind: TaskStepKind
-    previous_status: TaskStepStatus | None
-    current_status: TaskStepStatus
-    trace: TaskStepTraceLink
-
-
-class TaskStepLifecycleSummaryTracePayload(TypedDict):
-    task_id: str
-    task_step_id: str
-    source: TaskLifecycleSource
-    sequence_no: int
-    kind: TaskStepKind
-    final_status: TaskStepStatus
-    trace: TaskStepTraceLink
-
-
-class TaskStepSequenceRequestTracePayload(TypedDict):
-    task_id: str
-    previous_task_step_id: str
-    previous_sequence_no: int
-    previous_status: TaskStepStatus
-    requested_kind: TaskStepKind
-    requested_status: TaskStepStatus
-
-
-class TaskStepSequenceStateTracePayload(TypedDict):
-    task_id: str
-    previous_task_step_id: str
-    previous_sequence_no: int
-    previous_status: TaskStepStatus
-    task_step_id: str
-    assigned_sequence_no: int
-    kind: TaskStepKind
-    current_status: TaskStepStatus
-
-
-class TaskStepSequenceSummaryTracePayload(TypedDict):
-    task_id: str
-    task_step_id: str
-    latest_sequence_no: int
-    next_sequence_no: int
-    append_allowed: bool
-
-
-class TaskStepContinuationRequestTracePayload(TypedDict):
-    task_id: str
-    parent_task_step_id: str
-    parent_sequence_no: int
-    parent_status: TaskStepStatus
-    requested_kind: TaskStepKind
-    requested_status: TaskStepStatus
-    requested_source_approval_id: str | None
-    requested_source_execution_id: str | None
-
-
-class TaskStepContinuationLineageTracePayload(TypedDict):
-    task_id: str
-    parent_task_step_id: str
-    parent_sequence_no: int
-    parent_status: TaskStepStatus
-    source_approval_id: str | None
-    source_execution_id: str | None
-
-
-class TaskStepContinuationSummaryTracePayload(TypedDict):
-    task_id: str
-    task_step_id: str
-    latest_sequence_no: int
-    next_sequence_no: int
-    append_allowed: bool
-    lineage: TaskStepLineageRecord
-
-
-class TaskStepTransitionRequestTracePayload(TypedDict):
-    task_id: str
-    task_step_id: str
-    sequence_no: int
-    previous_status: TaskStepStatus
-    requested_status: TaskStepStatus
-
-
-class TaskStepTransitionStateTracePayload(TypedDict):
-    task_id: str
-    task_step_id: str
-    sequence_no: int
-    previous_status: TaskStepStatus
-    current_status: TaskStepStatus
-    allowed_next_statuses: list[TaskStepStatus]
-    trace: TaskStepTraceLink
-
-
-class TaskStepTransitionSummaryTracePayload(TypedDict):
-    task_id: str
-    task_step_id: str
-    sequence_no: int
-    final_status: TaskStepStatus
-    parent_task_status: TaskStatus
-    trace: TaskStepTraceLink
-
-
-class ApprovalRequestCreateResponse(TypedDict):
-    request: ToolRoutingRequestRecord
-    decision: ToolRoutingDecision
-    tool: ToolRecord
-    reasons: list[ToolAllowlistReason]
-    task: TaskRecord
-    approval: ApprovalRecord | None
-    routing_trace: ToolRoutingTraceSummary
-    trace: ApprovalRequestTraceSummary
-
-
-class ApprovalListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class ApprovalListResponse(TypedDict):
-    items: list[ApprovalRecord]
-    summary: ApprovalListSummary
-
-
-class ApprovalDetailResponse(TypedDict):
-    approval: ApprovalRecord
-
-
-class ApprovalResolutionResponse(TypedDict):
-    approval: ApprovalRecord
-    trace: ApprovalResolutionTraceSummary
-
-
-class ExecutionBudgetRecord(TypedDict):
-    id: str
-    agent_profile_id: str | None
-    tool_key: str | None
-    domain_hint: str | None
-    max_completed_executions: int
-    rolling_window_seconds: int | None
-    status: ExecutionBudgetStatus
-    deactivated_at: str | None
-    superseded_by_budget_id: str | None
-    supersedes_budget_id: str | None
-    created_at: str
-
-
-class ExecutionBudgetCreateResponse(TypedDict):
-    execution_budget: ExecutionBudgetRecord
-
-
-class ExecutionBudgetListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class ExecutionBudgetListResponse(TypedDict):
-    items: list[ExecutionBudgetRecord]
-    summary: ExecutionBudgetListSummary
-
-
-class ExecutionBudgetDetailResponse(TypedDict):
-    execution_budget: ExecutionBudgetRecord
-
-
-class ExecutionBudgetLifecycleTraceSummary(TypedDict):
-    trace_id: str
-    trace_event_count: int
-
-
-class ExecutionBudgetDeactivateResponse(TypedDict):
-    execution_budget: ExecutionBudgetRecord
-    trace: ExecutionBudgetLifecycleTraceSummary
-
-
-class ExecutionBudgetSupersedeResponse(TypedDict):
-    superseded_budget: ExecutionBudgetRecord
-    replacement_budget: ExecutionBudgetRecord
-    trace: ExecutionBudgetLifecycleTraceSummary
-
-
-class ExecutionBudgetDecisionRecord(TypedDict):
-    matched_budget_id: str | None
-    tool_key: str
-    domain_hint: str | None
-    budget_tool_key: str | None
-    budget_domain_hint: str | None
-    max_completed_executions: int | None
-    rolling_window_seconds: int | None
-    count_scope: ExecutionBudgetCountScope
-    window_started_at: str | None
-    completed_execution_count: int
-    projected_completed_execution_count: int
-    decision: ExecutionBudgetDecision
-    reason: ExecutionBudgetDecisionReason
-    order: list[str]
-    history_order: list[str]
-    request_thread_id: NotRequired[str | None]
-    context_resolution: NotRequired[ExecutionBudgetContextResolution]
-    context_reason: NotRequired[str | None]
-
-
-class ExecutionBudgetLifecycleRequestTracePayload(TypedDict):
-    thread_id: str
-    execution_budget_id: str
-    requested_action: ExecutionBudgetLifecycleAction
-    replacement_max_completed_executions: int | None
-
-
-class ExecutionBudgetLifecycleStateTracePayload(TypedDict):
-    execution_budget_id: str
-    requested_action: ExecutionBudgetLifecycleAction
-    previous_status: ExecutionBudgetStatus
-    current_status: ExecutionBudgetStatus
-    tool_key: str | None
-    domain_hint: str | None
-    max_completed_executions: int
-    rolling_window_seconds: int | None
-    deactivated_at: str | None
-    superseded_by_budget_id: str | None
-    supersedes_budget_id: str | None
-    replacement_budget_id: str | None
-    replacement_status: ExecutionBudgetStatus | None
-    replacement_max_completed_executions: int | None
-    replacement_rolling_window_seconds: int | None
-    rejection_reason: str | None
-
-
-class ExecutionBudgetLifecycleSummaryTracePayload(TypedDict):
-    execution_budget_id: str
-    requested_action: ExecutionBudgetLifecycleAction
-    outcome: ExecutionBudgetLifecycleOutcome
-    replacement_budget_id: str | None
-    active_budget_id: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class ToolExecutionCreateInput:
-    approval_id: UUID
-    task_step_id: UUID
-    thread_id: UUID
-    tool_id: UUID
-    trace_id: UUID
-    request_event_id: UUID | None
-    result_event_id: UUID | None
-    status: ProxyExecutionStatus
-    handler_key: str | None
-    request: ToolRoutingRequestRecord
-    tool: ToolRecord
-    result: "ToolExecutionResultRecord"
-    task_run_id: UUID | None = None
-    idempotency_key: str | None = None
-
-
-class ToolExecutionRecord(TypedDict):
-    id: str
-    approval_id: str
-    task_run_id: NotRequired[str | None]
-    task_step_id: str
-    thread_id: str
-    tool_id: str
-    trace_id: str
-    request_event_id: str | None
-    result_event_id: str | None
-    status: ProxyExecutionStatus
-    handler_key: str | None
-    idempotency_key: NotRequired[str | None]
-    request: ToolRoutingRequestRecord
-    tool: ToolRecord
-    result: "ToolExecutionResultRecord"
-    executed_at: str
-
-
-class ToolExecutionListSummary(TypedDict):
-    total_count: int
-    order: list[str]
-
-
-class ToolExecutionListResponse(TypedDict):
-    items: list[ToolExecutionRecord]
-    summary: ToolExecutionListSummary
-
-
-class ToolExecutionDetailResponse(TypedDict):
-    execution: ToolExecutionRecord
-
-
-class ProxyExecutionRequestRecord(TypedDict):
-    approval_id: str
-    task_run_id: NotRequired[str | None]
-    task_step_id: str
-
-
-class ProxyExecutionRequestEventPayload(TypedDict):
-    approval_id: str
-    task_run_id: NotRequired[str | None]
-    task_step_id: str
-    tool_id: str
-    tool_key: str
-    request: ToolRoutingRequestRecord
-
-
-class ProxyExecutionResultRecord(TypedDict):
-    handler_key: str
-    status: ProxyExecutionStatus
-    output: JsonObject | None
-
-
-class ProxyExecutionResultEventPayload(TypedDict):
-    approval_id: str
-    task_step_id: str
-    tool_id: str
-    tool_key: str
-    handler_key: str
-    status: Literal["completed"]
-    output: JsonObject
-
-
-class ToolExecutionResultRecord(TypedDict):
-    handler_key: str | None
-    status: ProxyExecutionStatus
-    output: JsonObject | None
-    reason: str | None
-    budget_decision: NotRequired[ExecutionBudgetDecisionRecord]
-
-
-class ProxyExecutionEventSummary(TypedDict):
-    request_event_id: str
-    request_sequence_no: int
-    result_event_id: str
-    result_sequence_no: int
-
-
-class ProxyExecutionTraceSummary(TypedDict):
-    trace_id: str
-    trace_event_count: int
-
-
-class ProxyExecutionBudgetPrecheckTracePayload(ExecutionBudgetDecisionRecord):
-    pass
-
-
-class ProxyExecutionApprovalTracePayload(TypedDict):
-    approval_id: str
-    task_step_id: str
-    approval_status: ApprovalStatus
-    eligible_for_execution: bool
-
-
-class ProxyExecutionBudgetContextTracePayload(TypedDict):
-    request_thread_id: str | None
-    context_resolution: ExecutionBudgetContextResolution
-    context_reason: str | None
-
-
-class ProxyExecutionDispatchTracePayload(TypedDict):
-    approval_id: str
-    task_step_id: str
-    tool_id: str
-    tool_key: str
-    handler_key: str | None
-    dispatch_status: Literal["executed", "blocked"]
-    reason: str | None
-    result_status: ProxyExecutionStatus | None
-    output: JsonObject | None
-    budget_context: NotRequired[ProxyExecutionBudgetContextTracePayload]
-
-
-class ProxyExecutionSummaryTracePayload(TypedDict):
-    approval_id: str
-    task_step_id: str
-    tool_id: str
-    tool_key: str
-    approval_status: ApprovalStatus
-    execution_status: Literal["completed", "blocked"]
-    handler_key: str | None
-    request_event_id: str | None
-    result_event_id: str | None
-
-
-class ProxyExecutionResponse(TypedDict):
-    request: ProxyExecutionRequestRecord
-    approval: ApprovalRecord
-    tool: ToolRecord
-    result: ProxyExecutionResultRecord | ToolExecutionResultRecord
-    events: ProxyExecutionEventSummary | None
-    trace: ProxyExecutionTraceSummary
-
-
-class ProxyExecutionBudgetBlockedResponse(TypedDict):
-    request: ProxyExecutionRequestRecord
-    approval: ApprovalRecord
-    tool: ToolRecord
-    result: ToolExecutionResultRecord
-    events: None
-    trace: ProxyExecutionTraceSummary
-
-
-def isoformat_or_none(value: datetime | None) -> str | None:
-    if value is None:
-        return None
-    return value.isoformat()
+from alicebot_api._contracts.retrieval import (
+    RetrievalRunRecord,
+    RetrievalRunListSummary,
+    RetrievalRunListResponse,
+    RetrievalTraceSummary,
+    RetrievalTraceResponse,
+)
+
+
+from alicebot_api._contracts.continuity import (
+    ContinuityOpenLoopSectionSummary,
+    ContinuityOpenLoopSection,
+    ContinuityOpenLoopDashboardSummary,
+    ContinuityOpenLoopDashboardRecord,
+    ContinuityOpenLoopDashboardResponse,
+    ContinuityDailyBriefRecord,
+    ContinuityDailyBriefResponse,
+    ContinuityWeeklyReviewRollup,
+    ContinuityWeeklyReviewRecord,
+    ContinuityWeeklyReviewResponse,
+    ContinuityOpenLoopReviewActionResponse,
+    ContinuityCorrectionApplyResponse,
+    MemoryReviewRecord,
+    MemoryReviewListSummary,
+    MemoryReviewListResponse,
+    MemoryReviewDetailResponse,
+    OpenLoopRecord,
+    OpenLoopListSummary,
+    OpenLoopListResponse,
+    OpenLoopDetailResponse,
+    OpenLoopCreateResponse,
+    OpenLoopStatusUpdateResponse,
+    MemoryRevisionReviewRecord,
+    MemoryRevisionReviewListSummary,
+    MemoryRevisionReviewListResponse,
+    MemoryReviewLabelCounts,
+    MemoryReviewLabelRecord,
+    MemoryReviewLabelSummary,
+    MemoryReviewLabelCreateResponse,
+    MemoryReviewLabelListResponse,
+    MemoryReviewQueueItem,
+    MemoryReviewQueueSummary,
+    MemoryReviewQueueResponse,
+    MemoryQualityGateComputationCounts,
+    MemoryQualityGateSummary,
+    MemoryQualityGateResponse,
+    MemoryTrustQueueAgingSummary,
+    MemoryTrustQueuePostureSummary,
+    MemoryTrustCorrectionFreshnessSummary,
+    MemoryTrustRecommendedReview,
+    MemoryHygienePosture,
+    MemoryHygieneFocusKind,
+    MemoryDuplicateGroupRecord,
+    MemoryReviewQueuePressureSummary,
+    MemoryHygieneFocusRecord,
+    MemoryHygieneDashboardSummary,
+    MemoryHygieneDashboardResponse,
+    MemoryTrustDashboardSummary,
+    MemoryTrustDashboardResponse,
+    MemoryEvaluationSummary,
+    MemoryEvaluationSummaryResponse,
+)
+
+
+from alicebot_api._contracts.knowledge import (
+    EntityRecord,
+    EntityCreateResponse,
+    EntityListSummary,
+    EntityListResponse,
+    EntityDetailResponse,
+    EntityEdgeRecord,
+    EntityEdgeCreateResponse,
+    EntityEdgeListSummary,
+    EntityEdgeListResponse,
+    TemporalValidityRecord,
+    TemporalStateFactRecord,
+    TemporalStateEdgeRecord,
+    TemporalStateSummary,
+    TemporalStateAtRecord,
+    TemporalStateAtResponse,
+    TemporalTimelineEventRecord,
+    TemporalTimelineSummary,
+    TemporalTimelineRecord,
+    TemporalTimelineResponse,
+    TemporalTrustRecord,
+    TemporalProvenanceRecord,
+    TemporalFactSupersessionRecord,
+    TemporalFactExplainRecord,
+    TemporalEdgeSupersessionRecord,
+    TemporalEdgeExplainRecord,
+    TemporalExplainSummary,
+    TemporalExplainRecord,
+    TemporalExplainResponse,
+    TrustedFactEvidenceLinkRecord,
+    TrustedFactPatternRecord,
+    TrustedFactPatternListSummary,
+    TrustedFactPatternListResponse,
+    TrustedFactPatternExplainResponse,
+    TrustedFactPlaybookStepRecord,
+    TrustedFactPlaybookRecord,
+    TrustedFactPlaybookListSummary,
+    TrustedFactPlaybookListResponse,
+    TrustedFactPlaybookExplainResponse,
+)
+
+
+from alicebot_api._contracts.retrieval import (
+    EmbeddingConfigRecord,
+    EmbeddingConfigCreateResponse,
+    EmbeddingConfigListSummary,
+    EmbeddingConfigListResponse,
+    MemoryEmbeddingRecord,
+    MemoryEmbeddingUpsertResponse,
+    MemoryEmbeddingDetailResponse,
+    MemoryEmbeddingListSummary,
+    MemoryEmbeddingListResponse,
+    SemanticMemoryRetrievalResultItem,
+    SemanticMemoryRetrievalSummary,
+    SemanticMemoryRetrievalResponse,
+    RetrievalEvaluationFixtureResult,
+    RetrievalEvaluationSummary,
+    RetrievalEvaluationResponse,
+    PublicEvalSuiteDefinitionRecord,
+    PublicEvalSuiteDefinitionListResponse,
+    PublicEvalRunRecord,
+    PublicEvalResultRecord,
+    PublicEvalRunListResponse,
+    PublicEvalRunDetailResponse,
+)
+
+
+from alicebot_api._contracts.governance import (
+    ConsentRecord,
+    ConsentUpsertResponse,
+    ConsentListSummary,
+    ConsentListResponse,
+    PolicyRecord,
+    PolicyCreateResponse,
+    PolicyListSummary,
+    PolicyListResponse,
+    PolicyDetailResponse,
+    PolicyEvaluationReason,
+    PolicyEvaluationSummary,
+    PolicyEvaluationTraceSummary,
+    PolicyEvaluationResponse,
+    ToolRecord,
+    ToolCreateResponse,
+    ToolListSummary,
+    ToolListResponse,
+    ToolDetailResponse,
+    ToolAllowlistReason,
+    ToolAllowlistDecisionRecord,
+    ToolAllowlistEvaluationSummary,
+    ToolAllowlistTraceSummary,
+    ToolAllowlistEvaluationResponse,
+    ToolRoutingRequestRecord,
+    ToolRoutingRequestTracePayload,
+    ToolRoutingDecisionTracePayload,
+    ToolRoutingSummaryTracePayload,
+    ToolRoutingSummary,
+    ToolRoutingTraceSummary,
+    ToolRoutingResponse,
+    ApprovalRoutingRecord,
+    ApprovalResolutionRecord,
+    ApprovalRecord,
+    ApprovalRequestTraceSummary,
+    ApprovalResolutionTraceSummary,
+    ApprovalResolutionRequestTracePayload,
+    ApprovalResolutionStateTracePayload,
+    ApprovalResolutionSummaryTracePayload,
+)
+
+
+from alicebot_api._contracts.tasks import (
+    TaskCreateInput,
+    TaskRecord,
+    TaskCreateResponse,
+    TaskStepCreateInput,
+    TaskStepNextCreateInput,
+    TaskStepTransitionInput,
+    TaskStepLineageInput,
+    TaskListSummary,
+    TaskListResponse,
+    TaskDetailResponse,
+    TaskRunCreateInput,
+    TaskRunTickInput,
+    TaskRunPauseInput,
+    TaskRunResumeInput,
+    TaskRunCancelInput,
+    TaskRunRecord,
+    TaskRunCreateResponse,
+    TaskRunListSummary,
+    TaskRunListResponse,
+    TaskRunDetailResponse,
+    TaskRunMutationResponse,
+)
+
+
+import alicebot_api._contracts.integrations as _integration_contracts
+from alicebot_api._contracts.integrations import (
+    GmailAccountConnectInput,
+    GmailMessageIngestInput,
+    GmailAccountRecord,
+    GmailAccountConnectResponse,
+    GmailAccountListSummary,
+    GmailAccountListResponse,
+    GmailAccountDetailResponse,
+    GmailMessageIngestionRecord,
+    GmailMessageIngestionResponse,
+    CalendarAccountConnectInput,
+    CalendarEventIngestInput,
+    CalendarEventListInput,
+    CalendarAccountRecord,
+    CalendarAccountConnectResponse,
+    CalendarAccountListSummary,
+    CalendarAccountListResponse,
+    CalendarAccountDetailResponse,
+    CalendarEventIngestionRecord,
+    CalendarEventIngestionResponse,
+    CalendarEventSummaryRecord,
+    CalendarEventListSummary,
+    CalendarEventListResponse,
+)
+
+_INTEGRATION_CONTRACT_CLASS_NAMES = (
+    "GmailAccountConnectInput",
+    "GmailMessageIngestInput",
+    "GmailAccountRecord",
+    "GmailAccountConnectResponse",
+    "GmailAccountListSummary",
+    "GmailAccountListResponse",
+    "GmailAccountDetailResponse",
+    "GmailMessageIngestionRecord",
+    "GmailMessageIngestionResponse",
+    "CalendarAccountConnectInput",
+    "CalendarEventIngestInput",
+    "CalendarEventListInput",
+    "CalendarAccountRecord",
+    "CalendarAccountConnectResponse",
+    "CalendarAccountListSummary",
+    "CalendarAccountListResponse",
+    "CalendarAccountDetailResponse",
+    "CalendarEventIngestionRecord",
+    "CalendarEventIngestionResponse",
+    "CalendarEventSummaryRecord",
+    "CalendarEventListSummary",
+    "CalendarEventListResponse",
+)
+
+for _integration_class_name in _INTEGRATION_CONTRACT_CLASS_NAMES:
+    _integration_class = getattr(_integration_contracts, _integration_class_name)
+    if not hasattr(_integration_class, "__dataclass_fields__"):
+        continue
+    for _integration_generated_name, _integration_generated_method in vars(
+        _integration_class
+    ).items():
+        if (
+            isinstance(_integration_generated_method, _FunctionType)
+            and _integration_generated_method.__globals__.get("__name__")
+            == "alicebot_api._contracts.integrations"
+        ):
+            setattr(
+                _integration_class,
+                _integration_generated_name,
+                _clone_generated_contract_function(_integration_generated_method),
+            )
+
+del _integration_class
+del _integration_class_name
+del _integration_generated_method
+del _integration_generated_name
+
+
+from alicebot_api._contracts.tasks import (
+    TaskWorkspaceCreateInput,
+    TaskWorkspaceRecord,
+    TaskWorkspaceCreateResponse,
+    TaskWorkspaceListSummary,
+    TaskWorkspaceListResponse,
+    TaskWorkspaceDetailResponse,
+    TaskArtifactRegisterInput,
+    TaskArtifactIngestInput,
+    TaskScopedArtifactChunkRetrievalInput,
+    ArtifactScopedArtifactChunkRetrievalInput,
+    TaskScopedSemanticArtifactChunkRetrievalInput,
+    ArtifactScopedSemanticArtifactChunkRetrievalInput,
+    TaskArtifactRecord,
+    TaskArtifactCreateResponse,
+    TaskArtifactListSummary,
+    TaskArtifactListResponse,
+    TaskArtifactDetailResponse,
+    TaskArtifactChunkRecord,
+    TaskArtifactChunkListSummary,
+    TaskArtifactChunkListResponse,
+    TaskArtifactChunkEmbeddingRecord,
+    TaskArtifactChunkEmbeddingWriteResponse,
+    TaskArtifactChunkEmbeddingDetailResponse,
+    TaskArtifactChunkEmbeddingListScope,
+    TaskArtifactChunkEmbeddingListSummary,
+    TaskArtifactChunkEmbeddingListResponse,
+    TaskArtifactIngestionResponse,
+    TaskArtifactChunkRetrievalMatch,
+    TaskArtifactChunkRetrievalItem,
+    TaskArtifactChunkRetrievalScope,
+    TaskArtifactChunkRetrievalSummary,
+    TaskArtifactChunkRetrievalResponse,
+    TaskArtifactChunkSemanticRetrievalItem,
+    TaskArtifactChunkSemanticRetrievalSummary,
+    TaskArtifactChunkSemanticRetrievalResponse,
+    TaskStepTraceLink,
+    TaskStepOutcomeSnapshot,
+    TaskStepLineageRecord,
+    TaskStepRecord,
+    TaskStepCreateResponse,
+    TaskStepSequencingSummary,
+    TaskStepListSummary,
+    TaskStepListResponse,
+    TaskStepDetailResponse,
+    TaskStepMutationTraceSummary,
+    TaskStepNextCreateResponse,
+    TaskStepTransitionResponse,
+    ResumptionBriefSectionSummary,
+    ResumptionBriefConversationSummary,
+    ResumptionBriefConversationSection,
+    ResumptionBriefOpenLoopSection,
+    ResumptionBriefMemoryHighlightSection,
+    ResumptionBriefWorkflowSummary,
+    ResumptionBriefWorkflowPosture,
+    ResumptionBriefRecord,
+    ResumptionBriefResponse,
+    TaskLifecycleStateTracePayload,
+    TaskLifecycleSummaryTracePayload,
+    TaskStepLifecycleStateTracePayload,
+    TaskStepLifecycleSummaryTracePayload,
+    TaskStepSequenceRequestTracePayload,
+    TaskStepSequenceStateTracePayload,
+    TaskStepSequenceSummaryTracePayload,
+    TaskStepContinuationRequestTracePayload,
+    TaskStepContinuationLineageTracePayload,
+    TaskStepContinuationSummaryTracePayload,
+    TaskStepTransitionRequestTracePayload,
+    TaskStepTransitionStateTracePayload,
+    TaskStepTransitionSummaryTracePayload,
+)
+
+
+from alicebot_api._contracts.governance import (
+    ApprovalRequestCreateResponse,
+    ApprovalListSummary,
+    ApprovalListResponse,
+    ApprovalDetailResponse,
+    ApprovalResolutionResponse,
+)
+
+
+from alicebot_api._contracts.execution import (
+    ExecutionBudgetRecord,
+    ExecutionBudgetCreateResponse,
+    ExecutionBudgetListSummary,
+    ExecutionBudgetListResponse,
+    ExecutionBudgetDetailResponse,
+    ExecutionBudgetLifecycleTraceSummary,
+    ExecutionBudgetDeactivateResponse,
+    ExecutionBudgetSupersedeResponse,
+    ExecutionBudgetDecisionRecord,
+    ExecutionBudgetLifecycleRequestTracePayload,
+    ExecutionBudgetLifecycleStateTracePayload,
+    ExecutionBudgetLifecycleSummaryTracePayload,
+    ToolExecutionCreateInput,
+    ToolExecutionRecord,
+    ToolExecutionListSummary,
+    ToolExecutionListResponse,
+    ToolExecutionDetailResponse,
+    ProxyExecutionRequestRecord,
+    ProxyExecutionRequestEventPayload,
+    ProxyExecutionResultRecord,
+    ProxyExecutionResultEventPayload,
+    ToolExecutionResultRecord,
+    ProxyExecutionEventSummary,
+    ProxyExecutionTraceSummary,
+    ProxyExecutionBudgetPrecheckTracePayload,
+    ProxyExecutionApprovalTracePayload,
+    ProxyExecutionBudgetContextTracePayload,
+    ProxyExecutionDispatchTracePayload,
+    ProxyExecutionSummaryTracePayload,
+    ProxyExecutionResponse,
+    ProxyExecutionBudgetBlockedResponse,
+)
+
+_EXECUTION_CONTRACT_CLASS_NAMES = (
+    "ProxyExecutionRequestInput",
+    "ExecutionBudgetCreateInput",
+    "ExecutionBudgetDeactivateInput",
+    "ExecutionBudgetSupersedeInput",
+    "ExecutionBudgetRecord",
+    "ExecutionBudgetCreateResponse",
+    "ExecutionBudgetListSummary",
+    "ExecutionBudgetListResponse",
+    "ExecutionBudgetDetailResponse",
+    "ExecutionBudgetLifecycleTraceSummary",
+    "ExecutionBudgetDeactivateResponse",
+    "ExecutionBudgetSupersedeResponse",
+    "ExecutionBudgetDecisionRecord",
+    "ExecutionBudgetLifecycleRequestTracePayload",
+    "ExecutionBudgetLifecycleStateTracePayload",
+    "ExecutionBudgetLifecycleSummaryTracePayload",
+    "ToolExecutionCreateInput",
+    "ToolExecutionRecord",
+    "ToolExecutionListSummary",
+    "ToolExecutionListResponse",
+    "ToolExecutionDetailResponse",
+    "ProxyExecutionRequestRecord",
+    "ProxyExecutionRequestEventPayload",
+    "ProxyExecutionResultRecord",
+    "ProxyExecutionResultEventPayload",
+    "ToolExecutionResultRecord",
+    "ProxyExecutionEventSummary",
+    "ProxyExecutionTraceSummary",
+    "ProxyExecutionBudgetPrecheckTracePayload",
+    "ProxyExecutionApprovalTracePayload",
+    "ProxyExecutionBudgetContextTracePayload",
+    "ProxyExecutionDispatchTracePayload",
+    "ProxyExecutionSummaryTracePayload",
+    "ProxyExecutionResponse",
+    "ProxyExecutionBudgetBlockedResponse",
+)
+
+_EXECUTION_EXPLICIT_METHODS = (
+    ("ProxyExecutionRequestInput", "as_payload"),
+    ("ExecutionBudgetCreateInput", "as_payload"),
+    ("ExecutionBudgetDeactivateInput", "as_payload"),
+    ("ExecutionBudgetSupersedeInput", "as_payload"),
+)
+
+for _execution_class_name, _execution_method_name in _EXECUTION_EXPLICIT_METHODS:
+    _execution_class = getattr(_execution_contracts, _execution_class_name)
+    _execution_method = getattr(_execution_class, _execution_method_name)
+    setattr(
+        _execution_class,
+        _execution_method_name,
+        _clone_contract_function(
+            _execution_method,
+            qualname=_execution_method.__qualname__,
+        ),
+    )
+
+for _execution_class_name in _EXECUTION_CONTRACT_CLASS_NAMES:
+    _execution_class = getattr(_execution_contracts, _execution_class_name)
+    if not hasattr(_execution_class, "__dataclass_fields__"):
+        continue
+    for _execution_generated_name, _execution_generated_method in vars(
+        _execution_class
+    ).items():
+        if (
+            isinstance(_execution_generated_method, _FunctionType)
+            and _execution_generated_method.__globals__.get("__name__")
+            == "alicebot_api._contracts.execution"
+        ):
+            setattr(
+                _execution_class,
+                _execution_generated_name,
+                _clone_generated_contract_function(_execution_generated_method),
+            )
+
+del _execution_class
+del _execution_class_name
+del _execution_generated_method
+del _execution_generated_name
+del _execution_method
+del _execution_method_name
+
+
+isoformat_or_none = _clone_contract_function(
+    _common_isoformat_or_none,  # type: ignore[arg-type]
+    qualname="isoformat_or_none",
+)

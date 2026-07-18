@@ -12,6 +12,7 @@ import anyio
 import alicebot_api.main as main_module
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
+from alicebot_api.routers import vnext_memories as vnext_memories_router
 from alicebot_api.store import ContinuityStore
 from alicebot_api.vnext_capture import (
     VNextCaptureService,
@@ -84,6 +85,11 @@ def test_source_review_http_rotates_identity_and_recapture_uses_new_envelope(
         "get_settings",
         lambda: Settings(database_url=database_url),
     )
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "get_settings",
+        lambda: Settings(database_url=database_url),
+    )
     text = "Fact: HTTP source review rotates the complete capture identity."
     with user_connection(database_url, user_id) as conn:
         store = PostgresVNextStore(conn)
@@ -151,6 +157,11 @@ def test_source_review_http_collision_returns_409_after_full_transaction_rollbac
     user_id = _seed_user(database_url, label="collision")
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(database_url=database_url),
+    )
+    monkeypatch.setattr(
+        vnext_memories_router,
         "get_settings",
         lambda: Settings(database_url=database_url),
     )

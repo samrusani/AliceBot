@@ -4,7 +4,7 @@ import json
 from contextlib import contextmanager
 from uuid import uuid4
 
-import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 from alicebot_api.calendar import (
     CalendarAccountAlreadyExistsError,
@@ -36,10 +36,10 @@ def test_list_calendar_accounts_endpoint_returns_payload(monkeypatch) -> None:
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "list_calendar_account_records",
         lambda *_args, **_kwargs: {
             "items": [],
@@ -47,7 +47,7 @@ def test_list_calendar_accounts_endpoint_returns_payload(monkeypatch) -> None:
         },
     )
 
-    response = main_module.list_calendar_accounts(user_id)
+    response = legacy_gated_router.list_calendar_accounts(user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -64,18 +64,18 @@ def test_connect_calendar_account_endpoint_maps_duplicate_to_409(monkeypatch) ->
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "create_calendar_account_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             CalendarAccountAlreadyExistsError("calendar account acct-001 is already connected")
         ),
     )
 
-    response = main_module.connect_calendar_account(
-        main_module.ConnectCalendarAccountRequest(
+    response = legacy_gated_router.connect_calendar_account(
+        legacy_gated_router.ConnectCalendarAccountRequest(
             user_id=user_id,
             provider_account_id="acct-001",
             email_address="owner@example.com",
@@ -98,18 +98,18 @@ def test_connect_calendar_account_endpoint_maps_validation_and_persistence_error
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
 
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "create_calendar_account_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             CalendarCredentialValidationError("calendar access token must be non-empty")
         ),
     )
-    response = main_module.connect_calendar_account(
-        main_module.ConnectCalendarAccountRequest(
+    response = legacy_gated_router.connect_calendar_account(
+        legacy_gated_router.ConnectCalendarAccountRequest(
             user_id=user_id,
             provider_account_id="acct-001",
             email_address="owner@example.com",
@@ -121,14 +121,14 @@ def test_connect_calendar_account_endpoint_maps_validation_and_persistence_error
     assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "create_calendar_account_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             CalendarCredentialPersistenceError("calendar protected credentials could not be persisted")
         ),
     )
-    response = main_module.connect_calendar_account(
-        main_module.ConnectCalendarAccountRequest(
+    response = legacy_gated_router.connect_calendar_account(
+        legacy_gated_router.ConnectCalendarAccountRequest(
             user_id=user_id,
             provider_account_id="acct-001",
             email_address="owner@example.com",
@@ -154,17 +154,17 @@ def test_get_calendar_account_endpoint_maps_not_found_to_404(monkeypatch) -> Non
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "get_calendar_account_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             CalendarAccountNotFoundError(f"calendar account {calendar_account_id} was not found")
         ),
     )
 
-    response = main_module.get_calendar_account(calendar_account_id, user_id)
+    response = legacy_gated_router.get_calendar_account(calendar_account_id, user_id)
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
@@ -181,10 +181,10 @@ def test_list_calendar_events_endpoint_returns_payload(monkeypatch) -> None:
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "list_calendar_event_records",
         lambda *_args, **_kwargs: {
             "account": {
@@ -219,7 +219,7 @@ def test_list_calendar_events_endpoint_returns_payload(monkeypatch) -> None:
         },
     )
 
-    response = main_module.list_calendar_events(calendar_account_id, user_id)
+    response = legacy_gated_router.list_calendar_events(calendar_account_id, user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -264,30 +264,30 @@ def test_list_calendar_events_endpoint_maps_errors(monkeypatch) -> None:
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
 
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "list_calendar_event_records",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             CalendarAccountNotFoundError(f"calendar account {calendar_account_id} was not found")
         ),
     )
-    response = main_module.list_calendar_events(calendar_account_id, user_id)
+    response = legacy_gated_router.list_calendar_events(calendar_account_id, user_id)
     assert response.status_code == 404
     assert json.loads(response.body) == {
         "detail": {"code": "not_found", "message": "The requested resource was not found"}
     }
 
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "list_calendar_event_records",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             CalendarCredentialNotFoundError(f"calendar account {calendar_account_id} is missing protected credentials")
         ),
     )
-    response = main_module.list_calendar_events(calendar_account_id, user_id)
+    response = legacy_gated_router.list_calendar_events(calendar_account_id, user_id)
     assert response.status_code == 409
     assert json.loads(response.body) == {
         "detail": {
@@ -297,24 +297,24 @@ def test_list_calendar_events_endpoint_maps_errors(monkeypatch) -> None:
     }
 
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "list_calendar_event_records",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             CalendarEventListValidationError("calendar event time_min must be less than or equal to time_max")
         ),
     )
-    response = main_module.list_calendar_events(calendar_account_id, user_id)
+    response = legacy_gated_router.list_calendar_events(calendar_account_id, user_id)
     assert response.status_code == 400
     assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "list_calendar_event_records",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             CalendarEventFetchError("calendar events could not be fetched")
         ),
     )
-    response = main_module.list_calendar_events(calendar_account_id, user_id)
+    response = legacy_gated_router.list_calendar_events(calendar_account_id, user_id)
     assert response.status_code == 502
     assert json.loads(response.body) == {
         "detail": {"code": "upstream_failure", "message": "An upstream service failed"}
@@ -331,20 +331,20 @@ def test_ingest_calendar_event_endpoint_maps_workspace_not_found_to_404(monkeypa
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "ingest_calendar_event_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             TaskWorkspaceNotFoundError(f"task workspace {task_workspace_id} was not found")
         ),
     )
 
-    response = main_module.ingest_calendar_event(
+    response = legacy_gated_router.ingest_calendar_event(
         calendar_account_id,
         "evt-001",
-        main_module.IngestCalendarEventRequest(
+        legacy_gated_router.IngestCalendarEventRequest(
             user_id=user_id,
             task_workspace_id=task_workspace_id,
         ),
@@ -366,20 +366,20 @@ def test_ingest_calendar_event_endpoint_maps_upstream_errors(monkeypatch) -> Non
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
 
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "ingest_calendar_event_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             CalendarEventNotFoundError("calendar event evt-missing was not found")
         ),
     )
-    response = main_module.ingest_calendar_event(
+    response = legacy_gated_router.ingest_calendar_event(
         calendar_account_id,
         "evt-missing",
-        main_module.IngestCalendarEventRequest(
+        legacy_gated_router.IngestCalendarEventRequest(
             user_id=user_id,
             task_workspace_id=task_workspace_id,
         ),
@@ -390,16 +390,16 @@ def test_ingest_calendar_event_endpoint_maps_upstream_errors(monkeypatch) -> Non
     }
 
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "ingest_calendar_event_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             CalendarEventUnsupportedError("calendar event evt-unsupported is not supported for ingestion")
         ),
     )
-    response = main_module.ingest_calendar_event(
+    response = legacy_gated_router.ingest_calendar_event(
         calendar_account_id,
         "evt-unsupported",
-        main_module.IngestCalendarEventRequest(
+        legacy_gated_router.IngestCalendarEventRequest(
             user_id=user_id,
             task_workspace_id=task_workspace_id,
         ),
@@ -408,16 +408,16 @@ def test_ingest_calendar_event_endpoint_maps_upstream_errors(monkeypatch) -> Non
     assert json.loads(response.body) == {"detail": {"code": "invalid_request", "message": "The request is invalid"}}
 
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "ingest_calendar_event_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             CalendarCredentialNotFoundError(f"calendar account {calendar_account_id} is missing protected credentials")
         ),
     )
-    response = main_module.ingest_calendar_event(
+    response = legacy_gated_router.ingest_calendar_event(
         calendar_account_id,
         "evt-001",
-        main_module.IngestCalendarEventRequest(
+        legacy_gated_router.IngestCalendarEventRequest(
             user_id=user_id,
             task_workspace_id=task_workspace_id,
         ),
@@ -431,16 +431,16 @@ def test_ingest_calendar_event_endpoint_maps_upstream_errors(monkeypatch) -> Non
     }
 
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "ingest_calendar_event_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             CalendarCredentialInvalidError(f"calendar account {calendar_account_id} has invalid protected credentials")
         ),
     )
-    response = main_module.ingest_calendar_event(
+    response = legacy_gated_router.ingest_calendar_event(
         calendar_account_id,
         "evt-001",
-        main_module.IngestCalendarEventRequest(
+        legacy_gated_router.IngestCalendarEventRequest(
             user_id=user_id,
             task_workspace_id=task_workspace_id,
         ),
@@ -454,7 +454,7 @@ def test_ingest_calendar_event_endpoint_maps_upstream_errors(monkeypatch) -> Non
     }
 
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "ingest_calendar_event_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             CalendarCredentialPersistenceError(
@@ -462,10 +462,10 @@ def test_ingest_calendar_event_endpoint_maps_upstream_errors(monkeypatch) -> Non
             )
         ),
     )
-    response = main_module.ingest_calendar_event(
+    response = legacy_gated_router.ingest_calendar_event(
         calendar_account_id,
         "evt-001",
-        main_module.IngestCalendarEventRequest(
+        legacy_gated_router.IngestCalendarEventRequest(
             user_id=user_id,
             task_workspace_id=task_workspace_id,
         ),
@@ -479,16 +479,16 @@ def test_ingest_calendar_event_endpoint_maps_upstream_errors(monkeypatch) -> Non
     }
 
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "ingest_calendar_event_record",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             CalendarEventFetchError("calendar event evt-001 could not be fetched")
         ),
     )
-    response = main_module.ingest_calendar_event(
+    response = legacy_gated_router.ingest_calendar_event(
         calendar_account_id,
         "evt-001",
-        main_module.IngestCalendarEventRequest(
+        legacy_gated_router.IngestCalendarEventRequest(
             user_id=user_id,
             task_workspace_id=task_workspace_id,
         ),

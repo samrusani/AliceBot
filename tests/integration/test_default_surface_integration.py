@@ -15,6 +15,7 @@ import pytest
 import alicebot_api.main as main_module
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
+from alicebot_api.routers import workspaces as workspaces_router
 from alicebot_api.store import ContinuityStore
 from alicebot_api.vnext_store import PostgresVNextStore
 
@@ -224,6 +225,7 @@ def test_default_http_and_mcp_surfaces_complete_core_round_trip(
         database_admin_url=migrated_database_urls["admin"],
     )
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(workspaces_router, "get_settings", lambda: settings)
 
     user_id = uuid4()
     with user_connection(migrated_database_urls["app"], user_id) as conn:

@@ -20,9 +20,16 @@ Protected paths:
 
 - `apps/api/alembic/versions/*.py`
 - `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/legacy_store/*.py`
+- `apps/api/src/alicebot_api/vnext_store.py`
+- `apps/api/src/alicebot_api/sqlite_store.py`
+- `apps/api/src/alicebot_api/vnext_stores/*.py`
+- `apps/api/src/alicebot_api/vnext_stores/postgres/*.py`
+- `apps/api/src/alicebot_api/vnext_stores/sqlite/*.py`
 - `apps/api/src/alicebot_api/db.py`
 - `apps/api/src/alicebot_api/memory.py`
 - `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/_contracts/*.py`
 
 Invariants:
 
@@ -55,6 +62,7 @@ Invariants:
 Protected paths:
 
 - `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/_contracts/*.py`
 - `apps/api/src/alicebot_api/memory.py`
 - `apps/api/src/alicebot_api/trusted_fact_promotions.py`
 
@@ -84,10 +92,14 @@ Invariants:
 Protected paths:
 
 - `apps/api/src/alicebot_api/cli.py`
+- `apps/api/src/alicebot_api/cli/*.py`
 - `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/_contracts/*.py`
 - `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/routers/*.py`
 - `apps/api/src/alicebot_api/mcp_server.py`
 - `apps/api/src/alicebot_api/mcp_tools.py`
+- `apps/api/src/alicebot_api/mcp/*.py`
 - `apps/web/lib/api.ts`
 
 Invariants:

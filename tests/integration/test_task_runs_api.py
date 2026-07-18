@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import anyio
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -136,6 +137,9 @@ def test_task_run_endpoints_create_list_get_tick_and_user_isolation(
         thread_id=owner["thread_id"],
     )
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     create_status, create_payload = invoke_request(
         "POST",
@@ -219,6 +223,9 @@ def test_task_run_endpoints_cover_budget_wait_resume_pause_cancel_and_conflicts(
         thread_id=owner["thread_id"],
     )
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     budget_create_status, budget_create_payload = invoke_request(
         "POST",
@@ -335,6 +342,9 @@ def test_task_run_create_endpoint_rejects_invalid_checkpoint(
         thread_id=owner["thread_id"],
     )
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(
+        legacy_gated_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
+    )
 
     status_code, payload = invoke_request(
         "POST",

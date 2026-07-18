@@ -45,6 +45,15 @@ def _subcommand_names(parser: argparse.ArgumentParser) -> set[str]:
     return set(subparser_actions[0].choices)
 
 
+def _cli_source_text() -> str:
+    package_init = Path(cli_module.__file__).resolve()
+    assert package_init.name == "__init__.py"
+    assert package_init.parent.name == "cli"
+    source_paths = sorted(package_init.parent.rglob("*.py"))
+    assert source_paths
+    return "\n".join(path.read_text(encoding="utf-8") for path in source_paths)
+
+
 def test_parser_routes_required_commands() -> None:
     parser = cli_module.build_parser()
     continuity_object_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -252,7 +261,7 @@ def test_dedicated_telegram_polling_cli_is_absent() -> None:
 
 
 def test_cli_contains_no_telegram_polling_or_bot_token_residue() -> None:
-    source = Path(cli_module.__file__).read_text(encoding="utf-8")
+    source = _cli_source_text()
 
     for forbidden in (
         "TelegramPollContext",

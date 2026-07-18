@@ -4,7 +4,8 @@ import json
 from contextlib import contextmanager
 from uuid import uuid4
 
-import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.artifacts import (
     TaskArtifactAlreadyExistsError,
@@ -25,10 +26,10 @@ def test_list_task_artifacts_endpoint_returns_payload(monkeypatch) -> None:
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "list_task_artifact_records",
         lambda *_args, **_kwargs: {
             "items": [],
@@ -36,7 +37,7 @@ def test_list_task_artifacts_endpoint_returns_payload(monkeypatch) -> None:
         },
     )
 
-    response = main_module.list_task_artifacts(user_id)
+    response = memories_legacy_router.list_task_artifacts(user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -57,11 +58,11 @@ def test_get_task_artifact_endpoint_maps_not_found_to_404(monkeypatch) -> None:
     def fake_get_task_artifact_record(*_args, **_kwargs):
         raise TaskArtifactNotFoundError(f"task artifact {task_artifact_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "get_task_artifact_record", fake_get_task_artifact_record)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_task_artifact_record", fake_get_task_artifact_record)
 
-    response = main_module.get_task_artifact(task_artifact_id, user_id)
+    response = memories_legacy_router.get_task_artifact(task_artifact_id, user_id)
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
@@ -78,10 +79,10 @@ def test_list_task_artifact_chunks_endpoint_returns_payload(monkeypatch) -> None
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "list_task_artifact_chunk_records",
         lambda *_args, **_kwargs: {
             "items": [],
@@ -95,7 +96,7 @@ def test_list_task_artifact_chunks_endpoint_returns_payload(monkeypatch) -> None
         },
     )
 
-    response = main_module.list_task_artifact_chunks(task_artifact_id, user_id)
+    response = memories_legacy_router.list_task_artifact_chunks(task_artifact_id, user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -119,10 +120,10 @@ def test_retrieve_task_artifact_chunks_endpoint_returns_payload(monkeypatch) -> 
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "retrieve_task_scoped_artifact_chunk_records",
         lambda *_args, **_kwargs: {
             "items": [],
@@ -144,9 +145,9 @@ def test_retrieve_task_artifact_chunks_endpoint_returns_payload(monkeypatch) -> 
         },
     )
 
-    response = main_module.retrieve_task_artifact_chunks(
+    response = legacy_gated_router.retrieve_task_artifact_chunks(
         task_id,
-        main_module.RetrieveArtifactChunksRequest(user_id=user_id, query="alpha"),
+        legacy_gated_router.RetrieveArtifactChunksRequest(user_id=user_id, query="alpha"),
     )
 
     assert response.status_code == 200
@@ -182,17 +183,17 @@ def test_retrieve_task_artifact_chunks_endpoint_maps_task_not_found_to_404(monke
     def fake_retrieve_task_scoped_artifact_chunk_records(*_args, **_kwargs):
         raise TaskNotFoundError(f"task {task_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "retrieve_task_scoped_artifact_chunk_records",
         fake_retrieve_task_scoped_artifact_chunk_records,
     )
 
-    response = main_module.retrieve_task_artifact_chunks(
+    response = legacy_gated_router.retrieve_task_artifact_chunks(
         task_id,
-        main_module.RetrieveArtifactChunksRequest(user_id=user_id, query="alpha"),
+        legacy_gated_router.RetrieveArtifactChunksRequest(user_id=user_id, query="alpha"),
     )
 
     assert response.status_code == 404
@@ -213,17 +214,17 @@ def test_retrieve_task_artifact_chunks_endpoint_maps_validation_to_400(monkeypat
     def fake_retrieve_task_scoped_artifact_chunk_records(*_args, **_kwargs):
         raise TaskArtifactChunkRetrievalValidationError("artifact chunk retrieval query must include at least one word")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "retrieve_task_scoped_artifact_chunk_records",
         fake_retrieve_task_scoped_artifact_chunk_records,
     )
 
-    response = main_module.retrieve_task_artifact_chunks(
+    response = legacy_gated_router.retrieve_task_artifact_chunks(
         task_id,
-        main_module.RetrieveArtifactChunksRequest(user_id=user_id, query="alpha"),
+        legacy_gated_router.RetrieveArtifactChunksRequest(user_id=user_id, query="alpha"),
     )
 
     assert response.status_code == 400
@@ -240,10 +241,10 @@ def test_retrieve_semantic_task_artifact_chunks_endpoint_returns_payload(monkeyp
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "retrieve_task_scoped_semantic_artifact_chunk_records",
         lambda *_args, **_kwargs: {
             "items": [],
@@ -260,9 +261,9 @@ def test_retrieve_semantic_task_artifact_chunks_endpoint_returns_payload(monkeyp
         },
     )
 
-    response = main_module.retrieve_semantic_task_artifact_chunks(
+    response = legacy_gated_router.retrieve_semantic_task_artifact_chunks(
         task_id,
-        main_module.RetrieveSemanticArtifactChunksRequest(
+        legacy_gated_router.RetrieveSemanticArtifactChunksRequest(
             user_id=user_id,
             embedding_config_id=config_id,
             query_vector=[1.0, 0.0, 0.0],
@@ -301,17 +302,17 @@ def test_retrieve_semantic_task_artifact_chunks_endpoint_maps_validation_to_400(
             f"embedding_config_id must reference an existing embedding config owned by the user: {config_id}"
         )
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "retrieve_task_scoped_semantic_artifact_chunk_records",
         fake_retrieve_task_scoped_semantic_artifact_chunk_records,
     )
 
-    response = main_module.retrieve_semantic_task_artifact_chunks(
+    response = legacy_gated_router.retrieve_semantic_task_artifact_chunks(
         task_id,
-        main_module.RetrieveSemanticArtifactChunksRequest(
+        legacy_gated_router.RetrieveSemanticArtifactChunksRequest(
             user_id=user_id,
             embedding_config_id=config_id,
             query_vector=[1.0, 0.0, 0.0],
@@ -336,17 +337,17 @@ def test_retrieve_semantic_artifact_chunk_endpoint_maps_not_found_to_404(monkeyp
     def fake_retrieve_artifact_scoped_semantic_artifact_chunk_records(*_args, **_kwargs):
         raise TaskArtifactNotFoundError(f"task artifact {task_artifact_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "retrieve_artifact_scoped_semantic_artifact_chunk_records",
         fake_retrieve_artifact_scoped_semantic_artifact_chunk_records,
     )
 
-    response = main_module.retrieve_semantic_artifact_chunks_for_artifact(
+    response = memories_legacy_router.retrieve_semantic_artifact_chunks_for_artifact(
         task_artifact_id,
-        main_module.RetrieveSemanticArtifactChunksRequest(
+        memories_legacy_router.RetrieveSemanticArtifactChunksRequest(
             user_id=user_id,
             embedding_config_id=config_id,
             query_vector=[1.0, 0.0, 0.0],
@@ -372,17 +373,17 @@ def test_retrieve_artifact_chunk_endpoint_maps_not_found_to_404(monkeypatch) -> 
     def fake_retrieve_artifact_scoped_artifact_chunk_records(*_args, **_kwargs):
         raise TaskArtifactNotFoundError(f"task artifact {task_artifact_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        memories_legacy_router,
         "retrieve_artifact_scoped_artifact_chunk_records",
         fake_retrieve_artifact_scoped_artifact_chunk_records,
     )
 
-    response = main_module.retrieve_task_artifact_chunks_for_artifact(
+    response = memories_legacy_router.retrieve_task_artifact_chunks_for_artifact(
         task_artifact_id,
-        main_module.RetrieveArtifactChunksRequest(user_id=user_id, query="alpha"),
+        memories_legacy_router.RetrieveArtifactChunksRequest(user_id=user_id, query="alpha"),
     )
 
     assert response.status_code == 404
@@ -403,13 +404,13 @@ def test_register_task_artifact_endpoint_maps_workspace_not_found_to_404(monkeyp
     def fake_register_task_artifact_record(*_args, **_kwargs):
         raise TaskWorkspaceNotFoundError(f"task workspace {task_workspace_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "register_task_artifact_record", fake_register_task_artifact_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "register_task_artifact_record", fake_register_task_artifact_record)
 
-    response = main_module.register_task_artifact(
+    response = legacy_gated_router.register_task_artifact(
         task_workspace_id,
-        main_module.RegisterTaskArtifactRequest(
+        legacy_gated_router.RegisterTaskArtifactRequest(
             user_id=user_id,
             local_path="/tmp/example.txt",
         ),
@@ -433,13 +434,13 @@ def test_register_task_artifact_endpoint_maps_validation_to_400(monkeypatch) -> 
     def fake_register_task_artifact_record(*_args, **_kwargs):
         raise TaskArtifactValidationError("artifact path /tmp/escape.txt escapes workspace root /tmp/workspace")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "register_task_artifact_record", fake_register_task_artifact_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "register_task_artifact_record", fake_register_task_artifact_record)
 
-    response = main_module.register_task_artifact(
+    response = legacy_gated_router.register_task_artifact(
         task_workspace_id,
-        main_module.RegisterTaskArtifactRequest(
+        legacy_gated_router.RegisterTaskArtifactRequest(
             user_id=user_id,
             local_path="/tmp/escape.txt",
         ),
@@ -463,13 +464,13 @@ def test_register_task_artifact_endpoint_maps_duplicate_to_409(monkeypatch) -> N
             f"artifact docs/spec.txt is already registered for task workspace {task_workspace_id}"
         )
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "register_task_artifact_record", fake_register_task_artifact_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "register_task_artifact_record", fake_register_task_artifact_record)
 
-    response = main_module.register_task_artifact(
+    response = legacy_gated_router.register_task_artifact(
         task_workspace_id,
-        main_module.RegisterTaskArtifactRequest(
+        legacy_gated_router.RegisterTaskArtifactRequest(
             user_id=user_id,
             local_path="/tmp/docs/spec.txt",
         ),
@@ -498,13 +499,13 @@ def test_ingest_task_artifact_endpoint_maps_validation_to_400(monkeypatch) -> No
             "message/rfc822"
         )
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "ingest_task_artifact_record", fake_ingest_task_artifact_record)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "ingest_task_artifact_record", fake_ingest_task_artifact_record)
 
-    response = main_module.ingest_task_artifact(
+    response = memories_legacy_router.ingest_task_artifact(
         task_artifact_id,
-        main_module.IngestTaskArtifactRequest(user_id=user_id),
+        memories_legacy_router.IngestTaskArtifactRequest(user_id=user_id),
     )
 
     assert response.status_code == 400
@@ -523,13 +524,13 @@ def test_ingest_task_artifact_endpoint_maps_not_found_to_404(monkeypatch) -> Non
     def fake_ingest_task_artifact_record(*_args, **_kwargs):
         raise TaskArtifactNotFoundError(f"task artifact {task_artifact_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "ingest_task_artifact_record", fake_ingest_task_artifact_record)
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(memories_legacy_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(memories_legacy_router, "ingest_task_artifact_record", fake_ingest_task_artifact_record)
 
-    response = main_module.ingest_task_artifact(
+    response = memories_legacy_router.ingest_task_artifact(
         task_artifact_id,
-        main_module.IngestTaskArtifactRequest(user_id=user_id),
+        memories_legacy_router.IngestTaskArtifactRequest(user_id=user_id),
     )
 
     assert response.status_code == 404

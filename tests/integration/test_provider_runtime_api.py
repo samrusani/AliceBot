@@ -19,6 +19,8 @@ from alicebot_api.db import user_connection
 from alicebot_api.provider_configuration import provider_config_fingerprint
 from alicebot_api.public_errors import UPSTREAM_FAILURE
 from alicebot_api.provider_secrets import decode_provider_secret_ref, resolve_provider_api_key
+from alicebot_api.routers import providers as providers_router
+from alicebot_api.routers import workspaces as workspaces_router
 from alicebot_api.store import ContinuityStore
 
 TEST_PROVIDER_SECRET_MANAGER_URL = f"file://{(Path('/tmp').resolve() / 'alicebot-provider-runtime-secrets').as_posix()}"
@@ -96,6 +98,26 @@ def allow_documentation_provider_hosts(monkeypatch) -> None:
 def _configure_settings(migrated_database_urls, monkeypatch) -> None:
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            database_admin_url=migrated_database_urls["admin"],
+            provider_secret_manager_url=TEST_PROVIDER_SECRET_MANAGER_URL,
+            model_timeout_seconds=30,
+        ),
+    )
+    monkeypatch.setattr(
+        providers_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            database_admin_url=migrated_database_urls["admin"],
+            provider_secret_manager_url=TEST_PROVIDER_SECRET_MANAGER_URL,
+            model_timeout_seconds=30,
+        ),
+    )
+    monkeypatch.setattr(
+        workspaces_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
@@ -519,9 +541,7 @@ def test_local_provider_test_runtime_invoke_and_workspace_isolation(
         headers=identity_header(user_id_b),
     )
     assert test_other_status == 404
-    assert test_other_payload == {
-        "detail": {"code": "not_found", "message": "The requested resource was not found"}
-    }
+    assert test_other_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
 
     runtime_other_status, runtime_other_payload = invoke_request(
         "POST",
@@ -534,9 +554,7 @@ def test_local_provider_test_runtime_invoke_and_workspace_isolation(
         headers=identity_header(user_id_b),
     )
     assert runtime_other_status == 404
-    assert runtime_other_payload == {
-        "detail": {"code": "not_found", "message": "The requested resource was not found"}
-    }
+    assert runtime_other_payload == {"detail": {"code": "not_found", "message": "The requested resource was not found"}}
 
     thread_id = _seed_thread_for_user(
         admin_db_url=migrated_database_urls["admin"],
@@ -1057,6 +1075,44 @@ def test_workspace_bootstrap_config_seed_and_provider_update_refresh_capabilitie
             ),
         ),
     )
+    monkeypatch.setattr(
+        providers_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            database_admin_url=migrated_database_urls["admin"],
+            provider_secret_manager_url=TEST_PROVIDER_SECRET_MANAGER_URL,
+            model_timeout_seconds=30,
+            workspace_provider_configs=(
+                WorkspaceProviderConfig(
+                    provider_key="openai_compatible",
+                    display_name="Configured OpenAI",
+                    base_url="https://provider.example/v1",
+                    api_key="provider-secret-key",
+                    default_model="gpt-5-mini",
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        workspaces_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            database_admin_url=migrated_database_urls["admin"],
+            provider_secret_manager_url=TEST_PROVIDER_SECRET_MANAGER_URL,
+            model_timeout_seconds=30,
+            workspace_provider_configs=(
+                WorkspaceProviderConfig(
+                    provider_key="openai_compatible",
+                    display_name="Configured OpenAI",
+                    base_url="https://provider.example/v1",
+                    api_key="provider-secret-key",
+                    default_model="gpt-5-mini",
+                ),
+            ),
+        ),
+    )
 
     def fake_discovery_urlopen(request, timeout):
         captured_requests.append(
@@ -1142,6 +1198,46 @@ def test_workspace_bootstrap_config_invokes_openai_compatible_without_auth(
             ),
         ),
     )
+    monkeypatch.setattr(
+        providers_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            database_admin_url=migrated_database_urls["admin"],
+            provider_secret_manager_url=TEST_PROVIDER_SECRET_MANAGER_URL,
+            model_timeout_seconds=30,
+            workspace_provider_configs=(
+                WorkspaceProviderConfig(
+                    provider_key="openai_compatible",
+                    display_name="Configured No-auth Provider",
+                    base_url="https://provider.example/v1",
+                    api_key="",
+                    auth_mode="none",
+                    default_model="local-model",
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        workspaces_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            database_admin_url=migrated_database_urls["admin"],
+            provider_secret_manager_url=TEST_PROVIDER_SECRET_MANAGER_URL,
+            model_timeout_seconds=30,
+            workspace_provider_configs=(
+                WorkspaceProviderConfig(
+                    provider_key="openai_compatible",
+                    display_name="Configured No-auth Provider",
+                    base_url="https://provider.example/v1",
+                    api_key="",
+                    auth_mode="none",
+                    default_model="local-model",
+                ),
+            ),
+        ),
+    )
 
     user_id, _, _ = _bootstrap_local_workspace("provider-bootstrap-no-auth@example.com")
     list_status, list_payload = invoke_request(
@@ -1174,6 +1270,52 @@ def test_workspace_bootstrap_config_seeds_vllm_provider(
 
     monkeypatch.setattr(
         main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            database_admin_url=migrated_database_urls["admin"],
+            provider_secret_manager_url=TEST_PROVIDER_SECRET_MANAGER_URL,
+            model_timeout_seconds=30,
+            workspace_provider_configs=(
+                WorkspaceProviderConfig(
+                    provider_key="vllm",
+                    display_name="Configured vLLM",
+                    base_url="http://vllm.example:8001",
+                    api_key="",
+                    auth_mode="none",
+                    default_model="mistral-small-instruct",
+                    model_list_path="/v1/models",
+                    healthcheck_path="/health",
+                    invoke_path="/v1/chat/completions",
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        providers_router,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            database_admin_url=migrated_database_urls["admin"],
+            provider_secret_manager_url=TEST_PROVIDER_SECRET_MANAGER_URL,
+            model_timeout_seconds=30,
+            workspace_provider_configs=(
+                WorkspaceProviderConfig(
+                    provider_key="vllm",
+                    display_name="Configured vLLM",
+                    base_url="http://vllm.example:8001",
+                    api_key="",
+                    auth_mode="none",
+                    default_model="mistral-small-instruct",
+                    model_list_path="/v1/models",
+                    healthcheck_path="/health",
+                    invoke_path="/v1/chat/completions",
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        workspaces_router,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
@@ -1720,9 +1862,7 @@ def test_azure_runtime_invoke_workspace_isolation_and_ad_token_auth(
         headers=identity_header(user_id_a),
     )
     assert invalid_register_status == 422
-    assert "api_key must be empty when auth_mode is azure_ad_token" in json.dumps(
-        invalid_register_payload["detail"]
-    )
+    assert "api_key must be empty when auth_mode is azure_ad_token" in json.dumps(invalid_register_payload["detail"])
 
     thread_id = _seed_thread_for_user(
         admin_db_url=migrated_database_urls["admin"],

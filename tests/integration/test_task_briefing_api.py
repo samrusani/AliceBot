@@ -10,6 +10,7 @@ import anyio
 import psycopg
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -56,11 +57,7 @@ def invoke_request(
     anyio.run(main_module.app, scope, receive, send)
 
     start_message = next(message for message in messages if message["type"] == "http.response.start")
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
+    body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
     return start_message["status"], json.loads(body)
 
 
@@ -178,6 +175,11 @@ def test_task_brief_compile_compare_and_show_are_deterministic(
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
+    monkeypatch.setattr(
+        legacy_gated_router,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
     compile_payload = {
         "user_id": str(user_id),
@@ -191,12 +193,15 @@ def test_task_brief_compile_compare_and_show_are_deterministic(
     assert second_status == 201
     assert first_payload["task_brief"] == second_payload["task_brief"]
     assert first_payload["task_brief"]["strategy"]["briefing_strategy"] == "compact"
-    assert not {
-        "workspace_id",
-        "pack_id",
-        "pack_version",
-        "model_pack_strategy",
-    } & first_payload["task_brief"]["strategy"].keys()
+    assert (
+        not {
+            "workspace_id",
+            "pack_id",
+            "pack_version",
+            "model_pack_strategy",
+        }
+        & first_payload["task_brief"]["strategy"].keys()
+    )
 
     show_status, show_payload = invoke_request(
         "GET",
@@ -225,6 +230,7 @@ def test_task_brief_compile_compare_and_show_are_deterministic(
     )
     assert compare_status == 200
     assert compare_payload["comparison"]["smaller_mode"] == "worker_subtask"
-    assert compare_payload["primary"]["summary"]["estimated_tokens"] < compare_payload["secondary"]["summary"][
-        "estimated_tokens"
-    ]
+    assert (
+        compare_payload["primary"]["summary"]["estimated_tokens"]
+        < compare_payload["secondary"]["summary"]["estimated_tokens"]
+    )

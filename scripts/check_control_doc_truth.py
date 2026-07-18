@@ -153,12 +153,12 @@ _ACTIVE_SPRINT_FORBIDDEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     (
-        "Phase 3 active-work claim",
+        "Phase 4 active-work claim",
         re.compile(
-            r"(?:\bphase\s*3\b.{0,80}\b(?:active|underway|in\s+progress|"
+            r"(?:\bphase\s*4\b.{0,80}\b(?:active|underway|in\s+progress|"
             r"authorized|current\s+(?:work|sprint))\b|"
             r"\b(?:active|underway|in\s+progress|authorized|current\s+(?:work|sprint))"
-            r"\b.{0,80}\bphase\s*3\b)",
+            r"\b.{0,80}\bphase\s*4\b)",
             flags=re.IGNORECASE,
         ),
     ),
@@ -193,14 +193,15 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path=str(_ACTIVE_SPRINT_PACKET),
         required_markers=(
-            "<!-- alice-sprint-scope: phase-2-only -->",
-            "Alice v0.11.1 Phase 2 debt sweep.",
-            "Branch: `codex/v0111-phase2-debt-sweep`",
-            "Items 2.0 through 2.14",
-            "coupled true redaction converges",
+            "<!-- alice-sprint-scope: phase-3-complete -->",
+            "Alice v0.12.0 Phase 3 structural refactor.",
+            "Branch: `codex/v0120-phase3-structural-refactor`",
+            "Structure only. Zero behavior change.",
+            "Governed package and web version sources: intentionally held at `0.11.1`",
             "Text extraction happens outside Alice.",
             "Alice does not perform OCR or transcription.",
-            "Stop after the Phase 2 handoff; do not begin Phase 3.",
+            "Phase 4 is out of scope for this packet.",
+            "Stop after the Phase 3 handoff; do not begin Phase 4.",
         ),
     ),
     ControlDocTruthRule(

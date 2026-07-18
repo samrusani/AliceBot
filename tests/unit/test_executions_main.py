@@ -4,7 +4,7 @@ import json
 from contextlib import contextmanager
 from uuid import uuid4
 
-import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 from alicebot_api.executions import ToolExecutionNotFoundError
 
@@ -58,11 +58,11 @@ def test_list_tool_executions_endpoint_returns_payload(monkeypatch) -> None:
             "summary": {"total_count": 1, "order": ["executed_at_asc", "id_asc"]},
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "list_tool_execution_records", fake_list_tool_execution_records)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "list_tool_execution_records", fake_list_tool_execution_records)
 
-    response = main_module.list_tool_executions(user_id)
+    response = legacy_gated_router.list_tool_executions(user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body)["summary"] == {
@@ -125,11 +125,11 @@ def test_get_tool_execution_endpoint_returns_payload(monkeypatch) -> None:
             }
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "get_tool_execution_record", fake_get_tool_execution_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_tool_execution_record", fake_get_tool_execution_record)
 
-    response = main_module.get_tool_execution(execution_id, user_id)
+    response = legacy_gated_router.get_tool_execution(execution_id, user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body)["execution"]["id"] == str(execution_id)
@@ -154,11 +154,11 @@ def test_get_tool_execution_endpoint_maps_missing_record_to_404(monkeypatch) -> 
     def fake_get_tool_execution_record(*_args, **_kwargs):
         raise ToolExecutionNotFoundError(f"tool execution {execution_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "get_tool_execution_record", fake_get_tool_execution_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_tool_execution_record", fake_get_tool_execution_record)
 
-    response = main_module.get_tool_execution(execution_id, user_id)
+    response = legacy_gated_router.get_tool_execution(execution_id, user_id)
 
     assert response.status_code == 404
     assert json.loads(response.body) == {

@@ -10,13 +10,27 @@ from uuid import uuid4
 
 import anyio
 import pytest
+from starlette.requests import Request
+from starlette.routing import Match
 
 import alicebot_api.main as main_module
 from alicebot_api.config import Settings
+from alicebot_api.routers import continuity as continuity_router
+from alicebot_api.routers import legacy_gated as legacy_gated_router
+from alicebot_api.routers import memories_legacy as memories_legacy_router
+from alicebot_api.routers import _vnext_automation as vnext_automation
+from alicebot_api.routers import vnext_memories as vnext_memories_router
+from alicebot_api.routers import vnext_projects as vnext_projects_router
+from alicebot_api.routers import vnext_retrieval as vnext_retrieval_router
+from alicebot_api.routers import vnext_review as vnext_review_router
+from alicebot_api.routers import workspaces as workspaces_router
+from alicebot_api.routers import _vnext_shared as vnext_shared
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_event_log import build_event_log_record
+from alicebot_api.vnext_memory_commit import VNextMemoryCommitService
 from alicebot_api.vnext_memory_version import memory_version_snapshot
+from alicebot_api.vnext_projects import VNextProjectService
 from alicebot_api.vnext_project_scope import memory_project_scope
 
 
@@ -92,7 +106,7 @@ class FakeVNextStore:
         return [memory for memory in self.memories if status is None or memory.get("status") == status]
 
     def list_memories_referencing_source(self, *, source_id: str, limit: int = 500) -> list[dict[str, object]]:
-        return [memory for memory in self.memories if main_module._vnext_row_references_source(memory, source_id)][
+        return [memory for memory in self.memories if vnext_shared._vnext_row_references_source(memory, source_id)][
             :limit
         ]
 
@@ -228,11 +242,8 @@ class FakeVNextStore:
 
         redacted_provenance_links = 0
         for link in self.provenance_links:
-            coupled = (
-                link.get("target_type") == "memory" and str(link.get("target_id")) == memory_id
-            ) or (
-                link.get("target_type") == "artifact"
-                and str(link.get("target_id")) in coupled_artifact_ids
+            coupled = (link.get("target_type") == "memory" and str(link.get("target_id")) == memory_id) or (
+                link.get("target_type") == "artifact" and str(link.get("target_id")) in coupled_artifact_ids
             )
             if coupled and link.get("quote") not in {None, "[REDACTED]"}:
                 link["quote"] = "[REDACTED]"
@@ -415,7 +426,9 @@ class FakeVNextStore:
 
     def list_open_loops_referencing_source(self, *, source_id: str, limit: int = 500) -> list[dict[str, object]]:
         return [
-            open_loop for open_loop in self.open_loops if main_module._vnext_row_references_source(open_loop, source_id)
+            open_loop
+            for open_loop in self.open_loops
+            if vnext_shared._vnext_row_references_source(open_loop, source_id)
         ][:limit]
 
     def get_open_loop(self, loop_id: str) -> dict[str, object] | None:
@@ -509,7 +522,7 @@ class FakeVNextStore:
         return [
             artifact
             for artifact in self.artifacts.values()
-            if main_module._vnext_row_references_source(artifact, source_id)
+            if vnext_shared._vnext_row_references_source(artifact, source_id)
         ][:limit]
 
     def update_artifact_status(
@@ -693,7 +706,7 @@ class FakeVNextStore:
         return [
             event
             for event in self.events
-            if main_module._vnext_event_references(
+            if vnext_shared._vnext_event_references(
                 event,
                 source_id=source_id,
                 memory_ids=set(memory_ids),
@@ -718,8 +731,8 @@ class FakeVNextStore:
         return [
             artifact
             for artifact in self.artifacts.values()
-            if main_module._vnext_metadata(artifact).get("generated_by") == "agent"
-            and (agent_id is None or main_module._vnext_metadata(artifact).get("agent_id") == agent_id)
+            if vnext_shared._vnext_metadata(artifact).get("generated_by") == "agent"
+            and (agent_id is None or vnext_shared._vnext_metadata(artifact).get("agent_id") == agent_id)
         ][:limit]
 
     def list_agent_policy_memories(
@@ -731,8 +744,8 @@ class FakeVNextStore:
         return [
             memory
             for memory in self.memories
-            if main_module._vnext_metadata(memory).get("agent_id") is not None
-            and (agent_id is None or main_module._vnext_metadata(memory).get("agent_id") == agent_id)
+            if vnext_shared._vnext_metadata(memory).get("agent_id") is not None
+            and (agent_id is None or vnext_shared._vnext_metadata(memory).get("agent_id") == agent_id)
         ][:limit]
 
     def upsert_agent_identity(self, identity: dict[str, object], **_kwargs) -> dict[str, object]:
@@ -830,9 +843,17 @@ def _install_fake_vnext_store(monkeypatch, store: FakeVNextStore) -> None:
         assert current_user_id is not None
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://db"))
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "PostgresVNextStore", lambda _conn: store)
+    for module in (
+        main_module,
+        vnext_memories_router,
+        vnext_projects_router,
+        vnext_retrieval_router,
+        vnext_review_router,
+        workspaces_router,
+    ):
+        monkeypatch.setattr(module, "get_settings", lambda: Settings(database_url="postgresql://db"))
+        monkeypatch.setattr(module, "user_connection", fake_user_connection)
+        monkeypatch.setattr(module, "PostgresVNextStore", lambda _conn: store)
 
 
 def _invoke_vnext_request(
@@ -1065,9 +1086,13 @@ def test_vnext_http_auth_gate_covers_query_and_json_routes(monkeypatch) -> None:
 
 
 def test_vnext_route_inventory_fails_closed_without_route_local_policy() -> None:
+    routes = []
+    for route in main_module.app.router.routes:
+        effective_route_contexts = getattr(route, "effective_route_contexts", None)
+        routes.extend(effective_route_contexts() if callable(effective_route_contexts) else (route,))
     registered = {
         (method, str(route.path))
-        for route in main_module.app.routes
+        for route in routes
         if str(getattr(route, "path", "")).startswith("/v0/vnext")
         for method in (getattr(route, "methods", None) or set())
         if method != "OPTIONS"
@@ -1149,13 +1174,596 @@ def test_vnext_route_inventory_fails_closed_without_route_local_policy() -> None
     assert unknown.reasons == ("vnext_route_not_classified",)
 
 
+@pytest.mark.parametrize(
+    ("concrete_path", "template_path"),
+    (
+        (
+            f"/v0/vnext/traces/sources/{uuid4()}",
+            "/v0/vnext/traces/sources/{source_id}",
+        ),
+        (
+            f"/v0/vnext/traces/artifacts/{uuid4()}",
+            "/v0/vnext/traces/artifacts/{artifact_id}",
+        ),
+    ),
+)
+def test_parameterized_retrieval_routes_keep_policy_template_paths(
+    concrete_path: str,
+    template_path: str,
+) -> None:
+    request = Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": concrete_path,
+            "raw_path": concrete_path.encode(),
+            "query_string": b"",
+            "headers": [],
+            "client": ("127.0.0.1", 50000),
+            "server": ("127.0.0.1", 8000),
+        }
+    )
+
+    matched_path = main_module._matched_vnext_route_path(request)
+
+    assert matched_path == template_path
+    assert ("GET", matched_path) in main_module._VNEXT_ROUTE_LOCAL_POLICY or (
+        "GET",
+        matched_path,
+    ) in main_module._VNEXT_CENTRAL_OPERATOR_ROUTES
+    assert (
+        main_module._vnext_central_route_policy(
+            identity=None,
+            method="GET",
+            route_path=matched_path,
+        )
+        is None
+    )
+
+
+def test_vnext_memories_router_partitions_preserve_global_route_sequence() -> None:
+    partition_manifests = (
+        (vnext_memories_router.source_create_router, [("POST", "/v0/vnext/sources")]),
+        (
+            vnext_memories_router.connectors_router,
+            [
+                ("GET", "/v0/vnext/connectors"),
+                ("GET", "/v0/vnext/connectors/health"),
+                ("GET", "/v0/vnext/connectors/{connector_name}/status"),
+                ("PATCH", "/v0/vnext/connectors/{connector_name}/config"),
+                ("POST", "/v0/vnext/connectors/{connector_name}/sync"),
+                ("POST", "/v0/vnext/connectors/telegram/sync"),
+                ("POST", "/v0/vnext/connectors/local-folder/sync"),
+                ("POST", "/v0/vnext/connectors/browser-clipper/capture"),
+                ("POST", "/v0/vnext/agents/ingest-output"),
+                ("GET", "/v0/vnext/dogfooding"),
+                ("GET", "/v0/vnext/doctor"),
+                ("POST", "/v0/vnext/doctor/run"),
+            ],
+        ),
+        (
+            vnext_memories_router.source_review_router,
+            [
+                ("GET", "/v0/vnext/sources/{source_id}"),
+                ("POST", "/v0/vnext/sources/{source_id}/review"),
+            ],
+        ),
+        (
+            vnext_memories_router.source_delete_router,
+            [("DELETE", "/v0/vnext/sources/{source_id}")],
+        ),
+        (
+            vnext_memories_router.memory_router,
+            [
+                ("POST", "/v0/vnext/memories/{memory_id}/review"),
+                ("POST", "/v0/vnext/memory-proposals"),
+                ("POST", "/v0/vnext/memories/commit"),
+                ("POST", "/v0/vnext/memories/confirm"),
+                ("POST", "/v0/vnext/memories/undo"),
+                ("POST", "/v0/vnext/memories/correct"),
+                ("POST", "/v0/vnext/memories/forget"),
+                ("POST", "/v0/vnext/memories/expire"),
+                ("POST", "/v0/vnext/memories/unexpire"),
+                ("POST", "/v0/vnext/memories/accept-consolidation"),
+                ("POST", "/v0/vnext/memories/redact"),
+                ("GET", "/v0/vnext/memories/recent-commits"),
+                ("GET", "/v0/vnext/memories/{memory_id}/audit"),
+            ],
+        ),
+    )
+    for router, expected in partition_manifests:
+        observed = [
+            (method, str(route.path))
+            for route in router.routes
+            for method in sorted(getattr(route, "methods", None) or set())
+        ]
+        assert observed == expected
+        assert {route.endpoint.__module__ for route in router.routes} == {"alicebot_api.routers.vnext_memories"}
+
+    effective_routes = []
+    for route in main_module.app.router.routes:
+        effective_route_contexts = getattr(route, "effective_route_contexts", None)
+        effective_routes.extend(effective_route_contexts() if callable(effective_route_contexts) else (route,))
+    effective_pairs = [
+        (method, str(getattr(route, "path", "")))
+        for route in effective_routes
+        for method in sorted(getattr(route, "methods", None) or set())
+    ]
+    expected_slice = [
+        ("GET", "/v0/vnext/workspace"),
+        *partition_manifests[0][1],
+        ("POST", "/v0/vnext/projects"),
+        ("GET", "/v0/vnext/projects"),
+        *partition_manifests[1][1],
+        ("POST", "/v0/vnext/artifacts/{artifact_id}/insight-feedback"),
+        *partition_manifests[2][1],
+        ("GET", "/v0/vnext/traces/sources/{source_id}"),
+        ("GET", "/v0/vnext/traces/artifacts/{artifact_id}"),
+        *partition_manifests[3][1],
+        ("POST", "/v0/vnext/context-packs"),
+        ("GET", "/v0/vnext/context-tree"),
+        *partition_manifests[4][1],
+        ("POST", "/v0/vnext/artifacts/generate/daily-brief"),
+    ]
+    start = effective_pairs.index(expected_slice[0])
+
+    assert effective_pairs[start : start + len(expected_slice)] == expected_slice
+
+
+def test_vnext_review_router_partitions_preserve_global_route_sequence() -> None:
+    feedback_manifest = [
+        ("POST", "/v0/vnext/artifacts/{artifact_id}/insight-feedback"),
+    ]
+    review_manifest = [
+        ("POST", "/v0/vnext/artifacts/generate/daily-brief"),
+        ("POST", "/v0/vnext/artifacts/generate/weekly-synthesis"),
+        ("POST", "/v0/vnext/artifacts/generate/connections"),
+        ("POST", "/v0/vnext/artifacts/generate/contradictions"),
+        ("POST", "/v0/vnext/queue/tasks"),
+        ("POST", "/v0/vnext/queue/process-next"),
+        ("GET", "/v0/vnext/artifacts"),
+        ("GET", "/v0/vnext/artifacts/{artifact_id}"),
+        ("POST", "/v0/vnext/artifacts/{artifact_id}/review"),
+        ("POST", "/v0/vnext/artifacts/{artifact_id}/quality-ratings"),
+        ("GET", "/v0/vnext/quality-evals"),
+        ("POST", "/v0/vnext/artifacts/{artifact_id}/export"),
+        ("POST", "/v0/vnext/graph/edges/{edge_id}/review"),
+        ("GET", "/v0/vnext/graph/neighborhood/{target_id}"),
+        ("POST", "/v0/vnext/beliefs/{belief_id}/review"),
+        ("GET", "/v0/vnext/beliefs/{belief_id}/state"),
+        ("POST", "/v0/vnext/projects/update-candidates"),
+        ("POST", "/v0/vnext/projects/update-candidates/{artifact_id}/review"),
+    ]
+    for router, expected in (
+        (vnext_review_router.insight_feedback_router, feedback_manifest),
+        (vnext_review_router.review_router, review_manifest),
+    ):
+        observed = [
+            (method, str(route.path))
+            for route in router.routes
+            for method in sorted(getattr(route, "methods", None) or set())
+        ]
+        assert observed == expected
+        assert {route.endpoint.__module__ for route in router.routes} == {"alicebot_api.routers.vnext_review"}
+
+    effective_routes = []
+    for route in main_module.app.router.routes:
+        effective_route_contexts = getattr(route, "effective_route_contexts", None)
+        effective_routes.extend(effective_route_contexts() if callable(effective_route_contexts) else (route,))
+    effective_pairs = [
+        (method, str(getattr(route, "path", "")))
+        for route in effective_routes
+        for method in sorted(getattr(route, "methods", None) or set())
+    ]
+    feedback_slice = [
+        ("POST", "/v0/vnext/doctor/run"),
+        *feedback_manifest,
+        ("GET", "/v0/vnext/sources/{source_id}"),
+    ]
+    feedback_start = effective_pairs.index(feedback_slice[0])
+    assert effective_pairs[feedback_start : feedback_start + len(feedback_slice)] == feedback_slice
+
+    review_slice = [
+        ("GET", "/v0/vnext/memories/{memory_id}/audit"),
+        *review_manifest,
+        ("GET", "/v0/vnext/projects/{project_id}/dashboard"),
+    ]
+    review_start = effective_pairs.index(review_slice[0])
+    assert effective_pairs[review_start : review_start + len(review_slice)] == review_slice
+
+
+def test_vnext_projects_router_partitions_preserve_global_route_sequence() -> None:
+    project_core_manifest = [
+        ("POST", "/v0/vnext/projects"),
+        ("GET", "/v0/vnext/projects"),
+    ]
+    project_operations_manifest = [
+        ("GET", "/v0/vnext/projects/{project_id}/dashboard"),
+        ("POST", "/v0/vnext/open-loops"),
+        ("GET", "/v0/vnext/settings/brain-charter"),
+        ("PUT", "/v0/vnext/settings/brain-charter"),
+        ("GET", "/v0/vnext/scheduler/status"),
+        ("GET", "/v0/vnext/scheduler/runs"),
+        ("GET", "/v0/vnext/scheduler/failures"),
+        ("GET", "/v0/vnext/agents/policy-telemetry"),
+        ("PATCH", "/v0/vnext/scheduler/workflows/{workflow_type}"),
+        ("POST", "/v0/vnext/scheduler/workflows/{workflow_type}/run-now"),
+        ("POST", "/v0/vnext/scheduler/run-due"),
+        ("POST", "/v0/vnext/scheduler/pause"),
+        ("POST", "/v0/vnext/scheduler/resume"),
+        ("POST", "/v0/vnext/open-loops/extract"),
+        ("POST", "/v0/vnext/open-loops/{loop_id}/review"),
+    ]
+    for router, expected in (
+        (vnext_projects_router.project_core_router, project_core_manifest),
+        (
+            vnext_projects_router.project_operations_router,
+            project_operations_manifest,
+        ),
+    ):
+        observed = [
+            (method, str(route.path))
+            for route in router.routes
+            for method in sorted(getattr(route, "methods", None) or set())
+        ]
+        assert observed == expected
+        assert {route.endpoint.__module__ for route in router.routes} == {"alicebot_api.routers.vnext_projects"}
+
+    effective_routes = []
+    for route in main_module.app.router.routes:
+        effective_route_contexts = getattr(route, "effective_route_contexts", None)
+        effective_routes.extend(effective_route_contexts() if callable(effective_route_contexts) else (route,))
+    effective_pairs = [
+        (method, str(getattr(route, "path", "")))
+        for route in effective_routes
+        for method in sorted(getattr(route, "methods", None) or set())
+    ]
+    project_core_slice = [
+        ("POST", "/v0/vnext/sources"),
+        *project_core_manifest,
+        ("GET", "/v0/vnext/connectors"),
+    ]
+    project_core_start = effective_pairs.index(project_core_slice[0])
+    assert effective_pairs[project_core_start : project_core_start + len(project_core_slice)] == project_core_slice
+
+    project_operations_slice = [
+        ("POST", "/v0/vnext/projects/update-candidates/{artifact_id}/review"),
+        *project_operations_manifest,
+        ("POST", "/v0/continuity/captures/candidates"),
+    ]
+    project_operations_start = effective_pairs.index(project_operations_slice[0])
+    assert (
+        effective_pairs[project_operations_start : project_operations_start + len(project_operations_slice)]
+        == project_operations_slice
+    )
+
+
+def test_continuity_router_partitions_preserve_global_route_sequence() -> None:
+    capture_manifest = [("POST", "/v0/continuity/captures")]
+    operations_manifest = [
+        ("POST", "/v0/continuity/captures/candidates"),
+        ("POST", "/v0/continuity/captures/commit"),
+        ("POST", "/v1/memory/operations/candidates/generate"),
+        ("GET", "/v1/memory/operations/candidates"),
+        ("POST", "/v1/memory/operations/commit"),
+        ("GET", "/v1/memory/operations"),
+        ("GET", "/v0/continuity/captures"),
+        ("GET", "/v0/continuity/captures/{capture_event_id}"),
+        ("GET", "/v0/admin/debug/continuity/lifecycle"),
+        ("GET", "/v0/admin/debug/continuity/lifecycle/{continuity_object_id}"),
+        ("GET", "/v0/continuity/review-queue"),
+        ("GET", "/v0/continuity/review-queue/{continuity_object_id}"),
+        ("GET", "/v0/continuity/explain/{continuity_object_id}"),
+        ("POST", "/v1/contradictions/detect"),
+        ("GET", "/v1/contradictions/cases"),
+        ("GET", "/v1/contradictions/cases/{contradiction_case_id}"),
+        ("POST", "/v1/contradictions/cases/{contradiction_case_id}/resolve"),
+        ("GET", "/v1/trust/signals"),
+        ("GET", "/v0/state-at"),
+        ("GET", "/v0/timeline"),
+        ("GET", "/v0/explain"),
+        ("GET", "/v0/patterns"),
+        ("GET", "/v0/patterns/{pattern_id}"),
+        ("GET", "/v0/playbooks"),
+        ("GET", "/v0/playbooks/{playbook_id}"),
+        ("GET", "/v0/admin/debug/continuity/artifacts/{artifact_id}"),
+        ("POST", "/v0/continuity/review-queue/{continuity_object_id}/corrections"),
+        ("GET", "/v0/continuity/open-loops"),
+        ("GET", "/v0/continuity/daily-brief"),
+        ("GET", "/v0/continuity/weekly-review"),
+        ("POST", "/v0/continuity/open-loops/{continuity_object_id}/review-action"),
+        ("GET", "/v0/continuity/recall"),
+        ("GET", "/v0/continuity/retrieval-runs"),
+        ("GET", "/v0/continuity/retrieval-runs/{retrieval_run_id}"),
+        ("GET", "/v0/continuity/retrieval-evaluation"),
+        ("GET", "/v1/evals/suites"),
+        ("POST", "/v1/evals/runs"),
+        ("GET", "/v1/evals/runs"),
+        ("GET", "/v1/evals/runs/{eval_run_id}"),
+        ("GET", "/v0/continuity/resumption-brief"),
+        ("POST", "/v1/continuity/brief"),
+    ]
+    for router, expected in (
+        (continuity_router.capture_router, capture_manifest),
+        (continuity_router.operations_router, operations_manifest),
+    ):
+        observed = [
+            (method, str(route.path))
+            for route in router.routes
+            for method in sorted(getattr(route, "methods", None) or set())
+        ]
+        assert observed == expected
+        assert {route.endpoint.__module__ for route in router.routes} == {"alicebot_api.routers.continuity"}
+
+    effective_routes = []
+    for route in main_module.app.router.routes:
+        effective_route_contexts = getattr(route, "effective_route_contexts", None)
+        effective_routes.extend(effective_route_contexts() if callable(effective_route_contexts) else (route,))
+    effective_pairs = [
+        (method, str(getattr(route, "path", "")))
+        for route in effective_routes
+        for method in sorted(getattr(route, "methods", None) or set())
+    ]
+    capture_slice = [
+        ("POST", "/v0/memories/capture-explicit-signals"),
+        *capture_manifest,
+        ("GET", "/v0/vnext/workspace"),
+    ]
+    capture_start = effective_pairs.index(capture_slice[0])
+    assert effective_pairs[capture_start : capture_start + len(capture_slice)] == capture_slice
+
+    operations_slice = [
+        ("POST", "/v0/vnext/open-loops/{loop_id}/review"),
+        *operations_manifest,
+    ]
+    operations_start = effective_pairs.index(operations_slice[0])
+    assert effective_pairs[operations_start : operations_start + len(operations_slice)] == operations_slice
+
+    main_source = Path(main_module.__file__).read_text(encoding="utf-8")
+    assert (
+        main_source.index("app.include_router(vnext_projects.project_operations_router)")
+        < main_source.index("app.include_router(continuity.operations_router)")
+        < main_source.index("app.include_router(legacy_gated.task_brief_router)")
+    )
+
+
+def test_memories_legacy_router_partitions_preserve_global_route_sequence() -> None:
+    core_manifest = [
+        ("GET", "/v0/agent-profiles"),
+        ("POST", "/v0/context/compile"),
+        ("POST", "/v0/threads"),
+        ("GET", "/v0/threads"),
+        ("GET", "/v0/threads/health-dashboard"),
+        ("GET", "/v0/threads/{thread_id}"),
+        ("GET", "/v0/threads/{thread_id}/sessions"),
+        ("GET", "/v0/threads/{thread_id}/events"),
+        ("GET", "/v0/threads/{thread_id}/resumption-brief"),
+        ("GET", "/v0/traces"),
+        ("GET", "/v0/traces/{trace_id}"),
+        ("GET", "/v0/traces/{trace_id}/events"),
+        ("POST", "/v0/memories/admit"),
+        ("GET", "/v0/open-loops"),
+        ("GET", "/v0/open-loops/{open_loop_id}"),
+        ("POST", "/v0/open-loops"),
+        ("POST", "/v0/open-loops/{open_loop_id}/status"),
+        ("POST", "/v0/consents"),
+        ("GET", "/v0/consents"),
+        ("POST", "/v0/policies"),
+        ("GET", "/v0/policies"),
+        ("GET", "/v0/policies/{policy_id}"),
+        ("POST", "/v0/policies/evaluate"),
+    ]
+    task_artifact_manifest = [
+        ("GET", "/v0/task-artifacts"),
+        ("GET", "/v0/task-artifacts/{task_artifact_id}"),
+        ("POST", "/v0/task-artifacts/{task_artifact_id}/ingest"),
+        ("GET", "/v0/task-artifacts/{task_artifact_id}/chunks"),
+    ]
+    task_artifact_retrieval_manifest = [
+        ("POST", "/v0/task-artifacts/{task_artifact_id}/chunks/retrieve"),
+    ]
+    task_artifact_semantic_manifest = [
+        ("POST", "/v0/task-artifacts/{task_artifact_id}/chunks/semantic-retrieval"),
+    ]
+    signals_manifest = [
+        ("POST", "/v0/memories/extract-explicit-preferences"),
+        ("POST", "/v0/open-loops/extract-explicit-commitments"),
+        ("POST", "/v0/memories/capture-explicit-signals"),
+    ]
+    memory_manifest = [
+        ("GET", "/v0/memories"),
+        ("GET", "/v0/memories/review-queue"),
+        ("GET", "/v0/memories/quality-gate"),
+        ("GET", "/v0/memories/trust-dashboard"),
+        ("GET", "/v0/memories/hygiene-dashboard"),
+        ("GET", "/v0/memories/evaluation-summary"),
+        ("POST", "/v0/memories/semantic-retrieval"),
+        ("GET", "/v0/memories/{memory_id}"),
+        ("GET", "/v0/memories/{memory_id}/revisions"),
+        ("POST", "/v0/memories/{memory_id}/labels"),
+        ("GET", "/v0/memories/{memory_id}/labels"),
+        ("POST", "/v0/embedding-configs"),
+        ("GET", "/v0/embedding-configs"),
+        ("POST", "/v0/memory-embeddings"),
+        ("POST", "/v0/task-artifact-chunk-embeddings"),
+        ("GET", "/v0/memories/{memory_id}/embeddings"),
+        ("GET", "/v0/task-artifacts/{task_artifact_id}/chunk-embeddings"),
+        ("GET", "/v0/task-artifact-chunks/{task_artifact_chunk_id}/embeddings"),
+        ("GET", "/v0/memory-embeddings/{memory_embedding_id}"),
+        ("GET", "/v0/task-artifact-chunk-embeddings/{task_artifact_chunk_embedding_id}"),
+        ("POST", "/v0/entities"),
+        ("POST", "/v0/entity-edges"),
+        ("GET", "/v0/entities"),
+        ("GET", "/v0/entities/{entity_id}/edges"),
+        ("GET", "/v0/entities/{entity_id}"),
+    ]
+    partition_manifests = (
+        (memories_legacy_router.core_router, core_manifest),
+        (memories_legacy_router.task_artifact_router, task_artifact_manifest),
+        (
+            memories_legacy_router.task_artifact_retrieval_router,
+            task_artifact_retrieval_manifest,
+        ),
+        (
+            memories_legacy_router.task_artifact_semantic_router,
+            task_artifact_semantic_manifest,
+        ),
+        (memories_legacy_router.signals_router, signals_manifest),
+        (memories_legacy_router.memory_router, memory_manifest),
+    )
+    for router, expected in partition_manifests:
+        observed = [
+            (method, str(route.path))
+            for route in router.routes
+            for method in sorted(getattr(route, "methods", None) or set())
+        ]
+        assert observed == expected
+        assert {route.endpoint.__module__ for route in router.routes} == {"alicebot_api.routers.memories_legacy"}
+
+    assert legacy_gated_router.RetrieveArtifactChunksRequest is memories_legacy_router.RetrieveArtifactChunksRequest
+    assert (
+        legacy_gated_router.RetrieveSemanticArtifactChunksRequest
+        is memories_legacy_router.RetrieveSemanticArtifactChunksRequest
+    )
+
+    effective_routes = []
+    for route in main_module.app.router.routes:
+        effective_route_contexts = getattr(route, "effective_route_contexts", None)
+        effective_routes.extend(effective_route_contexts() if callable(effective_route_contexts) else (route,))
+    effective_pairs = [
+        (method, str(getattr(route, "path", "")))
+        for route in effective_routes
+        for method in sorted(getattr(route, "methods", None) or set())
+    ]
+    default_front_slice = [
+        ("GET", "/healthz"),
+        *core_manifest,
+        *task_artifact_manifest,
+        *task_artifact_retrieval_manifest,
+        *task_artifact_semantic_manifest,
+        *signals_manifest,
+        ("POST", "/v0/continuity/captures"),
+    ]
+    front_start = effective_pairs.index(default_front_slice[0])
+    assert effective_pairs[front_start : front_start + len(default_front_slice)] == default_front_slice
+
+    default_memory_slice = [
+        ("POST", "/v1/continuity/brief"),
+        *memory_manifest,
+        ("POST", "/v1/workspaces/bootstrap"),
+    ]
+    memory_start = effective_pairs.index(default_memory_slice[0])
+    assert effective_pairs[memory_start : memory_start + len(default_memory_slice)] == default_memory_slice
+
+    main_source = Path(main_module.__file__).read_text(encoding="utf-8")
+    ordered_anchors = (
+        '@app.get("/healthz")',
+        "app.include_router(memories_legacy.core_router)",
+        "app.include_router(legacy_gated.core_router)",
+        "app.include_router(memories_legacy.task_artifact_router)",
+        "app.include_router(legacy_gated.task_artifact_retrieval_router)",
+        "app.include_router(memories_legacy.task_artifact_retrieval_router)",
+        "app.include_router(legacy_gated.task_artifact_semantic_router)",
+        "app.include_router(memories_legacy.task_artifact_semantic_router)",
+        "app.include_router(legacy_gated.operations_router)",
+        "app.include_router(memories_legacy.signals_router)",
+        "app.include_router(continuity.capture_router)",
+        "app.include_router(workspaces.core_router)",
+        "app.include_router(vnext_memories.source_create_router)",
+        "app.include_router(legacy_gated.task_brief_router)",
+        "app.include_router(memories_legacy.memory_router)",
+        "app.include_router(workspaces.bootstrap_router)",
+        "app.include_router(providers.router)",
+    )
+    anchor_positions = [main_source.index(anchor) for anchor in ordered_anchors]
+    assert anchor_positions == sorted(anchor_positions)
+
+
+@pytest.mark.parametrize(
+    "concrete_path",
+    (
+        "/v0/vnext/connectors/telegram/sync",
+        "/v0/vnext/connectors/local-folder/sync",
+    ),
+)
+def test_vnext_connector_literal_sync_paths_preserve_generic_first_match(
+    concrete_path: str,
+) -> None:
+    request = Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": concrete_path,
+            "raw_path": concrete_path.encode(),
+            "query_string": b"",
+            "headers": [],
+            "client": ("127.0.0.1", 50000),
+            "server": ("127.0.0.1", 8000),
+        }
+    )
+    full_match_paths: list[str] = []
+    for route in main_module.app.router.routes:
+        effective_route_contexts = getattr(route, "effective_route_contexts", None)
+        route_contexts = effective_route_contexts() if callable(effective_route_contexts) else (route,)
+        for route_context in route_contexts:
+            match, _child_scope = route_context.matches(request.scope)
+            if match is Match.FULL:
+                full_match_paths.append(str(route_context.path))
+
+    assert full_match_paths[:2] == [
+        "/v0/vnext/connectors/{connector_name}/sync",
+        concrete_path,
+    ]
+    assert main_module._matched_vnext_route_path(request) == "/v0/vnext/connectors/{connector_name}/sync"
+
+
+def test_retrieval_router_mount_preserves_original_route_sequence() -> None:
+    moved_paths = [
+        "/v0/vnext/traces/sources/{source_id}",
+        "/v0/vnext/traces/artifacts/{artifact_id}",
+        "/v0/vnext/context-packs",
+        "/v0/vnext/context-tree",
+    ]
+    moved_routes = [
+        *vnext_retrieval_router.trace_router.routes,
+        *vnext_retrieval_router.context_router.routes,
+    ]
+    assert [route.path for route in moved_routes] == moved_paths
+    assert {route.endpoint.__module__ for route in moved_routes} == {"alicebot_api.routers.vnext_retrieval"}
+
+    effective_routes = []
+    for route in main_module.app.router.routes:
+        effective_route_contexts = getattr(route, "effective_route_contexts", None)
+        effective_routes.extend(effective_route_contexts() if callable(effective_route_contexts) else (route,))
+    expected_sequence = [
+        ("GET", "/v0/vnext/traces/sources/{source_id}"),
+        ("GET", "/v0/vnext/traces/artifacts/{artifact_id}"),
+        ("DELETE", "/v0/vnext/sources/{source_id}"),
+        ("POST", "/v0/vnext/context-packs"),
+        ("GET", "/v0/vnext/context-tree"),
+    ]
+    relevant_pairs = set(expected_sequence)
+    observed_sequence = [
+        (method, str(getattr(route, "path", "")))
+        for route in effective_routes
+        for method in sorted(getattr(route, "methods", None) or set())
+        if (method, str(getattr(route, "path", ""))) in relevant_pairs
+    ]
+
+    assert observed_sequence == expected_sequence
+
+
 def test_create_vnext_source_endpoint_captures_text(monkeypatch) -> None:
     store = FakeVNextStore(None)
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
 
-    response = main_module.create_vnext_source(
-        main_module.VNextSourceCaptureRequest(
+    response = vnext_memories_router.create_vnext_source(
+        vnext_memories_router.VNextSourceCaptureRequest(
             user_id=user_id,
             raw_text="Fact: vNext source API preserves provenance.",
             title="API capture",
@@ -1189,8 +1797,8 @@ def test_create_vnext_source_threads_project_scope_into_captured_memory(monkeypa
     store = _sqlite_vnext_store()
     _install_fake_vnext_store(monkeypatch, store)
 
-    response = main_module.create_vnext_source(
-        main_module.VNextSourceCaptureRequest(
+    response = vnext_memories_router.create_vnext_source(
+        vnext_memories_router.VNextSourceCaptureRequest(
             user_id=uuid4(),
             raw_text="Decision: The Helios launch ships behind a staged rollout flag.",
             title="Helios launch decision",
@@ -1222,10 +1830,10 @@ def test_vnext_connector_endpoints_list_and_sync_payloads(monkeypatch) -> None:
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
 
-    list_response = main_module.list_vnext_connectors(user_id=user_id)
-    sync_response = main_module.sync_vnext_connector(
+    list_response = vnext_memories_router.list_vnext_connectors(user_id=user_id)
+    sync_response = vnext_memories_router.sync_vnext_connector(
         "browser_clipper",
-        main_module.VNextConnectorSyncRequest(
+        vnext_memories_router.VNextConnectorSyncRequest(
             user_id=user_id,
             items=[
                 {
@@ -1259,7 +1867,7 @@ def test_get_vnext_source_endpoint_returns_404_for_missing_source(monkeypatch) -
     _install_fake_vnext_store(monkeypatch, store)
     missing_source_id = uuid4()
 
-    response = main_module.get_vnext_source(missing_source_id, user_id=uuid4())
+    response = vnext_memories_router.get_vnext_source(missing_source_id, user_id=uuid4())
 
     assert response.status_code == 404
     assert f"vNext source {missing_source_id} was not found" in json.loads(response.body)["detail"]
@@ -1271,10 +1879,10 @@ def test_delete_vnext_source_endpoint_soft_deletes_source(monkeypatch) -> None:
     store.sources[source_id] = {"id": source_id, "deleted_at": None}
     _install_fake_vnext_store(monkeypatch, store)
 
-    response = main_module.delete_vnext_source(source_id=uuid4(), user_id=uuid4())
+    response = vnext_memories_router.delete_vnext_source(source_id=uuid4(), user_id=uuid4())
     assert response.status_code == 404
 
-    response = main_module.delete_vnext_source(source_id=main_module.UUID(source_id), user_id=uuid4())
+    response = vnext_memories_router.delete_vnext_source(source_id=main_module.UUID(source_id), user_id=uuid4())
 
     payload = json.loads(response.body)
     assert response.status_code == 200
@@ -1329,9 +1937,9 @@ def test_vnext_source_review_trace_and_doctor_endpoints(monkeypatch) -> None:
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
 
-    review_response = main_module.review_vnext_source(
+    review_response = vnext_memories_router.review_vnext_source(
         main_module.UUID(source_id),
-        main_module.VNextSourceReviewRequest(
+        vnext_memories_router.VNextSourceReviewRequest(
             user_id=user_id,
             action="assign_project",
             title="Reviewed source",
@@ -1341,23 +1949,25 @@ def test_vnext_source_review_trace_and_doctor_endpoints(monkeypatch) -> None:
             review_note="Reviewed from test.",
         ),
     )
-    trace_response = main_module.get_vnext_source_trace(main_module.UUID(source_id), user_id=user_id)
-    artifact_trace_response = main_module.get_vnext_artifact_trace(main_module.UUID(artifact_id), user_id=user_id)
-    doctor_response = main_module.run_vnext_doctor(
-        main_module.VNextDoctorRunRequest(user_id=user_id, fix_safe=False, ci=True)
+    trace_response = vnext_retrieval_router.get_vnext_source_trace(main_module.UUID(source_id), user_id=user_id)
+    artifact_trace_response = vnext_retrieval_router.get_vnext_artifact_trace(
+        main_module.UUID(artifact_id), user_id=user_id
+    )
+    doctor_response = vnext_memories_router.run_vnext_doctor(
+        vnext_memories_router.VNextDoctorRunRequest(user_id=user_id, fix_safe=False, ci=True)
     )
 
     review_payload = json.loads(review_response.body)
-    old_scope_response = main_module.create_vnext_context_pack(
-        main_module.VNextContextPackRequest(
+    old_scope_response = vnext_retrieval_router.create_vnext_context_pack(
+        vnext_retrieval_router.VNextContextPackRequest(
             user_id=user_id,
             query="source review persists",
             scope={"projects": ["project-old"]},
             options={"include_sources": True},
         )
     )
-    new_scope_response = main_module.create_vnext_context_pack(
-        main_module.VNextContextPackRequest(
+    new_scope_response = vnext_retrieval_router.create_vnext_context_pack(
+        vnext_retrieval_router.VNextContextPackRequest(
             user_id=user_id,
             query="source review persists",
             scope={"projects": ["project-1"]},
@@ -1431,7 +2041,7 @@ def test_vnext_agent_policy_telemetry_scopes_supporting_rows_to_requested_agent(
     )
     _install_fake_vnext_store(monkeypatch, store)
 
-    response = main_module.get_vnext_agent_policy_telemetry(
+    response = vnext_projects_router.get_vnext_agent_policy_telemetry(
         user_id=uuid4(),
         agent_id="hermes",
         limit=200,
@@ -1453,7 +2063,7 @@ def test_vnext_source_trace_caps_every_collection_and_reports_truncation(monkeyp
         "sensitivity": "private",
         "metadata_json": {},
     }
-    for index in range(main_module._VNEXT_SOURCE_TRACE_COLLECTION_LIMIT + 1):
+    for index in range(vnext_shared._VNEXT_SOURCE_TRACE_COLLECTION_LIMIT + 1):
         store.chunks.append({"id": f"chunk-{index}", "source_id": source_id, "chunk_index": index})
         store.memories.append(
             {
@@ -1484,12 +2094,12 @@ def test_vnext_source_trace_caps_every_collection_and_reports_truncation(monkeyp
         )
     _install_fake_vnext_store(monkeypatch, store)
 
-    response = main_module.get_vnext_source_trace(main_module.UUID(source_id), user_id=uuid4())
+    response = vnext_retrieval_router.get_vnext_source_trace(main_module.UUID(source_id), user_id=uuid4())
 
     payload = json.loads(response.body)
     assert response.status_code == 200
     for key in ("chunks", "candidate_memories", "artifacts", "open_loops", "events"):
-        assert len(payload[key]) == main_module._VNEXT_SOURCE_TRACE_COLLECTION_LIMIT
+        assert len(payload[key]) == vnext_shared._VNEXT_SOURCE_TRACE_COLLECTION_LIMIT
     assert payload["sampling"]["trace_complete"] is False
     assert payload["sampling"]["memory_history_complete"] is False
     assert set(payload["sampling"]["truncated_collections"]) == {
@@ -1515,7 +2125,7 @@ def test_vnext_agent_policy_telemetry_clamps_direct_call_limit(monkeypatch) -> N
     store.list_agent_policy_memories = capture_limit  # type: ignore[method-assign]
     _install_fake_vnext_store(monkeypatch, store)
 
-    response = main_module.get_vnext_agent_policy_telemetry(
+    response = vnext_projects_router.get_vnext_agent_policy_telemetry(
         user_id=uuid4(),
         limit=10_000,
     )
@@ -1572,7 +2182,7 @@ def test_vnext_artifact_trace_loads_exact_referenced_source_and_events_before_li
     )
     _install_fake_vnext_store(monkeypatch, store)
 
-    response = main_module.get_vnext_artifact_trace(
+    response = vnext_retrieval_router.get_vnext_artifact_trace(
         main_module.UUID(artifact_id),
         user_id=uuid4(),
     )
@@ -1624,7 +2234,7 @@ def test_vnext_artifact_trace_authorizes_sources_from_complete_persisted_scope_e
         project_scope="real",
     )
 
-    response = main_module.get_vnext_artifact_trace(
+    response = vnext_retrieval_router.get_vnext_artifact_trace(
         main_module.UUID(artifact_id),
         user_id=user_id,
         authorization=f"Bearer {raw_key}",
@@ -1662,8 +2272,8 @@ def test_create_vnext_context_pack_endpoint_returns_structured_pack(monkeypatch)
     )
     _install_fake_vnext_store(monkeypatch, store)
 
-    response = main_module.create_vnext_context_pack(
-        main_module.VNextContextPackRequest(
+    response = vnext_retrieval_router.create_vnext_context_pack(
+        vnext_retrieval_router.VNextContextPackRequest(
             user_id=uuid4(),
             query="Alice context sources",
             scope={"domains": ["project"]},
@@ -1704,14 +2314,14 @@ def test_vnext_brain_artifact_generation_endpoints(monkeypatch) -> None:
     )
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
-    request = main_module.VNextBrainArtifactGenerateRequest(
+    request = vnext_review_router.VNextBrainArtifactGenerateRequest(
         user_id=user_id,
         scope={"domains": ["project"]},
         options={"generated_for": "2026-05-10", "sensitivity_allowed": ["public", "private"]},
     )
 
-    daily_response = main_module.generate_vnext_daily_brief(request)
-    weekly_response = main_module.generate_vnext_weekly_synthesis(request)
+    daily_response = vnext_review_router.generate_vnext_daily_brief(request)
+    weekly_response = vnext_review_router.generate_vnext_weekly_synthesis(request)
 
     daily_payload = json.loads(daily_response.body)
     weekly_payload = json.loads(weekly_response.body)
@@ -1768,18 +2378,18 @@ def test_vnext_connection_and_graph_endpoints(monkeypatch) -> None:
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
 
-    generate_response = main_module.generate_vnext_connection_report(
-        main_module.VNextConnectionReportGenerateRequest(
+    generate_response = vnext_review_router.generate_vnext_connection_report(
+        vnext_review_router.VNextConnectionReportGenerateRequest(
             user_id=user_id,
             scope={"domains": ["project"]},
             options={"max_connections": 1},
         )
     )
-    review_response = main_module.review_vnext_graph_edge(
+    review_response = vnext_review_router.review_vnext_graph_edge(
         "edge-1",
-        main_module.VNextGraphEdgeReviewRequest(user_id=user_id, action="accept"),
+        vnext_review_router.VNextGraphEdgeReviewRequest(user_id=user_id, action="accept"),
     )
-    neighborhood_response = main_module.get_vnext_graph_neighborhood(source_id, user_id=user_id)
+    neighborhood_response = vnext_review_router.get_vnext_graph_neighborhood(source_id, user_id=user_id)
 
     generate_payload = json.loads(generate_response.body)
     review_payload = json.loads(review_response.body)
@@ -1825,18 +2435,18 @@ def test_vnext_contradiction_and_belief_endpoints(monkeypatch) -> None:
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
 
-    generate_response = main_module.generate_vnext_contradiction_report(
-        main_module.VNextContradictionReportGenerateRequest(
+    generate_response = vnext_review_router.generate_vnext_contradiction_report(
+        vnext_review_router.VNextContradictionReportGenerateRequest(
             user_id=user_id,
             scope={"domains": ["project"]},
             options={"max_contradictions": 1},
         )
     )
-    review_response = main_module.review_vnext_belief(
+    review_response = vnext_review_router.review_vnext_belief(
         "belief-1",
-        main_module.VNextBeliefReviewRequest(user_id=user_id, action="challenge", confidence=0.25),
+        vnext_review_router.VNextBeliefReviewRequest(user_id=user_id, action="challenge", confidence=0.25),
     )
-    state_response = main_module.get_vnext_belief_state("belief-1", user_id=user_id)
+    state_response = vnext_review_router.get_vnext_belief_state("belief-1", user_id=user_id)
 
     generate_payload = json.loads(generate_response.body)
     review_payload = json.loads(review_response.body)
@@ -1883,32 +2493,32 @@ def test_vnext_project_and_open_loop_endpoints(monkeypatch) -> None:
     }
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
-    request = main_module.VNextProjectAutomationRequest(
+    request = vnext_automation.VNextProjectAutomationRequest(
         user_id=user_id,
         scope={"domains": ["project"], "project_id": "project-1"},
         options={"sensitivity_allowed": ["public", "private"]},
     )
 
-    update_response = main_module.generate_vnext_project_update_candidate(request)
+    update_response = vnext_review_router.generate_vnext_project_update_candidate(request)
     update_payload = json.loads(update_response.body)
-    extract_response = main_module.extract_vnext_open_loops(request)
-    review_update_response = main_module.review_vnext_project_update_candidate(
+    extract_response = vnext_projects_router.extract_vnext_open_loops(request)
+    review_update_response = vnext_review_router.review_vnext_project_update_candidate(
         update_payload["id"],
-        main_module.VNextProjectUpdateReviewRequest(
+        vnext_review_router.VNextProjectUpdateReviewRequest(
             user_id=user_id,
             action="edit",
             edited_current_state="Project automation reviewed.",
         ),
     )
-    review_loop_response = main_module.review_vnext_open_loop(
+    review_loop_response = vnext_projects_router.review_vnext_open_loop(
         "loop-1",
-        main_module.VNextOpenLoopReviewRequest(
+        vnext_projects_router.VNextOpenLoopReviewRequest(
             user_id=user_id,
             action="snooze",
             due_at="2026-05-12T09:00:00Z",
         ),
     )
-    dashboard_response = main_module.get_vnext_project_dashboard("project-1", user_id=user_id)
+    dashboard_response = vnext_projects_router.get_vnext_project_dashboard("project-1", user_id=user_id)
 
     extract_payload = json.loads(extract_response.body)
     review_update_payload = json.loads(review_update_response.body)
@@ -1940,8 +2550,8 @@ def test_vnext_project_and_open_loop_endpoints(monkeypatch) -> None:
 
 
 def test_project_automation_uses_canonical_project_scope() -> None:
-    converted = main_module._vnext_project_automation_request(
-        main_module.VNextProjectAutomationRequest(
+    converted = vnext_automation._vnext_project_automation_request(
+        vnext_automation.VNextProjectAutomationRequest(
             user_id=uuid4(),
             scope={"domains": ["project"]},
             project_scope=["project-canonical"],
@@ -1953,8 +2563,8 @@ def test_project_automation_uses_canonical_project_scope() -> None:
 
 def test_project_automation_rejects_ambiguous_canonical_project_scope() -> None:
     with pytest.raises(ValueError, match="requires one project_id"):
-        main_module._vnext_project_automation_request(
-            main_module.VNextProjectAutomationRequest(
+        vnext_automation._vnext_project_automation_request(
+            vnext_automation.VNextProjectAutomationRequest(
                 user_id=uuid4(),
                 scope={"domains": ["project"]},
                 project_scope=["project-a", "project-b"],
@@ -1967,15 +2577,15 @@ def test_project_automation_endpoints_map_ambiguous_and_mismatched_scope_to_400(
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
 
-    ambiguous = main_module.generate_vnext_project_update_candidate(
-        main_module.VNextProjectAutomationRequest(
+    ambiguous = vnext_review_router.generate_vnext_project_update_candidate(
+        vnext_automation.VNextProjectAutomationRequest(
             user_id=user_id,
             scope={"domains": ["project"]},
             project_scope=["project-a", "project-b"],
         )
     )
-    mismatched = main_module.extract_vnext_open_loops(
-        main_module.VNextProjectAutomationRequest(
+    mismatched = vnext_projects_router.extract_vnext_open_loops(
+        vnext_automation.VNextProjectAutomationRequest(
             user_id=user_id,
             scope={"domains": ["project"]},
             project_scope=["project-a"],
@@ -1994,8 +2604,8 @@ def test_vnext_queue_and_artifact_endpoints(monkeypatch, tmp_path) -> None:
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
 
-    create_response = main_module.create_vnext_queue_task(
-        main_module.VNextQueueTaskCreateRequest(
+    create_response = vnext_review_router.create_vnext_queue_task(
+        vnext_review_router.VNextQueueTaskCreateRequest(
             user_id=user_id,
             title="Draft launch note",
             task_type="draft",
@@ -2013,8 +2623,8 @@ def test_vnext_queue_and_artifact_endpoints(monkeypatch, tmp_path) -> None:
     assert create_payload["requested_by"] == "api"
     assert store.events[-1]["event_type"] == "queue.task_enqueued"
 
-    process_response = main_module.process_next_vnext_queue_task(
-        main_module.VNextQueueProcessNextRequest(user_id=user_id)
+    process_response = vnext_review_router.process_next_vnext_queue_task(
+        vnext_review_router.VNextQueueProcessNextRequest(user_id=user_id)
     )
 
     process_payload = json.loads(process_response.body)
@@ -2025,20 +2635,20 @@ def test_vnext_queue_and_artifact_endpoints(monkeypatch, tmp_path) -> None:
     assert store.tasks[0]["output_artifact_id"] == artifact_id
     assert store.artifacts[artifact_id]["content_markdown"].startswith("# Draft launch note")
 
-    get_response = main_module.get_vnext_artifact(main_module.UUID(artifact_id), user_id=user_id)
+    get_response = vnext_review_router.get_vnext_artifact(main_module.UUID(artifact_id), user_id=user_id)
     assert get_response.status_code == 200
     assert json.loads(get_response.body)["id"] == artifact_id
 
-    review_response = main_module.review_vnext_artifact(
+    review_response = vnext_review_router.review_vnext_artifact(
         main_module.UUID(artifact_id),
-        main_module.VNextArtifactReviewRequest(user_id=user_id, action="accept"),
+        vnext_review_router.VNextArtifactReviewRequest(user_id=user_id, action="accept"),
     )
     assert review_response.status_code == 200
     assert json.loads(review_response.body)["status"] == "accepted"
 
-    quality_response = main_module.rate_vnext_artifact_quality(
+    quality_response = vnext_review_router.rate_vnext_artifact_quality(
         main_module.UUID(artifact_id),
-        main_module.VNextArtifactQualityRatingRequest(
+        vnext_review_router.VNextArtifactQualityRatingRequest(
             user_id=user_id,
             reviewer_id="reviewer-1",
             usefulness=4,
@@ -2052,7 +2662,7 @@ def test_vnext_queue_and_artifact_endpoints(monkeypatch, tmp_path) -> None:
         ),
     )
     quality_payload = json.loads(quality_response.body)
-    export_quality_response = main_module.list_vnext_quality_evals(
+    export_quality_response = vnext_review_router.list_vnext_quality_evals(
         user_id=user_id,
         artifact_id=main_module.UUID(artifact_id),
         limit=10,
@@ -2066,9 +2676,9 @@ def test_vnext_queue_and_artifact_endpoints(monkeypatch, tmp_path) -> None:
     assert export_quality_payload["count"] == 1
     assert export_quality_payload["items"][0]["artifact_id"] == artifact_id
 
-    export_response = main_module.export_vnext_artifact(
+    export_response = vnext_review_router.export_vnext_artifact(
         main_module.UUID(artifact_id),
-        main_module.VNextArtifactExportRequest(user_id=user_id, output_dir=str(tmp_path)),
+        vnext_review_router.VNextArtifactExportRequest(user_id=user_id, output_dir=str(tmp_path)),
     )
     export_payload = json.loads(export_response.body)
     output_path = Path(export_payload["output_path"])
@@ -2085,13 +2695,13 @@ def test_vnext_artifact_review_endpoint_maps_validation_errors(monkeypatch) -> N
     artifact_id = str(uuid4())
     store.artifacts[artifact_id] = {"id": artifact_id, "title": "Draft", "content_markdown": "# Draft"}
 
-    invalid_response = main_module.review_vnext_artifact(
+    invalid_response = vnext_review_router.review_vnext_artifact(
         main_module.UUID(artifact_id),
-        main_module.VNextArtifactReviewRequest(user_id=user_id, action="ship"),
+        vnext_review_router.VNextArtifactReviewRequest(user_id=user_id, action="ship"),
     )
-    missing_response = main_module.review_vnext_artifact(
+    missing_response = vnext_review_router.review_vnext_artifact(
         uuid4(),
-        main_module.VNextArtifactReviewRequest(user_id=user_id, action="accept"),
+        vnext_review_router.VNextArtifactReviewRequest(user_id=user_id, action="accept"),
     )
 
     assert invalid_response.status_code == 400
@@ -2114,9 +2724,9 @@ def test_generic_artifact_review_dispatches_with_authenticated_reviewer_attribut
         "metadata_json": {},
     }
 
-    response = main_module.review_vnext_artifact(
+    response = vnext_review_router.review_vnext_artifact(
         main_module.UUID(artifact_id),
-        main_module.VNextArtifactReviewRequest(
+        vnext_review_router.VNextArtifactReviewRequest(
             user_id=user_id,
             action="accept",
             agent=main_module.VNextAgentIdentityRequest(
@@ -2153,9 +2763,9 @@ def test_generic_artifact_review_preserves_human_reviewer_attribution(monkeypatc
         "metadata_json": {},
     }
 
-    response = main_module.review_vnext_artifact(
+    response = vnext_review_router.review_vnext_artifact(
         main_module.UUID(artifact_id),
-        main_module.VNextArtifactReviewRequest(
+        vnext_review_router.VNextArtifactReviewRequest(
             user_id=user_id,
             action="accept",
             trace_id="human-review-trace-1",
@@ -2196,20 +2806,20 @@ def test_generic_artifact_review_preserves_applied_project_update_state(monkeypa
     }
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
-    artifact = main_module.VNextProjectService(store).generate_project_update_candidate(
-        main_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    artifact = VNextProjectService(store).generate_project_update_candidate(
+        vnext_automation.ProjectAutomationRequest(project_id="project-1", domains=("project",))
     )
     artifact_id = str(artifact["id"])
     candidate_memory_id = str(artifact["metadata_json"]["candidate_memory_id"])
     expected_state = str(artifact["metadata_json"]["suggested_current_state"])
 
-    accepted_response = main_module.review_vnext_artifact(
+    accepted_response = vnext_review_router.review_vnext_artifact(
         main_module.UUID(artifact_id),
-        main_module.VNextArtifactReviewRequest(user_id=user_id, action="accept"),
+        vnext_review_router.VNextArtifactReviewRequest(user_id=user_id, action="accept"),
     )
-    rejected_response = main_module.review_vnext_artifact(
+    rejected_response = vnext_review_router.review_vnext_artifact(
         main_module.UUID(artifact_id),
-        main_module.VNextArtifactReviewRequest(user_id=user_id, action="reject"),
+        vnext_review_router.VNextArtifactReviewRequest(user_id=user_id, action="reject"),
     )
 
     assert accepted_response.status_code == 200
@@ -2245,8 +2855,8 @@ def _http_project_update_review_fixture() -> tuple[FakeVNextStore, dict[str, obj
             "raw_text": "Alice vNext is ready for terminal consistency review.",
         },
     }
-    artifact = main_module.VNextProjectService(store).generate_project_update_candidate(
-        main_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    artifact = VNextProjectService(store).generate_project_update_candidate(
+        vnext_automation.ProjectAutomationRequest(project_id="project-1", domains=("project",))
     )
     return store, artifact
 
@@ -2259,13 +2869,13 @@ def _review_project_update_over_http(
     action: str,
 ) -> main_module.JSONResponse:
     if adapter == "generic":
-        return main_module.review_vnext_artifact(
+        return vnext_review_router.review_vnext_artifact(
             main_module.UUID(artifact_id),
-            main_module.VNextArtifactReviewRequest(user_id=user_id, action=action),
+            vnext_review_router.VNextArtifactReviewRequest(user_id=user_id, action=action),
         )
-    return main_module.review_vnext_project_update_candidate(
+    return vnext_review_router.review_vnext_project_update_candidate(
         artifact_id,
-        main_module.VNextProjectUpdateReviewRequest(user_id=user_id, action=action),
+        vnext_review_router.VNextProjectUpdateReviewRequest(user_id=user_id, action=action),
     )
 
 
@@ -2278,7 +2888,7 @@ def _apply_supported_http_memory_lifecycle(
     metadata = artifact["metadata_json"]
     assert isinstance(metadata, dict)
     memory_id = str(metadata["candidate_memory_id"])
-    service = main_module.VNextMemoryCommitService(store)
+    service = VNextMemoryCommitService(store)
     if operation == "correct":
         service.correct(
             identity=None,
@@ -2301,9 +2911,9 @@ def _apply_supported_http_memory_lifecycle(
 
 
 def _accept_later_http_project_update(store: FakeVNextStore, *, first_artifact_id: str) -> None:
-    service = main_module.VNextProjectService(store)
+    service = VNextProjectService(store)
     later = service.generate_project_update_candidate(
-        main_module.ProjectAutomationRequest(project_id="project-1", domains=("project",))
+        vnext_automation.ProjectAutomationRequest(project_id="project-1", domains=("project",))
     )
     assert later["id"] != first_artifact_id
     service.review_project_update(
@@ -2431,7 +3041,7 @@ def test_http_project_update_review_rejects_forced_terminal_status_without_mutat
     )
 
     assert response.status_code == 409
-    assert json.loads(response.body) == {"detail": main_module.PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE}
+    assert json.loads(response.body) == {"detail": vnext_review_router.PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE}
     assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before
 
 
@@ -2462,7 +3072,7 @@ def test_http_project_update_review_rejects_terminal_clone_after_true_redaction_
     )
 
     assert response.status_code == 409
-    assert json.loads(response.body) == {"detail": main_module.PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE}
+    assert json.loads(response.body) == {"detail": vnext_review_router.PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE}
     assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
 
 
@@ -2534,7 +3144,7 @@ def test_http_project_update_terminal_replay_rejects_every_coupled_competing_dec
     )
 
     assert second.status_code == 409
-    assert json.loads(second.body) == {"detail": main_module.PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE}
+    assert json.loads(second.body) == {"detail": vnext_review_router.PROJECT_UPDATE_TERMINAL_CONSISTENCY_MESSAGE}
     assert (store.projects, store.memories, store.artifacts, store.revisions, store.events) == state_before_retry
 
 
@@ -2606,17 +3216,17 @@ def test_live_capture_connector_api_endpoints(monkeypatch) -> None:
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
 
-    config_response = main_module.update_vnext_connector_config(
+    config_response = vnext_memories_router.update_vnext_connector_config(
         "telegram",
-        main_module.VNextConnectorConfigRequest(
+        vnext_memories_router.VNextConnectorConfigRequest(
             user_id=user_id,
             enabled=True,
             sync_mode="on_demand",
             config_json={"allowed_chat_ids": ["999001"]},
         ),
     )
-    telegram_response = main_module.sync_vnext_telegram_connector(
-        main_module.VNextTelegramSyncRequest(
+    telegram_response = vnext_memories_router.sync_vnext_telegram_connector(
+        vnext_memories_router.VNextTelegramSyncRequest(
             user_id=user_id,
             allowed_chat_ids=["999001"],
             updates=[
@@ -2633,8 +3243,8 @@ def test_live_capture_connector_api_endpoints(monkeypatch) -> None:
             ],
         )
     )
-    browser_response = main_module.capture_vnext_browser_clip(
-        main_module.VNextBrowserClipperCaptureRequest(
+    browser_response = vnext_memories_router.capture_vnext_browser_clip(
+        vnext_memories_router.VNextBrowserClipperCaptureRequest(
             user_id=user_id,
             url="https://example.test/clip",
             title="Clip",
@@ -2642,7 +3252,7 @@ def test_live_capture_connector_api_endpoints(monkeypatch) -> None:
             user_note="Remember: keep this reviewable.",
         )
     )
-    health_response = main_module.get_vnext_connectors_health(user_id=user_id)
+    health_response = vnext_memories_router.get_vnext_connectors_health(user_id=user_id)
 
     assert config_response.status_code == 200
     assert telegram_response.status_code == 201
@@ -2672,19 +3282,19 @@ def test_local_folder_external_io_runs_without_database_connection(monkeypatch, 
         finally:
             connection_depth -= 1
 
-    original_scan_local_folder = main_module.scan_local_folder
+    original_scan_local_folder = vnext_memories_router.scan_local_folder
 
     def tracked_scan_local_folder(*args, **kwargs):
         scan_depths.append(connection_depth)
         return original_scan_local_folder(*args, **kwargs)
 
-    monkeypatch.setattr(main_module, "user_connection", tracked_user_connection)
-    monkeypatch.setattr(main_module, "scan_local_folder", tracked_scan_local_folder)
+    monkeypatch.setattr(vnext_memories_router, "user_connection", tracked_user_connection)
+    monkeypatch.setattr(vnext_memories_router, "scan_local_folder", tracked_scan_local_folder)
     watched_file = tmp_path / "release-note.md"
     watched_file.write_text("Fact: local folder scans release the database connection.", encoding="utf-8")
 
-    local_response = main_module.sync_vnext_local_folder_connector(
-        main_module.VNextLocalFolderSyncRequest(
+    local_response = vnext_memories_router.sync_vnext_local_folder_connector(
+        vnext_memories_router.VNextLocalFolderSyncRequest(
             user_id=user_id,
             paths=[str(tmp_path)],
         )
@@ -2705,8 +3315,8 @@ def test_vnext_agent_endpoint_with_bearer_key_uses_key_identity(monkeypatch) -> 
         store, user_id=user_id, agent_id="openclaw", permission_profile="project_scoped_agent"
     )
 
-    response = main_module.create_vnext_source(
-        main_module.VNextSourceCaptureRequest(
+    response = vnext_memories_router.create_vnext_source(
+        vnext_memories_router.VNextSourceCaptureRequest(
             user_id=user_id,
             raw_text="Fact: keyed agents authenticate with per-agent API keys.",
             domain="project",
@@ -2736,8 +3346,8 @@ def test_vnext_agent_endpoint_rejects_keyless_agent_call_when_keys_exist(monkeyp
     user_id = uuid4()
     create_agent_key(store, user_id=user_id, agent_id="openclaw", permission_profile="project_scoped_agent")
 
-    response = main_module.create_vnext_source(
-        main_module.VNextSourceCaptureRequest(
+    response = vnext_memories_router.create_vnext_source(
+        vnext_memories_router.VNextSourceCaptureRequest(
             user_id=user_id,
             raw_text="Fact: keyless agent calls are rejected once keys exist.",
             domain="project",
@@ -2760,8 +3370,8 @@ def test_vnext_memory_commit_rejects_keyless_agent_call_when_keys_exist(monkeypa
     user_id = uuid4()
     create_agent_key(store, user_id=user_id, agent_id="hermes", permission_profile="trusted_local_agent")
 
-    response = main_module.commit_vnext_memory(
-        main_module.VNextMemoryCommitRequest(
+    response = vnext_memories_router.commit_vnext_memory(
+        vnext_memories_router.VNextMemoryCommitRequest(
             user_id=user_id,
             title="Keyless agent commit",
             canonical_text="Keyless agent commits stay rejected once keys exist.",
@@ -2782,8 +3392,8 @@ def test_vnext_memory_commit_without_identity_commits_as_direct_user(monkeypatch
     _install_fake_vnext_store(monkeypatch, store)
     monkeypatch.delenv("ALICE_EMBEDDINGS_BASE_URL", raising=False)
     user_id = uuid4()
-    response = main_module.commit_vnext_memory(
-        main_module.VNextMemoryCommitRequest(
+    response = vnext_memories_router.commit_vnext_memory(
+        vnext_memories_router.VNextMemoryCommitRequest(
             user_id=user_id,
             title="Direct user commit",
             canonical_text="Direct human commits need no agent identity.",
@@ -2809,8 +3419,8 @@ def test_vnext_agent_endpoint_rejects_payload_profile_escalation(monkeypatch) ->
         store, user_id=user_id, agent_id="openclaw", permission_profile="project_scoped_agent"
     )
 
-    response = main_module.create_vnext_source(
-        main_module.VNextSourceCaptureRequest(
+    response = vnext_memories_router.create_vnext_source(
+        vnext_memories_router.VNextSourceCaptureRequest(
             user_id=user_id,
             raw_text="Fact: escalation attempts are rejected.",
             domain="project",
@@ -2837,8 +3447,8 @@ def test_vnext_agent_endpoint_rejects_agent_id_mismatch(monkeypatch) -> None:
         store, user_id=user_id, agent_id="openclaw", permission_profile="project_scoped_agent"
     )
 
-    response = main_module.create_vnext_source(
-        main_module.VNextSourceCaptureRequest(
+    response = vnext_memories_router.create_vnext_source(
+        vnext_memories_router.VNextSourceCaptureRequest(
             user_id=user_id,
             raw_text="Fact: keys are bound to a single agent id.",
             domain="project",
@@ -2857,8 +3467,8 @@ def test_vnext_agent_endpoint_without_keys_marks_unauthenticated_local(monkeypat
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
 
-    response = main_module.create_vnext_source(
-        main_module.VNextSourceCaptureRequest(
+    response = vnext_memories_router.create_vnext_source(
+        vnext_memories_router.VNextSourceCaptureRequest(
             user_id=user_id,
             raw_text="Fact: fresh installs keep working without keys.",
             domain="project",
@@ -2930,9 +3540,9 @@ def test_http_review_edit_synchronizes_title_and_summary(monkeypatch) -> None:
     memory_id = _seed_active_memory(store, text="The old review text is stale.")
     corrected = "The reviewed memory now carries the corrected canonical text."
 
-    response = main_module.review_vnext_memory(
+    response = vnext_memories_router.review_vnext_memory(
         main_module.UUID(memory_id),
-        main_module.VNextMemoryReviewRequest(
+        vnext_memories_router.VNextMemoryReviewRequest(
             user_id=uuid4(),
             action="edit",
             canonical_text=corrected,
@@ -2998,9 +3608,9 @@ def test_generic_http_review_cannot_strand_pending_project_update_candidate(
         }
     )
 
-    response = main_module.review_vnext_memory(
+    response = vnext_memories_router.review_vnext_memory(
         main_module.UUID(memory_id),
-        main_module.VNextMemoryReviewRequest(user_id=user_id, action="reject"),
+        vnext_memories_router.VNextMemoryReviewRequest(user_id=user_id, action="reject"),
     )
 
     assert response.status_code == 409
@@ -3025,9 +3635,9 @@ def test_http_terminal_reviews_close_nested_confirmation_metadata(
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
     memory_id = _seed_pending_confirmation(store, label=action)
-    response = main_module.review_vnext_memory(
+    response = vnext_memories_router.review_vnext_memory(
         main_module.UUID(memory_id),
-        main_module.VNextMemoryReviewRequest(
+        vnext_memories_router.VNextMemoryReviewRequest(
             user_id=user_id,
             action=action,
             canonical_text="Edited and confirmed text." if action == "edit" else None,
@@ -3079,9 +3689,9 @@ def test_assign_project_replaces_canonical_memory_scope_used_by_retrieval(monkey
         }
     )
 
-    response = main_module.review_vnext_memory(
+    response = vnext_memories_router.review_vnext_memory(
         main_module.UUID(memory_id),
-        main_module.VNextMemoryReviewRequest(
+        vnext_memories_router.VNextMemoryReviewRequest(
             user_id=user_id,
             action="assign_project",
             project_id="project-new",
@@ -3096,8 +3706,8 @@ def test_assign_project_replaces_canonical_memory_scope_used_by_retrieval(monkey
     assert reassigned["metadata_json"]["project_scope"] == ["project-new"]
 
     def scoped_pack(project_id: str) -> dict[str, object]:
-        pack_response = main_module.create_vnext_context_pack(
-            main_module.VNextContextPackRequest(
+        pack_response = vnext_retrieval_router.create_vnext_context_pack(
+            vnext_retrieval_router.VNextContextPackRequest(
                 user_id=user_id,
                 query="release scope reassignment marker",
                 scope={"projects": [project_id]},
@@ -3117,8 +3727,8 @@ def test_vnext_memory_expire_and_unexpire_endpoints(monkeypatch) -> None:
     user_id = uuid4()
     memory_id = _seed_active_memory(store)
 
-    expired = main_module.expire_vnext_memory(
-        main_module.VNextMemoryExpireRequest(user_id=user_id, memory_id=memory_id, reason="Window closed")
+    expired = vnext_memories_router.expire_vnext_memory(
+        vnext_memories_router.VNextMemoryExpireRequest(user_id=user_id, memory_id=memory_id, reason="Window closed")
     )
     assert expired.status_code == 200
     expired_payload = json.loads(expired.body)
@@ -3129,8 +3739,10 @@ def test_vnext_memory_expire_and_unexpire_endpoints(monkeypatch) -> None:
     assert store.get_memory(memory_id)["status"] == "active"
     assert any(event.get("event_type") == "agent.memory_expired" for event in store.events)
 
-    unexpired = main_module.unexpire_vnext_memory(
-        main_module.VNextMemoryUnexpireRequest(user_id=user_id, memory_id=memory_id, reason="Deadline extended")
+    unexpired = vnext_memories_router.unexpire_vnext_memory(
+        vnext_memories_router.VNextMemoryUnexpireRequest(
+            user_id=user_id, memory_id=memory_id, reason="Deadline extended"
+        )
     )
     assert unexpired.status_code == 200
     assert json.loads(unexpired.body)["status"] == "active"
@@ -3155,8 +3767,8 @@ def test_vnext_memory_accept_consolidation_endpoint_supersedes_members(monkeypat
         "review_required": True,
     }
 
-    response = main_module.accept_vnext_memory_consolidation(
-        main_module.VNextMemoryAcceptConsolidationRequest(
+    response = vnext_memories_router.accept_vnext_memory_consolidation(
+        vnext_memories_router.VNextMemoryAcceptConsolidationRequest(
             user_id=user_id, memory_id=candidate_id, reason="Duplicates of one fact"
         )
     )
@@ -3212,9 +3824,9 @@ def test_generic_http_review_delegates_consolidation_acceptance_and_rejects_stal
         return candidate_id
 
     candidate_id = seed_candidate()
-    edited = main_module.review_vnext_memory(
+    edited = vnext_memories_router.review_vnext_memory(
         main_module.UUID(candidate_id),
-        main_module.VNextMemoryReviewRequest(
+        vnext_memories_router.VNextMemoryReviewRequest(
             user_id=user_id,
             action="edit",
             canonical_text="Unsafe edited merge.",
@@ -3225,9 +3837,9 @@ def test_generic_http_review_delegates_consolidation_acceptance_and_rejects_stal
     assert store.get_memory(first_id)["status"] == "active"
 
     store.lock_order.clear()
-    accepted = main_module.review_vnext_memory(
+    accepted = vnext_memories_router.review_vnext_memory(
         main_module.UUID(candidate_id),
-        main_module.VNextMemoryReviewRequest(
+        vnext_memories_router.VNextMemoryReviewRequest(
             user_id=user_id,
             action="accept",
             reason="Reviewed duplicates.",
@@ -3268,9 +3880,9 @@ def test_generic_http_review_delegates_consolidation_acceptance_and_rejects_stal
     }
     store.get_memory(fresh_first)["canonical_text"] = "Changed after proposal."
 
-    rejected = main_module.review_vnext_memory(
+    rejected = vnext_memories_router.review_vnext_memory(
         main_module.UUID(stale_id),
-        main_module.VNextMemoryReviewRequest(user_id=user_id, action="accept"),
+        vnext_memories_router.VNextMemoryReviewRequest(user_id=user_id, action="accept"),
     )
     assert rejected.status_code == 400
     assert json.loads(rejected.body)["detail"] == {
@@ -3288,8 +3900,8 @@ def test_vnext_memory_redact_endpoint_forgets_then_scrubs(monkeypatch) -> None:
     user_id = uuid4()
     memory_id = _seed_active_memory(store, text="The secret codename is Kestrel.")
 
-    response = main_module.redact_vnext_memory(
-        main_module.VNextMemoryRedactRequest(user_id=user_id, memory_id=memory_id, reason="Erasure request")
+    response = vnext_memories_router.redact_vnext_memory(
+        vnext_memories_router.VNextMemoryRedactRequest(user_id=user_id, memory_id=memory_id, reason="Erasure request")
     )
 
     assert response.status_code == 200
@@ -3321,8 +3933,8 @@ def test_vnext_memory_redact_endpoint_forgets_then_scrubs(monkeypatch) -> None:
     state_after_first = deepcopy(
         (store.memories, store.artifacts, store.quality_ratings, store.provenance_links, store.revisions, store.events)
     )
-    replay = main_module.redact_vnext_memory(
-        main_module.VNextMemoryRedactRequest(
+    replay = vnext_memories_router.redact_vnext_memory(
+        vnext_memories_router.VNextMemoryRedactRequest(
             user_id=user_id,
             memory_id=memory_id,
             reason="Repeated erasure request",
@@ -3349,8 +3961,8 @@ def test_vnext_memory_redact_endpoint_forgets_then_scrubs(monkeypatch) -> None:
         store.events,
     ) == state_after_first
 
-    missing = main_module.redact_vnext_memory(
-        main_module.VNextMemoryRedactRequest(user_id=user_id, memory_id=uuid4(), reason="Nothing there")
+    missing = vnext_memories_router.redact_vnext_memory(
+        vnext_memories_router.VNextMemoryRedactRequest(user_id=user_id, memory_id=uuid4(), reason="Nothing there")
     )
     assert missing.status_code == 404
 
@@ -3361,8 +3973,8 @@ def test_vnext_memory_redact_endpoint_blocks_non_admin_agents(monkeypatch) -> No
     user_id = uuid4()
     memory_id = _seed_active_memory(store)
 
-    response = main_module.redact_vnext_memory(
-        main_module.VNextMemoryRedactRequest(
+    response = vnext_memories_router.redact_vnext_memory(
+        vnext_memories_router.VNextMemoryRedactRequest(
             user_id=user_id, memory_id=memory_id, reason="Not allowed", agent_id="hermes"
         )
     )
@@ -3389,8 +4001,8 @@ def test_vnext_memory_lifecycle_endpoints_share_agent_key_auth(monkeypatch) -> N
 
     # Keyless agent calls are rejected once keys exist — parity with the
     # other vNext agent endpoints.
-    keyless = main_module.expire_vnext_memory(
-        main_module.VNextMemoryExpireRequest(
+    keyless = vnext_memories_router.expire_vnext_memory(
+        vnext_memories_router.VNextMemoryExpireRequest(
             user_id=user_id, memory_id=memory_id, reason="Window closed", agent_id="hermes"
         )
     )
@@ -3402,8 +4014,8 @@ def test_vnext_memory_lifecycle_endpoints_share_agent_key_auth(monkeypatch) -> N
     assert store.get_memory(memory_id)["valid_to"] is None
 
     # With the key, the same call succeeds under the key-bound identity.
-    keyed = main_module.expire_vnext_memory(
-        main_module.VNextMemoryExpireRequest(
+    keyed = vnext_memories_router.expire_vnext_memory(
+        vnext_memories_router.VNextMemoryExpireRequest(
             user_id=user_id, memory_id=memory_id, reason="Window closed", agent_id="hermes"
         ),
         authorization=f"Bearer {raw_key}",
@@ -3415,18 +4027,20 @@ def test_vnext_memory_lifecycle_endpoints_share_agent_key_auth(monkeypatch) -> N
     identity_record = policy_events[-1]["payload_json"]["agent_identity"]
     assert identity_record["auth"] == "agent_api_key"
 
-    keyless_unexpire = main_module.unexpire_vnext_memory(
-        main_module.VNextMemoryUnexpireRequest(
+    keyless_unexpire = vnext_memories_router.unexpire_vnext_memory(
+        vnext_memories_router.VNextMemoryUnexpireRequest(
             user_id=user_id, memory_id=memory_id, reason="Extended", agent_id="hermes"
         )
     )
     assert keyless_unexpire.status_code == 401
-    keyless_redact = main_module.redact_vnext_memory(
-        main_module.VNextMemoryRedactRequest(user_id=user_id, memory_id=memory_id, reason="Erase", agent_id="hermes")
+    keyless_redact = vnext_memories_router.redact_vnext_memory(
+        vnext_memories_router.VNextMemoryRedactRequest(
+            user_id=user_id, memory_id=memory_id, reason="Erase", agent_id="hermes"
+        )
     )
     assert keyless_redact.status_code == 401
-    keyless_accept = main_module.accept_vnext_memory_consolidation(
-        main_module.VNextMemoryAcceptConsolidationRequest(
+    keyless_accept = vnext_memories_router.accept_vnext_memory_consolidation(
+        vnext_memories_router.VNextMemoryAcceptConsolidationRequest(
             user_id=user_id, memory_id=memory_id, reason="Merge", agent_id="hermes"
         )
     )
@@ -3450,9 +4064,9 @@ def test_http_memory_review_rejects_non_admin_and_out_of_scope_keys(monkeypatch)
         permission_profile="read_only_agent",
         project_scope="project-b",
     )
-    reader_response = main_module.review_vnext_memory(
+    reader_response = vnext_memories_router.review_vnext_memory(
         main_module.UUID(memory_id),
-        main_module.VNextMemoryReviewRequest(user_id=user_id, action="accept"),
+        vnext_memories_router.VNextMemoryReviewRequest(user_id=user_id, action="accept"),
         authorization=f"Bearer {reader_key}",
     )
     assert reader_response.status_code == 403
@@ -3466,9 +4080,9 @@ def test_http_memory_review_rejects_non_admin_and_out_of_scope_keys(monkeypatch)
         permission_profile="admin_agent",
         project_scope="project-a",
     )
-    scope_response = main_module.review_vnext_memory(
+    scope_response = vnext_memories_router.review_vnext_memory(
         main_module.UUID(memory_id),
-        main_module.VNextMemoryReviewRequest(user_id=user_id, action="accept"),
+        vnext_memories_router.VNextMemoryReviewRequest(user_id=user_id, action="accept"),
         authorization=f"Bearer {admin_key}",
     )
     assert scope_response.status_code == 403
@@ -3492,8 +4106,8 @@ def test_http_memory_lifecycle_authorizes_the_persisted_target_scope(monkeypatch
         project_scope="project-a",
     )
 
-    response = main_module.forget_vnext_memory(
-        main_module.VNextMemoryForgetRequest(
+    response = vnext_memories_router.forget_vnext_memory(
+        vnext_memories_router.VNextMemoryForgetRequest(
             user_id=user_id,
             memory_id=memory_id,
             reason="Cross-project attempt.",
@@ -3511,8 +4125,8 @@ def test_agent_output_ingest_api_creates_review_only_records(monkeypatch) -> Non
     _install_fake_vnext_store(monkeypatch, store)
     user_id = uuid4()
 
-    response = main_module.ingest_vnext_agent_output(
-        main_module.VNextAgentOutputIngestRequest(
+    response = vnext_memories_router.ingest_vnext_agent_output(
+        vnext_memories_router.VNextAgentOutputIngestRequest(
             user_id=user_id,
             agent_id="openclaw",
             agent_type="coding_agent",
@@ -3558,11 +4172,13 @@ def test_dogfooding_dashboard_and_insight_feedback_api(monkeypatch) -> None:
         }
     )
 
-    feedback_response = main_module.record_vnext_artifact_insight_feedback(
+    feedback_response = vnext_review_router.record_vnext_artifact_insight_feedback(
         main_module.UUID(str(artifact["id"])),
-        main_module.VNextArtifactInsightFeedbackRequest(user_id=user_id, useful_insight="yes", surfaced_missed="yes"),
+        vnext_review_router.VNextArtifactInsightFeedbackRequest(
+            user_id=user_id, useful_insight="yes", surfaced_missed="yes"
+        ),
     )
-    dashboard_response = main_module.get_vnext_dogfooding_dashboard(user_id=user_id)
+    dashboard_response = vnext_memories_router.get_vnext_dogfooding_dashboard(user_id=user_id)
     dashboard = json.loads(dashboard_response.body)
 
     assert feedback_response.status_code == 201
@@ -3599,9 +4215,11 @@ def test_insight_feedback_rejects_exact_redacted_project_update(monkeypatch) -> 
     )
     events_before = deepcopy(store.events)
 
-    response = main_module.record_vnext_artifact_insight_feedback(
+    response = vnext_review_router.record_vnext_artifact_insight_feedback(
         main_module.UUID(str(artifact["id"])),
-        main_module.VNextArtifactInsightFeedbackRequest(user_id=user_id, useful_insight="yes", comments="secret"),
+        vnext_review_router.VNextArtifactInsightFeedbackRequest(
+            user_id=user_id, useful_insight="yes", comments="secret"
+        ),
     )
 
     assert response.status_code == 400

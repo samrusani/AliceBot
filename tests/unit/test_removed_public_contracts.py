@@ -11,6 +11,7 @@ from alicebot_api import contracts
 
 PACKAGE_ROOT = Path(contracts.__file__).resolve().parent
 STORE_PATH = PACKAGE_ROOT / "store.py"
+LEGACY_STORE_ROOT = PACKAGE_ROOT / "legacy_store"
 
 REMOVED_RUNTIME_MODULES = (
     "telegram_channels",
@@ -111,7 +112,10 @@ def test_permanently_removed_public_contracts_are_not_exported() -> None:
 
 
 def test_permanently_removed_channel_store_rows_are_absent_from_source_and_ast() -> None:
-    store_source = STORE_PATH.read_text(encoding="utf-8")
+    store_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (STORE_PATH, *sorted(LEGACY_STORE_ROOT.rglob("*.py")))
+    )
     class_names = {
         node.name
         for node in ast.walk(ast.parse(store_source))

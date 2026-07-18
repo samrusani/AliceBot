@@ -4,7 +4,7 @@ import json
 from contextlib import contextmanager
 from uuid import uuid4
 
-import alicebot_api.main as main_module
+from alicebot_api.routers import legacy_gated as legacy_gated_router
 from alicebot_api.config import Settings
 from alicebot_api.approvals import ApprovalNotFoundError, ApprovalResolutionConflictError
 from alicebot_api.tasks import TaskStepApprovalLinkageError
@@ -68,12 +68,12 @@ def test_create_approval_request_endpoint_translates_request_and_returns_trace_p
             "trace": {"trace_id": "approval-trace-123", "trace_event_count": 4},
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "submit_approval_request", fake_submit_approval_request)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "submit_approval_request", fake_submit_approval_request)
 
-    response = main_module.create_approval_request(
-        main_module.CreateApprovalRequest(
+    response = legacy_gated_router.create_approval_request(
+        legacy_gated_router.CreateApprovalRequest(
             user_id=user_id,
             thread_id=thread_id,
             tool_id=tool_id,
@@ -108,12 +108,12 @@ def test_create_approval_request_endpoint_maps_validation_errors_to_400(monkeypa
     def fake_submit_approval_request(*_args, **_kwargs):
         raise ToolRoutingValidationError("tool_id must reference an existing active tool owned by the user")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "submit_approval_request", fake_submit_approval_request)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "submit_approval_request", fake_submit_approval_request)
 
-    response = main_module.create_approval_request(
-        main_module.CreateApprovalRequest(
+    response = legacy_gated_router.create_approval_request(
+        legacy_gated_router.CreateApprovalRequest(
             user_id=user_id,
             thread_id=uuid4(),
             tool_id=uuid4(),
@@ -135,10 +135,10 @@ def test_list_approvals_endpoint_returns_payload(monkeypatch) -> None:
     def fake_user_connection(*_args, **_kwargs):
         yield object()
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
     monkeypatch.setattr(
-        main_module,
+        legacy_gated_router,
         "list_approval_records",
         lambda *_args, **_kwargs: {
             "items": [],
@@ -146,7 +146,7 @@ def test_list_approvals_endpoint_returns_payload(monkeypatch) -> None:
         },
     )
 
-    response = main_module.list_approvals(user_id)
+    response = legacy_gated_router.list_approvals(user_id)
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -167,11 +167,11 @@ def test_get_approval_endpoint_maps_not_found_to_404(monkeypatch) -> None:
     def fake_get_approval_record(*_args, **_kwargs):
         raise ApprovalNotFoundError(f"approval {approval_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "get_approval_record", fake_get_approval_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "get_approval_record", fake_get_approval_record)
 
-    response = main_module.get_approval(approval_id, user_id)
+    response = legacy_gated_router.get_approval(approval_id, user_id)
 
     assert response.status_code == 404
     assert json.loads(response.body) == {
@@ -217,13 +217,13 @@ def test_approve_approval_endpoint_returns_payload(monkeypatch) -> None:
             "trace": {"trace_id": "approval-resolution-trace-123", "trace_event_count": 3},
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "approve_approval_record", fake_approve_approval_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "approve_approval_record", fake_approve_approval_record)
 
-    response = main_module.approve_approval(
+    response = legacy_gated_router.approve_approval(
         approval_id,
-        main_module.ResolveApprovalRequest(user_id=user_id),
+        legacy_gated_router.ResolveApprovalRequest(user_id=user_id),
     )
 
     assert response.status_code == 200
@@ -250,13 +250,13 @@ def test_approve_approval_endpoint_maps_conflicts_to_409(monkeypatch) -> None:
     def fake_approve_approval_record(*_args, **_kwargs):
         raise ApprovalResolutionConflictError(f"approval {approval_id} was already approved")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "approve_approval_record", fake_approve_approval_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "approve_approval_record", fake_approve_approval_record)
 
-    response = main_module.approve_approval(
+    response = legacy_gated_router.approve_approval(
         approval_id,
-        main_module.ResolveApprovalRequest(user_id=user_id),
+        legacy_gated_router.ResolveApprovalRequest(user_id=user_id),
     )
 
     assert response.status_code == 409
@@ -279,13 +279,13 @@ def test_approve_approval_endpoint_maps_linkage_errors_to_409(monkeypatch) -> No
             f"approval {approval_id} is inconsistent with linked task step task-step-123"
         )
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "approve_approval_record", fake_approve_approval_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "approve_approval_record", fake_approve_approval_record)
 
-    response = main_module.approve_approval(
+    response = legacy_gated_router.approve_approval(
         approval_id,
-        main_module.ResolveApprovalRequest(user_id=user_id),
+        legacy_gated_router.ResolveApprovalRequest(user_id=user_id),
     )
 
     assert response.status_code == 409
@@ -332,13 +332,13 @@ def test_reject_approval_endpoint_returns_payload(monkeypatch) -> None:
             "trace": {"trace_id": "approval-resolution-trace-456", "trace_event_count": 3},
         }
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "reject_approval_record", fake_reject_approval_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "reject_approval_record", fake_reject_approval_record)
 
-    response = main_module.reject_approval(
+    response = legacy_gated_router.reject_approval(
         approval_id,
-        main_module.ResolveApprovalRequest(user_id=user_id),
+        legacy_gated_router.ResolveApprovalRequest(user_id=user_id),
     )
 
     assert response.status_code == 200
@@ -365,13 +365,13 @@ def test_reject_approval_endpoint_maps_not_found_to_404(monkeypatch) -> None:
     def fake_reject_approval_record(*_args, **_kwargs):
         raise ApprovalNotFoundError(f"approval {approval_id} was not found")
 
-    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
-    monkeypatch.setattr(main_module, "reject_approval_record", fake_reject_approval_record)
+    monkeypatch.setattr(legacy_gated_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(legacy_gated_router, "user_connection", fake_user_connection)
+    monkeypatch.setattr(legacy_gated_router, "reject_approval_record", fake_reject_approval_record)
 
-    response = main_module.reject_approval(
+    response = legacy_gated_router.reject_approval(
         approval_id,
-        main_module.ResolveApprovalRequest(user_id=user_id),
+        legacy_gated_router.ResolveApprovalRequest(user_id=user_id),
     )
 
     assert response.status_code == 404

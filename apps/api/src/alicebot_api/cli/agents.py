@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+import argparse
+from alicebot_api.vnext_agent_keys import AgentKeyValidationError, create_agent_key
+from alicebot_api.vnext_repositories import JsonObject
+from .models import CLIContext
+from .shared import _json_dumps, _vnext_store_context
+
+
+def _agent_key_public_record(record: dict[str, object]) -> JsonObject:
+    return {
+        "id": str(record.get("id")),
+        "key_prefix": record.get("key_prefix"),
+        "agent_id": record.get("agent_id"),
+        "permission_profile": record.get("permission_profile"),
+        "project_scope": record.get("project_scope"),
+        "label": record.get("label"),
+        "created_at": record.get("created_at"),
+        "last_used_at": record.get("last_used_at"),
+        "revoked_at": record.get("revoked_at"),
+        "revoked": record.get("revoked_at") is not None,
+    }
+
+
+def _run_agent_keys_create(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        record, raw_key = create_agent_key(
+            store,
+            user_id=ctx.user_id,
+            agent_id=args.agent_id,
+            permission_profile=args.profile,
+            label=args.label,
+            project_scope=args.project_scope,
+        )
+    return _json_dumps(
+        {
+            "status": "created",
+            "key": _agent_key_public_record(record),
+            "raw_key": raw_key,
+            "warning": (
+                "Store this key now. It is shown exactly once; only its sha256 hash is persisted. "
+                "Pass it to agent HTTP calls as 'Authorization: Bearer <raw_key>'."
+            ),
+        }
+    )
+
+
+def _run_agent_keys_list(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        records = store.list_agent_api_keys(limit=args.limit)
+    items = [_agent_key_public_record(record) for record in records]
+    return _json_dumps({"items": items, "count": len(items), "order": ["created_at_desc", "id_desc"]})
+
+
+def _run_agent_keys_revoke(ctx: CLIContext, args: argparse.Namespace) -> str:
+    selector = args.key.strip()
+    if not selector:
+        raise AgentKeyValidationError("a key prefix or key id is required")
+    with _vnext_store_context(ctx) as store:
+        records = store.list_agent_api_keys(limit=200)
+        matches = [
+            record
+            for record in records
+            if str(record.get("id")) == selector or str(record.get("key_prefix") or "") == selector
+        ]
+        if not matches:
+            raise AgentKeyValidationError(f"no agent API key matches '{selector}'")
+        if len(matches) > 1:
+            raise AgentKeyValidationError(f"key prefix '{selector}' matches multiple keys; revoke by key id instead")
+        revoked = store.revoke_agent_api_key(key_id=str(matches[0]["id"]))
+        if revoked is None:
+            raise AgentKeyValidationError(f"agent API key '{selector}' is already revoked")
+    return _json_dumps({"status": "revoked", "key": _agent_key_public_record(revoked)})

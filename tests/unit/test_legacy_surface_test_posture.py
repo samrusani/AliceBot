@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -66,6 +69,33 @@ def test_postgres_matrix_has_a_required_flag_off_default_surface_row() -> None:
     ) in integration_job
     assert (
         "./.venv/bin/python -m pytest "
-        "tests/integration/test_default_surface_integration.py -q -p no:cacheprovider"
+        "tests/integration/test_default_surface_integration.py -q -p no:cacheprovider "
+        "--require-executed-tests"
     ) in integration_job
     assert "ALICE_LEGACY_SURFACES:" not in integration_job.split("    steps:", 1)[0]
+
+
+def test_default_surface_smoke_fails_when_every_selected_test_is_skipped() -> None:
+    env = os.environ.copy()
+    env["ALICE_LEGACY_SURFACES"] = "1"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/integration/test_default_surface_integration.py",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "--require-executed-tests",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == int(5), completed.stdout + completed.stderr
+    assert "1 skipped" in completed.stdout

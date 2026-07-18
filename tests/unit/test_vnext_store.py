@@ -12,6 +12,7 @@ from alicebot_api.store import ContinuityStoreInvariantError
 from alicebot_api.vnext_capture import capture_dedupe_key_for_text
 from alicebot_api.vnext_embeddings import memory_embedding_content_sha256
 from alicebot_api.vnext_event_log import build_event_log_record
+from alicebot_api.vnext_stores.postgres import memory_lifecycle as postgres_memory_lifecycle
 from alicebot_api.vnext_store import (
     PostgresVNextStore,
     _jsonb_project_scope_values_sql,
@@ -3317,7 +3318,7 @@ def test_redact_memory_bundle_only_reuses_authorized_prior_redaction_timestamp(
         def now(cls, tz=None):
             return cls.fromisoformat(minted_timestamp.replace("Z", "+00:00"))
 
-    monkeypatch.setattr(vnext_store_module, "datetime", FixedDateTime)
+    monkeypatch.setattr(postgres_memory_lifecycle, "datetime", FixedDateTime)
     current = {
         "id": memory_id,
         "memory_key": "legacy.content.derived.key",

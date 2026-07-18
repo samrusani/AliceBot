@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import anyio
 
 import alicebot_api.main as main_module
+from alicebot_api.routers import memories_legacy as memories_legacy_router
 from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
@@ -80,6 +81,7 @@ def seed_user(
 def test_consent_endpoints_upsert_and_list_deterministically(migrated_database_urls, monkeypatch) -> None:
     seeded = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
 
     first_status, first_payload = invoke_request(
         "POST",
@@ -148,6 +150,7 @@ def test_consent_endpoints_upsert_and_list_deterministically(migrated_database_u
 def test_policy_endpoints_create_list_and_get_in_priority_order(migrated_database_urls, monkeypatch) -> None:
     seeded = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
 
     low_priority_status, low_priority_payload = invoke_request(
         "POST",
@@ -212,6 +215,7 @@ def test_policy_endpoints_create_list_and_get_in_priority_order(migrated_databas
 def test_policy_evaluation_allow_records_trace_events(migrated_database_urls, monkeypatch) -> None:
     seeded = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
 
     with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -290,6 +294,7 @@ def test_policy_evaluation_scopes_to_global_and_thread_profile_policies(
         agent_profile_id="coach_default",
     )
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
 
     with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -359,6 +364,7 @@ def test_policy_evaluation_scopes_to_global_and_thread_profile_policies(
 def test_policy_evaluation_denies_when_required_consent_is_missing(migrated_database_urls, monkeypatch) -> None:
     seeded = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
 
     with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
         ContinuityStore(conn).create_policy(
@@ -395,6 +401,7 @@ def test_policy_evaluation_denies_when_required_consent_is_missing(migrated_data
 def test_policy_evaluation_returns_require_approval(migrated_database_urls, monkeypatch) -> None:
     seeded = seed_user(migrated_database_urls["app"], email="owner@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
 
     with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
         created_policy = ContinuityStore(conn).create_policy(
@@ -430,6 +437,7 @@ def test_policy_and_consent_endpoints_enforce_per_user_isolation(migrated_databa
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     intruder = seed_user(migrated_database_urls["app"], email="intruder@example.com")
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    monkeypatch.setattr(memories_legacy_router, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
 
     with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
         store = ContinuityStore(conn)
