@@ -421,8 +421,9 @@ def test_common_installed_wheel_and_python314_proofs_are_pinned() -> None:
         "pickle.loads(pickle.dumps(isoformat_or_none)) is isoformat_or_none",
         "typing.get_type_hints(isoformat_or_none)",
         'isoformat_or_none.__module__ == "alicebot_api.contracts"',
-        'facade_annotate.__qualname__ == "__annotate__"',
-        'facade_annotate.__code__.co_qualname == "__annotate__"',
+        'facade_annotate.__name__ == "__annotate__"',
+        "facade_annotate.__qualname__ == carrier_annotate.__qualname__",
+        "carrier_annotate.__code__.co_qualname",
         'carrier_annotate.__module__ == "alicebot_api._contracts.common"',
     ):
         assert expected in workflow

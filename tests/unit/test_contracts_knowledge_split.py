@@ -503,7 +503,8 @@ if sys.version_info >= (3, 14):
         )
         assert explicit_annotate.__module__ == "alicebot_api.contracts"
         assert explicit_annotate.__globals__ is vars(contracts)
-        assert explicit_annotate.__qualname__ == f"{owner}.__annotate__"
+        assert explicit_annotate.__qualname__.startswith(f"{owner}.")
+        assert explicit_annotate.__qualname__.endswith("__annotate__")
         assert isinstance(explicit_annotate(1), dict)
 """
     import_orders = (

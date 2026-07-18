@@ -6,6 +6,8 @@ import re
 import subprocess
 import tomllib
 
+import pytest
+
 
 _ROOT = Path(__file__).resolve().parents[2]
 _BASE = "f342d45dabe127acca6231f29830ff11d98a340e"
@@ -125,6 +127,16 @@ def test_phase3_carrier_receipt_exclusions_are_exact_and_review_safe() -> None:
 
 
 def test_phase3_carrier_does_not_edit_immutable_v010_v011_records() -> None:
+    base_present = subprocess.run(
+        ("git", "-C", str(_ROOT), "cat-file", "-e", f"{_BASE}^{{commit}}"),
+        check=False,
+        capture_output=True,
+    )
+    if base_present.returncode != 0:
+        pytest.skip(
+            "phase 3 base commit is not present in this checkout (shallow CI "
+            "clone); the immutable-records guard runs in full clones"
+        )
     result = subprocess.run(
         (
             "git",

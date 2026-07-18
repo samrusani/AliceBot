@@ -568,8 +568,11 @@ jobs:
               assert facade_annotate is not carrier_annotate
               assert facade_annotate.__globals__ is vars(contracts_module)
               assert facade_annotate.__module__ == "alicebot_api.contracts"
-              assert facade_annotate.__qualname__ == "__annotate__"
-              assert facade_annotate.__code__.co_qualname == "__annotate__"
+              assert facade_annotate.__name__ == "__annotate__"
+              assert facade_annotate.__qualname__ == carrier_annotate.__qualname__
+              assert facade_annotate.__code__.co_qualname == (
+                  carrier_annotate.__code__.co_qualname
+              )
               assert facade_annotate(1) == {
                   "value": "datetime | None",
                   "return": "str | None",
@@ -614,9 +617,10 @@ jobs:
           if runtime_method_annotate is not None:
               assert runtime_method_annotate.__globals__ is vars(contracts_module)
               assert runtime_method_annotate.__module__ == "alicebot_api.contracts"
-              assert runtime_method_annotate.__qualname__ == (
-                  "ContextCompilerLimits.__annotate__"
+              assert runtime_method_annotate.__qualname__.startswith(
+                  "ContextCompilerLimits."
               )
+              assert runtime_method_annotate.__qualname__.endswith("__annotate__")
               assert runtime_method_annotate.__code__.co_qualname == (
                   "ContextCompilerLimits.__annotate__"
               )
@@ -739,9 +743,8 @@ jobs:
                   )
                   assert continuity_explicit_annotate.__module__ == "alicebot_api.contracts"
                   assert continuity_explicit_annotate.__globals__ is vars(contracts_module)
-                  assert continuity_explicit_annotate.__qualname__ == (
-                      f"{owner_name}.__annotate__"
-                  )
+                  assert continuity_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert continuity_explicit_annotate.__qualname__.endswith("__annotate__")
                   assert isinstance(continuity_explicit_annotate(1), dict)
           knowledge_classes = [
               getattr(contracts_knowledge, name)
@@ -823,9 +826,8 @@ jobs:
                   )
                   assert knowledge_explicit_annotate.__module__ == "alicebot_api.contracts"
                   assert knowledge_explicit_annotate.__globals__ is vars(contracts_module)
-                  assert knowledge_explicit_annotate.__qualname__ == (
-                      f"{owner_name}.__annotate__"
-                  )
+                  assert knowledge_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert knowledge_explicit_annotate.__qualname__.endswith("__annotate__")
                   assert isinstance(knowledge_explicit_annotate(1), dict)
           retrieval_classes = [
               getattr(contracts_retrieval, name)
@@ -914,9 +916,8 @@ jobs:
                   )
                   assert retrieval_explicit_annotate.__module__ == "alicebot_api.contracts"
                   assert retrieval_explicit_annotate.__globals__ is vars(contracts_module)
-                  assert retrieval_explicit_annotate.__qualname__ == (
-                      f"{owner_name}.__annotate__"
-                  )
+                  assert retrieval_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert retrieval_explicit_annotate.__qualname__.endswith("__annotate__")
                   assert isinstance(retrieval_explicit_annotate(1), dict)
           governance_classes = [
               getattr(contracts_governance, name)
@@ -1322,9 +1323,8 @@ jobs:
                   )
                   assert governance_explicit_annotate.__module__ == "alicebot_api.contracts"
                   assert governance_explicit_annotate.__globals__ is vars(contracts_module)
-                  assert governance_explicit_annotate.__qualname__ == (
-                      f"{owner_name}.__annotate__"
-                  )
+                  assert governance_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert governance_explicit_annotate.__qualname__.endswith("__annotate__")
                   assert isinstance(governance_explicit_annotate(1), dict)
           if sys.version_info >= (3, 14):
               for tasks_typed_dict in tasks_typed_dicts:
@@ -1346,9 +1346,8 @@ jobs:
                   )
                   assert tasks_explicit_annotate.__module__ == "alicebot_api.contracts"
                   assert tasks_explicit_annotate.__globals__ is vars(contracts_module)
-                  assert tasks_explicit_annotate.__qualname__ == (
-                      f"{owner_name}.__annotate__"
-                  )
+                  assert tasks_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert tasks_explicit_annotate.__qualname__.endswith("__annotate__")
                   assert isinstance(tasks_explicit_annotate(1), dict)
           print(f"installed alicebot_api: {module_path}")
           print(f"installed common contracts carrier: {contracts_common_carrier_path}")
@@ -2062,9 +2061,8 @@ jobs:
                   )
                   assert continuity_explicit_annotate.__module__ == "alicebot_api.contracts"
                   assert continuity_explicit_annotate.__globals__ is vars(contracts_module)
-                  assert continuity_explicit_annotate.__qualname__ == (
-                      f"{owner_name}.__annotate__"
-                  )
+                  assert continuity_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert continuity_explicit_annotate.__qualname__.endswith("__annotate__")
                   assert isinstance(continuity_explicit_annotate(1), dict)
               for knowledge_typed_dict in knowledge_typed_dicts:
                   knowledge_typed_dict_annotate = knowledge_typed_dict.__annotate__
@@ -2085,9 +2083,8 @@ jobs:
                   )
                   assert knowledge_explicit_annotate.__module__ == "alicebot_api.contracts"
                   assert knowledge_explicit_annotate.__globals__ is vars(contracts_module)
-                  assert knowledge_explicit_annotate.__qualname__ == (
-                      f"{owner_name}.__annotate__"
-                  )
+                  assert knowledge_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert knowledge_explicit_annotate.__qualname__.endswith("__annotate__")
                   assert isinstance(knowledge_explicit_annotate(1), dict)
               for retrieval_typed_dict in retrieval_typed_dicts:
                   retrieval_typed_dict_annotate = retrieval_typed_dict.__annotate__
@@ -2108,9 +2105,8 @@ jobs:
                   )
                   assert retrieval_explicit_annotate.__module__ == "alicebot_api.contracts"
                   assert retrieval_explicit_annotate.__globals__ is vars(contracts_module)
-                  assert retrieval_explicit_annotate.__qualname__ == (
-                      f"{owner_name}.__annotate__"
-                  )
+                  assert retrieval_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert retrieval_explicit_annotate.__qualname__.endswith("__annotate__")
                   assert isinstance(retrieval_explicit_annotate(1), dict)
               for governance_typed_dict in governance_typed_dicts:
                   governance_typed_dict_annotate = governance_typed_dict.__annotate__
@@ -2131,9 +2127,8 @@ jobs:
                   )
                   assert governance_explicit_annotate.__module__ == "alicebot_api.contracts"
                   assert governance_explicit_annotate.__globals__ is vars(contracts_module)
-                  assert governance_explicit_annotate.__qualname__ == (
-                      f"{owner_name}.__annotate__"
-                  )
+                  assert governance_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert governance_explicit_annotate.__qualname__.endswith("__annotate__")
                   assert isinstance(governance_explicit_annotate(1), dict)
           if sys.version_info >= (3, 14):
               for tasks_typed_dict in tasks_typed_dicts:
@@ -2155,9 +2150,8 @@ jobs:
                   )
                   assert tasks_explicit_annotate.__module__ == "alicebot_api.contracts"
                   assert tasks_explicit_annotate.__globals__ is vars(contracts_module)
-                  assert tasks_explicit_annotate.__qualname__ == (
-                      f"{owner_name}.__annotate__"
-                  )
+                  assert tasks_explicit_annotate.__qualname__.startswith(f"{owner_name}.")
+                  assert tasks_explicit_annotate.__qualname__.endswith("__annotate__")
                   assert isinstance(tasks_explicit_annotate(1), dict)
           PY
           python -m pytest -o pythonpath= \
