@@ -3608,6 +3608,95 @@ def test_vector_cache_off_switch_and_over_cap_match_cached_results(tmp_path: Pat
     conn.close()
 
 
+def test_vector_cache_rebuild_streams_into_one_owned_matrix_and_survives_stale_counts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # (i) Build-path memory discipline: the rebuild decodes every blob chunk
+    # straight into ONE preallocated float32 matrix (slice assignment
+    # copies), so the resident arrays own their bytes -- no frombuffer view
+    # can keep SQLite blob buffers alive after the build -- and a stale
+    # live-row COUNT (rows appearing or vanishing between the sizing query
+    # and the scan) still yields results bit-identical to the stateless
+    # path.
+    _clear_vector_cache_env(monkeypatch)
+    db_path, conn = _open_file_connection(tmp_path)
+    store = _make_store(conn)
+    monkeypatch.setattr(vector_scan, "_SCAN_CHUNK_ROWS", 2)  # force multiple chunks
+    rng = np.random.default_rng(23)
+    for position in range(7):
+        memory = _create_memory(store, canonical_text=f"stream row {position}")
+        assert (
+            store.update_memory_embedding(memory_id=str(memory["id"]), vector=list(rng.standard_normal(1536)))
+            is not None
+        )
+    conn.commit()
+    query = list(rng.standard_normal(1536))
+    expected = _oracle_vector_search_per_row(store, query_vector=query)
+
+    # Decode-seam probe: record the array every blob was decoded into.
+    original_decode = vector_scan._decode_blob_into
+    decode_targets: list[object] = []
+
+    def tracking_decode(out_row: np.ndarray, blob: object) -> None:
+        decode_targets.append(out_row.base)
+        original_decode(out_row, blob)
+
+    monkeypatch.setattr(vector_scan, "_decode_blob_into", tracking_decode)
+    cached = store.search_memories_vector(query_vector=query)
+    monkeypatch.setenv(vector_scan.VECTOR_CACHE_ENV, "off")
+    stateless = store.search_memories_vector(query_vector=query)
+    monkeypatch.delenv(vector_scan.VECTOR_CACHE_ENV)
+    assert cached == stateless == expected
+
+    entry = _vector_cache_entry(db_path, store.user_id)
+    assert entry is not None and entry.rebuilds == 1
+    # Every blob went straight into a row view of THE resident matrix:
+    # one allocation, no accumulate-then-stack copy.
+    assert len(decode_targets) == 7
+    assert all(target is entry.matrix for target in decode_targets)
+    # The resident arrays own their data outright, so no cache attribute
+    # can be a view retaining blob bytes (frombuffer views have a base).
+    assert entry.matrix.flags["OWNDATA"] and entry.matrix.base is None
+    assert entry.norms.flags["OWNDATA"] and entry.norms.base is None
+    assert entry.matrix.dtype == np.float32 and entry.matrix.shape == (7, 1536)
+    monkeypatch.setattr(vector_scan, "_decode_blob_into", original_decode)
+
+    # Rows APPEARING after the COUNT (undercount by 2): the scan stops at
+    # capacity and the missed rows arrive through the in-query upsert.
+    real_count = vector_scan._count_live_embedding_rows
+    conn.execute("UPDATE embedding_stamp SET token = ? WHERE id = 1", (uuid4().hex,))
+    conn.commit()
+    monkeypatch.setattr(
+        vector_scan,
+        "_count_live_embedding_rows",
+        lambda inner_conn, inner_user: max(real_count(inner_conn, inner_user) - 2, 0),
+    )
+    undercounted = store.search_memories_vector(query_vector=query)
+    assert undercounted == expected
+    entry = _vector_cache_entry(db_path, store.user_id)
+    assert entry is not None and entry.rebuilds == 2
+    assert len(entry.row_index) == 7 and entry.matrix.shape == (7, 1536)
+    assert entry.matrix.flags["OWNDATA"] and entry.matrix.base is None
+
+    # Rows VANISHING after the COUNT (overcount by 3): the owning matrix is
+    # shrunk in place to the rows actually scanned.
+    conn.execute("UPDATE embedding_stamp SET token = ? WHERE id = 1", (uuid4().hex,))
+    conn.commit()
+    monkeypatch.setattr(
+        vector_scan,
+        "_count_live_embedding_rows",
+        lambda inner_conn, inner_user: real_count(inner_conn, inner_user) + 3,
+    )
+    overcounted = store.search_memories_vector(query_vector=query)
+    assert overcounted == expected
+    entry = _vector_cache_entry(db_path, store.user_id)
+    assert entry is not None and entry.rebuilds == 3
+    assert len(entry.row_index) == 7 and entry.matrix.shape == (7, 1536)
+    assert entry.matrix.flags["OWNDATA"] and entry.matrix.base is None
+    assert entry.norms.shape == (7,)
+    conn.close()
+
+
 def test_vector_cache_bypassed_for_in_memory_databases(monkeypatch) -> None:
     # (h) :memory: databases have no stable identity: the registry must not
     # gain an entry and results still match the oracle.

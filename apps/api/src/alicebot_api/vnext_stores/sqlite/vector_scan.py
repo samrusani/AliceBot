@@ -62,9 +62,14 @@ _OFF_VALUES = frozenset({"off", "0", "false", "no", "disabled"})
 #: Bytes one cached row occupies in the float32 matrix.
 _ROW_BYTES = EMBEDDING_VECTOR_DIMENSIONS * 4
 
-#: Row batch for streaming SELECTs and for the float64 matvec (the float64
-#: upcast is chunked so its temporary stays ~96 MiB even at the largest cap).
-_SCAN_CHUNK_ROWS = 8192
+#: Row batch for streaming SELECTs, the chunked row-norm computation, and
+#: the float64 matvec. Per-row results are independent of the chunk size
+#: (each output element is its own dot/norm), so this is purely a memory
+#: knob: 2048 rows keeps every transient -- one chunk of ~6 KiB SQLite
+#: blobs (~12 MiB), the squared-norm temporary (~12 MiB), and the reusable
+#: float64 matvec scratch (~24 MiB) -- small enough that allocator-retained
+#: churn pages stay negligible next to the resident matrix.
+_SCAN_CHUNK_ROWS = 2048
 
 #: Rebuild instead of serving when live embedding rows fall below this
 #: fraction of cached rows (dead soft-deleted/cleared rows dominate).
@@ -172,19 +177,38 @@ def _read_stamp_token(conn: sqlite3.Connection) -> str | None:
     return str(row[0])
 
 
-def _blob_vector(blob: object) -> np.ndarray:
-    """Float32 storage-width vector for one stored blob.
+def _decode_blob_into(out_row: np.ndarray, blob: object) -> None:
+    """Decode one stored blob straight into a preallocated matrix row.
 
+    Slice assignment COPIES the float32 values, so nothing retains the
+    ``np.frombuffer`` view (whose ``base`` would keep the whole blob bytes
+    object alive); the blob is released with its source row chunk.
     Pads/truncates non-conforming blobs with exactly the resize logic of
     ``_embedding_blob_distance`` so the cached row holds the same float32
     values the exact per-row scoring would parse from the blob.
     """
     vector: np.ndarray = np.frombuffer(blob, dtype=np.float32)  # type: ignore[arg-type]
-    if vector.size != EMBEDDING_VECTOR_DIMENSIONS:
-        resized: np.ndarray = np.zeros(EMBEDDING_VECTOR_DIMENSIONS, dtype=np.float32)
-        resized[: min(vector.size, EMBEDDING_VECTOR_DIMENSIONS)] = vector[:EMBEDDING_VECTOR_DIMENSIONS]
-        return resized
-    return vector
+    if vector.size == EMBEDDING_VECTOR_DIMENSIONS:
+        out_row[:] = vector
+        return
+    out_row[:] = 0.0
+    width = min(vector.size, EMBEDDING_VECTOR_DIMENSIONS)
+    out_row[:width] = vector[:width]
+
+
+def _chunked_row_norms(matrix: np.ndarray) -> np.ndarray:
+    """Float32 row norms of ``matrix`` computed chunk by chunk.
+
+    ``np.linalg.norm(matrix, axis=1)`` materializes a full-matrix-sized
+    squared temporary (~another 600 MB at 100k rows); chunking keeps that
+    transient at ~48 MiB. Rows are independent, so the per-row values are
+    bit-identical to the whole-matrix call.
+    """
+    norms = np.empty(matrix.shape[0], dtype=np.float32)
+    for start in range(0, matrix.shape[0], _SCAN_CHUNK_ROWS):
+        stop = min(start + _SCAN_CHUNK_ROWS, matrix.shape[0])
+        norms[start:stop] = np.linalg.norm(matrix[start:stop], axis=1)
+    return norms
 
 
 def _exact_row_distance(row: np.ndarray, query_array: np.ndarray, query_norm: float) -> float:
@@ -225,14 +249,40 @@ def _count_live_embedding_rows(conn: sqlite3.Connection, user_id: str) -> int:
     return int(row[0]) if row else 0
 
 
-def _rebuild_entry(entry: _VectorCacheEntry, conn: sqlite3.Connection, user_id: str, token: str) -> None:
-    """Full ids+embedding scan into the resident entry.
+def _rebuild_entry(
+    entry: _VectorCacheEntry,
+    conn: sqlite3.Connection,
+    user_id: str,
+    token: str,
+    expected_rows: int,
+) -> None:
+    """Full ids+embedding scan streamed into ONE preallocated matrix.
 
     The scan predicate is the cache-base superset (user, not deleted,
     embedding present); every query-time predicate -- status, domain,
     sensitivity, scope, signature -- is applied per query as fresh SQL
     against the candidate id set, never baked into the resident data.
+
+    Memory discipline: the float32 (N, 1536) matrix is allocated ONCE from
+    the caller's live-row COUNT and each fetchmany chunk's blobs are
+    decoded straight into their rows (slice assignment copies), so at no
+    point is more than one chunk of blob bytes alive alongside the matrix.
+    The previous accumulate-then-``np.stack`` shape kept every blob (via
+    the frombuffer views' ``base``) PLUS the stacked copy resident at once
+    -- ~3x the matrix bytes at peak on a 100k-row corpus.
+
+    ``expected_rows`` can go stale between the COUNT and this scan
+    (autocommit reads see concurrent commits):
+
+    - Fewer live rows: the owning matrix is shrunk in place
+      (``resize(refcheck=False)`` -- no copy, no view).
+    - More live rows: the scan stops at capacity. Uncached rows are just
+      missing candidates; the caller's upsert step fetches them in the
+      SAME query before any ranking is produced, so results are unchanged.
     """
+    matrix: np.ndarray = np.empty((expected_rows, EMBEDDING_VECTOR_DIMENSIONS), dtype=np.float32)
+    row_index: dict[str, int] = {}
+    filled = 0
     cursor = conn.execute(
         """
         SELECT id, embedding
@@ -244,24 +294,21 @@ def _rebuild_entry(entry: _VectorCacheEntry, conn: sqlite3.Connection, user_id: 
         (user_id,),
     )
     cursor.row_factory = None
-    vectors: list[np.ndarray] = []
-    row_index: dict[str, int] = {}
     try:
-        while True:
-            chunk = cursor.fetchmany(_SCAN_CHUNK_ROWS)
+        while filled < expected_rows:
+            chunk = cursor.fetchmany(min(_SCAN_CHUNK_ROWS, expected_rows - filled))
             if not chunk:
                 break
             for memory_id, blob in chunk:
-                row_index[str(memory_id or "")] = len(vectors)
-                vectors.append(_blob_vector(blob))
+                _decode_blob_into(matrix[filled], blob)
+                row_index[str(memory_id or "")] = filled
+                filled += 1
     finally:
         cursor.close()
-    if vectors:
-        matrix: np.ndarray = np.stack(vectors)
-    else:
-        matrix = np.empty((0, EMBEDDING_VECTOR_DIMENSIONS), dtype=np.float32)
+    if filled != expected_rows:
+        matrix.resize((filled, EMBEDDING_VECTOR_DIMENSIONS), refcheck=False)
     entry.matrix = matrix
-    entry.norms = np.linalg.norm(matrix, axis=1)
+    entry.norms = _chunked_row_norms(matrix)
     entry.row_index = row_index
     entry.token = token
     entry.rebuilds += 1
@@ -278,8 +325,14 @@ def _upsert_missing_rows(
     This is the embed-on-write path: a NULL -> vector write does not bump
     the stamp, so the new row arrives here instead of forcing a rebuild.
     The entry object is mutated in place (no rebuild is counted).
+
+    Same streaming discipline as ``_rebuild_entry``: the block is
+    preallocated once (``len(missing_ids)`` is an upper bound on the rows
+    the batched SELECTs can return) and each batch's blobs are decoded
+    straight into it, so no frombuffer view retains blob bytes past its
+    own <=900-row batch.
     """
-    new_vectors: list[np.ndarray] = []
+    block: np.ndarray = np.empty((len(missing_ids), EMBEDDING_VECTOR_DIMENSIONS), dtype=np.float32)
     new_ids: list[str] = []
     for start in range(0, len(missing_ids), _MAX_SQL_VARIABLES):
         batch = missing_ids[start : start + _MAX_SQL_VARIABLES]
@@ -304,17 +357,18 @@ def _upsert_missing_rows(
             candidate_id = str(memory_id or "")
             if candidate_id in entry.row_index:
                 continue
+            _decode_blob_into(block[len(new_ids)], blob)
             new_ids.append(candidate_id)
-            new_vectors.append(_blob_vector(blob))
     if not new_ids:
         # A candidate row whose embedding vanished between the candidate
         # SELECT and this fetch simply stays out of the cache; the ranking
         # skips it and the hydrate re-check would have dropped it anyway.
         return
-    block: np.ndarray = np.stack(new_vectors)
+    if len(new_ids) != block.shape[0]:
+        block.resize((len(new_ids), EMBEDDING_VECTOR_DIMENSIONS), refcheck=False)
     base = entry.matrix.shape[0]
     entry.matrix = np.concatenate([entry.matrix, block])
-    entry.norms = np.concatenate([entry.norms, np.linalg.norm(block, axis=1)])
+    entry.norms = np.concatenate([entry.norms, _chunked_row_norms(block)])
     for offset, candidate_id in enumerate(new_ids):
         entry.row_index[candidate_id] = base + offset
 
@@ -376,9 +430,17 @@ def _ranked_from_entry(
     if query_norm != 0.0:
         query64: np.ndarray = query_array.astype(np.float64)
         dots = np.empty(total_rows, dtype=np.float64)
+        # One reusable float64 scratch for the chunked upcast: ``copyto``
+        # performs the same float32 -> float64 cast ``astype`` would, into
+        # the same buffer every iteration, so the matvec allocates nothing
+        # per chunk (a fresh ``astype`` per chunk leaves allocator-retained
+        # churn pages behind at large row counts).
+        scratch: np.ndarray = np.empty((min(_SCAN_CHUNK_ROWS, total_rows), entry.matrix.shape[1]), dtype=np.float64)
         for start in range(0, total_rows, _SCAN_CHUNK_ROWS):
             stop = min(start + _SCAN_CHUNK_ROWS, total_rows)
-            dots[start:stop] = entry.matrix[start:stop].astype(np.float64) @ query64
+            width = stop - start
+            np.copyto(scratch[:width], entry.matrix[start:stop])
+            dots[start:stop] = scratch[:width] @ query64
         norms64 = entry.norms.astype(np.float64)
     for candidate_id, updated_key in candidates:
         position = entry.row_index.get(candidate_id)
@@ -444,7 +506,7 @@ def cached_vector_ranked(
                 if live_rows * _ROW_BYTES > max_bytes:
                     _drop_entry(key)
                     return None
-                _rebuild_entry(entry, conn, str(store.user_id), token)
+                _rebuild_entry(entry, conn, str(store.user_id), token, live_rows)
             elif entry.matrix.nbytes > max_bytes:
                 # Warm serve: the resident byte count is exact and free.
                 _drop_entry(key)
@@ -462,7 +524,7 @@ def cached_vector_ranked(
                     if live_rows * _ROW_BYTES > max_bytes:
                         _drop_entry(key)
                         return None
-                    _rebuild_entry(entry, conn, str(store.user_id), token)
+                    _rebuild_entry(entry, conn, str(store.user_id), token, live_rows)
             missing = [candidate_id for candidate_id, _updated in candidates if candidate_id not in entry.row_index]
             if missing:
                 if (len(entry.row_index) + len(missing)) * _ROW_BYTES > max_bytes:
