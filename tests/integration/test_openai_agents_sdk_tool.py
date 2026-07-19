@@ -24,6 +24,7 @@ import uvicorn
 
 import alicebot_api.main as main_module
 from alicebot_api.config import Settings
+from alicebot_api.config import get_settings as config_get_settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
 from alicebot_api.vnext_agent_keys import create_agent_key
@@ -48,8 +49,13 @@ def _free_port() -> int:
 
 @pytest.fixture
 def live_server(migrated_database_urls, monkeypatch):
-    # Routers resolve Settings.from_env() per request, so pointing the process
-    # env at the per-test database covers every module-local get_settings.
+    # get_settings is @lru_cache(maxsize=1): the FIRST caller in the process
+    # pins the settings for every later caller, so an earlier test that
+    # resolved settings against the root database would poison this server's
+    # request path (and this test would poison later ones). Clear the cache
+    # on both sides of the server's lifetime and point the env at the
+    # per-test database so the re-resolution lands here.
+    config_get_settings.cache_clear()
     monkeypatch.setenv("DATABASE_URL", migrated_database_urls["app"])
     monkeypatch.setattr(
         main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"])
@@ -67,6 +73,7 @@ def live_server(migrated_database_urls, monkeypatch):
     yield f"http://127.0.0.1:{port}"
     server.should_exit = True
     thread.join(timeout=10)
+    config_get_settings.cache_clear()
 
 
 def _seed_user(database_url: str):
@@ -111,6 +118,8 @@ def test_sdk_tool_functions_exercise_real_key_auth_end_to_end(
 
     # 1) Valid write-capable key: capture then recall the canary.
     monkeypatch.setenv("ALICE_AGENT_API_KEY", writer_key)
+    import os as _os
+    print(f"\nDEBUG env DATABASE_URL == migrated: {_os.environ.get('DATABASE_URL') == database_url}", flush=True)
     canary = "The SDK integration smoke canary prefers verifiable auth stories."
     captured = json.loads(example.alice_capture_memory(canary, title="SDK smoke canary"))
     assert captured["status"] in {"committed", "confirmation_required", "review_required"}, captured

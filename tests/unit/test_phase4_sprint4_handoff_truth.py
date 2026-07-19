@@ -39,6 +39,22 @@ _RECEIPT_EXCLUSIONS = (
 # The immutable carrier receipt, recorded in BUILD_REPORT.md and in the
 # integration commit message; used to locate the carrier commit in history.
 _RECEIPT_SHA256 = "b0f85fdaafcc2038f92162292b68374aa912f2e4df5ea766efb4faf1fbcfe840"
+
+
+@pytest.fixture(autouse=True)
+def _require_full_git_history() -> None:
+    """Every guard in this module reads history relative to the carrier base.
+
+    Shallow CI checkouts cannot see it (same posture as the phase 3 guards):
+    the guards run in full clones, and CI protection comes from the unit and
+    receipt suites plus the integrated commits themselves.
+    """
+    probe = _git("cat-file", "-e", f"{_BASE}^{{commit}}", check=False)
+    if probe.returncode != 0:
+        pytest.skip(
+            "phase 4 base commit unavailable in this checkout (shallow CI "
+            "clone); sprint 4 guards run in full clones"
+        )
 _ALLOWED_AUXILIARY_PATHS = ("coverage.json", "uv.lock")
 _EXTERNAL_RELEASE_ENGINEER_DIR = "docs/benchmarks/scale/results"
 _COVERAGE_FRAGMENT_PATTERN = re.compile(
