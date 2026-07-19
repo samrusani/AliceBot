@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## v0.13.0 — Unreleased candidate
+## v0.13.0 — 2026-07-19
 
 - Replicated LongMemEval_s baseline: 81.2% mean over three independent full
   runs on the published v0.12.0 code, per-question evidence committed; the
