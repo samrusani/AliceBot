@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from hashlib import sha256
 import itertools
 import json
 import re
@@ -1016,6 +1017,83 @@ def test_keyword_query_that_and_matches_does_not_use_the_fallback_on_sqlite() ->
 
     assert [item["id"] for item in pack["relevant_memories"]] == [memory["id"]]
     assert pack["trace"]["stages"]["fts"] == {"source": "sqlite_fts", "candidate_count": 1}
+
+
+def test_count_candidate_statistic_uses_real_sqlite_fts_mode_and_provenance_dedup() -> None:
+    store = _sqlite_retrieval_store()
+    provenance = (
+        ("record-1", "source-a", "chunk-a"),
+        ("record-2", "source-a", "chunk-a"),  # restatement of the same captured turn
+        ("record-3", "source-b", "chunk-b"),
+    )
+    for memory_key, source_id, chunk_id in provenance:
+        store.create_memory(
+            {
+                "memory_key": f"memory.{memory_key}",
+                "memory_type": "semantic",
+                "title": "Bike service record",
+                "canonical_text": f"Bike service record {memory_key} was logged.",
+                "status": "active",
+                "domain": "personal",
+                "sensitivity": "private",
+                "value": {"text": f"Bike service record {memory_key} was logged."},
+                "metadata_json": {
+                    "source_id": source_id,
+                    "source_chunk_id": chunk_id,
+                },
+            }
+        )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many bike service records are there?",
+            domains=("personal",),
+        )
+    )
+
+    assert pack["trace"]["stages"]["fts"] == {
+        "source": "sqlite_fts_or_fallback",
+        "candidate_count": 3,
+    }
+    statistic = pack["trace"]["stages"]["coverage_mode"]["candidate_instance_count"]
+    assert statistic["count"] == 2
+    assert statistic["fts_source"] == "sqlite_fts_or_fallback"
+    assert statistic["deduplication"] == "source_chunk_then_source_then_memory_id"
+    assert statistic["rows_examined"] == 3
+    assert statistic["candidate_prefix_exhausted"] is True
+    assert statistic["more_candidate_groups_may_exist"] is False
+    assert statistic["is_answer"] is False
+    assert statistic["supports_numeric_sum"] is False
+    # The widened OR fallback is useful trace telemetry, never reader-visible
+    # aggregation evidence.
+    assert "aggregation" not in pack
+    assert "aggregation" not in pack["budget"]["allocation"]
+
+
+def test_strict_count_candidate_statistic_without_selected_rollup_stays_trace_only() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[
+            _memory_row(
+                f"memory-bike-{index}",
+                f"Bike service record {index} was completed.",
+                metadata_json={"source_id": f"source-{index}", "source_chunk_id": f"chunk-{index}"},
+            )
+            for index in range(1, 4)
+        ],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="How many bike service records are there?")
+    )
+
+    statistic = pack["trace"]["stages"]["coverage_mode"]["candidate_instance_count"]
+    assert statistic["fts_source"] == "postgres_fts"
+    assert statistic["count"] == 3
+    assert statistic["candidate_prefix_exhausted"] is True
+    assert statistic["more_candidate_groups_may_exist"] is False
+    assert "aggregation" not in pack
+    assert "aggregation" not in pack["budget"]["allocation"]
 
 
 def test_single_token_miss_does_not_fire_the_or_fallback() -> None:
@@ -4099,7 +4177,30 @@ def test_ungated_query_takes_the_byte_identical_coverage_free_path(monkeypatch) 
     assert json.dumps(dormant_pack, sort_keys=True, default=str) == json.dumps(
         hard_disabled_pack, sort_keys=True, default=str
     )
+    canonical_pack = json.dumps(
+        dormant_pack,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode()
+    assert sha256(canonical_pack).hexdigest() == (
+        "4b046a9dccd4b58d0970f8957e65c769619338f29ba547fe3f39eecd5d6b7b32"
+    )
     assert "coverage" not in json.dumps(dormant_pack, default=str)
+    assert "aggregation" not in dormant_pack
+    assert set(dormant_pack["budget"]["allocation"]) == {
+        "relevant_memories",
+        "open_loops",
+        "sources",
+        "supporting_evidence",
+        "contradicting_evidence",
+        "item_annotations",
+        "entities",
+        "recent_changes",
+        "supersession_context",
+        "grounding",
+        "derived_values",
+    }
     assert set(dormant_pack["trace"]["stages"].keys()) == {
         "fts",
         "vector",
@@ -4201,6 +4302,7 @@ def test_aggregation_intent_promotes_distinct_instances_over_near_duplicates(mon
         "source": "coverage_mode",
         "intent": "count",
         "trigger": "how many",
+        "sub_intent": "frequency",
         "clauses": 1,
         "clause_candidate_count": 0,
         "diversity_status": "enabled",
@@ -4208,7 +4310,29 @@ def test_aggregation_intent_promotes_distinct_instances_over_near_duplicates(mon
         "memory_demotions": 0,
         "source_demotions": 9,
         "card_promotions": 0,
+        "candidate_instance_count": {
+            "count": 0,
+            "unit": "deduplicated_memory_candidate_groups",
+            "basis": "bounded_scoped_fts_candidates",
+            "query_basis": "context_pack_query",
+            "matching_criteria": "searchable scoped memories matched by the reported FTS mode",
+            "deduplication": "source_chunk_then_source_then_memory_id",
+            "fts_source": "postgres_fts_or_fallback",
+            "rows_examined": 0,
+            "rollup_cards_excluded": 0,
+            "candidate_cap": 96,
+            "scope_filtered": False,
+            "candidate_prefix_exhausted": True,
+            "more_candidate_groups_may_exist": False,
+            "is_answer": False,
+            "supports_numeric_sum": False,
+        },
     }
+    # An OR-fallback statistic with no selected accepted roll-up stays in the
+    # diagnostic trace and never opens a reader-facing budget section.
+    assert "aggregation" not in pack
+    assert "aggregation" not in pack["budget"]["allocation"]
+    assert pack["budget"]["token_estimate"] == sum(pack["budget"]["allocation"].values())
     # Single-clause aggregation: no clause sub-retrievals beyond the main
     # FTS pass (strict miss + OR fallback on the empty memories fixture).
     assert len(coverage_store.memory_search_kwargs) == len(control_store.memory_search_kwargs)
@@ -4270,6 +4394,10 @@ def test_multi_clause_aggregation_backfills_clause_only_memory_into_freed_slots(
     assert selected_ids == ["memory-filler-01", "memory-filler-03", "memory-filler-04", "memory-swim"]
     coverage_stage = pack["trace"]["stages"]["coverage_mode"]
     assert coverage_stage["intent"] == "count"
+    assert coverage_stage["sub_intent"] == "numeric_value"
+    assert "candidate_instance_count" not in coverage_stage
+    assert "aggregation" not in pack
+    assert "aggregation" not in pack["budget"]["allocation"]
     assert coverage_stage["clauses"] == 2
     assert coverage_stage["clause_candidate_count"] == 5  # 4 clause-1 rows + 1 clause-2 row
     assert coverage_stage["memory_demotions"] == 1
@@ -4289,10 +4417,30 @@ def test_multi_clause_aggregation_backfills_clause_only_memory_into_freed_slots(
     assert len(coverage_store.memory_search_kwargs) == 3
 
 
+def test_uncorroborated_count_statistic_does_not_consume_reader_budget() -> None:
+    store = InMemoryVNextRetrievalStore(memories=[], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="How many bikes did I service?", max_tokens=1)
+    )
+
+    assert "aggregation" not in pack
+    assert pack["budget"]["truncated"] is False
+    assert pack["budget"]["dropped_item_count"] == 0
+    assert "aggregation" not in pack["budget"]["allocation"]
+    assert pack["budget"]["token_estimate"] == sum(pack["budget"]["allocation"].values())
+
+
 # -- coverage mode: accepted roll-up card ranking -------------------------------
 
 
-def _accepted_rollup_card_row(card_id: str, text: str, member_ids: list[str]) -> dict[str, object]:
+def _accepted_rollup_card_row(
+    card_id: str,
+    text: str,
+    member_ids: list[str],
+    *,
+    topic_label: str = "board game night",
+) -> dict[str, object]:
     """A memory row shaped exactly like an accepted roll-up card: the
     metadata vnext_rollups writes at proposal time plus the acceptance
     stamp accept_consolidation_candidate adds."""
@@ -4314,6 +4462,29 @@ def _accepted_rollup_card_row(card_id: str, text: str, member_ids: list[str]) ->
                     "superseded_member_ids": [],
                     "skipped_members": [],
                 },
+                "rollup": {
+                    "rollup_key": f"topic:{topic_label}",
+                    "group_kind": "topic",
+                    "topic_label": topic_label,
+                    "revises_memory_id": None,
+                },
+            },
+        },
+        value={
+            "kind": "memory_rollup",
+            "text": text,
+            "rollup": {
+                "rollup_key": f"topic:{topic_label}",
+                "group_kind": "topic",
+                "topic_label": topic_label,
+                "member_count": len(member_ids),
+                "member_ids": list(member_ids),
+                "displayed_instance_count": len(member_ids),
+                "instances_truncated": False,
+                "grouping_input_truncated": False,
+                "grouping_input_count": len(member_ids),
+                "grouping_input_total": len(member_ids),
+                "grouping_input_total_exact": True,
             },
         },
     )
@@ -4342,8 +4513,7 @@ def _rollup_card_store() -> InMemoryVNextRetrievalStore:
 
 
 def test_aggregation_intent_promotes_accepted_rollup_card_above_its_members(monkeypatch) -> None:
-    """The round-5 scenario: the card is the aggregate answer, members the
-    receipts — under aggregation intent the card must outrank them."""
+    """The pre-Sprint generic card-promotion posture remains unchanged."""
     request = VNextRetrievalRequest(query="How many times did I host board game night?", max_items=4)
 
     control_store = _rollup_card_store()
@@ -4367,6 +4537,14 @@ def test_aggregation_intent_promotes_accepted_rollup_card_above_its_members(monk
     assert selected_ids == ["memory-rollup-card", "memory-game-1", "memory-game-2", "memory-game-3"]
     coverage_stage = pack["trace"]["stages"]["coverage_mode"]
     assert coverage_stage["card_promotions"] == 1
+    assert coverage_stage["sub_intent"] == "frequency"
+    candidate = coverage_stage["candidate_instance_count"]
+    assert candidate["count"] == 5
+    assert candidate["rollup_cards_excluded"] == 1
+    assert candidate["is_answer"] is False
+    assert candidate["supports_numeric_sum"] is False
+    assert "aggregation" not in pack
+    assert "aggregation" not in pack["budget"]["allocation"]
     assert coverage_stage["memory_demotions"] == 0
     card_trace = [
         record
@@ -4379,6 +4557,103 @@ def test_aggregation_intent_promotes_accepted_rollup_card_above_its_members(monk
     # candidate pool as honest trimmed_by_limit exclusions.
     assert pack["trace"]["excluded_counts"]["trimmed_by_limit"] == 2
     assert "coverage_redundant_demoted" not in pack["trace"]["excluded_counts"]
+
+
+def test_frequency_members_with_multiple_occurrences_remain_trace_only() -> None:
+    member_ids = [f"match-{index}" for index in range(1, 4)]
+    members = [
+        _memory_row(memory_id, f"I score goals twice in {memory_id}.")
+        for memory_id in member_ids
+    ]
+    card = _accepted_rollup_card_row(
+        "goals-rollup",
+        "Score goals — 3 instances: match one; match two; match three.",
+        member_ids,
+        topic_label="score goals",
+    )
+    pack = VNextRetrievalService(
+        InMemoryVNextRetrievalStore(memories=[*members, card], sources=[])
+    ).compile_context_pack(
+        VNextRetrievalRequest(query="How many times did I score goals?", max_items=3)
+    )
+
+    candidate = pack["trace"]["stages"]["coverage_mode"]["candidate_instance_count"]
+    assert candidate["count"] == 3
+    assert candidate["is_answer"] is False
+    # Three memories/card members do not establish six occurrences (twice in
+    # each memory), so the carrier never emits a reader-facing count.
+    assert "aggregation" not in pack
+    assert "aggregation" not in pack["budget"]["allocation"]
+
+
+def test_naturally_selected_unrelated_rollup_does_not_turn_trace_count_into_answer() -> None:
+    unrelated = [
+        _memory_row(
+            f"unrelated-{index}",
+            f"Board game night unrelated candidate {index}.",
+        )
+        for index in range(1, 4)
+    ]
+    card = _accepted_rollup_card_row(
+        "memory-rollup-card",
+        "Roll-up: board game night - 3 instances: azul; wingspan; codenames.",
+        ["actual-member-1", "actual-member-2", "actual-member-3"],
+    )
+    pack = VNextRetrievalService(
+        InMemoryVNextRetrievalStore(memories=[*unrelated, card], sources=[])
+    ).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I host board game night?",
+            max_items=4,
+        )
+    )
+
+    coverage = pack["trace"]["stages"]["coverage_mode"]
+    assert coverage["candidate_instance_count"]["count"] == 3
+    assert coverage["card_promotions"] == 0
+    assert "memory-rollup-card" in {
+        str(memory["id"]) for memory in pack["relevant_memories"]
+    }
+    assert "aggregation" not in pack
+    assert "aggregation" not in pack["budget"]["allocation"]
+
+
+def test_how_often_cadence_recognizes_without_changing_store_calls_or_ranking(monkeypatch) -> None:
+    request = VNextRetrievalRequest(query="How often did I host board game night?", max_items=4)
+    control_store = _rollup_card_store()
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            vnext_retrieval_module.vnext_coverage_query,
+            "detect_aggregation_intent",
+            lambda query: None,
+        )
+        control_pack = VNextRetrievalService(control_store).compile_context_pack(request)
+
+    cadence_store = _rollup_card_store()
+    pack = VNextRetrievalService(cadence_store).compile_context_pack(request)
+
+    coverage_stage = pack["trace"]["stages"]["coverage_mode"]
+    assert coverage_stage["sub_intent"] == "cadence"
+    assert coverage_stage["clauses"] == 0
+    assert coverage_stage["clause_candidate_count"] == 0
+    assert coverage_stage["diversity_status"] == (
+        "disabled: cadence requires rate evidence without coverage reordering"
+    )
+    assert coverage_stage["memory_demotions"] == 0
+    assert coverage_stage["source_demotions"] == 0
+    assert coverage_stage["card_promotions"] == 0
+    assert "candidate_instance_count" not in coverage_stage
+    assert "aggregation" not in pack
+    expected_ids = [
+        "memory-game-1",
+        "memory-game-2",
+        "memory-game-3",
+        "memory-game-4",
+    ]
+    assert [str(memory["id"]) for memory in control_pack["relevant_memories"]] == expected_ids
+    assert [str(memory["id"]) for memory in pack["relevant_memories"]] == expected_ids
+    assert cadence_store.memory_search_kwargs == control_store.memory_search_kwargs
+    assert cadence_store.fts_limits == control_store.fts_limits
 
 
 def test_non_aggregation_query_keeps_rollup_card_ranking_dormant(monkeypatch) -> None:

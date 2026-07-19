@@ -1,0 +1,330 @@
+from __future__ import annotations
+
+from contextlib import contextmanager
+from copy import deepcopy
+from pathlib import Path
+
+from longmemeval import count_probe as count_probe_module
+from longmemeval.count_probe import (
+    EXIT_RUN_FAILURES,
+    EXIT_STRATUM_FAILURES,
+    DEFAULT_AUDIT_MANIFEST,
+    DEFAULT_SLICE,
+    STRATUM_CADENCE_ABSTENTION,
+    STRATUM_CADENCE_ANSWERABLE,
+    STRATUM_CANDIDATE_COUNT,
+    STRATUM_NUMERIC_SAFE_NON_EMISSION,
+    STRATUM_REJECTED_GATE_WIDENING,
+    default_output_path,
+    expected_audit_manifest,
+    exit_code_for_summary,
+    probe_row,
+    probe_question,
+    summarize_rows,
+)
+from longmemeval.dataset import LongMemEvalQuestion
+
+
+def _question(question_id: str, question: str, answer: str = "3") -> LongMemEvalQuestion:
+    return LongMemEvalQuestion(
+        question_id=question_id,
+        question_type="multi-session",
+        question=question,
+        answer=answer,
+        question_date="2025/01/01 (Wed) 00:00",
+        haystack_session_ids=(),
+        haystack_dates=(),
+        haystack_sessions=(),
+        answer_session_ids=("session-1",),
+    )
+
+
+def _candidate(count: int = 3) -> dict[str, object]:
+    return {
+        "count": count,
+        "unit": "deduplicated_memory_candidate_groups",
+        "basis": "bounded_scoped_fts_candidates",
+        "query_basis": "context_pack_query",
+        "matching_criteria": "searchable scoped memories matched by the reported FTS mode",
+        "deduplication": "source_chunk_then_source_then_memory_id",
+        "fts_source": "sqlite_fts",
+        "rows_examined": count,
+        "rollup_cards_excluded": 1,
+        "candidate_cap": 96,
+        "scope_filtered": False,
+        "candidate_prefix_exhausted": True,
+        "more_candidate_groups_may_exist": False,
+        "is_answer": False,
+        "supports_numeric_sum": False,
+    }
+
+
+def _count_card(count: int = 3) -> dict[str, object]:
+    member_ids = [f"memory-{index}" for index in range(1, count + 1)]
+    return {
+        "id": "rollup-1",
+        "title": f"Roll-up: bike service ({count} instances in total)",
+        "canonical_text": f"bike service - {count} instances: receipts",
+        "metadata_json": {
+            "candidate_kind": "memory_rollup",
+            "consolidation": {
+                "proposal_kind": "rollup",
+                "cluster_member_ids": member_ids,
+                "accepted": {"reviewed": True},
+                "rollup": {"topic_label": "bike service"},
+            },
+        },
+        "value": {
+            "rollup": {
+                "topic_label": "bike service",
+                "member_ids": member_ids,
+                "member_count": count,
+                "grouping_input_truncated": False,
+                "grouping_input_total_exact": True,
+                "grouping_input_count": count,
+                "grouping_input_total": count,
+                "instances_truncated": False,
+            }
+        },
+    }
+
+
+def _pack(
+    *,
+    candidate: dict[str, object] | None = None,
+    selected_rollup: bool = False,
+    unexpected_aggregation: bool = False,
+) -> dict[str, object]:
+    pack: dict[str, object] = {
+        "relevant_memories": [],
+        "trace": {"vector_stage": "disabled", "stages": {"coverage_mode": {}}},
+    }
+    if candidate is not None:
+        pack["trace"]["stages"]["coverage_mode"]["candidate_instance_count"] = deepcopy(  # type: ignore[index]
+            candidate
+        )
+    if selected_rollup:
+        assert candidate is not None
+        pack["relevant_memories"] = [_count_card(int(candidate["count"]))]
+    if unexpected_aggregation:
+        pack["aggregation"] = {"verified_instance_count": candidate["count"] if candidate else 0}
+    return pack
+
+
+def _row(question: LongMemEvalQuestion, pack: dict[str, object]) -> dict[str, object]:
+    return probe_row(
+        question,
+        pack,
+        reused_store=True,
+        accept_rollups=False,
+        ingest_seconds=None,
+        retrieval_seconds=0.01,
+    )
+
+
+def test_probe_separates_trace_mechanism_from_reader_sufficiency() -> None:
+    question = _question("00ca467f", "How many bike services did I record?")
+    row = _row(question, _pack(candidate=_candidate()))
+
+    assert row["hand_audited_stratum"] == STRATUM_CANDIDATE_COUNT
+    assert row["trace_candidate_count_present"] is True
+    assert row["trace_candidate_disclosure_is_non_oracle"] is True
+    assert row["reader_aggregation_present"] is False
+    assert row["mechanism_expectation_met"] is True
+    assert row["answer_sufficiency"] == "trace_candidate_statistic_only_not_an_answer"
+
+
+def test_probe_never_treats_selected_frequency_rollup_as_answer_sufficient() -> None:
+    question = _question(
+        "00ca467f",
+        "How many times did I score goals?",
+        # Each of the three member memories can say "twice"; member_count=3
+        # therefore does not establish the six queried occurrences.
+        "6",
+    )
+    row = _row(
+        question,
+        _pack(candidate=_candidate(), selected_rollup=True),
+    )
+
+    assert row["selected_count_bearing_rollups"] == [
+        {"memory_id": "rollup-1", "member_count": 3}
+    ]
+    assert row["reader_aggregation_present"] is False
+    assert row["reader_aggregation_contract_valid"] is False
+    assert row["reader_verified_rollup"] is None
+    assert row["reader_verified_rollup_matches_dev_gold"] is False
+    assert row["answer_sufficiency"] == "selected_unverified_count_rollup_not_an_answer"
+
+
+def test_probe_rejects_any_unexpected_reader_aggregation_surface() -> None:
+    question = _question("00ca467f", "How many times did I service my bike?")
+    row = _row(
+        question,
+        _pack(candidate=_candidate(), unexpected_aggregation=True),
+    )
+
+    assert row["reader_aggregation_present"] is True
+    assert row["reader_aggregation_contract_valid"] is False
+    assert row["answer_sufficiency"] == "unexpected_reader_aggregation_not_an_answer"
+
+
+def test_probe_safe_non_emission_strata_cover_numeric_rejected_and_cadence() -> None:
+    cases = (
+        (
+            _question("10d9b85a", "How many days did the trip last?"),
+            STRATUM_NUMERIC_SAFE_NON_EMISSION,
+            "numeric_value",
+        ),
+        (
+            _question("4adc0475", "What is the total number of goals and assists I have?"),
+            STRATUM_REJECTED_GATE_WIDENING,
+            None,
+        ),
+        (
+            _question("945e3d21", "How often did I service my bike?", "Three times a week"),
+            STRATUM_CADENCE_ANSWERABLE,
+            "cadence",
+        ),
+        (
+            _question("2698e78f_abs", "How often did I service my bike?", "No evidence"),
+            STRATUM_CADENCE_ABSTENTION,
+            "cadence",
+        ),
+    )
+
+    for question, stratum, sub_intent in cases:
+        row = _row(question, _pack())
+        assert row["hand_audited_stratum"] == stratum
+        assert row["detector_sub_intent"] == sub_intent
+        assert row["trace_candidate_count_present"] is False
+        assert row["reader_aggregation_present"] is False
+        assert row["mechanism_expectation_met"] is True
+        assert row["safety_expectation_met"] is True
+    abstention = _row(cases[-1][0], _pack())
+    assert abstention["safe_abstention_non_answer"] is True
+
+
+def test_probe_summary_and_exit_fail_when_answer_sufficiency_is_zero() -> None:
+    question = _question("00ca467f", "How many bike services did I record?")
+    trace_only = _row(question, _pack(candidate=_candidate()))
+    no_go = summarize_rows([trace_only])
+
+    assert no_go["overall"]["mechanism_expectations_failed"] == 0  # type: ignore[index]
+    assert no_go["overall"]["answer_sufficiency_checks"] == 1  # type: ignore[index]
+    assert no_go["overall"]["answer_sufficient_via_verified_rollup"] == 0  # type: ignore[index]
+    assert exit_code_for_summary(no_go, has_errors=False) == EXIT_STRATUM_FAILURES
+
+    selected_card_row = _row(
+        _question("00ca467f", "How many times did I service my bike?"),
+        _pack(candidate=_candidate(), selected_rollup=True),
+    )
+    selected_card = summarize_rows([selected_card_row])
+    # A partial custom probe cannot green the release gate by omitting every
+    # safety stratum.
+    assert exit_code_for_summary(selected_card, has_errors=False) == EXIT_STRATUM_FAILURES
+    numeric = _row(
+        _question("10d9b85a", "How many days did the trip last?"),
+        _pack(),
+    )
+    complete_custom = summarize_rows([selected_card_row, numeric])
+    # A selected count-bearing card remains measurement only because members
+    # have no reviewed one-unit-per-member invariant.
+    assert exit_code_for_summary(complete_custom, has_errors=False) == EXIT_STRATUM_FAILURES
+    partial = summarize_rows(
+        [
+            selected_card_row,
+            trace_only,
+            numeric,
+        ]
+    )
+    assert partial["overall"]["answer_sufficient_via_verified_rollup"] == 0  # type: ignore[index]
+    assert partial["overall"]["answer_sufficiency_checks"] == 2  # type: ignore[index]
+    assert exit_code_for_summary(partial, has_errors=False) == EXIT_STRATUM_FAILURES
+    assert exit_code_for_summary(complete_custom, has_errors=True) == EXIT_RUN_FAILURES
+
+
+def test_probe_exit_rejects_empty_detector_only_and_incomplete_default_manifest() -> None:
+    assert exit_code_for_summary(summarize_rows([]), has_errors=False) == EXIT_STRATUM_FAILURES
+    detector_only = _row(
+        _question("unreviewed", "How many bikes did I service?"),
+        _pack(candidate=_candidate()),
+    )
+    assert (
+        exit_code_for_summary(summarize_rows([detector_only]), has_errors=False)
+        == EXIT_STRATUM_FAILURES
+    )
+    selected_card = _row(
+        _question("00ca467f", "How many times did I service my bike?"),
+        _pack(candidate=_candidate(), selected_rollup=True),
+    )
+    numeric = _row(
+        _question("10d9b85a", "How many days did the trip last?"),
+        _pack(),
+    )
+    incomplete = summarize_rows([selected_card, numeric])
+    assert (
+        exit_code_for_summary(
+            incomplete,
+            has_errors=False,
+            expected_manifest=DEFAULT_AUDIT_MANIFEST,
+        )
+        == EXIT_STRATUM_FAILURES
+    )
+    # ``--limit`` changes row selection, not the default-slice truth target:
+    # main() keeps this exact manifest and therefore rejects the partial run.
+    assert expected_audit_manifest(Path(DEFAULT_SLICE)) == DEFAULT_AUDIT_MANIFEST
+
+
+def test_default_outputs_separate_rollup_modes() -> None:
+    dataset = Path("longmemeval_s_cleaned.json")
+
+    off = default_output_path(dataset, accept_rollups=False)
+    on = default_output_path(dataset, accept_rollups=True)
+
+    assert off.name == "count_probe_longmemeval_s_cleaned_rollups_off.jsonl"
+    assert on.name == "count_probe_longmemeval_s_cleaned_rollups_on.jsonl"
+    assert off != on
+
+
+def test_probe_request_uses_the_question_date_as_reference_time(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    question = _question("00ca467f", "How many bike services did I record?")
+    captured: dict[str, object] = {}
+
+    class FakeRun:
+        store = object()
+
+        def ingest(self, *, accept_rollups: bool) -> None:
+            captured["accept_rollups"] = accept_rollups
+
+    @contextmanager
+    def fake_question_run(_question_value, _db_path):
+        yield FakeRun()
+
+    class FakeService:
+        def __init__(self, _store: object) -> None:
+            pass
+
+        def compile_context_pack(self, request):
+            captured["request"] = request
+            return {"relevant_memories": [], "trace": {"stages": {}}}
+
+    monkeypatch.setattr(count_probe_module, "question_run", fake_question_run)
+    monkeypatch.setattr(count_probe_module, "VNextRetrievalService", FakeService)
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text("[]\n", encoding="utf-8")
+
+    probe_question(
+        question,
+        work_dir=tmp_path,
+        dataset_path=dataset_path,
+        max_items=16,
+        accept_rollups=False,
+    )
+
+    request = captured["request"]
+    assert request.reference_time is not None
+    assert request.reference_time.isoformat() == "2025-01-01T00:00:00+00:00"

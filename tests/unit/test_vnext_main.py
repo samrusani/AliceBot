@@ -2289,6 +2289,49 @@ def test_create_vnext_context_pack_endpoint_returns_structured_pack(monkeypatch)
     assert store.events[-1]["event_type"] == "retrieval.context_pack_compiled"
 
 
+def test_create_vnext_context_pack_endpoint_keeps_uncorroborated_count_trace_only(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    for index, bike in enumerate(("commuter", "touring"), start=1):
+        store.memories.append(
+            {
+                "id": f"memory-bike-{index}",
+                "memory_type": "semantic",
+                "canonical_text": f"I serviced the {bike} bike in March.",
+                "status": "active",
+                "confidence": 0.9,
+                "domain": "personal",
+                "sensitivity": "private",
+                "metadata_json": {
+                    "source_id": f"source-bike-{index}",
+                    "source_chunk_id": f"chunk-bike-{index}",
+                },
+            }
+        )
+    _install_fake_vnext_store(monkeypatch, store)
+
+    response = vnext_retrieval_router.create_vnext_context_pack(
+        vnext_retrieval_router.VNextContextPackRequest(
+            user_id=uuid4(),
+            query="How many bikes did I service?",
+            scope={"domains": ["personal"]},
+            options={"sensitivity_allowed": ["private"], "max_items": 4},
+        )
+    )
+
+    payload = json.loads(response.body)
+    assert response.status_code == 201
+    assert "aggregation" not in payload
+    trace_count = payload["trace"]["stages"]["coverage_mode"]["candidate_instance_count"]
+    assert trace_count["count"] == 2
+    assert trace_count["is_answer"] is False
+    assert trace_count["supports_numeric_sum"] is False
+    response_contract = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[
+        ("POST", "/v0/vnext/context-packs")
+    ][1]
+    assert "aggregation" not in response_contract["required"]
+    assert "aggregation" not in response_contract["properties"]
+
+
 def test_vnext_brain_artifact_generation_endpoints(monkeypatch) -> None:
     store = FakeVNextStore(None)
     source_id = str(uuid4())

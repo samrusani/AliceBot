@@ -76,6 +76,21 @@ AGGREGATION_KINDS = (
     AGGREGATION_KIND_ORDERING,
     AGGREGATION_KIND_COMPARATIVE,
 )
+# Count-shaped questions split again by answer semantics.  Only discrete
+# cardinality/occurrence-frequency questions can safely receive a candidate-
+# instance statistic. Cadence ("how often" -> e.g. three times a week) needs a
+# rate, and numeric quantities ("how many hours/days/pages") need arithmetic;
+# neither may receive a row count.
+COUNT_SUB_INTENT_CARDINALITY = "cardinality"
+COUNT_SUB_INTENT_FREQUENCY = "frequency"
+COUNT_SUB_INTENT_CADENCE = "cadence"
+COUNT_SUB_INTENT_NUMERIC_VALUE = "numeric_value"
+COUNT_SUB_INTENTS = (
+    COUNT_SUB_INTENT_CARDINALITY,
+    COUNT_SUB_INTENT_FREQUENCY,
+    COUNT_SUB_INTENT_CADENCE,
+    COUNT_SUB_INTENT_NUMERIC_VALUE,
+)
 # Trace stage key for the coverage-mode record; absent when dormant.
 COVERAGE_STAGE = "coverage_mode"
 # stage_ranks key prefix for per-clause sub-retrieval lists in RRF fusion.
@@ -114,14 +129,19 @@ COVERAGE_MAX_CARD_PROMOTIONS = 2
 # promotions never surfaced an evidence-bearing card and once displaced
 # the sole carrier of an evidence session.
 COVERAGE_MIN_SLOTTED_MEMBERS = 2
+# Mirrors vnext_rollups.MIN_AGGREGATION_MEMBERS without importing the roll-up
+# service and its optional model-provider seam on the retrieval hot path.
+COUNT_MIN_ROLLUP_MEMBERS = 3
 # metadata_json.consolidation.proposal_kind marking a roll-up card. Kept as
 # a local literal (mirroring vnext_memory_commit's convention) so the
 # retrieval hot path does not import vnext_rollups' model-provider seam;
 # pinned to vnext_rollups.ROLLUP_PROPOSAL_KIND by a unit test.
 ROLLUP_PROPOSAL_KIND = "rollup"
+ROLLUP_CANDIDATE_KIND = "memory_rollup"
 # Honest diversity_status values for the coverage-mode stage record.
 DIVERSITY_ENABLED = "enabled"
 DIVERSITY_DISABLED_NO_STORE_SUPPORT = "disabled: store does not support source chunks"
+DIVERSITY_DISABLED_CADENCE = "disabled: cadence requires rate evidence without coverage reordering"
 
 # Mirrors the reasons ``vnext_retrieval._fused_candidates`` leaves on
 # candidates that ranking (not policy) excluded: only these are re-rankable.
@@ -145,6 +165,9 @@ _CLAUSE_SCAFFOLD_TOKENS = frozenset(
 _CLAUSE_SPLIT_PATTERN = re.compile(r",\s+|;\s+|\s+and\s+|\s+or\s+", re.IGNORECASE)
 
 _COUNT_PATTERN = re.compile(r"\bhow many\b")
+_HOW_MANY_HEAD_PATTERN = re.compile(r"\bhow many\s+([a-z][a-z-]*)\b")
+_FREQUENCY_PATTERN = re.compile(r"\bhow often\b")
+_NUMBER_OF_TIMES_PATTERN = re.compile(r"\bnumber of times\b")
 _HOW_MUCH_PATTERN = re.compile(r"\bhow much\b")
 _TOTALITY_PATTERN = re.compile(r"\b(?:total|altogether|combined|in all|overall)\b")
 _ENUMERATE_PATTERNS = (
@@ -152,6 +175,63 @@ _ENUMERATE_PATTERNS = (
     re.compile(r"\b(?:list|name) (?:every|all|each)\b"),
     re.compile(r"\beach of\b"),
 )
+
+# Heads that ask for a numeric value, duration, distance, or amount rather than
+# the number of discrete candidate instances.  This intentionally prefers safe
+# non-emission: the ordinary coverage path still runs, but B/C do not present a
+# memory-row cardinality as if it answered arithmetic.
+_NUMERIC_VALUE_HEADS = frozenset(
+    {
+        "age",
+        "calorie",
+        "calories",
+        "centimeter",
+        "centimeters",
+        "day",
+        "days",
+        "dollar",
+        "dollars",
+        "euro",
+        "euros",
+        "feet",
+        "foot",
+        "gram",
+        "grams",
+        "hour",
+        "hours",
+        "inch",
+        "inches",
+        "kilogram",
+        "kilograms",
+        "kilometer",
+        "kilometers",
+        "metre",
+        "metres",
+        "meter",
+        "meters",
+        "mile",
+        "miles",
+        "minute",
+        "minutes",
+        "month",
+        "months",
+        "ounce",
+        "ounces",
+        "page",
+        "pages",
+        "percent",
+        "percentage",
+        "pound",
+        "pounds",
+        "second",
+        "seconds",
+        "week",
+        "weeks",
+        "year",
+        "years",
+    }
+)
+
 _ORDERING_PATTERN = re.compile(r"\bin (?:what|which) order\b")
 _COMPARATIVE_PATTERN = re.compile(
     r"\bwhich of (?:my|the|these|those|them|us)\b.*?"
@@ -166,6 +246,15 @@ class AggregationIntent:
 
     kind: str
     trigger: str
+    sub_intent: str | None = None
+
+
+def _count_sub_intent_for_head(head: str) -> str:
+    return (
+        COUNT_SUB_INTENT_NUMERIC_VALUE
+        if head.casefold() in _NUMERIC_VALUE_HEADS
+        else COUNT_SUB_INTENT_CARDINALITY
+    )
 
 
 def detect_aggregation_intent(query: str) -> AggregationIntent | None:
@@ -181,7 +270,32 @@ def detect_aggregation_intent(query: str) -> AggregationIntent | None:
         return None
     count_match = _COUNT_PATTERN.search(lowered)
     if count_match is not None:
-        return AggregationIntent(kind=AGGREGATION_KIND_COUNT, trigger=count_match.group(0))
+        head_match = _HOW_MANY_HEAD_PATTERN.search(lowered)
+        head = head_match.group(1) if head_match is not None else ""
+        sub_intent = (
+            COUNT_SUB_INTENT_FREQUENCY
+            if head == "times"
+            else _count_sub_intent_for_head(head)
+        )
+        return AggregationIntent(
+            kind=AGGREGATION_KIND_COUNT,
+            trigger=count_match.group(0),
+            sub_intent=sub_intent,
+        )
+    frequency_match = _FREQUENCY_PATTERN.search(lowered)
+    if frequency_match is not None:
+        return AggregationIntent(
+            kind=AGGREGATION_KIND_COUNT,
+            trigger=frequency_match.group(0),
+            sub_intent=COUNT_SUB_INTENT_CADENCE,
+        )
+    number_of_times_match = _NUMBER_OF_TIMES_PATTERN.search(lowered)
+    if number_of_times_match is not None:
+        return AggregationIntent(
+            kind=AGGREGATION_KIND_COUNT,
+            trigger=number_of_times_match.group(0),
+            sub_intent=COUNT_SUB_INTENT_FREQUENCY,
+        )
     how_much_match = _HOW_MUCH_PATTERN.search(lowered)
     if how_much_match is not None:
         # "how much" alone is a single-fact question; it only aggregates
@@ -276,19 +390,94 @@ def coverage_stage_record(
     memory_demotions: int,
     source_demotions: int,
     card_promotions: int = 0,
+    candidate_instance_count: JsonObject | None = None,
+    diversity_status: str | None = None,
 ) -> JsonObject:
     """Honest trace record for the coverage-mode stage (absent when dormant)."""
-    return {
+    record: JsonObject = {
         "source": COVERAGE_STAGE,
         "intent": intent.kind,
         "trigger": intent.trigger,
         "clauses": clause_count,
         "clause_candidate_count": clause_candidate_count,
-        "diversity_status": DIVERSITY_ENABLED if source_diversity_enabled else DIVERSITY_DISABLED_NO_STORE_SUPPORT,
+        "diversity_status": diversity_status
+        or (DIVERSITY_ENABLED if source_diversity_enabled else DIVERSITY_DISABLED_NO_STORE_SUPPORT),
         "diversity_demotions": memory_demotions + source_demotions,
         "memory_demotions": memory_demotions,
         "source_demotions": source_demotions,
         "card_promotions": card_promotions,
+    }
+    if intent.sub_intent is not None:
+        record["sub_intent"] = intent.sub_intent
+    if candidate_instance_count is not None:
+        record["candidate_instance_count"] = dict(candidate_instance_count)
+    return record
+
+
+def supports_candidate_instance_count(intent: AggregationIntent | None) -> bool:
+    """Whether a count intent describes discrete candidates, not arithmetic."""
+    return bool(
+        intent is not None
+        and intent.kind == AGGREGATION_KIND_COUNT
+        and intent.sub_intent
+        in {COUNT_SUB_INTENT_CARDINALITY, COUNT_SUB_INTENT_FREQUENCY}
+    )
+
+
+def candidate_instance_count_record(
+    rows: Sequence[JsonObject],
+    *,
+    fts_source: str,
+    candidate_cap: int,
+    scope_filtered: bool,
+) -> JsonObject:
+    """Count distinct groups in the already-fetched scoped FTS candidate pool.
+
+    This is intentionally a retrieval statistic, not an answer. Accepted
+    roll-up cards are excluded (they summarize members rather than represent a
+    new instance); ordinary rows deduplicate by source chunk, then source, then
+    memory id. A full prefix means only that more candidate groups may exist.
+    """
+    effective_cap = max(1, candidate_cap)
+    groups: set[tuple[str, ...]] = set()
+    rows_examined = 0
+    rollup_cards_excluded = 0
+    for row in rows[:effective_cap]:
+        metadata = row.get("metadata_json")
+        if isinstance(metadata, Mapping) and metadata.get("candidate_kind") == ROLLUP_CANDIDATE_KIND:
+            rollup_cards_excluded += 1
+            continue
+        memory_id = str(row.get("id") or "")
+        if not memory_id:
+            continue
+        rows_examined += 1
+        source_id = str(metadata.get("source_id") or "") if isinstance(metadata, Mapping) else ""
+        chunk_id = str(metadata.get("source_chunk_id") or "") if isinstance(metadata, Mapping) else ""
+        group: tuple[str, ...]
+        if source_id and chunk_id:
+            group = ("source_chunk", source_id, chunk_id)
+        elif source_id:
+            group = ("source", source_id)
+        else:
+            group = ("memory", memory_id)
+        groups.add(group)
+    saturated = len(rows) >= effective_cap
+    return {
+        "count": len(groups),
+        "unit": "deduplicated_memory_candidate_groups",
+        "basis": "bounded_scoped_fts_candidates",
+        "query_basis": "context_pack_query",
+        "matching_criteria": "searchable scoped memories matched by the reported FTS mode",
+        "deduplication": "source_chunk_then_source_then_memory_id",
+        "fts_source": fts_source,
+        "rows_examined": rows_examined,
+        "rollup_cards_excluded": rollup_cards_excluded,
+        "candidate_cap": effective_cap,
+        "scope_filtered": scope_filtered,
+        "candidate_prefix_exhausted": not saturated,
+        "more_candidate_groups_may_exist": saturated,
+        "is_answer": False,
+        "supports_numeric_sum": False,
     }
 
 
@@ -519,6 +708,60 @@ def accepted_rollup_member_ids(memory: JsonObject) -> tuple[str, ...]:
     )
 
 
+def count_bearing_rollup_member_count(memory: JsonObject) -> int | None:
+    """Verified member cardinality carried by an accepted roll-up card.
+
+    The reviewed membership snapshot is authoritative. When the structured
+    roll-up value is present, its member_count must agree; the rendered title
+    or canonical text must also state that same number of instances. A card
+    whose bytes disagree with its reviewed inputs is not promoted as a count.
+    """
+    member_ids = accepted_rollup_member_ids(memory)
+    if len(member_ids) < COUNT_MIN_ROLLUP_MEMBERS:
+        return None
+    member_count = len(member_ids)
+    value = memory.get("value")
+    if not isinstance(value, Mapping):
+        return None
+    rollup = value.get("rollup")
+    if not isinstance(rollup, Mapping):
+        return None
+    structured_members = rollup.get("member_ids")
+    if not isinstance(structured_members, list):
+        return None
+    normalized_structured_members = tuple(str(member_id) for member_id in structured_members)
+    if normalized_structured_members != member_ids:
+        return None
+    if rollup.get("grouping_input_truncated") is not False:
+        return None
+    if rollup.get("grouping_input_total_exact") is not True:
+        return None
+    grouping_input_count = rollup.get("grouping_input_count")
+    grouping_input_total = rollup.get("grouping_input_total")
+    if (
+        not isinstance(grouping_input_count, int)
+        or isinstance(grouping_input_count, bool)
+        or not isinstance(grouping_input_total, int)
+        or isinstance(grouping_input_total, bool)
+        or grouping_input_count != grouping_input_total
+    ):
+        return None
+    if not isinstance(rollup.get("instances_truncated"), bool):
+        return None
+    stored_count = rollup.get("member_count")
+    if (
+        not isinstance(stored_count, int)
+        or isinstance(stored_count, bool)
+        or stored_count != member_count
+    ):
+        return None
+    rendered = " ".join(
+        str(memory.get(key) or "") for key in ("title", "canonical_text")
+    ).casefold()
+    count_pattern = re.compile(rf"\b{member_count}\s+(?:matched\s+)?instances?\b")
+    return member_count if count_pattern.search(rendered) is not None else None
+
+
 def promote_rollup_cards(
     candidates: Sequence[Any],
     *,
@@ -632,6 +875,12 @@ __all__ = [
     "AGGREGATION_KIND_ORDERING",
     "AGGREGATION_KIND_TOTAL",
     "AggregationIntent",
+    "COUNT_MIN_ROLLUP_MEMBERS",
+    "COUNT_SUB_INTENTS",
+    "COUNT_SUB_INTENT_CARDINALITY",
+    "COUNT_SUB_INTENT_CADENCE",
+    "COUNT_SUB_INTENT_FREQUENCY",
+    "COUNT_SUB_INTENT_NUMERIC_VALUE",
     "COVERAGE_CLAUSE_FETCH_LIMIT",
     "COVERAGE_CLAUSE_STAGE_PREFIX",
     "COVERAGE_MAX_CARD_PROMOTIONS",
@@ -640,6 +889,7 @@ __all__ = [
     "COVERAGE_POOL_MULTIPLIER",
     "COVERAGE_STAGE",
     "DIVERSITY_CANDIDATE_MULTIPLIER",
+    "DIVERSITY_DISABLED_CADENCE",
     "DIVERSITY_DISABLED_NO_STORE_SUPPORT",
     "DIVERSITY_ENABLED",
     "DIVERSITY_SIGNATURE_MAX_CHARS",
@@ -648,7 +898,9 @@ __all__ = [
     "ROLLUP_PROPOSAL_KIND",
     "accepted_rollup_member_ids",
     "apply_instance_diversity",
+    "candidate_instance_count_record",
     "clause_stage_name",
+    "count_bearing_rollup_member_count",
     "coverage_stage_record",
     "decompose_clauses",
     "detect_aggregation_intent",
@@ -657,4 +909,5 @@ __all__ = [
     "memory_signature_text",
     "promote_rollup_cards",
     "source_chunk_text_provider",
+    "supports_candidate_instance_count",
 ]
