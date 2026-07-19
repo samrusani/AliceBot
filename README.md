@@ -141,7 +141,7 @@ search degrades to full-text only and says so explicitly in the retrieval trace.
 
 ## Status
 
-The `v0.13.0` candidate (Phase 4) is in release preparation.
+The `v0.13.1` candidate (Phase 4) is in release preparation.
 
 `v0.12.0` is the latest published release and remains the install, checksum,
 and release-note baseline. Its tag, release record, and published artifacts

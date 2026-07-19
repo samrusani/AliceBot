@@ -7,7 +7,7 @@ baseline.
 Preparing candidate documents does not authorize a tag, PyPI upload, or GitHub
 Release.
 
-The `v0.13.0` candidate (Phase 4 core roadmap) is in release preparation.
+The `v0.13.1` candidate (Phase 4 core roadmap) is in release preparation.
 
 ## One Release Identity
 

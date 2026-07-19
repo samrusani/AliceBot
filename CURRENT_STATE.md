@@ -2,7 +2,7 @@
 
 ## Snapshot
 
-- The `v0.13.0` candidate carries the Phase 4 core-roadmap work; its exact
+- The `v0.13.1` candidate carries the Phase 4 core-roadmap work; its exact
   release headline is **Replicated benchmark, faster SQLite at scale,
   reference integrations.**
 - `v0.12.0` is the latest published release. It is available from PyPI and
@@ -88,7 +88,7 @@ authoritative description; Phase 3 does not rewrite that history.
 `docs/release/v0.11.1-release-notes.md` and
 `docs/release/v0.11.1-checksums.txt`.
 
-## What `v0.13.0` Targets
+## What `v0.13.1` Targets
 
 - The replicated LongMemEval_s baseline (81.2% mean over three runs on the
   published `v0.12.0` code) committed as per-question evidence.

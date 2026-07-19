@@ -2,7 +2,7 @@
 
 ## Scope Boundary
 
-- **Candidate boundary:** the `v0.13.0` candidate carries the Phase 4
+- **Candidate boundary:** the `v0.13.1` candidate carries the Phase 4
   core-roadmap work (replicated benchmark evidence, SQLite vector scale,
   reference integrations, trace-only count diagnostics).
 

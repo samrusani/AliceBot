@@ -14,7 +14,7 @@ artifacts are immutable.
 `v0.12.0` shipped the Phase 3 structural refactor with **Structure only. Zero
 behavior change.** It relocates oversized HTTP, store, contract, MCP, and CLI
 carriers behind stable public imports and entrypoints.
-The `v0.13.0` candidate (Phase 4) is in release preparation.
+The `v0.13.1` candidate (Phase 4) is in release preparation.
 Alice remains local-first rather than a hosted launch; install the
 package entrypoints for normal use and use an editable checkout only for
 contributor workflows.
