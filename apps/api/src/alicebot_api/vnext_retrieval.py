@@ -2398,7 +2398,15 @@ class VNextRetrievalService:
             if depth == CONTEXT_DEPTH_MINIMAL
             else vnext_coverage_query.detect_aggregation_intent(str(interpretation["query"]))
         )
-        if coverage_intent is not None:
+        # "How often" asks for cadence/rate, not an occurrence total. Keep
+        # recognition in the trace, but preserve the old ungated candidate
+        # pool, store calls, and ranking: repeated similar events are rate
+        # evidence and must not be diversity-demoted.
+        coverage_selection_enabled = bool(
+            coverage_intent is not None
+            and coverage_intent.sub_intent != vnext_coverage_query.COUNT_SUB_INTENT_CADENCE
+        )
+        if coverage_selection_enabled:
             memory_candidate_limit *= vnext_coverage_query.COVERAGE_POOL_MULTIPLIER
         # ---- coverage mode (aggregation intent) end ----------------------
 
@@ -2433,6 +2441,19 @@ class VNextRetrievalService:
                 or getattr(self.store, "search_memories", None)
             ),
         )
+        # Count-intent candidate annotation. This reuses the already-fetched,
+        # scoped FTS prefix: no store read, model call, or pool deepening. It
+        # is intentionally limited to discrete cardinality/frequency queries;
+        # numeric quantities (hours/days/pages/amounts) keep coverage mode but
+        # never receive a memory-row count that could be mistaken for a sum.
+        coverage_candidate_instance_count: JsonObject | None = None
+        if vnext_coverage_query.supports_candidate_instance_count(coverage_intent):
+            coverage_candidate_instance_count = vnext_coverage_query.candidate_instance_count_record(
+                fts_rows,
+                fts_source=fts_source,
+                candidate_cap=scope_target,
+                scope_filtered=scope.active,
+            )
         if depth == CONTEXT_DEPTH_MINIMAL:
             # The cheapest useful call: FTS only. No query embedding, no
             # entity resolution or graph hop; honest tier status instead.
@@ -2542,7 +2563,7 @@ class VNextRetrievalService:
         coverage_clauses: list[str] = []
         coverage_clause_lists: dict[str, list[JsonObject]] = {}
         coverage_clause_candidate_count = 0
-        if coverage_intent is not None:
+        if coverage_selection_enabled:
             coverage_clauses = vnext_coverage_query.decompose_clauses(str(interpretation["query"]))
             if len(coverage_clauses) >= 2:
                 for clause_index, clause in enumerate(coverage_clauses, start=1):
@@ -2621,7 +2642,7 @@ class VNextRetrievalService:
         # session coverage is a superset of the ungated pack's. Dormant
         # unless the gate fired.
         coverage_memory_demotions = 0
-        if coverage_intent is not None:
+        if coverage_selection_enabled:
             if coverage_clause_lists:
                 seen_candidate_ids = {str(candidate.item.get("id")) for candidate in memory_candidates}
                 backfill_candidates: list[RetrievalCandidate] = []
@@ -2686,7 +2707,11 @@ class VNextRetrievalService:
         # enough slot-holding members; disclosed as card_promotions on the
         # coverage_mode trace stage.
         coverage_card_promotions = 0
-        if coverage_intent is not None:
+        if coverage_selection_enabled:
+            # Preserve the pre-Sprint generic card-promotion posture. The
+            # measured count-specific aggressive arm was rejected: neither a
+            # candidate row nor a roll-up member is proven to represent one
+            # queried unit. Cadence remains recognition-only above.
             memory_candidates, coverage_card_promotions = vnext_coverage_query.promote_rollup_cards(
                 memory_candidates
             )
@@ -2755,8 +2780,12 @@ class VNextRetrievalService:
         # trace stage) unless the intent gate fired above.
         coverage_record: JsonObject | None = None
         if coverage_intent is not None:
-            coverage_text_for = vnext_coverage_query.source_chunk_text_provider(
-                getattr(self.store, "list_source_chunks", None)
+            coverage_text_for = (
+                vnext_coverage_query.source_chunk_text_provider(
+                    getattr(self.store, "list_source_chunks", None)
+                )
+                if coverage_selection_enabled
+                else None
             )
             coverage_source_demotions = 0
             if coverage_text_for is not None:
@@ -2774,6 +2803,12 @@ class VNextRetrievalService:
                 source_demotions=coverage_source_demotions,
                 # roll-up card ranking (see the marked block above).
                 card_promotions=coverage_card_promotions,
+                candidate_instance_count=coverage_candidate_instance_count,
+                diversity_status=(
+                    None
+                    if coverage_selection_enabled
+                    else vnext_coverage_query.DIVERSITY_DISABLED_CADENCE
+                ),
             )
         # ---- coverage mode (aggregation intent) end ----------------------
 

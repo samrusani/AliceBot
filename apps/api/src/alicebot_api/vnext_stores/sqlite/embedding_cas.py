@@ -14,8 +14,29 @@ from alicebot_api.vnext_embeddings import (
     pad_embedding_vector,
 )
 from alicebot_api.vnext_stores.sqlite.columns import MEMORY_COLUMNS
+from alicebot_api.vnext_stores.sqlite.vector_scan import bump_embedding_stamp
 
 VNextRow = dict[str, object]
+
+# Point-read backing the resident-vector-cache invalidation contract: only a
+# write that OVERWRITES or CLEARS an existing non-NULL embedding bumps the
+# embedding_stamp token (in the same transaction as the write). Embed-on-write
+# for a row without a vector must NOT bump -- the cache upserts new ids
+# without a rebuild.
+#
+# The read is only sound while it shares a transaction with the UPDATE and
+# the bump: executed in autocommit, a concurrent embed-on-write can commit
+# NULL -> vector between the read and the UPDATE, turning this write into an
+# overwrite whose bump the stale read skips (the cache then serves the dead
+# vector forever). Both callers therefore take the writer lock (BEGIN
+# IMMEDIATE, unless the caller already opened a transaction) BEFORE reading.
+_EMBEDDING_PRESENT_SQL = """
+                SELECT (embedding IS NOT NULL) AS embedding_present
+                FROM memories
+                WHERE id = ?
+                  AND user_id = ?
+                  AND deleted_at IS NULL
+                """
 
 
 def _embedding_content_sha256_sqlite(
@@ -67,6 +88,12 @@ def update_memory_embedding(
         raise ContinuityStoreInvariantError("embedding vectors must not be empty")
     padded = pad_embedding_vector(vector)
     blob = np.asarray(padded, dtype=np.float32).tobytes()
+    if not self.conn.in_transaction:
+        # Writer lock BEFORE the presence read: the read decides bump vs
+        # no-bump, so it must be atomic with the UPDATE and the bump.
+        self.conn.execute("BEGIN IMMEDIATE")
+    existing = self._fetch_optional_one(_EMBEDDING_PRESENT_SQL, (str(memory_id), self.user_id))
+    overwrites_existing_vector = bool(existing and existing.get("embedding_present"))
     signature_values = (provider, model, content_sha256)
     if any(value is not None for value in signature_values):
         if not all(isinstance(value, str) and value for value in signature_values):
@@ -112,6 +139,10 @@ def update_memory_embedding(
         )
     if cursor.rowcount == 0:
         return None
+    if overwrites_existing_vector:
+        # Reindex/backfill overwrite of a live vector: evict every resident
+        # cache built over the old bytes, atomically with this write.
+        bump_embedding_stamp(self._execute)
     return self._fetch_optional_one(
         """
                 SELECT id
@@ -125,6 +156,12 @@ def update_memory_embedding(
 
 def clear_memory_embedding(self, *, memory_id: str) -> VNextRow | None:
     """Invalidate an embedding derived from text that is about to change."""
+    if not self.conn.in_transaction:
+        # Writer lock BEFORE the presence read: the read decides bump vs
+        # no-bump, so it must be atomic with the UPDATE and the bump.
+        self.conn.execute("BEGIN IMMEDIATE")
+    existing = self._fetch_optional_one(_EMBEDDING_PRESENT_SQL, (str(memory_id), self.user_id))
+    had_vector = bool(existing and existing.get("embedding_present"))
     cursor = self._execute(
         f"""
                 UPDATE memories
@@ -141,6 +178,13 @@ def clear_memory_embedding(self, *, memory_id: str) -> VNextRow | None:
     )
     if cursor.rowcount == 0:
         return None
+    if had_vector:
+        # THE CLEAR-THEN-RE-EMBED HOLE: the commit service clears and then
+        # re-embeds on text updates. The re-embed sees a NULL column and does
+        # not bump, the id is already resident, and the top-k content-sha
+        # recheck cannot catch a same-id vector swap -- so the CLEAR must
+        # evict, in the same transaction as the NULLing write.
+        bump_embedding_stamp(self._execute)
     return self._fetch_optional_one(
         """
                 SELECT id

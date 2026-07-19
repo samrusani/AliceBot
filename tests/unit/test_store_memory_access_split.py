@@ -36,8 +36,15 @@ SOURCE_RECEIPTS = {
     "apps/api/src/alicebot_api/vnext_stores/sqlite/query_predicates.py": (
         "aada597da76324ec05a118f95c2b26441b076771a0e53b8d45f08eefb656bbb4"
     ),
+    # Re-minted for the Phase 4 Stage 2 resident vector cache (reviewed
+    # carrier change; the receipt guards unreviewed drift): the vector scan
+    # tries vector_scan.cached_vector_ranked before the stateless path, and
+    # the cached candidate SQL now carries the scan's FULL predicate set --
+    # including the signature json_extract clauses -- so no predicate is
+    # ever captured into the resident data (metadata_json rewrites cannot
+    # stale the cache).
     "apps/api/src/alicebot_api/vnext_stores/sqlite/memory_access.py": (
-        "08a2a7d301d03fb851fb973db53db1b1f3675d5ae009a3ddd699d7aa4c54f93b"
+        "043d5678070e1795194b677e89f74335cadf2d9220da110345dbd0391b742f3b"
     ),
 }
 

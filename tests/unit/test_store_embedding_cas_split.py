@@ -38,9 +38,16 @@ EXPECTED_METHOD_AST_SHA256 = {
         "clear_memory_embedding": "4e9fe6955f3246b51998c6b547f48a659f947f8a8150e6c86d4e61a0cf46df6c",
         "list_memories_missing_embeddings": "6022cbe4070c9db61833045c3d83ae0216880bcc3327b9998716f6da286183e0",
     },
+    # SQLite update/clear re-minted for the Phase 4 Stage 2 resident vector
+    # cache (reviewed carrier change): both methods point-read whether a
+    # non-NULL embedding exists and bump the embedding_stamp token when a
+    # live vector is overwritten or cleared -- and now take the writer lock
+    # (BEGIN IMMEDIATE, unless already in a transaction) BEFORE that read,
+    # so the bump decision is atomic with the write (no TOCTOU window
+    # against a concurrent embed-on-write).
     "sqlite": {
-        "update_memory_embedding": "57f829b8603a2a0c63652db45c1c35a9766d8bf9087bb1a68862f122a9c911c0",
-        "clear_memory_embedding": "412676994495c702a1b78a03b5947307a85fd4311df18481d26ea5b5fac6bdeb",
+        "update_memory_embedding": "42f7ede575246981330ad6e17f91051e198f87fbaed61ef4c2b00045c442c368",
+        "clear_memory_embedding": "51b583b250883911f0c5a068fec7ec4565f719c2bffafb1ed1c6b3dc980fa36c",
         "list_memories_missing_embeddings": "cf3e90cc72c5e388786b66aae1cd1b4da6c3d2e6438919d6a0fd94271f88f2d5",
     },
 }
@@ -96,15 +103,26 @@ EXPECTED_QUERY_SHA256 = {
     "postgres_clear": ("a5a6952a93bd77b3bdf311fe2682b411263d18a2822a9617c6fb7524555123ca",),
     "postgres_unsigned_missing": ("13a290c0fb56e0abb6b4feb15fbd96642ba60478b3d7e8e666ef904135002f31",),
     "postgres_signed_missing": ("d7af83168e7337a5798f1f9f201c5eb0863121b32d2f769a440dd1b099b01226",),
+    # SQLite update/clear sequences start with BEGIN IMMEDIATE (the capture
+    # connection is autocommit-shaped) followed by the Stage 2
+    # embedding-presence point-read (the vector-cache invalidation gate),
+    # now inside the writer transaction. The capture store reports no live
+    # embedding, so no stamp bump appears in these sequences.
     "sqlite_unsigned_update": (
+        "930a7770399087898ae6ac96ce5375048117486e06b21da4523d2c3c75113c32",
+        "4ef4eca2da3716e062d072149d5b9dd1a84de1d50557e7e534890c1d93934844",
         "f9c780945f863a6735df31f7552b1588b938499ff427a97ec86ca168990c7631",
         "4c02258b8fe75dc0cf54d352a81badde39d952bc69eae56cd12edb1505165ff4",
     ),
     "sqlite_signed_update": (
+        "930a7770399087898ae6ac96ce5375048117486e06b21da4523d2c3c75113c32",
+        "4ef4eca2da3716e062d072149d5b9dd1a84de1d50557e7e534890c1d93934844",
         "c037557387b90f9e0becd053c1e5b620579596e187e4d84865ebf1c32d09340a",
         "4c02258b8fe75dc0cf54d352a81badde39d952bc69eae56cd12edb1505165ff4",
     ),
     "sqlite_clear": (
+        "930a7770399087898ae6ac96ce5375048117486e06b21da4523d2c3c75113c32",
+        "4ef4eca2da3716e062d072149d5b9dd1a84de1d50557e7e534890c1d93934844",
         "7049f5693c64baa495f701ff8492f8c3dac4f6eb2cce1fcb7ae745141c04951a",
         "4c02258b8fe75dc0cf54d352a81badde39d952bc69eae56cd12edb1505165ff4",
     ),
@@ -184,10 +202,24 @@ class _SQLiteResult:
     rowcount = 1
 
 
+class _SQLiteCaptureConnection:
+    """Autocommit-shaped connection stub: update/clear must BEGIN IMMEDIATE."""
+
+    def __init__(self, queries: list[tuple[str, object]]) -> None:
+        self.in_transaction = False
+        self._queries = queries
+
+    def execute(self, query: str, params: object = ()) -> _SQLiteResult:
+        self._queries.append((query, params))
+        self.in_transaction = True
+        return _SQLiteResult()
+
+
 class _SQLiteCapture:
     def __init__(self) -> None:
         self.user_id = "user"
         self.queries: list[tuple[str, object]] = []
+        self.conn = _SQLiteCaptureConnection(self.queries)
 
     def _execute(self, query: str, params: object = ()) -> _SQLiteResult:
         self.queries.append((query, params))

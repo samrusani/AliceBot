@@ -8,15 +8,23 @@ from alicebot_api.vnext_coverage_query import (
     AGGREGATION_KIND_ENUMERATE,
     AGGREGATION_KIND_ORDERING,
     AGGREGATION_KIND_TOTAL,
+    COUNT_MIN_ROLLUP_MEMBERS,
+    COUNT_SUB_INTENT_CADENCE,
+    COUNT_SUB_INTENT_CARDINALITY,
+    COUNT_SUB_INTENT_FREQUENCY,
+    COUNT_SUB_INTENT_NUMERIC_VALUE,
     COVERAGE_MAX_CLAUSES,
     EXCLUSION_REASON_COVERAGE_REDUNDANT,
     apply_instance_diversity,
+    candidate_instance_count_record,
     clause_stage_name,
+    count_bearing_rollup_member_count,
     coverage_stage_record,
     decompose_clauses,
     detect_aggregation_intent,
     memory_provenance_group_key,
     source_chunk_text_provider,
+    supports_candidate_instance_count,
 )
 from alicebot_api.vnext_retrieval import RetrievalCandidate
 
@@ -30,6 +38,8 @@ from alicebot_api.vnext_retrieval import RetrievalCandidate
         ("How many hours did I play?", AGGREGATION_KIND_COUNT),
         ("how many times did I visit the dentist this year", AGGREGATION_KIND_COUNT),
         ("Roughly HOW MANY books did I finish?", AGGREGATION_KIND_COUNT),
+        ("How often do I attend yoga classes?", AGGREGATION_KIND_COUNT),
+        ("What is the number of times I visited Rome?", AGGREGATION_KIND_COUNT),
         ("How much did I spend in total on car repairs?", AGGREGATION_KIND_TOTAL),
         ("How much time did I spend commuting altogether?", AGGREGATION_KIND_TOTAL),
         ("In total, how much did the renovations cost?", AGGREGATION_KIND_TOTAL),
@@ -64,6 +74,11 @@ def test_detector_fires_on_aggregation_surface_shapes(query: str, kind: str) -> 
         "Did I finish the marathon last October?",
         "Tell me about my last trip to Boston",
         "Who owns the incident postmortem for Meridian?",
+        "What frequency did I tune the radio to?",
+        # Sprint 4E is measurement-gated: these scalar/sum surfaces stay
+        # dormant instead of receiving a misleading candidate row count.
+        "What is the total number of goals and assists I have?",
+        "What is the total number of siblings I have?",
         # "all" without the enumeration scaffold stays dormant.
         "Is the migration all done?",
         # "which of" without a comparative/superlative stays dormant.
@@ -84,6 +99,31 @@ def test_detector_reads_only_the_query_surface() -> None:
     assert intent is not None
     assert intent.kind == AGGREGATION_KIND_COUNT
     assert intent.trigger == "how many"
+    assert intent.sub_intent == COUNT_SUB_INTENT_CARDINALITY
+
+
+@pytest.mark.parametrize(
+    ("query", "sub_intent", "eligible"),
+    (
+        ("How many bikes did I service?", COUNT_SUB_INTENT_CARDINALITY, True),
+        ("How many times did I bake bread?", COUNT_SUB_INTENT_FREQUENCY, True),
+        ("How often did I host board game night?", COUNT_SUB_INTENT_CADENCE, False),
+        ("What is the number of times I called?", COUNT_SUB_INTENT_FREQUENCY, True),
+        ("How many hours did I play?", COUNT_SUB_INTENT_NUMERIC_VALUE, False),
+        ("How many days passed?", COUNT_SUB_INTENT_NUMERIC_VALUE, False),
+    ),
+)
+def test_count_sub_intent_separates_candidate_cardinality_from_numeric_values(
+    query: str,
+    sub_intent: str,
+    eligible: bool,
+) -> None:
+    intent = detect_aggregation_intent(query)
+
+    assert intent is not None
+    assert intent.kind == AGGREGATION_KIND_COUNT
+    assert intent.sub_intent == sub_intent
+    assert supports_candidate_instance_count(intent) is eligible
 
 
 # -- clause decomposition ---------------------------------------------------
@@ -165,6 +205,7 @@ def test_coverage_stage_record_reports_intent_clauses_and_demotions() -> None:
         "memory_demotions": 2,
         "source_demotions": 1,
         "card_promotions": 1,
+        "sub_intent": "cardinality",
     }
 
     disabled = coverage_stage_record(
@@ -177,6 +218,65 @@ def test_coverage_stage_record_reports_intent_clauses_and_demotions() -> None:
     )
     assert disabled["diversity_status"] == "disabled: store does not support source chunks"
     assert disabled["card_promotions"] == 0  # default: no cards promoted
+
+
+def test_candidate_instance_count_is_a_bounded_deduplicated_fts_statistic() -> None:
+    rows = [
+        {
+            "id": "memory-1",
+            "metadata_json": {"source_id": "source-a", "source_chunk_id": "chunk-1"},
+        },
+        {
+            "id": "memory-2",
+            "metadata_json": {"source_id": "source-a", "source_chunk_id": "chunk-1"},
+        },
+        {"id": "memory-3", "metadata_json": {"source_id": "source-a"}},
+        {"id": "memory-4", "metadata_json": {}},
+        {
+            "id": "rollup-1",
+            "metadata_json": {"candidate_kind": "memory_rollup"},
+        },
+    ]
+
+    record = candidate_instance_count_record(
+        rows,
+        fts_source="sqlite_fts5_or_fallback",
+        candidate_cap=5,
+        scope_filtered=True,
+    )
+
+    assert record == {
+        "count": 3,
+        "unit": "deduplicated_memory_candidate_groups",
+        "basis": "bounded_scoped_fts_candidates",
+        "query_basis": "context_pack_query",
+        "matching_criteria": "searchable scoped memories matched by the reported FTS mode",
+        "deduplication": "source_chunk_then_source_then_memory_id",
+        "fts_source": "sqlite_fts5_or_fallback",
+        "rows_examined": 4,
+        "rollup_cards_excluded": 1,
+        "candidate_cap": 5,
+        "scope_filtered": True,
+        "candidate_prefix_exhausted": False,
+        "more_candidate_groups_may_exist": True,
+        "is_answer": False,
+        "supports_numeric_sum": False,
+    }
+
+
+def test_candidate_instance_count_never_exceeds_its_disclosed_cap() -> None:
+    record = candidate_instance_count_record(
+        [{"id": f"memory-{index}", "metadata_json": {}} for index in range(8)],
+        fts_source="legacy_adapter_fts",
+        candidate_cap=3,
+        scope_filtered=True,
+    )
+
+    assert record["candidate_cap"] == 3
+    assert record["rows_examined"] == 3
+    assert record["count"] == 3
+    assert record["candidate_prefix_exhausted"] is False
+    assert record["more_candidate_groups_may_exist"] is True
 
 
 # -- source instance diversity ------------------------------------------------
@@ -586,6 +686,47 @@ def _accepted_card_item(
     }
 
 
+def _count_card_item(
+    card_id: str,
+    member_ids: list[str],
+    *,
+    topic_label: str = "board game night",
+    rendered_count: int | None = None,
+    structured_count: int | None = None,
+) -> dict[str, object]:
+    card = _accepted_card_item(card_id, member_ids)
+    member_count = len(dict.fromkeys(member_ids))
+    rendered = member_count if rendered_count is None else rendered_count
+    structured = member_count if structured_count is None else structured_count
+    card["title"] = f"Roll-up: {topic_label} ({rendered} instances in total)"
+    card["canonical_text"] = f"{topic_label} — {rendered} instances in total: receipts."
+    consolidation = card["metadata_json"]["consolidation"]  # type: ignore[index]
+    consolidation["rollup"] = {  # type: ignore[index]
+        "rollup_key": f"topic:{topic_label}",
+        "group_kind": "topic",
+        "topic_label": topic_label,
+        "revises_memory_id": None,
+    }
+    card["value"] = {
+        "kind": "memory_rollup",
+        "text": card["canonical_text"],
+        "rollup": {
+            "rollup_key": f"topic:{topic_label}",
+            "group_kind": "topic",
+            "topic_label": topic_label,
+            "member_count": structured,
+            "member_ids": list(member_ids),
+            "displayed_instance_count": len(member_ids),
+            "instances_truncated": False,
+            "grouping_input_truncated": False,
+            "grouping_input_count": len(member_ids),
+            "grouping_input_total": len(member_ids),
+            "grouping_input_total_exact": True,
+        },
+    }
+    return card
+
+
 def test_rollup_proposal_kind_literal_matches_vnext_rollups() -> None:
     # vnext_coverage_query keeps a local literal so the retrieval hot path
     # does not import vnext_rollups' model-provider seam; this pin fails
@@ -594,6 +735,7 @@ def test_rollup_proposal_kind_literal_matches_vnext_rollups() -> None:
     from alicebot_api.vnext_coverage_query import ROLLUP_PROPOSAL_KIND
 
     assert ROLLUP_PROPOSAL_KIND == vnext_rollups.ROLLUP_PROPOSAL_KIND
+    assert COUNT_MIN_ROLLUP_MEMBERS == vnext_rollups.MIN_AGGREGATION_MEMBERS
 
 
 def test_accepted_rollup_member_ids_requires_the_full_acceptance_shape() -> None:
@@ -614,6 +756,46 @@ def test_accepted_rollup_member_ids_requires_the_full_acceptance_shape() -> None
     malformed_members = _accepted_card_item("card-1", ["m-1"])
     malformed_members["metadata_json"]["consolidation"]["cluster_member_ids"] = "m-1"  # type: ignore[index]
     assert accepted_rollup_member_ids(malformed_members) == ()
+
+
+def test_count_bearing_rollup_requires_consistent_membership_structure_and_text() -> None:
+    valid = _count_card_item("card-1", ["m-1", "m-2", "m-3"])
+    assert count_bearing_rollup_member_count(valid) == 3
+
+    wrong_rendered = _count_card_item(
+        "card-2", ["m-1", "m-2", "m-3"], rendered_count=2
+    )
+    assert count_bearing_rollup_member_count(wrong_rendered) is None
+
+    wrong_structured = _count_card_item(
+        "card-3", ["m-1", "m-2", "m-3"], structured_count=2
+    )
+    assert count_bearing_rollup_member_count(wrong_structured) is None
+
+    missing_structured = _accepted_card_item("card-4", ["m-1", "m-2", "m-3"])
+    missing_structured["title"] = "Roll-up: board game night (3 instances in total)"
+    missing_structured["canonical_text"] = "board game night — 3 instances in total: receipts."
+    assert count_bearing_rollup_member_count(missing_structured) is None
+
+    below_rollup_minimum = _count_card_item("card-5", ["m-1"])
+    assert count_bearing_rollup_member_count(below_rollup_minimum) is None
+
+    truncated_input = _count_card_item("card-6", ["m-1", "m-2", "m-3"])
+    truncated_input["value"]["rollup"]["grouping_input_truncated"] = True  # type: ignore[index]
+    assert count_bearing_rollup_member_count(truncated_input) is None
+
+    membership_mismatch = _count_card_item("card-7", ["m-1", "m-2", "m-3"])
+    membership_mismatch["value"]["rollup"]["member_ids"] = [  # type: ignore[index]
+        "m-1",
+        "m-2",
+        "m-other",
+    ]
+    assert count_bearing_rollup_member_count(membership_mismatch) is None
+
+    display_truncated = _count_card_item("card-8", ["m-1", "m-2", "m-3"])
+    display_truncated["value"]["rollup"]["instances_truncated"] = True  # type: ignore[index]
+    display_truncated["value"]["rollup"]["displayed_instance_count"] = 2  # type: ignore[index]
+    assert count_bearing_rollup_member_count(display_truncated) == 3
 
 
 def _card_promotion_fixture() -> list[RetrievalCandidate]:

@@ -49,6 +49,7 @@ from __future__ import annotations
 from hashlib import md5
 import json
 import sqlite3
+from uuid import uuid4
 
 from alicebot_api.vnext_project_scope import (
     normalize_project_scope,
@@ -678,6 +679,20 @@ _TABLE_STATEMENTS: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS redaction_mode (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1))
+    )
+    """,
+    # One-row invalidation stamp for the process-local resident vector cache
+    # (vnext_stores/sqlite/vector_scan.py). The token is REWRITTEN to a fresh
+    # random value -- never incremented -- whenever a non-NULL memory embedding
+    # is overwritten or cleared, so a restored database snapshot can never
+    # alias a token a live cache entry was built at. Seeded by
+    # bootstrap_sqlite_schema with a random token (INSERT OR IGNORE keeps the
+    # existing token on re-bootstrap: an unchanged token must keep meaning
+    # "vectors unchanged").
+    """
+    CREATE TABLE IF NOT EXISTS embedding_stamp (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      token TEXT NOT NULL
     )
     """,
     # Append-only relationship history (append-only enforced by triggers
@@ -1950,6 +1965,14 @@ def bootstrap_sqlite_schema(conn: sqlite3.Connection) -> None:
     # a database file with redaction mode stuck open.
     conn.execute("INSERT OR IGNORE INTO redaction_mode (id, enabled) VALUES (1, 0)")
     conn.execute("UPDATE redaction_mode SET enabled = 0 WHERE id = 1")
+    # Seed the resident-vector-cache invalidation stamp with a random token.
+    # INSERT OR IGNORE: an existing token survives re-bootstrap on purpose
+    # (embedding bytes did not change, so caches built at that token stay
+    # valid). Embedding writers rewrite it via vector_scan.bump_embedding_stamp.
+    conn.execute(
+        "INSERT OR IGNORE INTO embedding_stamp (id, token) VALUES (1, ?)",
+        (uuid4().hex,),
+    )
     # FTS tables with a stale column set are dropped (with their triggers)
     # so the create-plus-rebuild path below re-indexes existing rows.
     _drop_outdated_fts_tables(conn)

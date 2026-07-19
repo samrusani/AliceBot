@@ -1,5 +1,26 @@
 # Alice on LongMemEval
 
+**Replicated accuracy: 81.2% mean over three independent full runs
+(80.8% / 81.0% / 81.8%; 404–409 of 500) on LongMemEval_s** — measured
+2026-07-18/19 on the published v0.12.0 code from the immutable release tag,
+with the same configuration as the historical run: gpt-4o reader
+(chain-of-thought, 24,000-char context budget, 16 items),
+gpt-4o-2024-08-06 judge with the benchmark's official protocol,
+text-embedding-3-small embed-on-write. Every run finished 500/500 scored
+with zero errors. Per-question evidence for all three runs is in
+[replication-v0.12.0-2026-07-19/](replication-v0.12.0-2026-07-19/).
+
+Replication notes, disclosed: transient OpenAI embedding-batch timeouts
+during ingest were cured by re-running the affected question supersets at
+lower concurrency before scoring was accepted (the same recovery the
+historical run used); one batch failure in run 1's cleanup pass could not be
+attributed to a question and is bounded to at most one partially-embedded
+ingest. Per-type accuracy is stable across runs (multi-session, the weakest
+category: 63.2/63.9/63.9%); the 30-question abstention subset is noisy
+across runs (76.7/90.0/83.3%) and should not be quoted to a single decimal.
+
+## Historical single run (superseded as the headline, retained as evidence)
+
 **Historical single-run accuracy: 79.4% (397/500) on LongMemEval_s** — run
 2026-07-07 with
 GPT-4o generation and the benchmark's official judge protocol, up from the

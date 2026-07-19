@@ -102,3 +102,17 @@ A full port would fork every query. The scoped approach below avoids that.
 - The core tools pass an integration smoke against the SQLite backend.
 - Retrieval evals (recall@k on the seeded corpus) run against both backends
   and report both numbers side by side.
+
+
+## Addendum (2026-07-19): sqlite-vec re-evaluated for the v0.13.0 scale work
+
+The vector-scale work re-examined the sqlite-vec rejection with evidence.
+It stands. The measured wall at 100k memories was per-query blob streaming
+(~615MB per query), not scoring; a pure-numpy resident vector cache with
+transactional stamp invalidation removed it (vector stage ~2.1s → 385–465ms
+warm, bit-identical results, 754MB peak RSS inside a 1024MB default cap with
+an off-switch), while keeping the install contract dependency-free — the
+fallback scan a native extension would still have required remains the only
+code path some environments ever run. An ANN adoption would now buy little:
+end-to-end recall at 100k is bounded by FTS/source search, not the vector
+stage (see docs/benchmarks/scale/README.md).

@@ -29,6 +29,7 @@ from alicebot_api.vnext_stores.sqlite.primitives import (
     _utc_now_iso,
     _uuid_text,
 )
+from alicebot_api.vnext_stores.sqlite.vector_scan import bump_embedding_stamp
 
 VNextRow = dict[str, object]
 
@@ -647,6 +648,10 @@ def redact_memory_bundle(
             ),
         )
         memory_changed = memory_update.rowcount > 0
+        if not current.get("_redaction_embedding_cleared"):
+            # Redaction NULLed a live vector: evict every resident vector
+            # cache in the same transaction (owner-decided prompt eviction).
+            bump_embedding_stamp(self._execute)
 
     redacted_memory = self._get_row("redact_memory_bundle", "memories", MEMORY_COLUMNS, mid)
     changed = bool(memory_changed or redacted_provenance_links or redacted_revisions or redacted_events)
@@ -685,7 +690,8 @@ def redact_memory_content(self, *, memory_id: str, actor_type: str = "user") -> 
     mid = str(memory_id)
     current = self._fetch_optional_one(
         """
-                SELECT metadata_json
+                SELECT metadata_json,
+                       (embedding IS NOT NULL) AS _redaction_had_embedding
                 FROM memories
                 WHERE id = ?
                   AND user_id = ?
@@ -733,6 +739,10 @@ def redact_memory_content(self, *, memory_id: str, actor_type: str = "user") -> 
                 self.user_id,
             ),
         )
+        if current.get("_redaction_had_embedding"):
+            # Redaction NULLed a live vector: evict every resident vector
+            # cache in the same transaction (owner-decided prompt eviction).
+            bump_embedding_stamp(self._execute)
     row = self._get_row("redact_memory_content", "memories", MEMORY_COLUMNS, mid)
     self._append_mutation_event(
         event_type="memory.redacted",

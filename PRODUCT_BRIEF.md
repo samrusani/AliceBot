@@ -39,7 +39,9 @@ Agent developers — people building or operating AI agents who need durable, ex
   Zero behavior change.** It relocates oversized HTTP, store, contract, MCP,
   and CLI modules behind stable facades and entrypoints without changing the
   local-first product boundary.
-- Phase 4 has not begun. It is not authorized by the Phase 3 handoff.
+- Phase 4 built the current carrier: the `v0.13.0` candidate (replicated
+  benchmark, SQLite scale, reference integrations) is in release
+  preparation.
 
 ## Non-Goals (Now)
 - Hosted service, multi-tenant control plane, SLA, or managed cloud.

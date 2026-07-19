@@ -12,6 +12,8 @@ Start with the narrowest path that solves the integration need:
 | Need | Default path | Demo or example |
 |---|---|---|
 | Generic external agent needs continuity in one call | `POST /v1/continuity/brief`; key-bound MCP integrations use core `alice_recall` / `alice_resume` (`alice_brief` is keyless-local legacy compatibility only) | `docs/examples/reference-agent-examples.md` |
+| MCP client (Claude Desktop, Claude Code, any stdio MCP host) needs zero-setup local memory | `uvx alice-memory mcp` serving the eleven core tools over stdio | `docs/examples/mcp_quickstart.py` |
+| Agent-framework tooling (OpenAI Agents SDK style function tools) with per-agent API keys | HTTP function tools over `/v0/vnext` with `Authorization: Bearer alice_sk_...` | `docs/examples/openai_agents_sdk_tool.py` |
 | Hermes owns orchestration and Alice supplies continuity workflows | provider plus MCP | `./.venv/bin/python scripts/run_hermes_bridge_demo.py` |
 | Existing OpenClaw workspace data must become queryable in Alice | import, then use normal brief/recall/resume surfaces | `./scripts/use_alice_with_openclaw.sh` |
 | Alice must target a non-default runtime provider | supporting Alice-side configuration for the paths above | `docs/integrations/phase14-provider-configuration.md` |
@@ -30,6 +32,32 @@ Use this when you are integrating Alice into a Python or TypeScript agent withou
 - use `alice_recall` or `alice_resume` only when your agent truly needs narrower output
 - examples: `docs/examples/generic_python_agent.py` and `docs/examples/generic_typescript_agent.ts`
 - reproducible demo: `./.venv/bin/python scripts/run_reference_agent_examples_demo.py`
+
+### MCP Quickstart
+
+Use this when the integrating agent is an MCP client and memory should live in
+a local SQLite file with no server to operate.
+
+- entrypoint: `uvx alice-memory mcp` (or `alice-memory mcp` from an install)
+- runnable example: `docs/examples/mcp_quickstart.py` spawns the packaged
+  server, verifies the eleven-core-tool surface over live `tools/list`, and
+  round-trips a capture, commit, and recall over stdio
+- CI smoke: `tests/integration/test_mcp_quickstart.py`
+- client configuration snippets: `docs/integrations/mcp.md`
+
+### Agent-Framework Function Tools
+
+Use this when a framework such as the OpenAI Agents SDK owns the loop and
+Alice supplies memory tools authenticated with per-agent API keys.
+
+- runnable example: `docs/examples/openai_agents_sdk_tool.py` defines
+  capture/recall functions in the SDK's function-tool shape (no SDK
+  dependency) calling `/v0/vnext` with `Authorization: Bearer alice_sk_...`
+- key management: `alicebot agent keys create --agent-id <id> --profile <profile>`
+  with server-side permission profiles; see `docs/alpha/agent-integration.md`
+- CI smoke: `tests/integration/test_openai_agents_sdk_tool.py` exercises a
+  real key end to end, including tampered-key rejection and the
+  `read_only_agent` write refusal
 
 ### Hermes
 

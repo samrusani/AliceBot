@@ -74,11 +74,14 @@ SQLITE_METHODS = (
 SOURCE_RECEIPTS = {
     COMMON_PATH: "191f0ebd106cf757f5082af171da06e2e77eee518d17e80e5489e9e0d81493fe",
     POSTGRES_CARRIER_PATH: "1960ff3dd899c63c0f298e79b7e0ea13c9115ae7aacc91081967ce9473d92f92",
-    SQLITE_CARRIER_PATH: "3d334607e5c207b6a01dbfe6aa2b209d82767bd46387cd5837a82ab439b02388",
+    # SQLite carrier re-minted for the Phase 4 Stage 2 resident vector cache
+    # (reviewed change): redaction paths that NULL a live embedding now bump
+    # the embedding_stamp token in the same transaction (prompt eviction).
+    SQLITE_CARRIER_PATH: "5ebda2b3ff1bdf5bb5dc5be44923ec600c68e85f00725541b1c35df64b9a3a85",
 }
 EXPECTED_METHOD_AST_MANIFESTS = {
     "postgres": "538d5a18c0dfa01b368b409832738d5a25d7ff4bd063ba17062b01fefbb05d3b",
-    "sqlite": "ea2dad84a804ac9b15c8815aec774c32d37e240a76145273b21dc61c76cb0922",
+    "sqlite": "5bd15d28cf3b5424ad9cf8f033095827c33a5342c5caf51f8b05f3042ed880eb",
 }
 EXPECTED_METADATA_MANIFESTS = {
     "postgres": "af03955c805f720b8d3ec735f8202efeb5f405c8c7de1cc45cbfef3644867824",

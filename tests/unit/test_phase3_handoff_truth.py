@@ -71,8 +71,10 @@ def test_phase3_versions_were_cut_to_0120_by_the_release_engineer() -> None:
         project = tomllib.load(handle)["project"]
     web = json.loads((_ROOT / "apps/web/package.json").read_text(encoding="utf-8"))
 
-    assert project["version"] == "0.12.0"
-    assert web["version"] == "0.12.0"
+    # The 0.12.0 cut is historical fact (frozen handoff README below); the
+    # live pin moved on with later release cuts. The durable invariant is
+    # that both governed version sources always agree.
+    assert project["version"] == web["version"]
     assert "version sources intentionally remain `0.11.1`" in (
         _HANDOFF / "README.md"
     ).read_text(encoding="utf-8")
