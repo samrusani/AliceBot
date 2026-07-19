@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
+import os
 import sqlite3
 from pathlib import Path
 from uuid import uuid4
@@ -9,6 +10,7 @@ from uuid import uuid4
 import numpy as np
 import pytest
 
+from alicebot_api import vnext_embeddings
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import (
     SQLiteVNextStore,
@@ -24,6 +26,7 @@ from alicebot_api.vnext_embeddings import (
     memory_embedding_signature_is_current,
     pad_embedding_vector,
 )
+from alicebot_api.vnext_stores.sqlite import vector_scan
 from alicebot_api.vnext_stores.sqlite.columns import MEMORY_COLUMNS
 from alicebot_api.mcp_tools import redact_memory_flow
 from alicebot_api.vnext_memory_commit import VNextMemoryCommitService, VNextMemoryCommitValidationError
@@ -2655,18 +2658,23 @@ _SIGNATURE_A = {"version": 2, "provider": "prov-a", "model": "model-a", "endpoin
 _SIGNATURE_B = {"version": 2, "provider": "prov-b", "model": "model-b", "endpoint": "ep-b"}
 
 
-def test_vector_search_matches_per_row_oracle_on_adversarial_corpus() -> None:
-    conn = _open_connection()
-    store = _make_store(conn)
-    rng = np.random.default_rng(42)
+def _sig_kwargs(signature: dict[str, object]) -> dict[str, object]:
+    return {
+        "embedding_provider": signature["provider"],
+        "embedding_model": signature["model"],
+        "embedding_endpoint": signature["endpoint"],
+        "embedding_signature_version": signature["version"],
+    }
 
-    def _sig_kwargs(signature: dict[str, object]) -> dict[str, object]:
-        return {
-            "embedding_provider": signature["provider"],
-            "embedding_model": signature["model"],
-            "embedding_endpoint": signature["endpoint"],
-            "embedding_signature_version": signature["version"],
-        }
+
+def _seed_adversarial_vector_corpus(store: SQLiteVNextStore, conn: sqlite3.Connection) -> list[dict[str, object]]:
+    """Seed the adversarial vector corpus; return the differential scenarios.
+
+    Shared between the Stage 1 (stateless-scan) oracle test and the Stage 2
+    (resident-cache) three-way differential test so both exercise the exact
+    same corpus and query mix.
+    """
+    rng = np.random.default_rng(42)
 
     # Signature population A (12 rows, one of them stale-sha and nearest to
     # the query so signature-filtered search must refill past it).
@@ -2746,7 +2754,7 @@ def test_vector_search_matches_per_row_oracle_on_adversarial_corpus() -> None:
         )
 
     query = list(rng.standard_normal(64))
-    scenarios: list[dict[str, object]] = [
+    return [
         {"query_vector": query, "limit": 100},
         {"query_vector": query, "limit": 3},
         {"query_vector": [0.0, 1.0, 1.0], "limit": 5},
@@ -2754,6 +2762,12 @@ def test_vector_search_matches_per_row_oracle_on_adversarial_corpus() -> None:
         {"query_vector": query, "limit": 100, **_sig_kwargs(_SIGNATURE_A)},
         {"query_vector": query, "limit": 2, **_sig_kwargs(_SIGNATURE_B)},
     ]
+
+
+def test_vector_search_matches_per_row_oracle_on_adversarial_corpus() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    scenarios = _seed_adversarial_vector_corpus(store, conn)
     for scenario in scenarios:
         expected = _oracle_vector_search_per_row(store, **scenario)
         actual = store.search_memories_vector(**scenario)
@@ -3005,6 +3019,608 @@ def test_vector_search_survives_embedding_nulled_between_scan_and_hydrate(tmp_pa
     )
     assert [str(row["id"]) for row in rows] == survivors
     assert target not in {str(row["id"]) for row in rows}
+
+
+# -- Stage 2 resident vector cache ------------------------------------------------------
+#
+# search_memories_vector gained a process-local resident vector cache
+# (vnext_stores/sqlite/vector_scan.py) validated against the one-row
+# embedding_stamp token. The cache holds ONLY vectors/norms/id-map; every
+# predicate -- including the embedding-signature json_extract clauses --
+# runs as fresh candidate SQL per query. These tests pin: three-way
+# differential equality (cached == stateless == per-row oracle), the
+# invalidation contract for clear-then-re-embed / reindex / redaction,
+# embed-on-write upserts without rebuilds, warm-path signature parity with
+# the stateless SQL (including metadata_json rewrites that never touch the
+# embedding column), the atomicity of the bump-deciding presence read, the
+# off-switch and byte cap, and the :memory: bypass.
+
+
+def _clear_vector_cache_env(monkeypatch) -> None:
+    monkeypatch.delenv(vector_scan.VECTOR_CACHE_ENV, raising=False)
+    monkeypatch.delenv(vector_scan.VECTOR_CACHE_MAX_MB_ENV, raising=False)
+
+
+def _open_file_connection(tmp_path: Path) -> tuple[str, sqlite3.Connection]:
+    db_path = str(tmp_path / f"vector-cache-{uuid4()}.db")
+    conn = sqlite3.connect(db_path)
+    bootstrap_sqlite_schema(conn)
+    conn.commit()
+    return db_path, conn
+
+
+def _vector_cache_entry(db_path: str, user_id: str):
+    return vector_scan._REGISTRY.get((os.path.realpath(db_path), str(user_id)))
+
+
+def _stamp_token(db_path: str) -> str:
+    probe = sqlite3.connect(db_path)
+    try:
+        return str(probe.execute("SELECT token FROM embedding_stamp WHERE id = 1").fetchone()[0])
+    finally:
+        probe.close()
+
+
+def _id_distance_pairs(rows: list[dict[str, object]]) -> list[tuple[str, object]]:
+    return [(str(row["id"]), row["vector_distance"]) for row in rows]
+
+
+class _SubstringVectorProvider:
+    """Deterministic embedding stub: marker substrings map to fixed directions."""
+
+    provider = "stub_provider"
+    model = "stub-embed"
+    base_url = "https://stub.invalid/v1"
+
+    def __init__(self, routes: dict[str, list[float]]):
+        self._routes = routes
+
+    def embed_text(self, text: str) -> list[float]:
+        return self.embed_batch([text])[0]
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for text in texts:
+            for marker, vector in self._routes.items():
+                if marker in text:
+                    vectors.append(list(vector))
+                    break
+            else:
+                raise AssertionError(f"no stub vector for text: {text!r}")
+        return vectors
+
+
+def test_vector_cache_matches_stateless_and_oracle_on_adversarial_corpus(tmp_path: Path, monkeypatch) -> None:
+    # (a) Three-way differential: cached path == stateless path == the
+    # per-row oracle, on the same adversarial corpus, cold and warm.
+    _clear_vector_cache_env(monkeypatch)
+    db_path, conn = _open_file_connection(tmp_path)
+    store = _make_store(conn)
+    scenarios = _seed_adversarial_vector_corpus(store, conn)
+    conn.commit()
+    for round_name in ("cold", "warm"):
+        for scenario in scenarios:
+            expected = _oracle_vector_search_per_row(store, **scenario)
+            monkeypatch.setenv(vector_scan.VECTOR_CACHE_ENV, "off")
+            stateless = store.search_memories_vector(**scenario)
+            monkeypatch.delenv(vector_scan.VECTOR_CACHE_ENV)
+            cached = store.search_memories_vector(**scenario)
+            assert _id_distance_pairs(cached) == _id_distance_pairs(stateless) == _id_distance_pairs(expected), (
+                round_name,
+                scenario,
+            )
+            # Full hydrated rows are identical too (bitwise-equal distances).
+            assert cached == stateless == expected, (round_name, scenario)
+    entry = _vector_cache_entry(db_path, store.user_id)
+    assert entry is not None
+    assert entry.rebuilds == 1  # served warm across every scenario
+    conn.close()
+
+
+def test_vector_cache_clear_then_reembed_via_commit_service_scores_new_vector(tmp_path: Path, monkeypatch) -> None:
+    # (b) THE CLEAR-THEN-RE-EMBED HOLE: a text update through the real
+    # commit-service flow clears then re-embeds the SAME row id. The clear
+    # must bump the stamp so a WARM cache stops scoring the old vector.
+    _clear_vector_cache_env(monkeypatch)
+    db_path, conn = _open_file_connection(tmp_path)
+    store = _make_store(conn)
+    provider = _SubstringVectorProvider({"tea": [0.0, 1.0], "coffee": [1.0, 0.0]})
+    monkeypatch.setattr("alicebot_api.vnext_embeddings.get_embedding_provider", lambda: provider)
+    memory = _create_memory(store, canonical_text="Sam prefers coffee before noon.")
+    assert vnext_embeddings.attach_memory_embedding(store, memory, actor_type="user") is True
+    conn.commit()
+
+    warm = store.search_memories_vector(query_vector=[1.0, 0.0])
+    assert [str(row["id"]) for row in warm] == [str(memory["id"])]
+    assert warm[0]["vector_distance"] == pytest.approx(0.0, abs=1e-6)
+    entry = _vector_cache_entry(db_path, store.user_id)
+    assert entry is not None
+    rebuilds_before = entry.rebuilds
+    token_before = _stamp_token(db_path)
+
+    service = VNextMemoryCommitService(store)
+    result = service.correct(
+        identity=None,
+        memory_id=str(memory["id"]),
+        canonical_text="Sam prefers tea before noon.",
+    )
+    assert result["status"] == "committed"
+    conn.commit()
+
+    # The clear bumped the token even though the re-embed (NULL -> vector,
+    # current content sha) did not.
+    assert _stamp_token(db_path) != token_before
+
+    # The next query scores by the NEW vector...
+    new_direction = store.search_memories_vector(query_vector=[0.0, 1.0])
+    assert [str(row["id"]) for row in new_direction] == [str(memory["id"])]
+    assert new_direction[0]["vector_distance"] == pytest.approx(0.0, abs=1e-6)
+    old_direction = store.search_memories_vector(query_vector=[1.0, 0.0])
+    assert old_direction[0]["vector_distance"] == pytest.approx(1.0, abs=1e-6)
+    assert entry.rebuilds > rebuilds_before  # invalidation, not upsert
+
+    # ...including from a second sqlite3 connection to the same file.
+    conn2 = sqlite3.connect(db_path)
+    store2 = SQLiteVNextStore(conn2, store.user_id)
+    second = store2.search_memories_vector(query_vector=[0.0, 1.0])
+    assert second == new_direction
+    assert second == _oracle_vector_search_per_row(store2, query_vector=[0.0, 1.0])
+    conn2.close()
+    conn.close()
+
+
+def test_vector_cache_reindex_overwrite_and_cas_rollback_stay_consistent(tmp_path: Path, monkeypatch) -> None:
+    # (c) Reindex/backfill overwrites bump the token and later queries (from
+    # a second connection) see the new vectors; a rolled-back overwrite
+    # leaves both the token and subsequent results consistent.
+    _clear_vector_cache_env(monkeypatch)
+    db_path, conn = _open_file_connection(tmp_path)
+    store = _make_store(conn)
+    rng = np.random.default_rng(7)
+    ids: list[str] = []
+    for position in range(4):
+        memory = _create_memory(store, canonical_text=f"reindex row {position}")
+        ids.append(str(memory["id"]))
+        assert store.update_memory_embedding(memory_id=ids[-1], vector=list(rng.standard_normal(1536))) is not None
+    conn.commit()
+    store.search_memories_vector(query_vector=[1.0, 0.0])  # warm the cache
+    entry = _vector_cache_entry(db_path, store.user_id)
+    assert entry is not None and entry.rebuilds == 1
+    token_before = _stamp_token(db_path)
+
+    # Overwrite every existing vector (the backfill/reindex shape).
+    for position, memory_id in enumerate(ids):
+        basis = [0.0] * 4
+        basis[position] = 1.0
+        assert store.update_memory_embedding(memory_id=memory_id, vector=basis) is not None
+    conn.commit()
+    token_after = _stamp_token(db_path)
+    assert token_after != token_before
+
+    conn2 = sqlite3.connect(db_path)
+    store2 = SQLiteVNextStore(conn2, store.user_id)
+    rows = store2.search_memories_vector(query_vector=[0.0, 0.0, 1.0, 0.0])
+    assert str(rows[0]["id"]) == ids[2]
+    assert rows[0]["vector_distance"] == pytest.approx(0.0, abs=1e-6)
+    assert rows == _oracle_vector_search_per_row(store2, query_vector=[0.0, 0.0, 1.0, 0.0])
+
+    # CAS rollback: an uncommitted overwrite is visible to its own
+    # connection (snapshot consistency)...
+    assert store2.update_memory_embedding(memory_id=ids[0], vector=[0.5, 0.5, 0.0, 0.0]) is not None
+    uncommitted = store2.search_memories_vector(query_vector=[0.5, 0.5, 0.0, 0.0])
+    assert str(uncommitted[0]["id"]) == ids[0]
+    assert uncommitted[0]["vector_distance"] == pytest.approx(0.0, abs=1e-6)
+    conn2.rollback()
+    # ...and after rollback the committed token survives and results match
+    # the stateless path again (fresh-uuid rewrite: no token aliasing).
+    assert _stamp_token(db_path) == token_after
+    rolled_back = store2.search_memories_vector(query_vector=[1.0, 0.0, 0.0, 0.0])
+    monkeypatch.setenv(vector_scan.VECTOR_CACHE_ENV, "off")
+    stateless = store2.search_memories_vector(query_vector=[1.0, 0.0, 0.0, 0.0])
+    monkeypatch.delenv(vector_scan.VECTOR_CACHE_ENV)
+    assert rolled_back == stateless
+    assert str(rolled_back[0]["id"]) == ids[0]
+    assert rolled_back[0]["vector_distance"] == pytest.approx(0.0, abs=1e-6)
+
+    # Re-bootstrap keeps the token: INSERT OR IGNORE, never re-seeded.
+    bootstrap_sqlite_schema(conn)
+    conn.commit()
+    assert _stamp_token(db_path) == token_after
+    conn2.close()
+    conn.close()
+
+
+def test_vector_cache_embed_on_write_upserts_without_rebuild(tmp_path: Path, monkeypatch) -> None:
+    # (d) Newly captured memories become searchable WITHOUT a rebuild: the
+    # NULL -> vector write does not bump, and the warm path upserts the new
+    # id into the same entry object.
+    _clear_vector_cache_env(monkeypatch)
+    db_path, conn = _open_file_connection(tmp_path)
+    store = _make_store(conn)
+    for position, vector in enumerate(([0.0, 1.0], [0.6, 0.8], [-1.0, 0.2])):
+        memory = _create_memory(store, canonical_text=f"resident row {position}")
+        assert store.update_memory_embedding(memory_id=str(memory["id"]), vector=vector) is not None
+    conn.commit()
+    store.search_memories_vector(query_vector=[1.0, 0.0])  # warm the cache
+    entry = _vector_cache_entry(db_path, store.user_id)
+    assert entry is not None
+    assert entry.rebuilds == 1
+    assert len(entry.row_index) == 3
+    token_before = _stamp_token(db_path)
+
+    captured = _create_memory(store, canonical_text="embed on write row")
+    assert store.update_memory_embedding(memory_id=str(captured["id"]), vector=[1.0, 0.0]) is not None
+    conn.commit()
+    assert _stamp_token(db_path) == token_before  # embed-on-write must NOT bump
+
+    rows = store.search_memories_vector(query_vector=[1.0, 0.0])
+    assert str(rows[0]["id"]) == str(captured["id"])
+    assert rows[0]["vector_distance"] == pytest.approx(0.0, abs=1e-6)
+    entry_after = _vector_cache_entry(db_path, store.user_id)
+    assert entry_after is entry  # cache entry object identity survives
+    assert entry.rebuilds == 1  # upsert path, no rebuild
+    assert len(entry.row_index) == 4
+    assert rows == _oracle_vector_search_per_row(store, query_vector=[1.0, 0.0])
+    conn.close()
+
+
+def test_vector_cache_warm_signature_filter_matches_sql_clauses(tmp_path: Path, monkeypatch) -> None:
+    # (e) The warm cached path applies the SAME signature json_extract SQL
+    # clauses as the stateless path (fresh per query, nothing captured), so
+    # it must select EXACTLY the same rows on a mixed-population corpus
+    # including adversarial value types.
+    _clear_vector_cache_env(monkeypatch)
+    db_path, conn = _open_file_connection(tmp_path)
+    store = _make_store(conn)
+    for position in range(3):
+        _seed_vector_row(
+            store,
+            conn,
+            canonical_text=f"warm sig a {position}",
+            vector=[1.0, float(position) * 0.1],
+            updated_at=f"2026-07-05T00:00:{position:02d}+00:00",
+            signature=_SIGNATURE_A,
+        )
+    for position in range(3):
+        _seed_vector_row(
+            store,
+            conn,
+            canonical_text=f"warm sig b {position}",
+            vector=[1.0, 0.0],
+            updated_at=f"2026-07-05T00:01:{position:02d}+00:00",
+            signature=_SIGNATURE_B,
+        )
+    _seed_vector_row(
+        store,
+        conn,
+        canonical_text="warm sig other endpoint",
+        vector=[1.0, 0.0],
+        updated_at="2026-07-05T00:02:00+00:00",
+        signature={**_SIGNATURE_A, "endpoint": "ep-other"},
+    )
+    _seed_vector_row(
+        store,
+        conn,
+        canonical_text="warm sig unsigned",
+        vector=[1.0, 0.0],
+        updated_at="2026-07-05T00:03:00+00:00",
+    )
+    # Nearest stale-sha row: SQL clauses admit it, the hydrate sha recheck
+    # must reject it -- identically on both paths.
+    _seed_vector_row(
+        store,
+        conn,
+        canonical_text="warm sig stale nearest",
+        vector=[1.0, 0.0],
+        updated_at="2026-07-05T00:04:00+00:00",
+        signature=_SIGNATURE_A,
+        stale_sha=True,
+    )
+    # Adversarial: version stored as TEXT '2'. SQLite `'2' = 2` is false
+    # (storage-class mismatch), so both paths must reject it -- never
+    # coerce.
+    _seed_vector_row(
+        store,
+        conn,
+        canonical_text="warm sig text version",
+        vector=[1.0, 0.0],
+        updated_at="2026-07-05T00:05:00+00:00",
+        signature={**_SIGNATURE_A, "version": "2"},
+    )
+    conn.commit()
+
+    scenarios: list[dict[str, object]] = [
+        {"query_vector": [1.0, 0.0]},
+        {"query_vector": [1.0, 0.0], **_sig_kwargs(_SIGNATURE_A)},
+        {
+            "query_vector": [1.0, 0.0],
+            "embedding_provider": "prov-a",
+            "embedding_model": "model-a",
+        },
+        {"query_vector": [1.0, 0.0], **{**_sig_kwargs(_SIGNATURE_A), "embedding_signature_version": 3}},
+        {"query_vector": [1.0, 0.0], **_sig_kwargs(_SIGNATURE_B)},
+        {"query_vector": [1.0, 0.0], "embedding_provider": "prov-none", "embedding_model": "model-none"},
+    ]
+    for round_name in ("cold", "warm"):
+        for scenario in scenarios:
+            expected = _oracle_vector_search_per_row(store, **scenario)
+            monkeypatch.setenv(vector_scan.VECTOR_CACHE_ENV, "off")
+            stateless = store.search_memories_vector(**scenario)
+            monkeypatch.delenv(vector_scan.VECTOR_CACHE_ENV)
+            cached = store.search_memories_vector(**scenario)
+            assert _id_distance_pairs(cached) == _id_distance_pairs(stateless) == _id_distance_pairs(expected), (
+                round_name,
+                scenario,
+            )
+            assert cached == stateless == expected, (round_name, scenario)
+    entry = _vector_cache_entry(db_path, store.user_id)
+    assert entry is not None
+    assert entry.rebuilds == 1  # the warm round served without a rebuild
+    conn.close()
+
+
+def test_vector_cache_signature_metadata_patch_without_bump_stays_bit_identical(tmp_path: Path, monkeypatch) -> None:
+    # (e2) update_memory(metadata_json=...) can rewrite the embedding
+    # signature WITHOUT touching the embedding column, so no stamp bump
+    # happens (correctly: the vector bytes are unchanged). Because signature
+    # filtering is SQL-side on every query -- never captured into the
+    # resident data -- a WARM cache must admit the row the rewritten
+    # signature now matches, bit-identical to the stateless path.
+    _clear_vector_cache_env(monkeypatch)
+    db_path, conn = _open_file_connection(tmp_path)
+    store = _make_store(conn)
+
+    target = _create_memory(store, canonical_text="signature swap target")
+    decoy = _create_memory(store, canonical_text="signature decoy")
+    sha_target = memory_embedding_content_sha256(store.get_memory(str(target["id"])))
+    sha_decoy = memory_embedding_content_sha256(store.get_memory(str(decoy["id"])))
+    assert (
+        store.update_memory_embedding(
+            memory_id=str(target["id"]),
+            vector=[1.0, 0.0],
+            provider="prov-a",
+            model="model-a",
+            endpoint="ep-a",
+            content_sha256=sha_target,
+            signature_version=2,
+        )
+        is not None
+    )
+    assert (
+        store.update_memory_embedding(
+            memory_id=str(decoy["id"]),
+            vector=[0.0, 1.0],
+            provider="prov-b",
+            model="model-b",
+            endpoint="ep-b",
+            content_sha256=sha_decoy,
+            signature_version=2,
+        )
+        is not None
+    )
+    conn.commit()
+
+    # Warm the cache while target still carries the prov-a signature.
+    store.search_memories_vector(query_vector=[1.0, 0.0])
+    conn.commit()
+    token_before = _stamp_token(db_path)
+
+    # Rewrite the signature metadata WITHOUT touching the embedding column.
+    new_metadata = {
+        EMBEDDING_SIGNATURE_METADATA_KEY: {
+            "version": 2,
+            "provider": "prov-b",
+            "model": "model-b",
+            "endpoint": "ep-b",
+            "content_sha256": sha_target,
+        }
+    }
+    store.update_memory(memory_id=str(target["id"]), patch={"metadata_json": new_metadata})
+    conn.commit()
+    assert _stamp_token(db_path) == token_before, "no bump expected: embedding column untouched"
+
+    query = {
+        "query_vector": [1.0, 0.0],
+        "embedding_provider": "prov-b",
+        "embedding_model": "model-b",
+        "embedding_endpoint": "ep-b",
+        "embedding_signature_version": 2,
+    }
+    monkeypatch.setenv(vector_scan.VECTOR_CACHE_ENV, "off")
+    stateless = store.search_memories_vector(**query)
+    monkeypatch.delenv(vector_scan.VECTOR_CACHE_ENV)
+    cached = store.search_memories_vector(**query)
+    # SQL admits the patched target (nearest) plus the genuinely-prov-b decoy.
+    assert [str(row["id"]) for row in stateless] == [str(target["id"]), str(decoy["id"])]
+    assert _id_distance_pairs(cached) == _id_distance_pairs(stateless)
+    assert cached == stateless
+
+    # And the reverse rewrite excludes the row again, on both paths.
+    store.update_memory(memory_id=str(target["id"]), patch={"metadata_json": {}})
+    conn.commit()
+    monkeypatch.setenv(vector_scan.VECTOR_CACHE_ENV, "off")
+    stateless_after = store.search_memories_vector(**query)
+    monkeypatch.delenv(vector_scan.VECTOR_CACHE_ENV)
+    cached_after = store.search_memories_vector(**query)
+    assert [str(row["id"]) for row in stateless_after] == [str(decoy["id"])]
+    assert cached_after == stateless_after
+    conn.close()
+
+
+def test_vector_cache_presence_read_is_atomic_with_update_and_bump(tmp_path: Path, monkeypatch) -> None:
+    # (e3) The bump-vs-no-bump decision comes from an embedding-presence
+    # point-read. Executed in autocommit it races embed-on-write: a
+    # concurrent NULL -> V1 commit between the read and the UPDATE would
+    # turn this write into an overwrite whose bump the stale read skips,
+    # and the cache would serve V1 forever. The fix takes BEGIN IMMEDIATE
+    # before the read, so this test proves (1) the read runs inside the
+    # writer transaction and (2) no concurrent embedding write can commit
+    # inside the gap -- the interleaving that skipped the bump is
+    # impossible.
+    _clear_vector_cache_env(monkeypatch)
+    db_path, conn1 = _open_file_connection(tmp_path)
+    store1 = _make_store(conn1)
+    # Short busy timeout: the blocked writer must fail fast, not stall.
+    conn2 = sqlite3.connect(db_path, timeout=0.2)
+    store2 = SQLiteVNextStore(conn2, store1.user_id)
+
+    target = _create_memory(store1, canonical_text="toctou target")
+    for position in range(8):
+        angle = 0.05 + 0.01 * position
+        filler = _create_memory(store1, canonical_text=f"toctou filler {position}")
+        assert (
+            store1.update_memory_embedding(
+                memory_id=str(filler["id"]),
+                vector=[float(np.cos(angle)), float(np.sin(angle))],
+            )
+            is not None
+        )
+    conn1.commit()
+    target_id = str(target["id"])
+
+    original_fetch = store1._fetch_optional_one
+    state: dict[str, object] = {"fired": False, "in_transaction_at_preread": None, "concurrent_error": None}
+
+    def hooked(query: str, params: tuple[object, ...] = ()):  # noqa: ANN001
+        row = original_fetch(query, params)
+        if not state["fired"] and "embedding_present" in query:
+            state["fired"] = True
+            # (1) The presence read shares the writer transaction.
+            state["in_transaction_at_preread"] = conn1.in_transaction
+            # (2) A concurrent embed-on-write cannot commit inside the gap:
+            # the writer lock is already held, so it fails with SQLITE_BUSY
+            # instead of silently landing between the read and the UPDATE.
+            try:
+                store2.update_memory_embedding(memory_id=target_id, vector=[0.0, 1.0])
+                conn2.commit()
+            except sqlite3.OperationalError as exc:
+                state["concurrent_error"] = str(exc)
+        return row
+
+    store1._fetch_optional_one = hooked  # type: ignore[method-assign]
+    token_before = _stamp_token(db_path)
+    assert store1.update_memory_embedding(memory_id=target_id, vector=[1.0, 0.0]) is not None
+    store1._fetch_optional_one = original_fetch  # type: ignore[method-assign]
+    conn1.commit()
+
+    assert state["fired"] is True
+    assert state["in_transaction_at_preread"] is True
+    assert "locked" in str(state["concurrent_error"])
+    # A's write was a true embed-on-write (NULL -> vector): no bump.
+    assert _stamp_token(db_path) == token_before
+
+    # Warm the cache on the second connection, then overwrite the now-live
+    # vector: the presence read (inside the writer lock) sees it and bumps.
+    store2.search_memories_vector(query_vector=[1.0, 0.0])
+    assert store2.update_memory_embedding(memory_id=target_id, vector=[0.0, 1.0]) is not None
+    conn2.commit()
+    assert _stamp_token(db_path) != token_before
+
+    # Quiescent end state: cached and stateless paths agree bit-identically.
+    query = {"query_vector": [1.0, 0.0], "limit": 1}
+    monkeypatch.setenv(vector_scan.VECTOR_CACHE_ENV, "off")
+    stateless = store2.search_memories_vector(**query)
+    monkeypatch.delenv(vector_scan.VECTOR_CACHE_ENV)
+    cached = store2.search_memories_vector(**query)
+    assert target_id not in {str(row["id"]) for row in stateless}
+    assert _id_distance_pairs(cached) == _id_distance_pairs(stateless)
+    assert cached == stateless
+    conn1.close()
+    conn2.close()
+
+
+def test_vector_cache_redaction_evicts_the_row_and_bumps_the_token(tmp_path: Path, monkeypatch) -> None:
+    # (f) Redacting a cached row NULLs its embedding inline; the stamp bump
+    # (owner-decided prompt eviction) must stop the vector from
+    # participating, including for a fresh second connection.
+    _clear_vector_cache_env(monkeypatch)
+    db_path, conn = _open_file_connection(tmp_path)
+    store = _make_store(conn)
+    target = _create_memory(store, canonical_text="redaction target row")
+    assert store.update_memory_embedding(memory_id=str(target["id"]), vector=[1.0, 0.0]) is not None
+    for position, vector in enumerate(([0.9, 0.1], [0.5, 0.5])):
+        survivor = _create_memory(store, canonical_text=f"redaction survivor {position}")
+        assert store.update_memory_embedding(memory_id=str(survivor["id"]), vector=vector) is not None
+    conn.commit()
+    warm = store.search_memories_vector(query_vector=[1.0, 0.0])
+    assert str(warm[0]["id"]) == str(target["id"])
+    entry = _vector_cache_entry(db_path, store.user_id)
+    assert entry is not None
+    rebuilds_before = entry.rebuilds
+    token_before = _stamp_token(db_path)
+
+    redact_memory_flow(store, memory_id=str(target["id"]), reason="user requested removal")
+    conn.commit()
+    assert _stamp_token(db_path) != token_before
+
+    conn2 = sqlite3.connect(db_path)
+    store2 = SQLiteVNextStore(conn2, store.user_id)
+    rows = store2.search_memories_vector(query_vector=[1.0, 0.0])
+    assert str(target["id"]) not in {str(row["id"]) for row in rows}
+    assert len(rows) == 2
+    monkeypatch.setenv(vector_scan.VECTOR_CACHE_ENV, "off")
+    stateless = store2.search_memories_vector(query_vector=[1.0, 0.0])
+    monkeypatch.delenv(vector_scan.VECTOR_CACHE_ENV)
+    assert rows == stateless
+    assert rows == _oracle_vector_search_per_row(store2, query_vector=[1.0, 0.0])
+    assert entry.rebuilds > rebuilds_before
+    conn2.close()
+    conn.close()
+
+
+def test_vector_cache_off_switch_and_over_cap_match_cached_results(tmp_path: Path, monkeypatch) -> None:
+    # (g) ALICEBOT_SQLITE_VECTOR_CACHE=off and an over-cap
+    # ALICEBOT_SQLITE_VECTOR_CACHE_MAX_MB both fall back to the stateless
+    # path with identical results on the same corpus.
+    _clear_vector_cache_env(monkeypatch)
+    db_path, conn = _open_file_connection(tmp_path)
+    store = _make_store(conn)
+    rng = np.random.default_rng(11)
+    for position in range(8):
+        memory = _create_memory(store, canonical_text=f"cap row {position}")
+        assert (
+            store.update_memory_embedding(memory_id=str(memory["id"]), vector=list(rng.standard_normal(1536)))
+            is not None
+        )
+    conn.commit()
+    query = list(rng.standard_normal(1536))
+    expected = _oracle_vector_search_per_row(store, query_vector=query)
+
+    monkeypatch.setenv(vector_scan.VECTOR_CACHE_ENV, "off")
+    off_rows = store.search_memories_vector(query_vector=query)
+    assert _vector_cache_entry(db_path, store.user_id) is None  # never built
+    monkeypatch.delenv(vector_scan.VECTOR_CACHE_ENV)
+
+    cached_rows = store.search_memories_vector(query_vector=query)
+    assert _vector_cache_entry(db_path, store.user_id) is not None
+    assert cached_rows == off_rows == expected
+
+    monkeypatch.setenv(vector_scan.VECTOR_CACHE_MAX_MB_ENV, "0")
+    capped_rows = store.search_memories_vector(query_vector=query)
+    assert capped_rows == expected
+    assert _vector_cache_entry(db_path, store.user_id) is None  # dropped at the cap gate
+
+    # An unparseable cap falls back to the default and the cache serves again.
+    monkeypatch.setenv(vector_scan.VECTOR_CACHE_MAX_MB_ENV, "not-a-number")
+    default_cap_rows = store.search_memories_vector(query_vector=query)
+    assert default_cap_rows == expected
+    assert _vector_cache_entry(db_path, store.user_id) is not None
+    conn.close()
+
+
+def test_vector_cache_bypassed_for_in_memory_databases(monkeypatch) -> None:
+    # (h) :memory: databases have no stable identity: the registry must not
+    # gain an entry and results still match the oracle.
+    _clear_vector_cache_env(monkeypatch)
+    conn = _open_connection()
+    store = _make_store(conn)
+    for position, vector in enumerate(([1.0, 0.0], [0.0, 1.0])):
+        memory = _create_memory(store, canonical_text=f"memory-db row {position}")
+        assert store.update_memory_embedding(memory_id=str(memory["id"]), vector=vector) is not None
+    rows = store.search_memories_vector(query_vector=[1.0, 0.0])
+    assert rows == _oracle_vector_search_per_row(store, query_vector=[1.0, 0.0])
+    assert all(key[1] != store.user_id for key in vector_scan._REGISTRY)
+    conn.close()
 
 
 # -- open loops -------------------------------------------------------------------------

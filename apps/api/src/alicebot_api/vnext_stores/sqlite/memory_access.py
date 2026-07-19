@@ -30,6 +30,7 @@ from alicebot_api.vnext_stores.sqlite.query_predicates import (
     _fts_match_expression,
     _sqlite_ascii_literal_contains_sql,
 )
+from alicebot_api.vnext_stores.sqlite.vector_scan import cached_vector_ranked
 
 VNextRow = dict[str, object]
 
@@ -1037,16 +1038,16 @@ def search_memories_vector(
                     embedding_signature_version,
                 )
             )
-    params: list[object] = [self.user_id]
-    params.extend(domain_params)
-    params.extend(sensitivity_params)
-    params.extend(type_params)
-    params.extend(project_params)
-    params.extend(created_by_params)
-    params.extend(run_params)
-    params.extend(expiry_params)
-    params.extend(scope_params)
-    params.extend(signature_params)
+    base_params: list[object] = [self.user_id]
+    base_params.extend(domain_params)
+    base_params.extend(sensitivity_params)
+    base_params.extend(type_params)
+    base_params.extend(project_params)
+    base_params.extend(created_by_params)
+    base_params.extend(run_params)
+    base_params.extend(expiry_params)
+    base_params.extend(scope_params)
+    params: list[object] = [*base_params, *signature_params]
     # Full predicate set shared by BOTH phases. No transaction spans the scan
     # and the hydrate (autocommit; per-statement snapshots), so a concurrent
     # writer can commit between them; re-applying every scan predicate --
@@ -1054,60 +1055,83 @@ def search_memories_vector(
     # mutated in that window (soft-deleted, lifecycle-demoted, embedding
     # cleared, re-scoped) simply hydrates to no row and is skipped, exactly as
     # if the single-SELECT implementation had never seen it.
-    predicate_sql = f"""user_id = ?
+    base_predicate_sql = f"""user_id = ?
                   AND deleted_at IS NULL
                   AND embedding IS NOT NULL
-                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{created_by_sql}{run_sql}{expiry_sql}{scope_sql}{signature_sql}"""
-    # Step 1 -- stateless vectorized scan. Only (id, updated_at, embedding)
-    # stream out of SQLite, as raw tuples (no dict/JSON decode per row); the
-    # full rows are hydrated later for just the ranked head.
-    cursor = self._execute(
-        f"""
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{created_by_sql}{run_sql}{expiry_sql}{scope_sql}"""
+    predicate_sql = f"{base_predicate_sql}{signature_sql}"
+    # Step 1a -- resident vector cache (Stage 2). When enabled and within
+    # its byte cap, the ranking comes from the process-local float32 matrix
+    # validated against the one-row embedding_stamp token; the candidate SQL
+    # runs ids-only with the scan's FULL predicate set -- including the
+    # signature json_extract clauses -- so every predicate reads the live
+    # row on every query (a metadata_json signature rewrite can never go
+    # stale in the cache; only vectors are resident).
+    # ``None`` means the cache must not serve (disabled, :memory:, over-cap,
+    # stamp unavailable) and the stateless scan below runs unchanged. Either
+    # way, Step 2 recomputes every returned distance from the hydrated
+    # row's own blob, so results are bit-identical across both paths.
+    maybe_ranked = cached_vector_ranked(
+        self,
+        predicate_sql=predicate_sql,
+        predicate_params=tuple(params),
+        query_array=query_array,
+        query_norm=query_norm,
+        tiny_norm_threshold=_VECTOR_TINY_NORM_THRESHOLD,
+    )
+    if maybe_ranked is not None:
+        ranked: list[tuple[float, str, str]] = maybe_ranked
+    else:
+        # Step 1b -- stateless vectorized scan. Only (id, updated_at,
+        # embedding) stream out of SQLite, as raw tuples (no dict/JSON decode
+        # per row); the full rows are hydrated later for just the ranked head.
+        cursor = self._execute(
+            f"""
                 SELECT id, updated_at, embedding
                 FROM memories
                 WHERE {predicate_sql}
                 """,
-        tuple(params),
-    )
-    cursor.row_factory = None  # bypass any installed dict row factory
-    query64: np.ndarray = query_array.astype(np.float64)
-    # (approximate_distance, updated_at_key, id) per candidate row.
-    ranked: list[tuple[float, str, str]] = []
-    while True:
-        chunk = cursor.fetchmany(_VECTOR_SCAN_CHUNK_ROWS)
-        if not chunk:
-            break
-        conforming: list[tuple[object, object, bytes]] = []
-        for memory_id, updated_at, blob in chunk:
-            if isinstance(blob, bytes) and len(blob) == _EMBEDDING_BLOB_BYTES:
-                conforming.append((memory_id, updated_at, blob))
-            else:
-                # Non-storage-width blobs take the exact pad/truncate path.
-                distance = _embedding_blob_distance(cast(bytes, blob), query_array, query_norm)
+            tuple(params),
+        )
+        cursor.row_factory = None  # bypass any installed dict row factory
+        query64: np.ndarray = query_array.astype(np.float64)
+        # (approximate_distance, updated_at_key, id) per candidate row.
+        ranked = []
+        while True:
+            chunk = cursor.fetchmany(_VECTOR_SCAN_CHUNK_ROWS)
+            if not chunk:
+                break
+            conforming: list[tuple[object, object, bytes]] = []
+            for memory_id, updated_at, blob in chunk:
+                if isinstance(blob, bytes) and len(blob) == _EMBEDDING_BLOB_BYTES:
+                    conforming.append((memory_id, updated_at, blob))
+                else:
+                    # Non-storage-width blobs take the exact pad/truncate path.
+                    distance = _embedding_blob_distance(cast(bytes, blob), query_array, query_norm)
+                    ranked.append((distance, str(updated_at or ""), str(memory_id or "")))
+            if not conforming:
+                continue
+            if query_norm == 0.0:
+                ranked.extend(
+                    (1.0, str(updated_at or ""), str(memory_id or "")) for memory_id, updated_at, _blob in conforming
+                )
+                continue
+            matrix: np.ndarray = np.frombuffer(
+                b"".join(blob for _memory_id, _updated_at, blob in conforming),
+                dtype=np.float32,
+            ).reshape(-1, EMBEDDING_VECTOR_DIMENSIONS)
+            norms: np.ndarray = np.linalg.norm(matrix, axis=1)
+            dots: np.ndarray = matrix.astype(np.float64) @ query64
+            norms64: np.ndarray = norms.astype(np.float64)
+            for position, (memory_id, updated_at, blob) in enumerate(conforming):
+                if norms[position] < _VECTOR_TINY_NORM_THRESHOLD:
+                    # Zero or near-subnormal norms: the vectorized error bound
+                    # does not hold, so score with the exact per-row math.
+                    distance = _embedding_blob_distance(blob, query_array, query_norm)
+                else:
+                    distance = 1.0 - float(dots[position]) / (query_norm * float(norms64[position]))
                 ranked.append((distance, str(updated_at or ""), str(memory_id or "")))
-        if not conforming:
-            continue
-        if query_norm == 0.0:
-            ranked.extend(
-                (1.0, str(updated_at or ""), str(memory_id or "")) for memory_id, updated_at, _blob in conforming
-            )
-            continue
-        matrix: np.ndarray = np.frombuffer(
-            b"".join(blob for _memory_id, _updated_at, blob in conforming),
-            dtype=np.float32,
-        ).reshape(-1, EMBEDDING_VECTOR_DIMENSIONS)
-        norms: np.ndarray = np.linalg.norm(matrix, axis=1)
-        dots: np.ndarray = matrix.astype(np.float64) @ query64
-        norms64: np.ndarray = norms.astype(np.float64)
-        for position, (memory_id, updated_at, blob) in enumerate(conforming):
-            if norms[position] < _VECTOR_TINY_NORM_THRESHOLD:
-                # Zero or near-subnormal norms: the vectorized error bound
-                # does not hold, so score with the exact per-row math.
-                distance = _embedding_blob_distance(blob, query_array, query_norm)
-            else:
-                distance = 1.0 - float(dots[position]) / (query_norm * float(norms64[position]))
-            ranked.append((distance, str(updated_at or ""), str(memory_id or "")))
-    ranked.sort()
+        ranked.sort()
     # Step 2 -- hydrate full rows for the ranked head in batches, verify the
     # embedding signature when signature filtering is active (stale rows are
     # skipped without consuming limit slots; the walk refills from further
