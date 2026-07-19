@@ -47,6 +47,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+from typing import cast
 from uuid import uuid4
 
 import numpy as np
@@ -187,7 +188,7 @@ def _decode_blob_into(out_row: np.ndarray, blob: object) -> None:
     ``_embedding_blob_distance`` so the cached row holds the same float32
     values the exact per-row scoring would parse from the blob.
     """
-    vector: np.ndarray = np.frombuffer(blob, dtype=np.float32)  # type: ignore[arg-type]
+    vector: np.ndarray = np.frombuffer(cast(bytes, blob), dtype=np.float32)
     if vector.size == EMBEDDING_VECTOR_DIMENSIONS:
         out_row[:] = vector
         return
