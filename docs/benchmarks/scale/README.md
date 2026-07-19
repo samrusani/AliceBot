@@ -1,21 +1,42 @@
 # Alice scale envelope: core-operation latency at 1k / 10k / 100k memories
 
-Measured 2026-07-06 on an Apple Silicon laptop (single machine, no
-concurrency), seeded with a deterministic synthetic corpus and embeddings
-from a deterministic in-process provider (so the vector stage runs at every
-scale without network calls). The tables report p50 over the operation-specific
-iteration counts recorded in each raw result (20–50 after warmup; slow
-operations stop at a disclosed time budget). Reproduction command below. Raw
-results are in [results/](results/).
+SQLite rows re-measured 2026-07-19 after the v0.13.0-cycle vector-scale work
+(vectorized scan plus resident vector cache); Postgres rows retain their
+2026-07-06 measurements because Postgres code was untouched by that work and
+the local measurement environment had degraded by 2026-07-19 (a re-run on a
+3-day-old Docker Postgres produced non-monotonic latencies and was discarded
+rather than published). Both measurement dates used the same harness: an
+Apple Silicon laptop (single machine, no concurrency), a deterministic
+synthetic corpus, and a deterministic in-process embedding provider (so the
+vector stage runs at every scale without network calls). Tables report p50
+over the operation-specific iteration counts recorded in each raw result
+(20–50 after warmup; slow operations stop at a disclosed time budget).
+Reproduction command below. Raw results are in [results/](results/).
 
 ## The two numbers that matter for agents
 
 | Operation | Backend | 1k | 10k | 100k |
 |---|---|---|---|---|
-| **recall (context pack)** | SQLite | 18.4ms | 198.5ms | 2253.7ms |
-| | Postgres | 22.9ms | 98.4ms | 393.6ms |
+| **recall (context pack)** | SQLite (2026-07-19) | 20.1ms | 176.9ms | 1764.4ms |
+| | Postgres (2026-07-06) | 22.9ms | 98.4ms | 393.6ms |
 | **memory commit** | SQLite | 2.3ms | 2.3ms | 2.4ms |
 | | Postgres | 15.5ms | 17.7ms | 20.1ms |
+
+### Inside SQLite recall at 100k: the vector stage is no longer the wall
+
+The 2026-07-06 note attributed the 100k recall cost to the brute-force
+vector scan alone. Direct stage measurement (2026-07-19) corrects that:
+
+- **Vector stage, warm resident cache: 385–465ms** (was ~2.1s stateless);
+  cold first query after process start or invalidation: ~1.1–1.7s.
+- Resident memory for the cache at 100k: **754MB peak / 760MB steady**
+  (~6KB per embedded memory; default cap 1024MB via
+  `ALICEBOT_SQLITE_VECTOR_CACHE_MAX_MB`, disable with
+  `ALICEBOT_SQLITE_VECTOR_CACHE=off`; results are bit-identical either way,
+  and over-cap corpora fall back to the stateless scan automatically).
+- The remaining ~1.3s of the 100k end-to-end pack is FTS and source-chunk
+  search over the full corpus — the next optimization wall, out of scope for
+  the vector-cache work and recorded here so the attribution stays honest.
 
 ## Full matrix (p50)
 
@@ -42,10 +63,13 @@ optimized).
 
 - **SQLite (the `uvx alice-memory` trial path)**: writes are effectively
   instant at any scale, and recall is excellent through ~10k memories
-  (~200ms). Beyond ~20–30k memories **with embeddings**, the deliberate
-  brute-force vector design (no ANN index in SQLite) makes recall slow —
-  2.3s at 100k. That is the documented boundary: move to Postgres for large
-  corpora, or run FTS-only.
+  (~180ms). The vector stage now stays interactive well past the old
+  ~20–30k comfort zone (385–465ms warm at 100k via the resident cache, at
+  the documented memory cost), but end-to-end recall at very large corpora
+  is bounded by FTS/source search (~1.8s at 100k). Practical guidance:
+  SQLite is comfortable to ~30–50k memories end-to-end; beyond that move to
+  Postgres, run FTS-only, or accept slower packs until the FTS wall is
+  addressed.
 - **Postgres**: production-viable across the board — ~20ms commits and
   ~400ms recall at 100k memories. Recall's growth (23 → 98 → 394ms) is a
   known optimization candidate, not a wall.

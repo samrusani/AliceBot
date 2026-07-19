@@ -1,15 +1,15 @@
 {
   "benchmark": "alice-scale-envelope",
-  "generated_at": "2026-07-05T19:57:25.685974Z",
+  "generated_at": "2026-07-19T13:42:40.811766Z",
   "backend": "sqlite",
   "scale": 1000,
   "seed": 42,
-  "store": "eval/scale/data/scale_42_1000.db",
-  "store_size_bytes": 14897152,
+  "store": "/Users/samirusani/Desktop/Codex/AliceBot/eval/scale/data/scale_42_1000.db",
+  "store_size_bytes": 17248256,
   "environment": {
-    "platform": "macOS-26.5.1-arm64-arm-64bit",
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
     "python": "3.12.11",
-    "commit": "7e53ecc",
+    "commit": "3fb7d16",
     "cpu": "Apple M3 Max",
     "ram_gb": 128,
     "cores": "16",
@@ -24,27 +24,27 @@
     "provenance_links": 1000,
     "entities_seconds": 0.0,
     "sources_seconds": 0.02,
-    "memories_seconds": 0.75,
-    "total_seconds": 0.77,
-    "memories_per_second": 1325.9,
+    "memories_seconds": 1.02,
+    "total_seconds": 1.05,
+    "memories_per_second": 978.6,
     "embed_on_write": true
   },
   "operations": {
     "recall_context_pack": {
       "iterations": 50,
       "warmup_iterations": 3,
-      "p50_ms": 18.351,
-      "p95_ms": 21.865,
-      "mean_ms": 17.018,
-      "min_ms": 4.755,
-      "max_ms": 29.665,
-      "total_seconds": 0.85,
+      "p50_ms": 20.109,
+      "p95_ms": 23.266,
+      "mean_ms": 20.127,
+      "min_ms": 17.163,
+      "max_ms": 23.686,
+      "total_seconds": 1.01,
       "notes": {
         "queries": 8,
         "stages_entity_query": {
           "fts": [
-            "postgres_fts",
-            0
+            "sqlite_fts_or_fallback",
+            16
           ],
           "vector": [
             "enabled",
@@ -55,8 +55,8 @@
             8
           ],
           "sources": [
-            "store_lexical",
-            8
+            "rrf(chunk_fts+provenance+title_recency)",
+            16
           ],
           "open_loops": [
             null,
@@ -69,6 +69,10 @@
           "recent_changes": [
             null,
             5
+          ],
+          "currency_chains": [
+            null,
+            null
           ]
         }
       }
@@ -76,23 +80,23 @@
     "capture_text_single": {
       "iterations": 50,
       "warmup_iterations": 3,
-      "p50_ms": 1.279,
-      "p95_ms": 4.183,
-      "mean_ms": 1.513,
-      "min_ms": 1.151,
-      "max_ms": 6.686,
-      "total_seconds": 0.08,
+      "p50_ms": 1.713,
+      "p95_ms": 4.848,
+      "mean_ms": 2.041,
+      "min_ms": 1.354,
+      "max_ms": 5.34,
+      "total_seconds": 0.1,
       "notes": {}
     },
     "memory_commit": {
       "iterations": 50,
       "warmup_iterations": 3,
-      "p50_ms": 2.3,
-      "p95_ms": 7.152,
-      "mean_ms": 2.885,
-      "min_ms": 2.01,
-      "max_ms": 8.982,
-      "total_seconds": 0.14,
+      "p50_ms": 4.256,
+      "p95_ms": 10.678,
+      "mean_ms": 4.92,
+      "min_ms": 2.67,
+      "max_ms": 13.7,
+      "total_seconds": 0.25,
       "notes": {
         "write_mode_last": "commit",
         "status_last": "committed"
@@ -101,12 +105,12 @@
     "review_queue_list": {
       "iterations": 50,
       "warmup_iterations": 3,
-      "p50_ms": 0.512,
-      "p95_ms": 0.529,
-      "mean_ms": 0.513,
-      "min_ms": 0.5,
-      "max_ms": 0.548,
-      "total_seconds": 0.03,
+      "p50_ms": 0.876,
+      "p95_ms": 1.139,
+      "mean_ms": 0.915,
+      "min_ms": 0.799,
+      "max_ms": 1.252,
+      "total_seconds": 0.05,
       "notes": {
         "returned_rows_last": 20
       }
@@ -114,11 +118,11 @@
     "entity_find_by_names": {
       "iterations": 50,
       "warmup_iterations": 3,
-      "p50_ms": 0.098,
-      "p95_ms": 0.11,
-      "mean_ms": 0.1,
-      "min_ms": 0.094,
-      "max_ms": 0.113,
+      "p50_ms": 0.093,
+      "p95_ms": 0.094,
+      "mean_ms": 0.093,
+      "min_ms": 0.092,
+      "max_ms": 0.094,
       "total_seconds": 0.0,
       "notes": {
         "lookup_names": 5,
@@ -128,11 +132,11 @@
     "graph_one_hop_hot_entity": {
       "iterations": 50,
       "warmup_iterations": 3,
-      "p50_ms": 0.32,
-      "p95_ms": 0.343,
-      "mean_ms": 0.322,
-      "min_ms": 0.313,
-      "max_ms": 0.359,
+      "p50_ms": 0.308,
+      "p95_ms": 0.354,
+      "mean_ms": 0.32,
+      "min_ms": 0.301,
+      "max_ms": 0.543,
       "total_seconds": 0.02,
       "notes": {
         "hot_entity_edges": 21
@@ -141,31 +145,31 @@
     "staleness_sweep_pass": {
       "iterations": 50,
       "warmup_iterations": 1,
-      "p50_ms": 12.899,
-      "p95_ms": 16.104,
-      "mean_ms": 13.563,
-      "min_ms": 12.543,
-      "max_ms": 23.14,
-      "total_seconds": 0.68,
+      "p50_ms": 1.727,
+      "p95_ms": 2.375,
+      "mean_ms": 1.77,
+      "min_ms": 1.29,
+      "max_ms": 2.476,
+      "total_seconds": 0.09,
       "notes": {
-        "first_pass_ms": 27.0,
+        "first_pass_ms": 7.2,
         "artifact_persisted": false
       }
     },
     "consolidation_pass": {
       "iterations": 50,
       "warmup_iterations": 0,
-      "p50_ms": 154.412,
-      "p95_ms": 166.327,
-      "mean_ms": 156.229,
-      "min_ms": 152.663,
-      "max_ms": 175.096,
-      "total_seconds": 7.81,
+      "p50_ms": 1463.365,
+      "p95_ms": 1486.387,
+      "mean_ms": 1463.702,
+      "min_ms": 1439.5,
+      "max_ms": 1498.444,
+      "total_seconds": 73.19,
       "notes": {
-        "embedded_memory_hard_cap": 5000,
+        "embedded_memory_hard_cap": 2000,
         "artifact_persisted": false
       }
     }
   },
-  "combo_seconds": 10.8
+  "combo_seconds": 77.5
 }

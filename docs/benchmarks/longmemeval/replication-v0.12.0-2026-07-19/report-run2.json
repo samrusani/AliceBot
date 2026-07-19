@@ -1,0 +1,107 @@
+{
+  "abstention": {
+    "accuracy": 0.9,
+    "correct": 27,
+    "questions": 30
+  },
+  "config": {
+    "accept_rollups": false,
+    "alicebot_version": "0.12.0",
+    "answer_model": {
+      "api_key_configured": true,
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-4o"
+    },
+    "context_char_budget": 24000,
+    "dataset_file": "longmemeval_s_cleaned.json",
+    "dataset_sha256_prefix": "d6f21ea9d60a0d56",
+    "digest": "c5a7dbe1416cc43d",
+    "embeddings_base_url": "https://api.openai.com/v1",
+    "embeddings_enabled": true,
+    "embeddings_model": "text-embedding-3-small",
+    "generation_temperature": 0.0,
+    "harness_version": "1.0",
+    "judge_model": {
+      "api_key_configured": true,
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-4o-2024-08-06"
+    },
+    "max_items": 16,
+    "mode": "scored",
+    "pack_format": "prose",
+    "question_subset": null,
+    "reading_style": "cot",
+    "reranker_base_url": null,
+    "reranker_enabled": false,
+    "reranker_model": null,
+    "reranker_prompt_sha256": null,
+    "reuse_stores": false,
+    "source": {
+      "git_commit": "692c28ae60072b1eac4a437676b3ecf68e8bc026",
+      "tracked_diff_sha256_prefix": null,
+      "tracked_tree_dirty": false,
+      "untracked_file_count": 0,
+      "untracked_manifest_sha256_prefix": null,
+      "untracked_tree_dirty": false
+    },
+    "variant": "s",
+    "verifier_model": null,
+    "verify_grounding": false
+  },
+  "failures": [],
+  "generated_at": "2026-07-19T10:08:10.603015+00:00",
+  "non_abstention": {
+    "accuracy": 0.8128,
+    "correct": 382,
+    "questions": 470
+  },
+  "per_type": {
+    "knowledge-update": {
+      "accuracy": 0.9103,
+      "correct": 71,
+      "questions": 78
+    },
+    "multi-session": {
+      "accuracy": 0.6391,
+      "correct": 85,
+      "questions": 133
+    },
+    "single-session-assistant": {
+      "accuracy": 0.9821,
+      "correct": 55,
+      "questions": 56
+    },
+    "single-session-preference": {
+      "accuracy": 0.7333,
+      "correct": 22,
+      "questions": 30
+    },
+    "single-session-user": {
+      "accuracy": 0.9857,
+      "correct": 69,
+      "questions": 70
+    },
+    "temporal-reasoning": {
+      "accuracy": 0.8045,
+      "correct": 107,
+      "questions": 133
+    }
+  },
+  "resumed_from_checkpoint": 327,
+  "retrieval": {
+    "approx_context_tokens_mean": 6143.8,
+    "context_chars_mean": 24576.5,
+    "ingest_seconds_mean": 19.507,
+    "retrieval_seconds_p50": 0.252,
+    "retrieval_seconds_p95": 0.35,
+    "vector_enabled_share": 1.0
+  },
+  "schema": "longmemeval_report_v1",
+  "totals": {
+    "accuracy": 0.818,
+    "correct": 409,
+    "errors": 0,
+    "ok": 500,
+    "questions": 500
+  }
+}

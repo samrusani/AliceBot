@@ -31,8 +31,10 @@
 4. **Deepen reference integrations.** Keep examples runnable and CI-smoked
    against the surviving core without introducing a second runtime or reviving
    deleted product surfaces.
-5. **Scale SQLite vector search.** Extend the documented 20-30k embedding
-   comfort zone while publishing latency and recall deltas.
+5. **Scale SQLite end-to-end recall.** The vector stage now stays
+   interactive at 100k memories (resident cache; latency, memory, and recall
+   deltas published in `docs/benchmarks/scale/`); the remaining end-to-end
+   wall at very large corpora is FTS/source search.
 6. **Build enterprise evidence on the post-cut surface.** Conduct the first
    scoped security review, exercise backup/restore and supported upgrade paths,
    and run one final product-scoped audit before `1.0`.
