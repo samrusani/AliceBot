@@ -36,6 +36,9 @@ _RECEIPT_EXCLUSIONS = (
     f"{_HANDOFF_REL}/BUILD_REPORT.md",
     f"{_HANDOFF_REL}/REVIEW_REPORT.md",
 )
+# The immutable carrier receipt, recorded in BUILD_REPORT.md and in the
+# integration commit message; used to locate the carrier commit in history.
+_RECEIPT_SHA256 = "b0f85fdaafcc2038f92162292b68374aa912f2e4df5ea766efb4faf1fbcfe840"
 _ALLOWED_AUXILIARY_PATHS = ("coverage.json", "uv.lock")
 _EXTERNAL_RELEASE_ENGINEER_DIR = "docs/benchmarks/scale/results"
 _COVERAGE_FRAGMENT_PATTERN = re.compile(
@@ -192,32 +195,56 @@ def test_sprint4_versions_and_protected_scope_remain_at_base() -> None:
     )
     protected_sqlite = "apps/api/src/alicebot_api/vnext_stores/sqlite/memory_access.py"
     assert protected_sqlite not in carrier
-    assert _git("diff", "--quiet", _BASE, "--", protected_sqlite, check=False).returncode == 0
 
-    protected = _git(
-        "diff",
-        "--name-only",
-        _BASE,
-        "--",
-        "docs/release",
-        "docs/handoff/2026-07-13-v0.10-audit-remediation",
-        "docs/handoff/2026-07-13-v0.10.2-post-release-remediation",
-        "docs/handoff/2026-07-14-v0.10.4-remediation",
-        "docs/handoff/2026-07-15-v0.11.0-phase1-periphery-cut",
-        "docs/handoff/2026-07-16-v0.11.1-phase2-debt-sweep",
-        "docs/handoff/2026-07-18-v0.12.0-phase3-structural-refactor",
-        "pyproject.toml",
-        "apps/web/package.json",
-    ).stdout
-    assert protected == b""
+    # Post-integration form: the carrier COMMIT touched neither the protected
+    # SQLite scale file, the immutable records, nor the governed versions.
+    # Later reviewed commits by the release engineer (the vector-cache lane)
+    # legitimately change the protected file; the invariant guarded here is
+    # that Sprint 4 itself never did.
+    carrier_commit_paths = _carrier_commit_paths()
+    assert protected_sqlite not in carrier_commit_paths
+    forbidden_committed_prefixes = (
+        "docs/release/",
+        "docs/handoff/2026-07-13-",
+        "docs/handoff/2026-07-14-",
+        "docs/handoff/2026-07-15-",
+        "docs/handoff/2026-07-16-",
+        "docs/handoff/2026-07-18-",
+    )
+    assert all(
+        not path.startswith(forbidden_committed_prefixes)
+        for path in carrier_commit_paths
+    )
+    assert "pyproject.toml" not in carrier_commit_paths
+    assert "apps/web/package.json" not in carrier_commit_paths
+
+
+def _carrier_commit_paths() -> frozenset[str]:
+    """Paths changed by the integrated Sprint 4 carrier commit.
+
+    The commit is located by the immutable receipt hash recorded in its
+    message, so this guard survives later history without pinning a sha.
+    """
+    commits = (
+        _git("log", "--format=%H", f"--grep={_RECEIPT_SHA256}", "HEAD")
+        .stdout.decode()
+        .split()
+    )
+    assert len(commits) == 1, commits
+    listing = _git(
+        "diff-tree", "--no-commit-id", "--name-only", "-r", commits[0]
+    ).stdout.decode()
+    return frozenset(line for line in listing.splitlines() if line)
 
 
 def test_sprint4_carrier_allowlist_isolated_from_external_scale_lane() -> None:
-    selected = {path.decode("utf-8") for path in _selected_paths()}
-    external = set(_external_dirty_paths())
-    assert selected == set(_CARRIER_PATHS)
-    assert selected.isdisjoint(external)
-    assert all(_is_external_release_engineer_output(path) for path in external)
+    # Post-integration form: the carrier commit changed exactly the 12
+    # receipt-bound paths plus the two receipt-excluded report documents,
+    # and nothing from the concurrent release-engineer scale lane.
+    committed = _carrier_commit_paths()
+    assert committed == set(_CARRIER_PATHS) | set(_RECEIPT_EXCLUSIONS), sorted(
+        committed.symmetric_difference(set(_CARRIER_PATHS) | set(_RECEIPT_EXCLUSIONS))
+    )
 
 
 def test_sprint4_allows_only_precise_root_coverage_fragments() -> None:
