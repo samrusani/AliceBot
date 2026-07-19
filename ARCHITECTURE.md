@@ -2,6 +2,10 @@
 
 ## Scope Boundary
 
+- **Candidate boundary:** the `v0.13.0` candidate carries the Phase 4
+  core-roadmap work (replicated benchmark evidence, SQLite vector scale,
+  reference integrations, trace-only count diagnostics).
+
 - **Published boundary:** `v0.12.0` is the latest published release. It is
   tagged and immutable, passed the exact-SHA CI, semantic, and
   repository-control gates, and is published on PyPI with Trusted Publishing

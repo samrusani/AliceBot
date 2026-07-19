@@ -2,6 +2,9 @@
 
 ## Snapshot
 
+- The `v0.13.0` candidate carries the Phase 4 core-roadmap work; its exact
+  release headline is **Replicated benchmark, faster SQLite at scale,
+  reference integrations.**
 - `v0.12.0` is the latest published release. It is available from PyPI and
   GitHub; exact artifact digests are in
   `docs/release/v0.12.0-checksums.txt`.
@@ -84,6 +87,23 @@ authoritative description; Phase 3 does not rewrite that history.
 `v0.11.1` is the prior published release; its records remain at
 `docs/release/v0.11.1-release-notes.md` and
 `docs/release/v0.11.1-checksums.txt`.
+
+## What `v0.13.0` Targets
+
+- The replicated LongMemEval_s baseline (81.2% mean over three runs on the
+  published `v0.12.0` code) committed as per-question evidence.
+- SQLite vector-scale work: bit-identical vectorized scan, resident vector
+  cache with transactional stamp invalidation (vector stage 385-465ms warm
+  at 100k inside 754MB peak / 760MB steady, 1024MB default cap,
+  off-switch), one additive bootstrap table, Postgres unchanged.
+- Two CI-smoked reference integrations: the MCP quickstart and the OpenAI
+  Agents SDK function-tool example with real per-agent key auth.
+- Trace-only count-intent diagnostics behind the aggregation gate
+  (is_answer=false); the multi-session benchmark-closure NO-GO is recorded
+  and no synthesis uplift is claimed.
+- The deferred mcp-tools.md legacy-alias wording correction.
+- No MCP registry, OpenAPI, HTTP route, dependency, or Postgres schema
+  change.
 
 ## Product Boundaries
 

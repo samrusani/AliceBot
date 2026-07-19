@@ -2,6 +2,9 @@
 
 ## Baseline (Not Roadmap Work)
 
+- The `v0.13.0` candidate carries the Phase 4 core-roadmap work and is in
+  release preparation.
+
 - `v0.12.0` is the latest published release. Its immutable release record is
   `docs/release/v0.12.0-release-notes.md`, with artifact digests in
   `docs/release/v0.12.0-checksums.txt`.

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## v0.13.0 — Unreleased candidate
+
+- Replicated LongMemEval_s baseline: 81.2% mean over three independent full
+  runs on the published v0.12.0 code, per-question evidence committed; the
+  historical 79.4% single run retained as dated evidence.
+- SQLite vector scale: bit-identical vectorized scan plus a resident vector
+  cache with transactional stamp invalidation (vector stage ~2.1s to
+  385-465ms warm at 100k, 754MB peak RSS, 1024MB default cap, off-switch);
+  one additive bootstrap table; Postgres unchanged. Scale benchmark record
+  corrected: the remaining 100k wall is FTS/source search.
+- Reference integrations: MCP stdio quickstart and OpenAI-Agents-SDK-shaped
+  memory tools with real per-agent key auth, both CI-smoked with
+  server-enforced tamper and read-only-profile rejection.
+- Count-intent recognition with a bounded trace-only candidate statistic
+  (is_answer=false); the multi-session benchmark-closure NO-GO is recorded
+  honestly and no synthesis uplift is claimed.
+- Deferred mcp-tools.md legacy-alias wording corrected; live-server test
+  isolation for the process-wide settings cache.
+
 ## v0.12.0 — 2026-07-18
 
 - **Structure only. Zero behavior change.** The Phase 3 carrier moves HTTP
