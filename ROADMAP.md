@@ -2,7 +2,7 @@
 
 ## Baseline (Not Roadmap Work)
 
-- The `v0.13.0` candidate carries the Phase 4 core-roadmap work and is in
+- The `v0.13.1` candidate carries the Phase 4 core-roadmap work and is in
   release preparation.
 
 - `v0.12.0` is the latest published release. Its immutable release record is
