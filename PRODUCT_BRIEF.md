@@ -15,10 +15,11 @@ Agent developers — people building or operating AI agents who need durable, ex
 - Local-first: your data stays on your machine; models and embeddings are pluggable via OpenAI-compatible endpoints.
 
 ## Current Posture
-- `v0.12.0` is the latest published release and immutable baseline. It
-  carries the Phase 3 structural refactor. Its PyPI wheel and source
-  distribution have Trusted Publishing provenance, with exact digests in
-  `docs/release/v0.12.0-checksums.txt`.
+- `v0.13.1` is the latest published release and immutable baseline. It
+  carries the Phase 4 core-roadmap work (replicated benchmark, SQLite
+  scale, reference integrations). Its PyPI wheel and source distribution
+  have Trusted Publishing provenance, with exact digests in
+  `docs/release/v0.13.1-checksums.txt`.
 - `v0.11.0` shipped the Phase 1 periphery cut. It removes the Telegram,
   hosted/control-plane, public chat/response, chief-of-staff, and model-pack
   periphery so the default runtime matches the product described here. The
@@ -39,9 +40,7 @@ Agent developers — people building or operating AI agents who need durable, ex
   Zero behavior change.** It relocates oversized HTTP, store, contract, MCP,
   and CLI modules behind stable facades and entrypoints without changing the
   local-first product boundary.
-- Phase 4 built the current carrier: the `v0.13.1` candidate (replicated
-  benchmark, SQLite scale, reference integrations) is in release
-  preparation.
+- Phase 4 shipped as `v0.13.1`. Phase 5 (enterprise track) has not begun.
 
 ## Non-Goals (Now)
 - Hosted service, multi-tenant control plane, SLA, or managed cloud.

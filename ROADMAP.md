@@ -2,12 +2,10 @@
 
 ## Baseline (Not Roadmap Work)
 
-- The `v0.13.1` candidate carries the Phase 4 core-roadmap work and is in
-  release preparation.
-
-- `v0.12.0` is the latest published release. Its immutable release record is
-  `docs/release/v0.12.0-release-notes.md`, with artifact digests in
-  `docs/release/v0.12.0-checksums.txt`.
+- `v0.13.1` is the latest published release. Its immutable release record is
+  `docs/release/v0.13.1-release-notes.md`, with artifact digests in
+  `docs/release/v0.13.1-checksums.txt`. (The `v0.13.0` tag was never
+  published; superseded.)
 - `v0.11.0` shipped the Phase 1 periphery cut; `v0.11.1` shipped the Phase 2
   debt sweep. Their tags, release records, and published artifacts are not
   changed by the Phase 3 carrier.

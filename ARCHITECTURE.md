@@ -2,11 +2,13 @@
 
 ## Scope Boundary
 
-- **Candidate boundary:** the `v0.13.1` candidate carries the Phase 4
-  core-roadmap work (replicated benchmark evidence, SQLite vector scale,
-  reference integrations, trace-only count diagnostics).
 
-- **Published boundary:** `v0.12.0` is the latest published release. It is
+- **Published boundary:** `v0.13.1` is the latest published release,
+  carrying the Phase 4 core-roadmap work (replicated benchmark evidence,
+  SQLite vector scale, reference integrations, trace-only count
+  diagnostics); artifact digests are in
+  `docs/release/v0.13.1-checksums.txt`.
+- **Prior published:** `v0.12.0` is the prior published release. It is
   tagged and immutable, passed the exact-SHA CI, semantic, and
   repository-control gates, and is published on PyPI with Trusted Publishing
   provenance; artifact digests are in `docs/release/v0.12.0-checksums.txt`.
@@ -221,7 +223,7 @@ usage justifies a separately reviewed boundary.
 
 ## Current Architectural Posture
 
-- `v0.12.0` is the latest published release and reconciles runtime and product
+- `v0.13.1` is the latest published release and reconciles runtime and product
   identity around the agent interface plus retrieval/memory quality.
 - Phase 3 reduces `main.py` to app assembly and shared middleware,
   extracts domain routers, mirrors PostgreSQL and SQLite vNext store seams,

@@ -2,12 +2,11 @@
 
 
 
-`v0.12.0` is the latest published release and remains the checksum/install
+`v0.13.1` is the latest published release and remains the checksum/install
 baseline.
 Preparing candidate documents does not authorize a tag, PyPI upload, or GitHub
 Release.
 
-The `v0.13.1` candidate (Phase 4 core roadmap) is in release preparation.
 
 ## One Release Identity
 
