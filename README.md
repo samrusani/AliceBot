@@ -141,10 +141,9 @@ search degrades to full-text only and says so explicitly in the retrieval trace.
 
 ## Status
 
-The `v0.13.1` candidate (Phase 4) is in release preparation.
-
-`v0.12.0` is the latest published release and remains the install, checksum,
-and release-note baseline. Its tag, release record, and published artifacts
+`v0.13.1` is the latest published release and remains the install, checksum,
+and release-note baseline (the `v0.13.0` tag was never published;
+superseded). Its tag, release record, and published artifacts
 are immutable.
 `v0.12.0` shipped the Phase 3 structural refactor with **Structure only. Zero
 behavior change.** It splits oversized HTTP, store, contract, MCP, and CLI
@@ -181,6 +180,7 @@ What that means in practice:
 - [v0.11.0 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.11.0-release-notes.md)
 - [v0.11.1 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.11.1-release-notes.md)
 - [v0.12.0 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.12.0-release-notes.md)
+- [v0.13.1 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.13.1-release-notes.md)
 - [Release procedure](https://github.com/samrusani/AliceBot/blob/main/RELEASING.md)
 - [Architecture](https://github.com/samrusani/AliceBot/blob/main/ARCHITECTURE.md)
 - [Roadmap](https://github.com/samrusani/AliceBot/blob/main/ROADMAP.md)

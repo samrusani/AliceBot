@@ -2,12 +2,15 @@
 
 ## Snapshot
 
-- The `v0.13.1` candidate carries the Phase 4 core-roadmap work; its exact
-  release headline is **Replicated benchmark, faster SQLite at scale,
-  reference integrations.**
-- `v0.12.0` is the latest published release. It is available from PyPI and
+- `v0.13.1` is the latest published release. It is available from PyPI and
   GitHub; exact artifact digests are in
-  `docs/release/v0.12.0-checksums.txt`.
+  `docs/release/v0.13.1-checksums.txt`. It shipped the Phase 4
+  core-roadmap work with the exact release headline **Replicated
+  benchmark, faster SQLite at scale, reference integrations.** The
+  `v0.13.0` tag exists but was never published (superseded; see the
+  release notes).
+- `v0.12.0` is the prior published release; its records remain under
+  `docs/release/`.
 - `v0.12.0` shipped the Phase 3 structural refactor, with the exact release
   headline **Structure only. Zero behavior change.**
 - Phase 3 implementation and the bounded builder matrix completed on
@@ -79,16 +82,23 @@ authoritative description; Phase 3 does not rewrite that history.
 
 ## Release Boundary
 
-`v0.12.0` is tagged, published, and immutable. Its authoritative records are:
+`v0.13.1` is tagged, published, and immutable. Its authoritative records are:
 
-- `docs/release/v0.12.0-release-notes.md`
-- `docs/release/v0.12.0-checksums.txt`
+- `docs/release/v0.13.1-release-notes.md`
+- `docs/release/v0.13.1-checksums.txt`
+
+The `v0.13.0` tag exists but was never published; the number was
+superseded by `v0.13.1` because stable tags are immutable.
+
+`v0.12.0` is the prior published release; its records remain at
+`docs/release/v0.12.0-release-notes.md` and
+`docs/release/v0.12.0-checksums.txt`.
 
 `v0.11.1` is the prior published release; its records remain at
 `docs/release/v0.11.1-release-notes.md` and
 `docs/release/v0.11.1-checksums.txt`.
 
-## What `v0.13.1` Targets
+## What `v0.13.1` Shipped
 
 - The replicated LongMemEval_s baseline (81.2% mean over three runs on the
   published `v0.12.0` code) committed as per-question evidence.

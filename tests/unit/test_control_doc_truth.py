@@ -409,7 +409,12 @@ def test_phase2_post_freeze_docs_point_to_final_reports_and_external_release_wor
     assert "`BUILD_REPORT.md`" in release_notes
     assert "`REVIEW_REPORT.md`" in release_notes
     assert "still follow this\n  documentation freeze" not in release_notes
-    assert "`v0.12.0` is the latest published release." in roadmap
+    # Durable form: the roadmap names the CURRENT governed version as the
+    # latest published release (transitioned each post-publication sweep).
+    import tomllib as _tomllib
+    with (repo_root / "pyproject.toml").open("rb") as _handle:
+        _version = _tomllib.load(_handle)["project"]["version"]
+    assert f"`v{_version}` is the latest published release." in roadmap
     assert "**Verify and release the completed v0.12.0 structural handoff.**" not in roadmap
     assert "**Verify and publish the completed v0.11.1 handoff.**" not in roadmap
     assert "final `BUILD_REPORT.md`" in fix_matrix
