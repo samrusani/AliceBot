@@ -58,6 +58,28 @@ def redact_secret_fields(value: object) -> object:
     return value
 
 
+def redact_secret_value(value: object, secret_value: str) -> object:
+    """Remove every occurrence of one secret from a JSON-like value.
+
+    Key-name redaction cannot protect a credential that an untrusted caller
+    copies into an otherwise ordinary field. This value-based pass is intended
+    for short-lived credentials known at the ingestion boundary.
+    """
+
+    if not secret_value:
+        return value
+    if isinstance(value, str):
+        return value.replace(secret_value, "***")
+    if isinstance(value, dict):
+        return {
+            str(key).replace(secret_value, "***"): redact_secret_value(item, secret_value)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_secret_value(item, secret_value) for item in value]
+    return value
+
+
 @dataclass(slots=True)
 class EnvironmentSecretProvider:
     """Resolve refs such as env:CONNECTOR_API_TOKEN without persisting values."""
@@ -232,4 +254,5 @@ __all__ = [
     "is_secret_key",
     "redact_secret_fields",
     "redact_secret_text",
+    "redact_secret_value",
 ]

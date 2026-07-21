@@ -52,6 +52,10 @@ from alicebot_api.vnext_stores.postgres.columns import (
     PROVENANCE_COLUMNS as PROVENANCE_COLUMNS,
     REVISION_COLUMNS as REVISION_COLUMNS,
 )
+from alicebot_api.vnext_stores.postgres.browser_clip_capabilities import (
+    consume_browser_clip_capability as _browser_clip_consume_capability,
+    create_browser_clip_capability as _browser_clip_create_capability,
+)
 from alicebot_api.vnext_stores.postgres.embedding_cas import (
     _MEMORY_EMBEDDING_CONTENT_SHA256_SQL as _MEMORY_EMBEDDING_CONTENT_SHA256_SQL,
     _PYTHON_312_STRIP_CHARS_SQL as _PYTHON_312_STRIP_CHARS_SQL,
@@ -917,8 +921,11 @@ class PostgresVNextStore:
                   to_regclass('public.scheduler_runs') IS NOT NULL AS scheduler_runs_exists,
                   (SELECT extversion FROM pg_extension WHERE extname = 'vector') AS pgvector_version,
                   NULL::text AS migration_revision
-                """,
+            """,
         )
+
+    create_browser_clip_capability = _browser_clip_create_capability
+    consume_browser_clip_capability = _browser_clip_consume_capability
 
     def list_sources(
         self,

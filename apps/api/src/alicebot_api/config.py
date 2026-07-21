@@ -475,10 +475,6 @@ def _validate_settings(
             )
         if settings.database_url == DEFAULT_DATABASE_URL:
             raise ValueError("DATABASE_URL must be overridden outside development/test environments")
-        if settings.database_admin_url == DEFAULT_DATABASE_ADMIN_URL:
-            raise ValueError(
-                "DATABASE_ADMIN_URL must be overridden outside development/test environments"
-            )
     return settings
 
 

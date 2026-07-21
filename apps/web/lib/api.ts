@@ -383,6 +383,14 @@ export type VNextConnectorConfigRecord = {
   last_configured_at?: string | null;
 };
 
+export type VNextBrowserClipCapability = {
+  status: "issued";
+  capability: string;
+  origin: string;
+  expires_at: string;
+  one_time: true;
+};
+
 export type VNextConnectorStatusPayload = {
   config: VNextConnectorConfigRecord;
   health: VNextConnectorHealthRecord;
@@ -1955,8 +1963,55 @@ export function isLocalApiBaseUrl(apiBaseUrl: string) {
   }
 }
 
+function currentAliceWebOrigin() {
+  const configuredOrigin =
+    typeof window === "undefined" ? process.env.PUBLIC_ORIGIN ?? "" : window.location.origin;
+  const normalized = configuredOrigin.trim();
+  if (!normalized) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.username ||
+      parsed.password ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      return "";
+    }
+    return parsed.origin;
+  } catch {
+    return "";
+  }
+}
+
+export function isTrustedApiBaseUrl(apiBaseUrl: string) {
+  const normalized = sanitizeApiBaseUrl(apiBaseUrl);
+  if (!normalized) {
+    return false;
+  }
+  if (isLocalApiBaseUrl(normalized)) {
+    return true;
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    return (
+      parsed.protocol === "https:" &&
+      parsed.pathname === "/" &&
+      parsed.origin === currentAliceWebOrigin()
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function hasLiveApiConfig(config: Pick<ApiConfig, "apiBaseUrl" | "userId">) {
-  return Boolean(config.userId.trim() && isLocalApiBaseUrl(config.apiBaseUrl));
+  return Boolean(config.userId.trim() && isTrustedApiBaseUrl(config.apiBaseUrl));
 }
 
 export function combinePageModes(...modes: Array<ApiSource | null | undefined>): PageDataMode {
@@ -2068,7 +2123,7 @@ function shouldAttachVNextOperatorAgentApiKey(apiBaseUrl: string, path: string) 
 
   const logicalPath = `/${path.replace(/^\/+/, "")}`;
   return (
-    isLocalApiBaseUrl(apiBaseUrl) &&
+    isTrustedApiBaseUrl(apiBaseUrl) &&
     (logicalPath === "/v0/vnext" || logicalPath.startsWith("/v0/vnext/"))
   );
 }
@@ -3281,6 +3336,7 @@ export function captureVNextBrowserClip(
     page_text?: string | null;
     user_note?: string | null;
     capture_token?: string | null;
+    capture_capability?: string | null;
     domain?: string;
     sensitivity?: string;
   },
@@ -3289,6 +3345,20 @@ export function captureVNextBrowserClip(
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function issueVNextBrowserClipCapability(
+  apiBaseUrl: string,
+  payload: { user_id: string; origin: string },
+) {
+  return requestJson<VNextBrowserClipCapability>(
+    apiBaseUrl,
+    "/v0/vnext/connectors/browser-clipper/capabilities",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export function updateVNextConnectorConfig(

@@ -54,6 +54,7 @@ export function ApprovalList({
               key={item.id}
               href={`/approvals?approval=${item.id}`}
               className={`list-row${item.id === selectedId ? " is-selected" : ""}`}
+              aria-current={item.id === selectedId ? "page" : undefined}
             >
               <div className="list-row__topline">
                 <div className="detail-stack">

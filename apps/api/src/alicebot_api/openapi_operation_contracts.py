@@ -1056,6 +1056,19 @@ OPENAPI_OPERATION_RESPONSE_SCHEMAS: dict[tuple[str, str], tuple[str, dict[str, o
             ),
         ),
     ),
+    ("POST", "/v0/vnext/connectors/browser-clipper/capabilities"): (
+        "CreateVnextBrowserClipCapabilitySuccessResponse",
+        _operation_schema(
+            "CreateVnextBrowserClipCapabilitySuccessResponse",
+            (
+                "status",
+                "capability",
+                "origin",
+                "expires_at",
+                "one_time",
+            ),
+        ),
+    ),
     ("POST", "/v0/vnext/connectors/browser-clipper/capture"): (
         "CaptureVnextBrowserClipSuccessResponse",
         _operation_schema(
@@ -2260,10 +2273,17 @@ _OPENAPI_EXPLICIT_PROPERTY_SCHEMAS.update(
             objects=("connector",), strings=("status",)
         ),
         ("POST", "/v0/vnext/connectors/telegram/sync"): _typed_properties(objects=("telegram",), strings=("status",)),
-        ("POST", "/v0/vnext/connectors/local-folder/sync"): _typed_properties(
-            objects=("local_folder",), strings=("status",)
-        ),
-        ("POST", "/v0/vnext/connectors/browser-clipper/capture"): _typed_properties(
+    ("POST", "/v0/vnext/connectors/local-folder/sync"): _typed_properties(
+        objects=("local_folder",), strings=("status",)
+    ),
+    ("POST", "/v0/vnext/connectors/browser-clipper/capabilities"): {
+        "status": {"type": "string"},
+        "capability": {"type": "string", "readOnly": True},
+        "origin": {"type": "string", "format": "uri"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "one_time": {"type": "boolean"},
+    },
+    ("POST", "/v0/vnext/connectors/browser-clipper/capture"): _typed_properties(
             objects=("browser_clipper",), strings=("status",)
         ),
         ("POST", "/v0/vnext/agents/ingest-output"): _typed_properties(objects=("ingest_output",), strings=("status",)),
@@ -2755,6 +2775,10 @@ _OPENAPI_SOURCE_AUDITED_RESPONSES: dict[
     ("POST", "/v0/vnext/connectors/{connector_name}/sync"): (_CONNECTOR_SYNC_RESPONSE_FIELDS, None),
     ("POST", "/v0/vnext/connectors/telegram/sync"): (_CONNECTOR_SYNC_RESPONSE_FIELDS, None),
     ("POST", "/v0/vnext/connectors/local-folder/sync"): (_CONNECTOR_SYNC_RESPONSE_FIELDS, None),
+    ("POST", "/v0/vnext/connectors/browser-clipper/capabilities"): (
+        ("status", "capability", "origin", "expires_at", "one_time"),
+        None,
+    ),
     ("POST", "/v0/vnext/connectors/browser-clipper/capture"): (_CONNECTOR_SYNC_RESPONSE_FIELDS, None),
     ("POST", "/v0/vnext/agents/ingest-output"): (
         ("status", "source_id", "artifact_id", "memory_id", "policy_decision"),
@@ -3043,9 +3067,19 @@ for _operation_key in _OPENAPI_ARTIFACT_ROW_OPERATIONS:
 
 for _operation_key, (_fields, _required) in _OPENAPI_SOURCE_AUDITED_RESPONSES.items():
     _component_name, _previous_schema = OPENAPI_OPERATION_RESPONSE_SCHEMAS[_operation_key]
+    _source_properties = (
+        _OPENAPI_EXPLICIT_PROPERTY_SCHEMAS[_operation_key]
+        if _operation_key == ("POST", "/v0/vnext/connectors/browser-clipper/capabilities")
+        else None
+    )
     OPENAPI_OPERATION_RESPONSE_SCHEMAS[_operation_key] = (
         _component_name,
-        _closed_source_schema(_component_name, _fields, required=_required),
+        _closed_source_schema(
+            _component_name,
+            _fields,
+            required=_required,
+            properties=_source_properties,
+        ),
     )
 
 

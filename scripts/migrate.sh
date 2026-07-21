@@ -39,6 +39,10 @@ if [ -f "${REPO_ROOT}/.env" ]; then
   set +a
 fi
 
+if [ -z "${DATABASE_ADMIN_URL:-}" ]; then
+  fail "DATABASE_ADMIN_URL is required for migrations; inject the admin DSN into this migration process only."
+fi
+
 cd "${REPO_ROOT}"
 
 "${PYTHON_BIN}" -m alembic -c "${REPO_ROOT}/apps/api/alembic.ini" upgrade "${1:-head}"

@@ -34,11 +34,14 @@ CARRIER_NAMES = tuple(
     _openapi_tag_for_path _OPENAPI_EXACT_RESPONSE_CONTRACTS
     _OPENAPI_CREATED_ONLY_OPERATIONS _OPENAPI_CONDITIONAL_SUCCESS_OPERATIONS
     LEGACY_HTTP_OPERATION_KEYS LEGACY_SURFACES_ENABLED
-    _openapi_live_operation_keys AliceFastAPI app HealthStatus ServiceStatus
+    _openapi_live_operation_keys AliceFastAPI app _alice_request_validation_error
+    HealthStatus ServiceStatus
     DatabaseServicePayload RedisServicePayload ObjectStorageServicePayload
     HealthServicesPayload HealthcheckPayload _rewrite_user_id_query_param
     _rewrite_user_id_json_body _VNEXT_ROUTE_LOCAL_POLICY
-    _VNEXT_CENTRAL_OPERATOR_ROUTES _matched_vnext_route_path
+    _VNEXT_CENTRAL_OPERATOR_ROUTES _BROWSER_CLIP_SIMPLE_CAPTURE_PATH
+    _BROWSER_CLIP_SIMPLE_BODY_MAX_BYTES _prepare_browser_clip_simple_request
+    _matched_vnext_route_path
     _vnext_central_route_policy _resolve_vnext_http_auth
     _vnext_protected_http_auth build_healthcheck_payload
     _request_client_is_loopback _append_vary_header _cors_origin_allowed
@@ -75,8 +78,8 @@ EXPECTED_SUPPORT_AST_SHA256 = "878128b51d8e8fd091f189f4595ab7774c736667f68e25139
 EXPECTED_ROUTE_NAME_MANIFEST_SHA256 = "225c57c08bd8314156c56352dd1c53ffed3f556ce285c666dd6fca125115d0b4"
 EXPECTED_OPERATION_MANIFEST_SHA256 = "c320979b62d7ee8de244fe38bde5bf3761a4f9d76f76bf3cd8576c30fce9857e"
 EXPECTED_IMPORT_MANIFEST_SHA256 = "8d9669a4024ea5258cd50f92ac290c2a040ff224dd0a67b5c60faed5ae722517"
-EXPECTED_CARRIER_NAMES_SHA256 = "6cd0951deb96f86d9f6b5ba4c862698b615db12e6c3933749ce39aee34c858c6"
-EXPECTED_CARRIER_AST_SHA256 = "d2533461869ee4e696ad63173b948584546ee9d9de0b59f908a8c037d086a432"
+EXPECTED_CARRIER_NAMES_SHA256 = "00f4b8aba8e03d77e9936205d45003365df5f4f3afd0b7f6eced5b0b6ab49a9b"
+EXPECTED_CARRIER_AST_SHA256 = "1465fa9c2d60479ab41c44f2a2d9dbb2bca4319b4d8368c132b4b158241cf294"
 EXPECTED_ROUTE_NODE_SHA256 = {
     "get_vnext_workspace": "6c2151bf38b1b1311f016c00d14394afc7077a6ea219f7ce3dcfd9b701474ae7",
     "bootstrap_v1_workspace": "07b1fe2a4cd03a5ba69abe76e258a457e85e92b0bfba592520ee02d01d759c4b",
@@ -539,7 +542,7 @@ def test_workspace_routes_preserve_mount_order_origins_and_operation_ids() -> No
         for method in sorted(getattr(route, "methods", None) or set())
         if method in {"GET", "POST", "PUT", "PATCH", "DELETE"}
     ]
-    expected_indices = (84, 223, 224) if main_module.LEGACY_SURFACES_ENABLED else (38, 174, 175)
+    expected_indices = (84, 224, 225) if main_module.LEGACY_SURFACES_ENABLED else (38, 175, 176)
     assert all(effective_pairs.count((method, path)) == 1 for method, path, _name in EXPECTED_ROUTE_MANIFEST)
     observed_indices = tuple(
         effective_pairs.index((method, path))

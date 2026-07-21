@@ -18,6 +18,11 @@ Historical note: `v0.5.1-vnext-preview` and `v0.6.0-alpha-rc.2` are older milest
 
 ## Recommended Secure Access
 
+The default keyless posture trusts the local machine owner. It is not an
+internet-facing authentication mode: while no active agent key exists, a local
+caller can select the Alice `user_id`, and that identifier is not proof of
+identity. Keep both services on `127.0.0.1` and use an SSH tunnel:
+
 Use an SSH tunnel from your laptop:
 
 ```bash
@@ -30,7 +35,17 @@ Then open this from your local browser:
 http://127.0.0.1:3000/vnext
 ```
 
-Do not expose `/vnext`, the API, MCP, or browser clipper endpoint publicly by default. Keep services bound to localhost and add an authenticated reverse proxy only after the alpha path is working over SSH.
+Do not expose `/vnext`, the API, MCP, or browser clipper endpoint publicly by
+default. If remote access is required, first provision and test agent API keys,
+then place Alice behind a TLS-terminating authenticated reverse proxy, restrict
+`CORS_ALLOWED_ORIGINS` to the exact trusted UI origins, and restrict the host
+firewall so clients cannot bypass the proxy. Agent keys do not replace TLS or
+host isolation. A one-time browser-clipper capability authorizes only its bound
+page origin and one capture; it is not a general remote-access credential.
+
+Single-tenant remote hardening beyond these minimum constraints belongs to the
+separate cloud-deployment work. Multi-tenant hosting is not a supported alpha
+deployment.
 
 ## Inspect-Before-Run Install
 

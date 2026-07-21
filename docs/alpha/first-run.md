@@ -30,7 +30,8 @@ For local live mode, `.env` must include `CORS_ALLOWED_ORIGINS=http://127.0.0.1:
 
 Keyless local compatibility ends when the first active agent key is provisioned. The console key is
 entered per mounted browser session and is never configured through `.env`, local storage, or the
-URL. The browser-clipper bookmarklet remains a zero-active-key compatibility path; after keys
-exist, use a trusted authenticated API client with both Bearer authentication and `capture_token`.
+URL. The trusted console can use that session key to issue an origin-bound, short-lived, one-time
+browser-clip capability. Prepare a fresh bookmarklet for every clip; the bookmarklet receives
+neither the reusable agent key nor a configured `capture_token`.
 
 Use `pnpm --dir apps/web dev` only while editing the web UI. For long-running agent or Hermes sessions, prefer `make runtime` as the combined API plus web command, or use the `next start` command above when API is already running.

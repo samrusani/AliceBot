@@ -1,8 +1,12 @@
 # Security Policy
 
-## Supported Scope
+## Supported Versions
 
-Alice is pre-1.0 software. Security fixes target the latest minor release series (currently `v0.9.x`); older tags are not maintained. Security posture in this repo is scoped to the shipped local/runtime surfaces and deterministic verification paths on the current baseline.
+Alice is pre-1.0 software. Security fixes target the latest published minor
+release series. Older minor series and development snapshots are not maintained
+with security backports; move to the latest published release before reporting
+or validating a fix. The default branch is useful for reproducing a forthcoming
+fix, but it is not a supported release until it is tagged and published.
 
 ## Reporting a Vulnerability
 
@@ -17,14 +21,52 @@ Do not open public issues for active security vulnerabilities.
 
 ## Security Boundaries
 
-- Postgres remains the system of record.
-- User-owned data paths are RLS-governed.
-- Public CLI/MCP/importer surfaces should not bypass trust/provenance boundaries.
+- Alice is local-first, single-user, self-hosted software. It is not a
+  multi-tenant service boundary.
+- **Keyless means local-machine-owner trust.** A keyless vNext deployment is
+  safe only when the API remains on loopback and every local process and OS user
+  that can reach it is trusted as the Alice owner. In this mode a caller-supplied
+  `user_id` is routing context, not proof of identity.
+- Once a user has any active agent API key, protected `/v0/vnext` requests for
+  that user reject keyless access and require `Authorization: Bearer
+  alice_sk_...`. A browser-clipper one-time capability is a deliberately narrow
+  exception for its single capture route; it is not a general API credential.
+- Do not expose a keyless API or MCP process to a LAN, container peer, public
+  interface, or untrusted reverse-proxy client. Remote access requires active
+  agent keys, a TLS-terminating authenticated reverse proxy, a restrictive CORS
+  allowlist, and host/firewall controls.
+- PostgreSQL runtime access uses the application role and per-user RLS. Keep the
+  admin database credential confined to migrations and administrative recovery.
+  SQLite is a single-user on-ramp protected by owner-only filesystem
+  permissions, not by database RLS.
+- Public CLI, MCP, connector, and importer surfaces must preserve provenance and
+  policy boundaries. Imported and provider-returned text is data, never policy.
 - Consequential side effects remain approval-bounded.
+
+The shipped threat model and current evidence boundaries are documented in
+[`docs/security/`](docs/security/README.md).
+
+## Browser Clipper Credentials
+
+Visited-page JavaScript is hostile credential context. The bookmarklet must
+never contain, request, or persist an agent API key or reusable connector
+`capture_token`.
+
+The trusted Alice UI issues a short-lived, origin-bound, one-time capability for
+the selected page origin. The visited page can observe that narrow capability,
+so it may make the one authorized submission; it cannot replay it, redeem it
+from another origin, or turn it into general Alice access. Trusted API clients
+may still use Bearer authentication plus a reusable `capture_token`, but must
+never pass that reusable token to a bookmarklet or other visited-page script.
 
 ## Hardening Notes
 
-- keep `.env` local and do not commit secrets
-- keep local services bound to loopback where possible
-- treat per-agent API keys (`alicebot agent keys create`) as secrets; they are stored hashed, printed exactly once, and can be revoked with `alicebot agent keys revoke`
-- run verification commands before release tagging
+- Keep `.env` files local and do not commit secrets.
+- Keep API and web services bound to loopback unless the authenticated TLS
+  deployment boundary above is in place.
+- Treat per-agent API keys (`alicebot agent keys create`) as secrets. Alice
+  stores a SHA-256 verifier and short identification prefix, displays the raw
+  key once, and supports revocation with `alicebot agent keys revoke`.
+- Treat logs, exports, backups, and imported source archives as sensitive user
+  data even when application secrets have been redacted.
+- Run the release verification and security evidence commands before tagging.

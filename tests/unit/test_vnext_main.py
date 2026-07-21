@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 import sqlite3
@@ -51,7 +52,39 @@ class FakeVNextStore:
         self.projects: dict[str, dict[str, object]] = {}
         self.agent_identities: dict[str, dict[str, object]] = {}
         self.agent_api_keys: list[dict[str, object]] = []
+        self.browser_clip_capabilities: dict[str, dict[str, object]] = {}
         self.revisions: list[dict[str, object]] = []
+
+    def create_browser_clip_capability(
+        self,
+        *,
+        capability_hash: str,
+        origin: str,
+        ttl_seconds: int,
+    ) -> dict[str, object]:
+        row = {
+            "id": str(uuid4()),
+            "origin": origin,
+            "expires_at": datetime.now(UTC) + timedelta(seconds=ttl_seconds),
+            "consumed_at": None,
+        }
+        self.browser_clip_capabilities[capability_hash] = row
+        return dict(row)
+
+    def consume_browser_clip_capability(
+        self,
+        *,
+        capability_hash: str,
+        origin: str,
+    ) -> dict[str, object] | None:
+        row = self.browser_clip_capabilities.get(capability_hash)
+        if row is None or row["origin"] != origin or row["consumed_at"] is not None:
+            return None
+        expires_at = row["expires_at"]
+        if not isinstance(expires_at, datetime) or expires_at <= datetime.now(UTC):
+            return None
+        row["consumed_at"] = datetime.now(UTC)
+        return dict(row)
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
@@ -872,6 +905,8 @@ def _invoke_vnext_request(
     query: dict[str, str] | None = None,
     payload: dict[str, object] | None = None,
     authorization: str | None = None,
+    content_type: str = "application/json",
+    origin: str | None = None,
 ) -> tuple[int, dict[str, object]]:
     messages: list[dict[str, object]] = []
     body = b"" if payload is None else json.dumps(payload).encode()
@@ -887,9 +922,11 @@ def _invoke_vnext_request(
     async def send(message: dict[str, object]) -> None:
         messages.append(message)
 
-    headers = [(b"content-type", b"application/json")]
+    headers = [(b"content-type", content_type.encode())]
     if authorization is not None:
         headers.append((b"authorization", authorization.encode()))
+    if origin is not None:
+        headers.append((b"origin", origin.encode()))
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
@@ -910,6 +947,58 @@ def _invoke_vnext_request(
         message.get("body", b"") for message in messages if message["type"] == "http.response.body"
     )
     return int(start["status"]), json.loads(response_body)
+
+
+@pytest.mark.parametrize("content_type", ("application/json", "text/plain;charset=UTF-8"))
+@pytest.mark.parametrize(
+    "payload_factory",
+    (
+        lambda user_id, capability: {
+            "user_id": user_id,
+            "capture_capability": capability,
+        },
+        lambda user_id, _capability: {
+            "user_id": user_id,
+            "url": "https://example.test/article",
+            "capture_capability": f"alice_clip_{'S' * 191}",
+        },
+        lambda user_id, capability: {
+            "user_id": user_id,
+            "url": {"unexpected": "object"},
+            "capture_capability": capability,
+        },
+    ),
+)
+def test_browser_clip_validation_errors_never_echo_capability(
+    monkeypatch,
+    content_type: str,
+    payload_factory,
+) -> None:
+    _install_fake_vnext_store(monkeypatch, FakeVNextStore(None))
+    capability = f"alice_clip_{'S' * 43}"
+    payload = payload_factory(str(uuid4()), capability)
+
+    status, response_payload = _invoke_vnext_request(
+        "POST",
+        "/v0/vnext/connectors/browser-clipper/capture",
+        payload=payload,
+        content_type=content_type,
+        origin="https://example.test",
+    )
+
+    serialized_response = json.dumps(response_payload, sort_keys=True)
+    assert status == 422
+    assert response_payload == {
+        "detail": [
+            {
+                "type": "value_error",
+                "loc": ["body"],
+                "msg": "Input validation failed",
+            }
+        ]
+    }
+    assert "alice_clip_" not in serialized_response
+    assert "S" * 43 not in serialized_response
 
 
 def test_vnext_source_http_rejects_invalid_domain_and_sensitivity_enums(monkeypatch) -> None:
@@ -1108,7 +1197,7 @@ def test_vnext_route_inventory_fails_closed_without_route_local_policy() -> None
     }
     assert not (main_module._VNEXT_ROUTE_LOCAL_POLICY & main_module._VNEXT_CENTRAL_OPERATOR_ROUTES)
     assert (main_module._VNEXT_ROUTE_LOCAL_POLICY | main_module._VNEXT_CENTRAL_OPERATOR_ROUTES) == registered
-    assert len(registered) == 70
+    assert len(registered) == 71
 
     project_bound = main_module.AgentIdentity(
         agent_id="project-reader",
@@ -1246,6 +1335,7 @@ def test_vnext_memories_router_partitions_preserve_global_route_sequence() -> No
                 ("POST", "/v0/vnext/connectors/telegram/sync"),
                 ("POST", "/v0/vnext/connectors/local-folder/sync"),
                 ("POST", "/v0/vnext/connectors/browser-clipper/capture"),
+                ("POST", "/v0/vnext/connectors/browser-clipper/capabilities"),
                 ("POST", "/v0/vnext/agents/ingest-output"),
                 ("GET", "/v0/vnext/dogfooding"),
                 ("GET", "/v0/vnext/doctor"),
@@ -3314,6 +3404,84 @@ def test_live_capture_connector_api_endpoints(monkeypatch) -> None:
     health_payload = json.loads(health_response.body)
     assert health_payload["count"] >= 4
     assert any(item["connector_name"] == "telegram" for item in health_payload["items"])
+
+
+def test_browser_clip_capability_is_one_time_origin_bound_and_bypasses_only_capture_auth(monkeypatch) -> None:
+    from alicebot_api.vnext_agent_keys import create_agent_key
+
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    _key_record, raw_agent_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="browser-clip-issuer",
+        permission_profile="trusted_local_agent",
+    )
+    issue_payload = {"user_id": str(user_id), "origin": "https://example.test"}
+
+    assert (
+        _invoke_vnext_request(
+            "POST",
+            "/v0/vnext/connectors/browser-clipper/capabilities",
+            payload=issue_payload,
+        )[0]
+        == 401
+    )
+    issued_status, issued_payload = _invoke_vnext_request(
+        "POST",
+        "/v0/vnext/connectors/browser-clipper/capabilities",
+        payload=issue_payload,
+        authorization=f"Bearer {raw_agent_key}",
+    )
+    assert issued_status == 201
+    capability = str(issued_payload["capability"])
+    assert capability.startswith("alice_clip_")
+    assert capability not in repr(store.browser_clip_capabilities)
+
+    clip_payload = {
+        "user_id": str(user_id),
+        "url": "https://example.test/article",
+        "selected_text": "Fact: one-time browser capabilities are narrow.",
+        "capture_capability": capability,
+    }
+    captured_status, captured_payload = _invoke_vnext_request(
+        "POST",
+        "/v0/vnext/connectors/browser-clipper/capture",
+        payload=clip_payload,
+        content_type="text/plain;charset=UTF-8",
+        origin="https://example.test",
+    )
+    replay_status, _replay_payload = _invoke_vnext_request(
+        "POST",
+        "/v0/vnext/connectors/browser-clipper/capture",
+        payload=clip_payload,
+        content_type="text/plain;charset=UTF-8",
+        origin="https://example.test",
+    )
+
+    assert captured_status == 201, captured_payload
+    assert captured_payload["imported_count"] == 1
+    assert replay_status == 400
+    assert len(store.sources) == 1
+    assert capability not in json.dumps(store.sources, default=str)
+    assert capability not in json.dumps(store.events, default=str)
+
+
+def test_browser_clip_capability_response_is_not_cacheable(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+
+    response = vnext_memories_router.create_vnext_browser_clip_capability(
+        vnext_memories_router.VNextBrowserClipperCapabilityRequest(
+            user_id=uuid4(),
+            origin="https://example.test",
+        )
+    )
+
+    assert response.status_code == 201
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["pragma"] == "no-cache"
 
 
 def test_local_folder_external_io_runs_without_database_connection(monkeypatch, tmp_path) -> None:

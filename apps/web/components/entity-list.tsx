@@ -71,7 +71,11 @@ export function EntityList({
           </div>
         </div>
 
-        {unavailableReason ? <p className="responsive-note">Live list read failed: {unavailableReason}</p> : null}
+        {unavailableReason ? (
+          <p className="responsive-note" role="alert">
+            Live list read failed: {unavailableReason}
+          </p>
+        ) : null}
 
         <div className="list-rows">
           {entities.map((entity) => (

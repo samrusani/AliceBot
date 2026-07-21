@@ -1249,8 +1249,32 @@ export const COMPARISON_ARTIFACT_TYPES = [
   { artifactType: "contradiction_report", label: "Contradiction Report" },
 ];
 
-export const BROWSER_CLIPPER_BOOKMARKLET =
-  'javascript:(async()=>{try{const endpoint=prompt("Alice API endpoint","http://127.0.0.1:8000/v0/vnext/connectors/browser-clipper/capture");if(!endpoint)return;const user_id=prompt("Alice user id","00000000-0000-0000-0000-000000000001");if(!user_id)return;const capture_token=prompt("Optional Alice clipper token","");const user_note=prompt("Optional note","");const s=window.getSelection().toString();const body={user_id,url:location.href,title:document.title,selected_text:s||null,page_text:s?null:document.body.innerText.slice(0,20000),user_note:user_note||null,domain:"professional",sensitivity:"private"};if(capture_token)body.capture_token=capture_token;const r=await fetch(endpoint,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});alert(r.ok?"Alice clip saved":"Alice clip failed: "+r.status)}catch(e){alert("Alice clip failed")}})();';
+export type BrowserClipperBookmarkletInput = {
+  endpoint: string;
+  userId: string;
+  capability: string;
+  origin: string;
+  domain: Domain;
+  sensitivity: Sensitivity;
+};
+
+export function buildBrowserClipperBookmarklet({
+  endpoint,
+  userId,
+  capability,
+  origin,
+  domain,
+  sensitivity,
+}: BrowserClipperBookmarkletInput) {
+  const serializedEndpoint = JSON.stringify(endpoint);
+  const serializedUserId = JSON.stringify(userId);
+  const serializedCapability = JSON.stringify(capability);
+  const serializedOrigin = JSON.stringify(origin);
+  const serializedDomain = JSON.stringify(domain);
+  const serializedSensitivity = JSON.stringify(sensitivity);
+
+  return `javascript:(async()=>{try{const endpoint=${serializedEndpoint};const user_id=${serializedUserId};const capture_capability=${serializedCapability};const expected_origin=${serializedOrigin};if(location.origin!==expected_origin){alert("This Alice clip is bound to "+expected_origin+". Prepare a new clip for this page.");return;}const user_note=prompt("Optional note","");const selection=window.getSelection()?.toString()??"";const body={user_id,url:location.href,title:document.title,selected_text:selection||null,page_text:selection?null:(document.body?.innerText??"").slice(0,20000),user_note:user_note||null,capture_capability,domain:${serializedDomain},sensitivity:${serializedSensitivity}};await fetch(endpoint,{method:"POST",mode:"no-cors",body:JSON.stringify(body)});alert("Alice clip request submitted. Verify it in the Alice Inbox.")}catch{alert("Alice clip request failed before submission.")}})();`;
+}
 
 export function scheduleValue(workflow: VNextSchedulerStatus["workflows"][number], key: string, fallback: string) {
   const schedule = asRecord(workflow.schedule_json);

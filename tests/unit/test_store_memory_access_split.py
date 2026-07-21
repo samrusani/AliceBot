@@ -157,8 +157,9 @@ SQLITE_QUERY_EXPORTS = (
 )
 
 EXPECTED_CLASS_ORDERS = {
-    "PostgresVNextStore": (168, "00e1d9bab613f90665fb2f7666bfff3be1cdc3d96f925614b0bf7e04cecce638"),
-    "SQLiteVNextStore": (121, "2c0b5694a015fe7939e91bb5572145b8bf82598edfcbb579e51b4175c392e2e5"),
+    # Two paired browser-clip capability methods extend both façades.
+    "PostgresVNextStore": (170, "5f28f1a17670a0c8b7b373acd0c314637c58e6a10ccf52053481a8a028bb3c09"),
+    "SQLiteVNextStore": (123, "72cbbffacc5fee804508f7e9517450c955f2c85235bd403d4f5759ee86c103e3"),
 }
 
 

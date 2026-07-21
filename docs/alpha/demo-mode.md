@@ -41,3 +41,8 @@ Safety expectations:
 - synthetic names and identifiers only
 
 After loading, open `/vnext` and inspect Inbox, Memory Review, Generated, Trace, Agent Activity, Doctor, and Connectors.
+
+For the public-API capture, review, accept, trace, and redaction walkthrough, use
+the [review dashboard demo](review-dashboard-demo.md). It distinguishes the
+source-review trace from the independent `/traces` view and keeps redaction on
+the governed API rather than claiming a web control that does not exist.
