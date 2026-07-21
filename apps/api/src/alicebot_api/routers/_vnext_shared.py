@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Literal
+from typing import Literal, Mapping
 from uuid import UUID
 
 from fastapi.encoders import jsonable_encoder
@@ -11,6 +11,7 @@ from pydantic import BaseModel as PydanticBaseModel, ConfigDict, Field
 from alicebot_api.public_errors import public_exception_response
 from alicebot_api.vnext_agent_control import (
     AgentIdentity,
+    AgentIdentityValidationError,
     AgentPolicyBlockedError,
     PolicyDecision,
     append_policy_events,
@@ -327,10 +328,36 @@ def _vnext_load_source_trace(
     )
 
 
-def _vnext_agent_identity(request: VNextAgentRequest) -> AgentIdentity | None:
+def _vnext_normalized_agent_payload(request: VNextAgentRequest) -> dict[str, object]:
     payload = request.model_dump(mode="json")
     if payload.get("agent_identity") is None and isinstance(payload.get("agent"), dict):
         payload["agent_identity"] = payload["agent"]
+    nested_request = request.agent_identity or request.agent
+    nested = payload.get("agent_identity")
+    if nested_request is None or not isinstance(nested, Mapping):
+        return payload
+    for field in ("agent_id", "agent_type"):
+        if field not in request.model_fields_set or field not in nested_request.model_fields_set:
+            continue
+        top_level = payload.get(field)
+        nested_value = nested.get(field)
+        normalized_top_level = " ".join(top_level.split()).strip() if isinstance(top_level, str) else top_level
+        normalized_nested_value = (
+            " ".join(nested_value.split()).strip() if isinstance(nested_value, str) else nested_value
+        )
+        if (
+            normalized_top_level is not None
+            and normalized_nested_value is not None
+            and normalized_top_level != normalized_nested_value
+        ):
+            raise AgentIdentityValidationError(
+                f"agent_identity conflicts with top-level {field}"
+            )
+    return payload
+
+
+def _vnext_agent_identity(request: VNextAgentRequest) -> AgentIdentity | None:
+    payload = _vnext_normalized_agent_payload(request)
     return AgentIdentity.from_payload(payload)
 
 
@@ -341,9 +368,7 @@ def _vnext_authenticated_agent_identity(
     user_id: UUID,
     authorization: str | None,
 ) -> AgentIdentity | None:
-    payload = request.model_dump(mode="json")
-    if payload.get("agent_identity") is None and isinstance(payload.get("agent"), dict):
-        payload["agent_identity"] = payload["agent"]
+    payload = _vnext_normalized_agent_payload(request)
     return resolve_protected_agent_identity(
         store,
         user_id=user_id,
