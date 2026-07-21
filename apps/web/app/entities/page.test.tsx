@@ -3,6 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import EntitiesPage from "./page";
+import EntitiesLoading from "./loading";
 
 const {
   getApiConfigMock,
@@ -67,6 +68,13 @@ describe("EntitiesPage", () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it("announces the loading route without interrupting the operator", () => {
+    const { container } = render(<EntitiesLoading />);
+
+    expect(container.firstElementChild).toHaveAttribute("aria-busy", "true");
+    expect(container.firstElementChild).toHaveAttribute("aria-live", "polite");
   });
 
   it("uses fixture-backed entity workspace state when live API config is absent", async () => {
@@ -204,5 +212,35 @@ describe("EntitiesPage", () => {
     expect(screen.getByText("Edge review unavailable")).toBeInTheDocument();
     expect(screen.getByText("Edges unavailable")).toBeInTheDocument();
     expect(screen.getByText("edges down")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("edges down");
+  });
+
+  it("marks a failed live detail read unavailable and does not invent edge state", async () => {
+    const entity = {
+      id: "entity-live-without-fixture",
+      entity_type: "project",
+      name: "Live-only entity",
+      source_memory_ids: ["memory-live-1"],
+      created_at: "2026-07-21T09:00:00Z",
+    };
+    getApiConfigMock.mockReturnValue({ apiBaseUrl: "https://api.example.com", userId: "user-1" });
+    hasLiveApiConfigMock.mockReturnValue(true);
+    listEntitiesMock.mockResolvedValue({
+      items: [entity],
+      summary: { total_count: 1, order: ["created_at_asc", "id_asc"] },
+    });
+    getEntityDetailMock.mockRejectedValue(new Error("entity detail down"));
+
+    render(
+      await EntitiesPage({
+        searchParams: Promise.resolve({ entity: entity.id }),
+      }),
+    );
+
+    expect(screen.getByText("Detail unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("Live detail")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Edge review unavailable" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("entity detail down");
+    expect(listEntityEdgesMock).not.toHaveBeenCalled();
   });
 });

@@ -58,6 +58,21 @@ export function MemoryRevisionList({
     );
   }
 
+  if (source === "unavailable") {
+    return (
+      <SectionCard
+        eyebrow="Revision history"
+        title="Revision history unavailable"
+        description="Revision records stay undisclosed when the selected memory detail or revision read is unavailable."
+      >
+        <div className="execution-summary__note execution-summary__note--danger" role="alert">
+          <p className="execution-summary__label">Revision read unavailable</p>
+          <p>{unavailableReason ?? "Revision history could not be loaded for this memory."}</p>
+        </div>
+      </SectionCard>
+    );
+  }
+
   return (
     <SectionCard
       eyebrow="Revision history"

@@ -4,7 +4,7 @@ import { StatusBadge } from "../../components/status-badge";
 
 export default function Loading() {
   return (
-    <div className="page-stack" aria-busy="true">
+    <div className="page-stack" aria-busy="true" aria-live="polite">
       <PageHeader
         eyebrow="Approvals"
         title="Approval inbox and review"

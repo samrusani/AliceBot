@@ -33,7 +33,7 @@ function formatAttributeValue(value: unknown) {
 
 type ApprovalDetailProps = {
   initialApproval: ApprovalItem | null;
-  detailSource: ApiSource;
+  detailSource: ApiSource | "unavailable";
   initialExecution: ToolExecutionItem | null;
   executionSource?: ApiSource | null;
   executionUnavailableMessage?: string | null;
@@ -112,7 +112,13 @@ export function ApprovalDetail({
           </div>
           <div>
             <dt>Detail source</dt>
-            <dd>{detailSource === "live" ? "Live approval detail" : "Fixture detail fallback"}</dd>
+            <dd>
+              {detailSource === "live"
+                ? "Live approval detail"
+                : detailSource === "fixture"
+                  ? "Fixture detail fallback"
+                  : "Approval detail unavailable"}
+            </dd>
           </div>
           <div>
             <dt>Routing trace</dt>

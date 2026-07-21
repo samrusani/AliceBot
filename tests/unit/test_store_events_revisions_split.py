@@ -139,8 +139,9 @@ EXPECTED_PRIMITIVE_METADATA = {
     },
 }
 EXPECTED_CLASS_KEY_SHA256 = {
-    "postgres": "cc60702b43d219abe4938d798376370ffa5b986959c6d0ce63ae8530bb237aeb",
-    "sqlite": "0744bbc5dfdc2906da0c650585945e47482a59e5c0b50c71bf0bd30dd92eba15",
+    # Re-minted for the paired browser-clip capability façade methods.
+    "postgres": "88174a48507e75d260fa597319e8baec273a663b0036899d70c9550138bc6046",
+    "sqlite": "25cc77d828edc52ce8a1bea7ecc0964b9b9ad9a6656b6e0c37f4a012a03f2d8f",
 }
 EXPECTED_SUPPORT_AST_SHA256 = {
     "postgres_columns": {

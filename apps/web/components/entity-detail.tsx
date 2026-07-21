@@ -56,7 +56,7 @@ export function EntityDetail({ entity, source, unavailableReason }: EntityDetail
         </div>
 
         {unavailableReason ? (
-          <div className="execution-summary__note execution-summary__note--danger">
+          <div className="execution-summary__note execution-summary__note--danger" role="alert">
             <p className="execution-summary__label">Detail read</p>
             <p>{unavailableReason}</p>
           </div>

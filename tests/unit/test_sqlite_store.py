@@ -93,6 +93,7 @@ def test_bootstrap_sqlite_schema_is_idempotent() -> None:
         "event_log",
         "agent_identities",
         "agent_api_keys",
+        "browser_clip_capabilities",
         "memories_fts",
         "source_chunks_fts",
     ):

@@ -139,7 +139,7 @@ The connector layer has two local-first tiers.
 Live local capture supports:
 
 - local folder and Obsidian-style Markdown/text scan or polling watch
-- browser clipper capture through `POST /v0/vnext/connectors/browser-clipper/capture` and bookmarklet guidance
+- browser clipper capability issuance through `POST /v0/vnext/connectors/browser-clipper/capabilities`, followed by one-time origin-bound capture through `POST /v0/vnext/connectors/browser-clipper/capture`
 - generic agent output ingestion through CLI/API/MCP
 
 Deterministic payload ingestion remains available for:

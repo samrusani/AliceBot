@@ -1,0 +1,92 @@
+name: Phase 5 Ops Evidence
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ops-evidence:
+    name: Backup, restore, upgrade, and monitoring evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
+        env:
+          POSTGRES_USER: alicebot_admin
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: alicebot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U alicebot_admin -d alicebot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_ADMIN_URL: postgresql://alicebot_admin:ci@localhost:5432/alicebot
+      DATABASE_URL: postgresql://alicebot_app:ci@localhost:5432/alicebot
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Select PostgreSQL 16 client tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends postgresql-client-16
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+          /usr/lib/postgresql/16/bin/pg_dump --version
+          /usr/lib/postgresql/16/bin/pg_restore --version
+
+      - name: Install Alice and test dependencies
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install -e '.[dev]'
+
+      - name: Bootstrap the role-separated application role
+        env:
+          PGHOST: localhost
+          PGPASSWORD: ci
+          POSTGRES_USER: alicebot_admin
+          POSTGRES_DB: alicebot
+          ALICEBOT_APP_USER: alicebot_app
+          ALICEBOT_APP_PASSWORD: ci
+        run: infra/postgres/init/001_roles.sh
+
+      - name: Run evidence contract tests
+        run: >-
+          ./.venv/bin/python -m pytest
+          tests/unit/test_phase5_ops_evidence.py
+          tests/unit/test_phase5_enterprise_handoff_truth.py
+          -q -p no:cacheprovider
+
+      - name: Execute both backend drills
+        run: |
+          mkdir -p artifacts/phase5
+          ./.venv/bin/python scripts/run_phase5_ops_evidence.py \
+            --backend all \
+            --work-dir "${RUNNER_TEMP}" \
+            --output artifacts/phase5/ops-evidence.json
+
+      - name: Upload sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: phase5-ops-evidence
+          path: artifacts/phase5/ops-evidence.json
+          if-no-files-found: error
+          retention-days: 14

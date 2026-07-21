@@ -3,6 +3,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import TracesPage from "./page";
+import TracesLoading from "./loading";
 
 const {
   getApiConfigMock,
@@ -85,11 +86,22 @@ describe("TracesPage", () => {
     cleanup();
   });
 
+  it("announces the loading route without interrupting the operator", () => {
+    const { container } = render(<TracesLoading />);
+
+    expect(container.firstElementChild).toHaveAttribute("aria-busy", "true");
+    expect(container.firstElementChild).toHaveAttribute("aria-live", "polite");
+  });
+
   it("shows fixture mode when live api config is absent", async () => {
     render(await TracesPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByText("Fixture-backed")).toBeInTheDocument();
     expect(screen.getByText("Trace and explain-why review")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Context compile review/ })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
   });
 
   it("shows api unavailable chip when live trace list fails", async () => {

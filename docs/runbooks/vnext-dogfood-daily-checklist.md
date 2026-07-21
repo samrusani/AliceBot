@@ -69,7 +69,7 @@ alicebot vnext smoke agentic-scheduler
 
 - Missing `connector_settings` or `connector_state`: run `./scripts/migrate.sh`, then `alicebot vnext doctor --fix-safe`.
 - Local folder recapture noise: check ignored generated folders, extensions, and allowed roots.
-- Browser clipper unauthorized: pass the configured local capture token or clear the browser clipper `secret_ref`.
+- Browser clipper unauthorized: prepare a fresh one-time bookmarklet in the authenticated Alice console and confirm that its bound origin matches the page; trusted API clients may instead send Bearer authentication plus the configured local `capture_token`.
 - Scheduler stale or failing: inspect `alicebot vnext scheduler failures`, then keep generated artifacts review-only until the root cause is fixed.
 
 ## Non-Negotiables

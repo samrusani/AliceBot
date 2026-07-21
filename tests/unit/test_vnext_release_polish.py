@@ -476,7 +476,7 @@ def test_ci_action_dependency_carrier_uses_exact_atomic_pins() -> None:
 
     assert checkout_refs == [
         "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
-    ] * 16
+    ] * 18
     assert codeql_refs == [
         "99df26d4f13ea111d4ec1a7dddef6063f76b97e9"
     ] * 3

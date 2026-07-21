@@ -78,7 +78,9 @@ export default async function ArtifactsPage({
   const selectedFromList = artifacts.find((item) => item.id === selectedArtifactId) ?? null;
 
   let selectedArtifact = selectedFromList;
-  let selectedArtifactSource: ApiSource | null = selectedArtifact ? artifactListSource : null;
+  let selectedArtifactSource: ApiSource | "unavailable" | null = selectedArtifact
+    ? artifactListSource
+    : null;
   let selectedArtifactUnavailableReason: string | undefined;
 
   if (selectedFromList && liveModeReady && artifactListSource === "live") {
@@ -91,6 +93,8 @@ export default async function ArtifactsPage({
       if (fixtureArtifact) {
         selectedArtifact = fixtureArtifact;
         selectedArtifactSource = "fixture";
+      } else {
+        selectedArtifactSource = "unavailable";
       }
       selectedArtifactUnavailableReason =
         error instanceof Error ? error.message : "Selected artifact detail could not be loaded.";
@@ -99,7 +103,15 @@ export default async function ArtifactsPage({
 
   let chunks = selectedArtifact ? getFixtureTaskArtifactChunks(selectedArtifact.id) : [];
   let chunkSummary = selectedArtifact ? getFixtureTaskArtifactChunkSummary(selectedArtifact.id) : null;
-  let chunkSource: ApiSource | "unavailable" | null = selectedArtifact ? "fixture" : null;
+  let chunkSource: ApiSource | "unavailable" | null = selectedArtifact
+    ? selectedArtifactSource === "unavailable"
+      ? "unavailable"
+      : "fixture"
+    : null;
+  if (chunkSource === "unavailable") {
+    chunks = [];
+    chunkSummary = null;
+  }
   let chunkUnavailableReason: string | undefined;
 
   if (selectedArtifact && liveModeReady && selectedArtifactSource === "live") {
@@ -132,7 +144,7 @@ export default async function ArtifactsPage({
 
   const pageMode = combinePageModes(
     artifactListSource,
-    selectedArtifactSource,
+    selectedArtifactSource === "unavailable" ? null : selectedArtifactSource,
     chunkSource === "unavailable" ? null : chunkSource,
   );
 

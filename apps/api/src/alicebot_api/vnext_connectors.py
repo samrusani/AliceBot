@@ -23,7 +23,12 @@ from alicebot_api.vnext_embeddings import DeferredMemoryEmbedding
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_project_scope import resolve_project_scope
 from alicebot_api.vnext_repositories import JsonObject
-from alicebot_api.vnext_secrets import SecretProvider, default_secret_provider, redact_secret_fields
+from alicebot_api.vnext_secrets import (
+    SecretProvider,
+    default_secret_provider,
+    redact_secret_fields,
+    redact_secret_value,
+)
 
 
 CONNECTOR_ITEM_IMPORT_ERROR_CODE = "connector_item_import_failed"
@@ -1582,10 +1587,11 @@ class VNextConnectorService:
         *,
         default_domain: str | None = None,
         default_sensitivity: str | None = None,
+        capability_authorized: bool = False,
     ) -> ConnectorSyncResult:
         config = self.get_config("browser_clipper")
         secret_ref = _as_optional_text(config.get("secret_ref"))
-        if secret_ref is not None:
+        if secret_ref is not None and not capability_authorized:
             expected_token = self._resolve_secret(secret_ref)
             provided_token = _as_optional_text(payload.get("capture_token"))
             if not expected_token or not provided_token or not hmac.compare_digest(provided_token, expected_token):
@@ -1599,7 +1605,18 @@ class VNextConnectorService:
                     },
                 )
                 raise VNextConnectorValidationError("browser clipper capture token is invalid")
-        sanitized_payload = cast(JsonObject, redact_secret_fields(dict(payload)))
+        sanitized_payload_value: object = dict(payload)
+        capability = _as_optional_text(payload.get("capture_capability"))
+        if capability_authorized:
+            if capability is None:
+                raise VNextConnectorValidationError("browser clipper capability is required")
+            sanitized_payload_value = redact_secret_value(sanitized_payload_value, capability)
+        if not isinstance(sanitized_payload_value, dict):  # pragma: no cover - recursive redactor contract
+            raise RuntimeError("browser clipper payload redaction returned a non-object")
+        # Capabilities authorize only this transaction. Never persist even a
+        # redacted marker that would imply they are connector source content.
+        sanitized_payload_value.pop("capture_capability", None)
+        sanitized_payload = cast(JsonObject, redact_secret_fields(sanitized_payload_value))
         return self.sync_items(
             "browser_clipper",
             [sanitized_payload],

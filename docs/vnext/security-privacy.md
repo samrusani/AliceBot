@@ -50,7 +50,7 @@ Secret rules:
 
 - API, CLI, UI, event logs, source metadata, artifact metadata, and health responses must expose only the reference or configured/not-configured status.
 - Redaction applies before raw connector payloads are persisted.
-- Browser clipper capture tokens are accepted only when configured and are redacted from source/event evidence.
+- Trusted API clients may use a configured browser-clipper capture token, which is redacted from source/event evidence. The bookmarklet never receives it: the trusted Alice console issues a short-lived, origin-bound, one-time capability whose digest is stored until atomic redemption.
 - The future OS keychain or hosted secret-provider implementation should satisfy the same interface without changing connector behavior.
 
 Allowed public demo material:

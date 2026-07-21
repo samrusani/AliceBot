@@ -3,6 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ApprovalsPage from "./page";
+import ApprovalsLoading from "./loading";
 
 const {
   getApiConfigMock,
@@ -25,8 +26,20 @@ const {
 }));
 
 vi.mock("next/link", () => ({
-  default: ({ href, children, className }: { href: string; children: React.ReactNode; className?: string }) => (
-    <a href={href} className={className}>{children}</a>
+  default: ({
+    href,
+    children,
+    className,
+    "aria-current": ariaCurrent,
+  }: {
+    href: string;
+    children: React.ReactNode;
+    className?: string;
+    "aria-current"?: React.AriaAttributes["aria-current"];
+  }) => (
+    <a href={href} className={className} aria-current={ariaCurrent}>
+      {children}
+    </a>
   ),
 }));
 
@@ -112,6 +125,13 @@ describe("ApprovalsPage", () => {
 
   afterEach(cleanup);
 
+  it("announces the loading route without interrupting the operator", () => {
+    const { container } = render(<ApprovalsLoading />);
+
+    expect(container.firstElementChild).toHaveAttribute("aria-busy", "true");
+    expect(container.firstElementChild).toHaveAttribute("aria-live", "polite");
+  });
+
   it("returns not found before any reads when legacy surfaces are disabled", async () => {
     legacySurfacesEnabledMock.mockReturnValue(false);
 
@@ -150,6 +170,10 @@ describe("ApprovalsPage", () => {
 
     expect(screen.getByText("Live API")).toBeInTheDocument();
     expect(screen.getAllByText("Release Publisher").length).toBeGreaterThan(0);
+    expect(screen.getByRole("link", { name: /Release Publisher/ })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
     expect(getApprovalDetailMock).toHaveBeenCalledWith(
       "https://api.example.com",
       liveApproval.id,
@@ -171,5 +195,24 @@ describe("ApprovalsPage", () => {
 
     expect(screen.getByText("Fixture-backed")).toBeInTheDocument();
     expect(screen.getByText(/total approvals/i)).toBeInTheDocument();
+  });
+
+  it("marks a failed live detail read unavailable and keeps every mutation disabled", async () => {
+    getApiConfigMock.mockReturnValue({ apiBaseUrl: "https://api.example.com", userId: "user-1" });
+    hasLiveApiConfigMock.mockReturnValue(true);
+    listApprovalsMock.mockResolvedValue({ items: [liveApproval] });
+    getApprovalDetailMock.mockRejectedValue(new Error("approval detail down"));
+
+    render(
+      await ApprovalsPage({
+        searchParams: Promise.resolve({ approval: liveApproval.id }),
+      }),
+    );
+
+    expect(screen.getByText("Approval detail unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("Live approval detail")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Execute approved request" })).toBeDisabled();
+    expect(listToolExecutionsMock).not.toHaveBeenCalled();
+    expect(getToolExecutionMock).not.toHaveBeenCalled();
   });
 });

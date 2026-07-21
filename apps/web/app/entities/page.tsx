@@ -77,7 +77,9 @@ export default async function EntitiesPage({
   const selectedFromList = entities.find((item) => item.id === selectedEntityId) ?? null;
 
   let selectedEntity = selectedFromList;
-  let selectedEntitySource: ApiSource | null = selectedEntity ? entityListSource : null;
+  let selectedEntitySource: ApiSource | "unavailable" | null = selectedEntity
+    ? entityListSource
+    : null;
   let selectedEntityUnavailableReason: string | undefined;
 
   if (selectedFromList && liveModeReady && entityListSource === "live") {
@@ -90,6 +92,8 @@ export default async function EntitiesPage({
       if (fixtureEntity) {
         selectedEntity = fixtureEntity;
         selectedEntitySource = "fixture";
+      } else {
+        selectedEntitySource = "unavailable";
       }
       selectedEntityUnavailableReason =
         error instanceof Error ? error.message : "Selected entity detail could not be loaded.";
@@ -98,7 +102,15 @@ export default async function EntitiesPage({
 
   let edges = selectedEntity ? getFixtureEntityEdges(selectedEntity.id) : [];
   let edgeSummary = selectedEntity ? getFixtureEntityEdgeSummary(selectedEntity.id) : null;
-  let edgeSource: ApiSource | "unavailable" | null = selectedEntity ? "fixture" : null;
+  let edgeSource: ApiSource | "unavailable" | null = selectedEntity
+    ? selectedEntitySource === "unavailable"
+      ? "unavailable"
+      : "fixture"
+    : null;
+  if (edgeSource === "unavailable") {
+    edges = [];
+    edgeSummary = null;
+  }
   let edgeUnavailableReason: string | undefined;
 
   if (selectedEntity && liveModeReady && selectedEntitySource === "live") {
@@ -125,7 +137,7 @@ export default async function EntitiesPage({
 
   const pageMode = combinePageModes(
     entityListSource,
-    selectedEntitySource,
+    selectedEntitySource === "unavailable" ? null : selectedEntitySource,
     edgeSource === "unavailable" ? null : edgeSource,
   );
 

@@ -1,0 +1,43 @@
+{
+	# Replace before deployment. Caddy obtains and renews a public certificate.
+	email alice-operator@example.com
+	admin 127.0.0.1:2019
+	servers {
+		strict_sni_host on
+	}
+}
+
+alice.example.com {
+	encode zstd gzip
+	tls {
+		# Install the public certificate of the operator CA that issues one
+		# client certificate per authorized browser or agent at this path.
+		client_auth {
+			mode require_and_verify
+			trust_pool file /run/secrets/alicebot/client-ca.pem
+		}
+	}
+
+	log {
+		output stdout
+		format json
+	}
+
+	header {
+		-Server
+		Content-Security-Policy "frame-ancestors 'none'"
+		Referrer-Policy "no-referrer"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+	}
+
+	@alice_api path /healthz /openapi.json /docs /docs/* /redoc /redoc/* /v0/vnext /v0/vnext/*
+	handle @alice_api {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}

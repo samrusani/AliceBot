@@ -3,6 +3,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import MemoriesPage from "./page";
+import MemoriesLoading from "./loading";
 
 const {
   getApiConfigMock,
@@ -113,6 +114,13 @@ describe("MemoriesPage", () => {
     cleanup();
   });
 
+  it("announces the loading route without interrupting the operator", () => {
+    const { container } = render(<MemoriesLoading />);
+
+    expect(container.firstElementChild).toHaveAttribute("aria-busy", "true");
+    expect(container.firstElementChild).toHaveAttribute("aria-live", "polite");
+  });
+
   it("uses fixture-backed memory workspace state when live API config is absent", async () => {
     render(await MemoriesPage({ searchParams: Promise.resolve({}) }));
 
@@ -133,6 +141,41 @@ describe("MemoriesPage", () => {
     ).toBeInTheDocument();
     expect(listMemoriesMock).not.toHaveBeenCalled();
     expect(getMemoryHygieneDashboardMock).not.toHaveBeenCalled();
+  });
+
+  it("renders a truthful empty live memory list without selecting or mutating a fixture", async () => {
+    getApiConfigMock.mockReturnValue({
+      apiBaseUrl: "https://api.example.com",
+      userId: "user-1",
+      defaultThreadId: "thread-1",
+      defaultToolId: "tool-1",
+    });
+    hasLiveApiConfigMock.mockReturnValue(true);
+    listMemoriesMock.mockResolvedValue({
+      items: [],
+      summary: {
+        status: "active",
+        limit: 20,
+        returned_count: 0,
+        total_count: 0,
+        has_more: false,
+        order: ["updated_at_desc", "created_at_desc", "id_desc"],
+      },
+    });
+    listMemoryReviewQueueMock.mockRejectedValue(new Error("queue unavailable"));
+    getMemoryEvaluationSummaryMock.mockRejectedValue(new Error("summary unavailable"));
+    getMemoryTrustDashboardMock.mockRejectedValue(new Error("trust unavailable"));
+    getMemoryHygieneDashboardMock.mockRejectedValue(new Error("hygiene unavailable"));
+    listOpenLoopsMock.mockRejectedValue(new Error("open loops unavailable"));
+
+    render(await MemoriesPage({ searchParams: Promise.resolve({}) }));
+
+    expect(screen.getByRole("heading", { name: "No active memories" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { name: "No memory selected" }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "Label form is disabled" })).toBeInTheDocument();
+    expect(getMemoryDetailMock).not.toHaveBeenCalled();
+    expect(getMemoryRevisionsMock).not.toHaveBeenCalled();
+    expect(listMemoryLabelsMock).not.toHaveBeenCalled();
   });
 
   it("renders live-backed memory summary, detail, revisions, and labels when live reads succeed", async () => {
@@ -541,10 +584,18 @@ describe("MemoriesPage", () => {
     expect(screen.getAllByText("Insufficient sample").length).toBeGreaterThan(0);
     expect(screen.getByText("Detail read")).toBeInTheDocument();
     expect(screen.getByText("detail down")).toBeInTheDocument();
-    expect(screen.getByText("Revisions unavailable")).toBeInTheDocument();
-    expect(screen.getByText("revisions down")).toBeInTheDocument();
-    expect(screen.getByText("Labels unavailable")).toBeInTheDocument();
-    expect(screen.getByText("labels down")).toBeInTheDocument();
+    expect(screen.getByText("Detail unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("Live detail")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Revision history unavailable" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Review labels unavailable" })).toBeInTheDocument();
+    expect(screen.queryByText("No revisions returned")).not.toBeInTheDocument();
+    expect(screen.queryByText("No labels yet")).not.toBeInTheDocument();
+    expect(screen.queryByText("0 total labels")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Submit review label" })).toBeDisabled();
+    expect(getMemoryRevisionsMock).not.toHaveBeenCalled();
+    expect(listMemoryLabelsMock).not.toHaveBeenCalled();
   });
 
   it("starts independent selected-record reads in bounded parallel waves", async () => {

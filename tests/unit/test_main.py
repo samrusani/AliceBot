@@ -312,7 +312,7 @@ def test_openapi_has_concrete_success_contracts_and_accurate_statuses() -> None:
     }
     operations = list(operations_by_key.values())
 
-    assert len(operations) == 182
+    assert len(operations) == 183
     assert all(operation.get("tags") for operation in operations)
     assert all(operation.get("description") for operation in operations)
     assert all("default" in operation["responses"] for operation in operations)
@@ -323,7 +323,7 @@ def test_openapi_has_concrete_success_contracts_and_accurate_statuses() -> None:
         if status.startswith("2")
         for json_body in [response.get("content", {}).get("application/json", {})]
     ]
-    assert len(success_schemas) == 186
+    assert len(success_schemas) == 187
     assert "APIJsonDocument" not in components
     assert all(document.get("$ref", "").startswith("#/components/schemas/") for document in success_schemas)
     resolved_success_schemas = [components[document["$ref"].rsplit("/", 1)[-1]] for document in success_schemas]
@@ -347,7 +347,7 @@ def test_openapi_has_concrete_success_contracts_and_accurate_statuses() -> None:
     assert exact_keys | set(operation_registry) == set(operations_by_key), coverage_report
     assert exact_keys.isdisjoint(operation_registry), coverage_report
     assert len(exact_keys) == 42
-    assert len(operation_registry) == 140
+    assert len(operation_registry) == 141
     assert 0 < len(polymorphic_operations) <= 3
     assert set(polymorphic_operations) <= set(operation_registry)
     assert all(reason.strip() for reason in polymorphic_operations.values())
@@ -379,6 +379,26 @@ def test_openapi_has_concrete_success_contracts_and_accurate_statuses() -> None:
     assert broad_components.isdisjoint(components)
     assert broad_components.isdisjoint(referenced_component_names)
     assert broad_components.isdisjoint(all_response_component_names)
+
+    clip_request_properties = components["VNextBrowserClipperCaptureRequest"]["properties"]
+    assert clip_request_properties["capture_capability"]["writeOnly"] is True
+    clip_request_content = operations_by_key[
+        ("POST", "/v0/vnext/connectors/browser-clipper/capture")
+    ]["requestBody"]["content"]
+    assert set(clip_request_content) == {"application/json", "text/plain"}
+    assert clip_request_content["text/plain"]["schema"] == {
+        "type": "string",
+        "contentMediaType": "application/json",
+        "description": (
+            "JSON-encoded VNextBrowserClipperCaptureRequest used by the "
+            "CORS-safelisted one-time bookmarklet transport."
+        ),
+    }
+    capability_response = components["CreateVnextBrowserClipCapabilitySuccessResponse"]
+    assert capability_response["properties"]["capability"]["readOnly"] is True
+    assert "example" not in json.dumps(
+        operations_by_key[("POST", "/v0/vnext/connectors/browser-clipper/capabilities")]
+    ).casefold()
 
     registry_component_names: list[str] = []
     for operation_key, (component_name, registered_schema) in operation_registry.items():
@@ -1217,6 +1237,163 @@ def test_rewrite_user_id_json_body_rejects_mismatch() -> None:
 
     with pytest.raises(ValueError, match="request user_id does not match authenticated user"):
         asyncio.run(main_module._rewrite_user_id_json_body(request, uuid4()))
+
+
+def test_browser_clip_simple_transport_is_bounded_and_rewritten_to_json(monkeypatch) -> None:
+    user_id = str(uuid4())
+    raw_body = json.dumps(
+        {
+            "user_id": user_id,
+            "url": "https://example.test/article",
+            "selected_text": "Bounded simple request.",
+            "capture_capability": f"alice_clip_{'A' * 43}",
+        }
+    ).encode("utf-8")
+    request = _build_request(
+        method="POST",
+        path="/v0/vnext/connectors/browser-clipper/capture",
+        body=raw_body,
+        headers={"content-type": "text/plain;charset=UTF-8"},
+    )
+
+    rewritten, payload = asyncio.run(main_module._prepare_browser_clip_simple_request(request))
+
+    assert payload is not None and payload["user_id"] == user_id
+    assert rewritten.headers["content-type"] == "application/json"
+    assert asyncio.run(rewritten.body()) == raw_body
+
+    monkeypatch.setattr(main_module, "_BROWSER_CLIP_SIMPLE_BODY_MAX_BYTES", len(raw_body) - 1)
+    oversized = _build_request(
+        method="POST",
+        path="/v0/vnext/connectors/browser-clipper/capture",
+        body=raw_body,
+        headers={"content-type": "text/plain;charset=UTF-8"},
+    )
+    with pytest.raises(ValueError, match="too large"):
+        asyncio.run(main_module._prepare_browser_clip_simple_request(oversized))
+
+
+def test_browser_clip_simple_transport_stops_buffering_at_limit(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "_BROWSER_CLIP_SIMPLE_BODY_MAX_BYTES", 8)
+    received_chunks = 0
+    handler_called = False
+    chunks = (
+        {"type": "http.request", "body": b'{"cap":', "more_body": True},
+        {"type": "http.request", "body": b'"too-large', "more_body": True},
+        {"type": "http.request", "body": b'-never-read"}', "more_body": False},
+    )
+    base_request = _build_request(
+        method="POST",
+        path="/v0/vnext/connectors/browser-clipper/capture",
+        headers={"content-type": "text/plain;charset=UTF-8"},
+    )
+
+    async def receive() -> dict[str, object]:
+        nonlocal received_chunks
+        message = chunks[received_chunks]
+        received_chunks += 1
+        return message
+
+    async def call_next(_: Request) -> Response:
+        nonlocal handler_called
+        handler_called = True
+        return Response(status_code=204)
+
+    request = Request(base_request.scope, receive)
+    response = asyncio.run(main_module._vnext_protected_http_auth(request, call_next))
+
+    assert response.status_code == 400
+    assert received_chunks == 2
+    assert handler_called is False
+
+
+def test_browser_clip_simple_transport_rejects_declared_oversize_before_read(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "_BROWSER_CLIP_SIMPLE_BODY_MAX_BYTES", 8)
+    receive_called = False
+    base_request = _build_request(
+        method="POST",
+        path="/v0/vnext/connectors/browser-clipper/capture",
+        headers={
+            "content-type": "text/plain;charset=UTF-8",
+            "content-length": "9",
+        },
+    )
+
+    async def receive() -> dict[str, object]:
+        nonlocal receive_called
+        receive_called = True
+        return {"type": "http.request", "body": b"oversized", "more_body": False}
+
+    request = Request(base_request.scope, receive)
+    with pytest.raises(ValueError, match="too large"):
+        asyncio.run(main_module._prepare_browser_clip_simple_request(request))
+
+    assert receive_called is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        [],
+        {"user_id": "00000000-0000-0000-0000-000000000001"},
+        {"capture_capability": ""},
+    ),
+)
+def test_browser_clip_simple_transport_rejects_non_object_or_missing_capability(payload: object) -> None:
+    request = _build_request(
+        method="POST",
+        path="/v0/vnext/connectors/browser-clipper/capture",
+        body=json.dumps(payload).encode("utf-8"),
+        headers={"content-type": "text/plain;charset=UTF-8"},
+    )
+
+    with pytest.raises(ValueError):
+        asyncio.run(main_module._prepare_browser_clip_simple_request(request))
+
+
+def test_vnext_capability_auth_exception_is_confined_to_capture_route(monkeypatch) -> None:
+    user_id = str(uuid4())
+    capability = f"alice_clip_{'A' * 43}"
+    auth_calls: list[str] = []
+
+    def fake_resolve_vnext_http_auth(**kwargs):
+        auth_calls.append(str(kwargs["route_path"]))
+        return None, None
+
+    async def call_next(_: Request) -> Response:
+        return Response(status_code=204)
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://db"))
+    monkeypatch.setattr(main_module, "_resolve_vnext_http_auth", fake_resolve_vnext_http_auth)
+    capture = _build_request(
+        method="POST",
+        path="/v0/vnext/connectors/browser-clipper/capture",
+        body=json.dumps(
+            {
+                "user_id": user_id,
+                "url": "https://example.test/article",
+                "capture_capability": capability,
+            }
+        ).encode("utf-8"),
+        headers={"content-type": "application/json", "origin": "https://example.test"},
+    )
+    other = _build_request(
+        method="POST",
+        path="/v0/vnext/sources",
+        body=json.dumps(
+            {
+                "user_id": user_id,
+                "raw_text": "The capability must not authorize this route.",
+                "capture_capability": capability,
+            }
+        ).encode("utf-8"),
+        headers={"content-type": "application/json"},
+    )
+
+    assert asyncio.run(main_module._vnext_protected_http_auth(capture, call_next)).status_code == 204
+    assert auth_calls == []
+    assert asyncio.run(main_module._vnext_protected_http_auth(other, call_next)).status_code == 204
+    assert auth_calls == ["/v0/vnext/sources"]
 
 
 def test_request_client_identifier_ignores_forwarded_header_when_proxy_not_trusted() -> None:

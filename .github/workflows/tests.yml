@@ -2222,7 +2222,10 @@ jobs:
           DATABASE_ADMIN_URL: postgresql://alicebot_admin:ci@localhost:5432/alicebot
         run: |
           unset ALICE_LEGACY_SURFACES ALICE_MCP_LEGACY_TOOLS ALICE_AGENT_API_KEY
-          ./.venv/bin/python -m pytest tests/integration/test_default_surface_integration.py -q -p no:cacheprovider --require-executed-tests
+          ./.venv/bin/python -m pytest \
+            tests/integration/test_default_surface_integration.py \
+            tests/integration/test_openai_agents_sdk_tool.py \
+            -q -p no:cacheprovider --require-executed-tests
 
   web:
     name: Web tests, types, accessibility, and budgets

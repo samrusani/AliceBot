@@ -628,6 +628,43 @@ _TABLE_STATEMENTS: tuple[str, ...] = (
         CHECK (permission_profile IN ({_PERMISSION_PROFILES_SQL}))
     )
     """,
+    f"""
+    CREATE TABLE IF NOT EXISTS browser_clip_capabilities (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      capability_hash TEXT NOT NULL UNIQUE,
+      origin TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT NULL,
+      created_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
+      UNIQUE (id, user_id),
+      CONSTRAINT browser_clip_capabilities_hash_check
+        CHECK (
+          length(capability_hash) = 64
+          AND capability_hash = lower(capability_hash)
+          AND capability_hash NOT GLOB '*[^0-9a-f]*'
+        ),
+      CONSTRAINT browser_clip_capabilities_origin_length_check
+        CHECK (length(origin) BETWEEN 8 AND 2048),
+      CONSTRAINT browser_clip_capabilities_expiry_range_check
+        CHECK (
+          julianday(expires_at) IS NOT NULL
+          AND julianday(created_at) IS NOT NULL
+          AND julianday(expires_at) > julianday(created_at)
+          -- One millisecond absorbs SQLite julianday floating-point error at
+          -- the exact 300-second boundary; the write seam still rejects >300.
+          AND julianday(expires_at) <= julianday(created_at) + (300.001 / 86400.0)
+        ),
+      CONSTRAINT browser_clip_capabilities_consumed_range_check
+        CHECK (
+          consumed_at IS NULL
+          OR (
+            julianday(consumed_at) IS NOT NULL
+            AND julianday(consumed_at) >= julianday(created_at)
+          )
+        )
+    )
+    """,
     # Entity substrate (mirrors Postgres migration 20260705_0078):
     # entities.normalized_name is the resolution key, aliases is a JSON
     # array of alternate normalized names.
@@ -976,6 +1013,16 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS agent_api_keys_user_agent_idx
       ON agent_api_keys (user_id, agent_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS browser_clip_capabilities_live_expiry_idx
+      ON browser_clip_capabilities (user_id, expires_at)
+      WHERE consumed_at IS NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS browser_clip_capabilities_consumed_idx
+      ON browser_clip_capabilities (user_id, consumed_at)
+      WHERE consumed_at IS NOT NULL
     """,
     # Mirrors vnext_entities_user_normalized_name_idx and
     # entity_relationship_events_entity_changed_idx from Postgres
