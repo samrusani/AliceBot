@@ -740,8 +740,6 @@ def start_background_daemon(config: SchedulerRuntimeConfig) -> JsonObject:
         sys.executable,
         "-m",
         "alicebot_api",
-        "--database-url",
-        config.database_url,
         "--user-id",
         str(config.user_id),
         "vnext",
@@ -775,7 +773,11 @@ def start_background_daemon(config: SchedulerRuntimeConfig) -> JsonObject:
             "started": False,
             "message": "Scheduler ownership is held by another launcher or daemon.",
         }
-    child_env = {**os.environ, INSTANCE_TOKEN_ENV: instance_token}
+    child_env = {
+        **os.environ,
+        INSTANCE_TOKEN_ENV: instance_token,
+        "DATABASE_URL": config.database_url,
+    }
     log_handle = config.log_file.open("ab")
     try:
         process = subprocess.Popen(

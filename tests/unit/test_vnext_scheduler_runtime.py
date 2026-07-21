@@ -25,11 +25,12 @@ from alicebot_api.vnext_scheduler_runtime import (
 )
 
 
-def test_background_once_scheduler_forwards_once_to_spawned_child(
+def test_background_scheduler_keeps_database_url_out_of_argv_and_in_child_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     spawned_commands: list[list[str]] = []
+    spawned_envs: list[dict[str, str]] = []
 
     class FakeProcess:
         pid = 24680
@@ -40,8 +41,9 @@ def test_background_once_scheduler_forwards_once_to_spawned_child(
         def terminate(self) -> None:
             raise AssertionError("healthy spawned process must not be terminated")
 
-    def fake_popen(command, **_kwargs):
+    def fake_popen(command, **kwargs):
         spawned_commands.append(list(command))
+        spawned_envs.append(dict(kwargs["env"]))
         return FakeProcess()
 
     monkeypatch.setattr(scheduler_runtime, "daemon_status", lambda **_kwargs: {"running": False})
@@ -50,8 +52,9 @@ def test_background_once_scheduler_forwards_once_to_spawned_child(
     monkeypatch.setattr(scheduler_runtime, "_replace_owner_lease", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(scheduler_runtime.subprocess, "Popen", fake_popen)
 
+    database_url = "postgresql://alice:scheduler-secret@db/alice"
     config = SchedulerRuntimeConfig(
-        database_url="postgresql://db/alice",
+        database_url=database_url,
         user_id=uuid4(),
         pid_file=tmp_path / "scheduler.pid",
         status_file=tmp_path / "scheduler-status.json",
@@ -64,6 +67,11 @@ def test_background_once_scheduler_forwards_once_to_spawned_child(
     assert result["started"] is True
     assert len(spawned_commands) == 1
     command = spawned_commands[0]
+    assert "--database-url" not in command
+    assert database_url not in command
+    assert "scheduler-secret" not in "\0".join(command)
+    assert spawned_envs[0]["DATABASE_URL"] == database_url
+    assert spawned_envs[0][scheduler_runtime.INSTANCE_TOKEN_ENV]
     assert command.count("--once") == 1
     assert command.index("--foreground") < command.index("--once")
 
