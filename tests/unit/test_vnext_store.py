@@ -765,6 +765,35 @@ def test_artifact_quality_ratings_insert_and_export_json_safe_payloads() -> None
     assert list_params == (artifact_id, artifact_id, None, None, 10)
 
 
+def test_artifact_quality_ratings_upsert_on_artifact_reviewer_conflict() -> None:
+    artifact_id = str(uuid4())
+    rating_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {"id": artifact_id, "artifact_type": "daily_brief", "status": "needs_review"},
+            {"id": rating_id, "artifact_id": artifact_id, "reviewer_id": "samir", "usefulness": 2},
+            _event_row(artifact_id),
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    created = store.create_artifact_quality_rating(
+        {
+            "artifact_id": artifact_id,
+            "reviewer_id": "samir",
+            "usefulness": 2,
+            "verbosity": "too_shallow",
+            "metadata_json": {},
+        }
+    )
+
+    assert created["id"] == rating_id
+    upsert_query, _upsert_params = cursor.executed[1]
+    assert "ON CONFLICT (artifact_id, reviewer_id) DO UPDATE SET" in upsert_query
+    assert "usefulness = EXCLUDED.usefulness" in upsert_query
+    assert "metadata_json = EXCLUDED.metadata_json" in upsert_query
+
+
 def test_quality_rating_rejects_exact_redacted_artifact_before_insert() -> None:
     artifact_id = str(uuid4())
     memory_id = str(uuid4())

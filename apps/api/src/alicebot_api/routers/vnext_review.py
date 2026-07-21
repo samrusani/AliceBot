@@ -257,7 +257,11 @@ def record_vnext_artifact_insight_feedback(
 ) -> JSONResponse:
     settings = get_settings()
     try:
-        identity = _vnext_agent_identity(request)
+        _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return public_exception_response(exc, status_code=400)
+
+    try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
             identity = _vnext_authenticated_agent_identity(
@@ -709,11 +713,17 @@ def rate_vnext_artifact_quality(
                 for_update=True,
             )
             actor_type, actor_id = _vnext_agent_actor(identity, fallback="user")
+            reviewer_id = actor_id or str(request.user_id)
+            if request.reviewer_id is not None and request.reviewer_id != reviewer_id:
+                raise AgentKeyAuthenticationError(
+                    "reviewer_id must match the authenticated reviewer identity",
+                    status_code=403,
+                )
             existing_metadata = existing.get("metadata_json")
             payload = store.create_artifact_quality_rating(
                 {
                     "artifact_id": str(artifact_id),
-                    "reviewer_id": request.reviewer_id or actor_id,
+                    "reviewer_id": reviewer_id,
                     "usefulness": request.usefulness,
                     "accuracy": request.accuracy,
                     "source_grounding": request.source_grounding,
@@ -789,6 +799,11 @@ def export_vnext_artifact(
     authorization: str | None = Header(default=None),
 ) -> JSONResponse:
     settings = get_settings()
+
+    try:
+        _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return public_exception_response(exc, status_code=400)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:

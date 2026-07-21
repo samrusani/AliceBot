@@ -2354,6 +2354,17 @@ class PostgresVNextStore:
                   %s,
                   %s
                 )
+                ON CONFLICT (artifact_id, reviewer_id) DO UPDATE SET
+                  usefulness = EXCLUDED.usefulness,
+                  accuracy = EXCLUDED.accuracy,
+                  source_grounding = EXCLUDED.source_grounding,
+                  novel_connections = EXCLUDED.novel_connections,
+                  actionability = EXCLUDED.actionability,
+                  hallucination_risk = EXCLUDED.hallucination_risk,
+                  verbosity = EXCLUDED.verbosity,
+                  missed_context = EXCLUDED.missed_context,
+                  comments = EXCLUDED.comments,
+                  metadata_json = EXCLUDED.metadata_json
                 RETURNING {QUALITY_RATING_COLUMNS}
                 """,
             (
@@ -2378,7 +2389,7 @@ class PostgresVNextStore:
             target_type="artifact",
             target_id=row["artifact_id"],
             payload={
-                "operation": "create_quality_rating",
+                "operation": "upsert_quality_rating",
                 "quality_rating_id": str(row["id"]),
                 "artifact_id": str(row["artifact_id"]),
                 "reviewer_id": row.get("reviewer_id"),

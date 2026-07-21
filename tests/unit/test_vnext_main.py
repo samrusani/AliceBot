@@ -545,6 +545,15 @@ class FakeVNextStore:
         return artifact
 
     def create_artifact_quality_rating(self, rating: dict[str, object], **_kwargs) -> dict[str, object]:
+        reviewer_id = rating.get("reviewer_id")
+        if reviewer_id is not None:
+            for row in self.quality_ratings:
+                if (
+                    row.get("artifact_id") == rating.get("artifact_id")
+                    and row.get("reviewer_id") == reviewer_id
+                ):
+                    row.update(rating)
+                    return row
         row = {**rating, "id": f"quality-{len(self.quality_ratings) + 1}"}
         self.quality_ratings.append(row)
         return row
@@ -2693,7 +2702,7 @@ def test_vnext_queue_and_artifact_endpoints(monkeypatch, tmp_path) -> None:
         main_module.UUID(artifact_id),
         vnext_review_router.VNextArtifactQualityRatingRequest(
             user_id=user_id,
-            reviewer_id="reviewer-1",
+            reviewer_id=str(user_id),
             usefulness=4,
             accuracy=5,
             source_grounding=5,
@@ -3505,6 +3514,56 @@ def test_vnext_agent_endpoint_rejects_agent_id_mismatch(monkeypatch) -> None:
     assert store.sources == {}
 
 
+def test_vnext_agent_endpoint_rejects_conflicting_identity_namespaces(monkeypatch) -> None:
+    from alicebot_api.vnext_agent_keys import create_agent_key
+
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    _record, raw_key = create_agent_key(
+        store, user_id=user_id, agent_id="openclaw", permission_profile="project_scoped_agent"
+    )
+    nested_identity = vnext_shared.VNextAgentIdentityRequest(
+        agent_id="openclaw",
+        agent_type="coding_agent",
+        permission_profile="project_scoped_agent",
+    )
+
+    rejected = vnext_memories_router.create_vnext_source(
+        vnext_memories_router.VNextSourceCaptureRequest(
+            user_id=user_id,
+            raw_text="Fact: conflicting identities must be rejected.",
+            domain="project",
+            sensitivity="private",
+            agent_identity=nested_identity,
+            agent_id="hermes",
+            agent_type="personal_assistant",
+        ),
+        authorization=f"Bearer {raw_key}",
+    )
+    accepted = vnext_memories_router.create_vnext_source(
+        vnext_memories_router.VNextSourceCaptureRequest(
+            user_id=user_id,
+            raw_text="Fact: matching identities preserve authenticated provenance.",
+            domain="project",
+            sensitivity="private",
+            agent_identity=nested_identity,
+            agent_id="openclaw",
+            agent_type="coding_agent",
+        ),
+        authorization=f"Bearer {raw_key}",
+    )
+
+    assert rejected.status_code == 400
+    assert accepted.status_code == 201
+    assert len(store.sources) == 1
+    source = next(iter(store.sources.values()))
+    metadata = source["metadata_json"]
+    assert isinstance(metadata, dict)
+    assert metadata["agent_identity"]["agent_id"] == "openclaw"
+    assert metadata["agent_identity"]["agent_type"] == "coding_agent"
+
+
 def test_vnext_agent_endpoint_without_keys_marks_unauthenticated_local(monkeypatch) -> None:
     store = FakeVNextStore(None)
     _install_fake_vnext_store(monkeypatch, store)
@@ -4228,6 +4287,66 @@ def test_dogfooding_dashboard_and_insight_feedback_api(monkeypatch) -> None:
     assert dashboard_response.status_code == 200
     assert dashboard["artifact_quality_rating_count"] == 1
     assert dashboard["insight_feedback"]["useful_yes"] == 1
+
+
+def test_artifact_quality_rating_rejects_alias_forgery_and_rerates_authenticated_reviewer(monkeypatch) -> None:
+    from alicebot_api.vnext_agent_keys import create_agent_key
+
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    artifact = store.create_artifact(
+        {
+            "artifact_type": "daily_brief",
+            "title": "Daily",
+            "content_markdown": "# Daily",
+            "status": "needs_review",
+            "domain": "project",
+            "sensitivity": "private",
+        }
+    )
+    _record, raw_key = create_agent_key(
+        store, user_id=user_id, agent_id="reviewer", permission_profile="trusted_local_agent"
+    )
+
+    rejected = vnext_review_router.rate_vnext_artifact_quality(
+        main_module.UUID(str(artifact["id"])),
+        vnext_review_router.VNextArtifactQualityRatingRequest(
+            user_id=user_id,
+            reviewer_id="forged-reviewer",
+            usefulness=5,
+            verbosity="right_sized",
+        ),
+        authorization=f"Bearer {raw_key}",
+    )
+    first = vnext_review_router.rate_vnext_artifact_quality(
+        main_module.UUID(str(artifact["id"])),
+        vnext_review_router.VNextArtifactQualityRatingRequest(
+            user_id=user_id,
+            reviewer_id="reviewer",
+            usefulness=5,
+            verbosity="right_sized",
+        ),
+        authorization=f"Bearer {raw_key}",
+    )
+    second = vnext_review_router.rate_vnext_artifact_quality(
+        main_module.UUID(str(artifact["id"])),
+        vnext_review_router.VNextArtifactQualityRatingRequest(
+            user_id=user_id,
+            reviewer_id="reviewer",
+            usefulness=2,
+            verbosity="too_shallow",
+        ),
+        authorization=f"Bearer {raw_key}",
+    )
+
+    assert rejected.status_code == 403
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert len(store.quality_ratings) == 1
+    assert store.quality_ratings[0]["reviewer_id"] == "reviewer"
+    assert store.quality_ratings[0]["usefulness"] == 2
+    assert store.quality_ratings[0]["verbosity"] == "too_shallow"
 
 
 def test_insight_feedback_rejects_exact_redacted_project_update(monkeypatch) -> None:
