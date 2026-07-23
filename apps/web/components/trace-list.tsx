@@ -152,6 +152,7 @@ export function TraceList({
                 key={trace.id}
                 href={`/traces?trace=${trace.id}`}
                 className={`list-row${trace.id === selected.id ? " is-selected" : ""}`}
+                aria-current={trace.id === selected.id ? "page" : undefined}
               >
                 <div className="list-row__topline">
                   <div className="detail-stack">

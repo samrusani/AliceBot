@@ -233,6 +233,7 @@ code,
 .shell-column {
   display: grid;
   gap: 22px;
+  align-content: start;
 }
 
 .shell-topbar {
@@ -928,6 +929,7 @@ code,
   display: grid;
   gap: 24px;
   grid-template-columns: minmax(340px, 0.94fr) minmax(0, 1.2fr);
+  align-items: flex-start;
 }
 
 .list-panel__header {

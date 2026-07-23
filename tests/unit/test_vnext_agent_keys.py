@@ -166,11 +166,23 @@ def test_resolve_agent_identity_allows_profile_downgrade() -> None:
     assert identity.permission_profile == "read_only_agent"
 
 
-def test_resolve_agent_identity_rejects_profile_escalation_and_audits() -> None:
+@pytest.mark.parametrize("identity_namespace", [None, "agent", "agent_identity"])
+def test_resolve_agent_identity_rejects_profile_escalation_and_audits(
+    identity_namespace: str | None,
+) -> None:
     store = FakeAgentKeyStore()
     user_id = uuid4()
     _record, raw_key = create_agent_key(
         store, user_id=user_id, agent_id="openclaw", permission_profile="project_scoped_agent"
+    )
+    claimed_identity = {
+        "agent_id": "openclaw",
+        "permission_profile": "admin_agent",
+    }
+    payload = (
+        claimed_identity
+        if identity_namespace is None
+        else {identity_namespace: claimed_identity}
     )
 
     with pytest.raises(AgentKeyAuthenticationError) as exc_info:
@@ -178,7 +190,7 @@ def test_resolve_agent_identity_rejects_profile_escalation_and_audits() -> None:
             store,
             user_id=user_id,
             raw_key=raw_key,
-            payload={"agent_id": "openclaw", "permission_profile": "admin_agent"},
+            payload=payload,
         )
 
     assert exc_info.value.status_code == 403

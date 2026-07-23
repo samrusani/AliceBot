@@ -88,8 +88,9 @@ EXPECTED_METADATA_MANIFESTS = {
     "sqlite": "9a5a4a9f0ae533652250a9e9854cd34a068392d71ffde98b012c9c620134d2c4",
 }
 EXPECTED_CLASS_ORDERS = {
-    "PostgresVNextStore": (168, "00e1d9bab613f90665fb2f7666bfff3be1cdc3d96f925614b0bf7e04cecce638"),
-    "SQLiteVNextStore": (121, "2c0b5694a015fe7939e91bb5572145b8bf82598edfcbb579e51b4175c392e2e5"),
+    # Two paired browser-clip capability methods extend both façades.
+    "PostgresVNextStore": (170, "5f28f1a17670a0c8b7b373acd0c314637c58e6a10ccf52053481a8a028bb3c09"),
+    "SQLiteVNextStore": (123, "72cbbffacc5fee804508f7e9517450c955f2c85235bd403d4f5759ee86c103e3"),
 }
 EXPECTED_FACADE_COMMENT_DIGESTS = {
     POSTGRES_FACADE_PATH: "d8599a46ee26dc35a3ae52c1a98a416509add9ae4a42ece780c5c5ed7e132b93",

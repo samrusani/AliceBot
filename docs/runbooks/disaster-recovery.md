@@ -1,0 +1,162 @@
+# Disaster Recovery
+
+This runbook restores one self-hosted, single-tenant Alice installation. It
+does not define an SLA or a managed backup service. Choose and document your
+own recovery-point objective (backup frequency) and recovery-time objective
+(time to provision, restore, verify, and cut over).
+
+The destructive commands below always target a new or disposable database
+first. Never rehearse against the only copy of production data.
+
+## Before an incident
+
+1. Record the Alice version and source commit deployed with each backup.
+2. Encrypt backups off-machine and restrict access as you would for the live
+   database; memory content is sensitive plaintext.
+3. Retain the database roles, extensions, TLS settings, and environment
+   configuration separately from the data dump. Portable SQLite JSONL omits
+   users, agent keys, embeddings, and deleted rows.
+4. Schedule backups and run a restore drill regularly. A successful backup
+   command without a successful restore drill is not recovery evidence.
+
+The repository drill exercises both backends, the v0.12.0 upgrade path, and
+monitoring contracts. It creates and destroys only private SQLite fixtures and
+randomly named `alice_phase5_ops_*` PostgreSQL databases:
+
+```bash
+./.venv/bin/python scripts/run_phase5_ops_evidence.py --backend all \
+  --work-dir "$(mktemp -d)" \
+  --output artifacts/phase5/ops-evidence.json
+```
+
+It requires `DATABASE_ADMIN_URL`, `DATABASE_URL`, PostgreSQL 16 `pg_dump` and
+`pg_restore`, a PostgreSQL 16 server, and the `alicebot_app` role. The drill
+validates all three major versions before creating a disposable database and
+fails closed on missing, malformed, or mismatched version evidence. Do not use
+a newer client major: its archive prologue may contain settings PostgreSQL 16
+cannot restore. Exit `0` and report status `passed` are required. The
+JSON report is sanitized; the temporary databases, dumps, and memory text are
+removed on exit. Failure to drop the randomly named PostgreSQL database is a
+failed drill with `postgres_cleanup_failed`, never a passed receipt; an
+operator must remove the named-by-prefix fixture before retrying. CI runs the same command in
+`.github/workflows/ops-evidence.yml` and retains only the sanitized report.
+
+Receipt identity does not pretend that Git `HEAD` contains an uncommitted
+carrier. It records `source_head_commit`, that commit's `source_head_tree`, a
+`carrier_state` of `clean` or `dirty`, and `carrier_snapshot_sha256` over the
+actual carrier. The snapshot includes tracked changes and deletions plus all
+non-ignored untracked files. It hashes file contents, types, modes, and symlink
+targets without following a symlink outside the repository. Git-ignored drill
+outputs such as `artifacts/` are excluded through the repository's standard
+ignore rules.
+
+## SQLite physical recovery
+
+Use a physical copy when you need every local byte, including signed embedding
+vectors and the vector-cache invalidation stamp.
+
+1. Stop every Alice MCP/API process that can write the database.
+2. Checkpoint the WAL and require the first returned value to be `0` (not
+   busy):
+
+   ```bash
+   sqlite3 ~/.alice/memory.db 'PRAGMA wal_checkpoint(TRUNCATE);'
+   sqlite3 ~/.alice/memory.db 'PRAGMA integrity_check;'
+   ```
+
+3. Copy the main database only after the successful checkpoint. Preserve
+   owner-only permissions and hash the copy:
+
+   ```bash
+   install -m 0600 ~/.alice/memory.db ~/alice-backups/memory.db
+   shasum -a 256 ~/alice-backups/memory.db
+   ```
+
+4. Restore into a new owner-only directory, never over the only live copy:
+
+   ```bash
+   install -d -m 0700 ~/alice-restore-test
+   install -m 0600 ~/alice-backups/memory.db ~/alice-restore-test/memory.db
+   sqlite3 ~/alice-restore-test/memory.db 'PRAGMA integrity_check;'
+   alice-memory mcp --db ~/alice-restore-test/memory.db
+   ```
+
+5. Run a known recall query and inspect a memory that has an embedding. Only
+   then stop the live process, preserve the failed database family (`.db`,
+   `-wal`, `-shm`, `-journal`), and atomically replace it with the verified
+   restore.
+
+If the checkpoint reports busy, do not copy just the main file. Find the
+remaining writer or use the `alice-memory export` online-snapshot path in
+[Backup and restore](../alpha/backup-and-restore.md).
+
+## SQLite portable recovery
+
+Portable JSONL is for user-owned memory-graph portability, not a physical
+clone:
+
+```bash
+alice-memory export --db ~/.alice/memory.db \
+  --out ~/alice-backups/alice.jsonl
+alice-memory import --db ~/alice-restore-test/memory.db \
+  --in ~/alice-backups/alice.jsonl
+alice-memory reindex-embeddings --db ~/alice-restore-test/memory.db
+```
+
+Require the export/import/re-export canonical SHA-256 footer and record counts
+to match. FTS recall works immediately after import. Vector recall does not:
+portable JSONL omits embedding vectors, so configure the intended embedding
+provider and reindex before cutover.
+
+## PostgreSQL recovery
+
+Run PostgreSQL 16 client tools against the PostgreSQL 16 server with libpq
+environment variables so credentials do not appear in process arguments:
+
+```bash
+export PGHOST=db.internal PGPORT=5432 PGUSER=alicebot_admin PGDATABASE=alicebot
+export PGSSLMODE=verify-full
+export PGSSLROOTCERT=/run/secrets/alicebot/postgres-ca.pem
+export PGPASSWORD='from-your-secret-manager'
+pg_dump --format=custom --file=alice.dump
+pg_restore --list alice.dump
+sha256sum alice.dump
+```
+
+Provision a new database with PostgreSQL 16 and pgvector 0.8 or newer. Ensure
+the `alicebot_app` role exists, then restore without changing ownership:
+
+```bash
+createdb alice_restore_test
+pg_restore --exit-on-error --no-owner --dbname=alice_restore_test alice.dump
+```
+
+Against the restored database, verify:
+
+- `SELECT version_num FROM alembic_version` equals the release's dynamic
+  Alembic head;
+- `SELECT count(*)` matches for users, memories, events, artifacts, and
+  artifact ratings;
+- a known FTS recall query returns its memory;
+- the memory still has `embedding_vector` and a content-matching embedding
+  signature;
+- application-role access works with RLS enabled and forced.
+
+If the restore is from an older release, follow
+[Upgrade v0.12.0 to current](upgrade-v0.12-to-current.md) in the restored
+database before verification and cutover.
+
+## Cutover and rollback
+
+1. Quiesce writers and take one final backup.
+2. Repeat the integrity, row-count, recall, embedding-signature, migration-head,
+   and application-role checks on the candidate.
+3. Point Alice at the verified target and check `/healthz`, `/v0/vnext/doctor`,
+   and scheduler status.
+4. Keep the pre-cutover store read-only until the retention window expires.
+5. On any failed proof, point Alice back to that untouched store. Do not merge
+   or replay writes until the cause is understood.
+
+Record the backup hash, source-head commit/tree, carrier state/snapshot hash,
+database engine version, migration head, check results, start/end time, and
+operator. Never record credentials or memory content in the recovery receipt.

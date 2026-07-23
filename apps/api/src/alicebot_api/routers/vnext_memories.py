@@ -9,6 +9,11 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import Field
 
+from alicebot_api.browser_clip_capabilities import (
+    BrowserClipCapabilityValidationError,
+    consume_browser_clip_capability,
+    issue_browser_clip_capability,
+)
 from alicebot_api.config import get_settings
 from alicebot_api.db import user_connection
 from alicebot_api.mcp_tools import redact_memory_flow
@@ -138,9 +143,20 @@ class VNextBrowserClipperCaptureRequest(VNextAgentRequest):
     page_text: str | None = Field(default=None, min_length=1, max_length=500_000)
     user_note: str | None = Field(default=None, min_length=1, max_length=20_000)
     capture_token: str | None = Field(default=None, min_length=1, max_length=500)
+    capture_capability: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        json_schema_extra={"writeOnly": True},
+    )
     captured_at: str | None = Field(default=None, min_length=1, max_length=120)
     domain: VNextDomain = "professional"
     sensitivity: VNextSensitivity = "private"
+
+
+class VNextBrowserClipperCapabilityRequest(VNextAgentRequest):
+    user_id: UUID
+    origin: str = Field(min_length=1, max_length=2048)
 
 
 class VNextAgentOutputIngestRequest(VNextAgentRequest):
@@ -564,14 +580,31 @@ def sync_vnext_local_folder_connector(request: VNextLocalFolderSyncRequest) -> J
 
 
 @connectors_router.post("/v0/vnext/connectors/browser-clipper/capture")
-def capture_vnext_browser_clip(request: VNextBrowserClipperCaptureRequest) -> JSONResponse:
+def capture_vnext_browser_clip(
+    request: VNextBrowserClipperCaptureRequest,
+    origin: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            result = VNextConnectorService(PostgresVNextStore(conn), defer_embeddings=True).capture_browser_clip(
+            store = PostgresVNextStore(conn)
+            capability_authorized = request.capture_capability is not None
+            if capability_authorized:
+                if request.capture_token is not None:
+                    raise BrowserClipCapabilityValidationError(
+                        "browser clip credentials are mutually exclusive"
+                    )
+                consume_browser_clip_capability(
+                    store,
+                    capability=request.capture_capability or "",
+                    capture_url=request.url,
+                    request_origin=origin if isinstance(origin, str) else None,
+                )
+            result = VNextConnectorService(store, defer_embeddings=True).capture_browser_clip(
                 request.model_dump(mode="json"),
                 default_domain=request.domain,
                 default_sensitivity=request.sensitivity,
+                capability_authorized=capability_authorized,
             )
             payload = result.to_record()
         _persist_vnext_deferred_embeddings(
@@ -579,11 +612,35 @@ def capture_vnext_browser_clip(request: VNextBrowserClipperCaptureRequest) -> JS
             user_id=request.user_id,
             result=result,
         )
-    except VNextConnectorValidationError:
+    except (BrowserClipCapabilityValidationError, VNextConnectorValidationError):
         return _vnext_public_error_response(status_code=400, detail="vNext browser clip capture request is invalid")
     return JSONResponse(
         status_code=201 if payload["status"] in {"ok", "partial", "duplicate"} else 400,
         content=jsonable_encoder(payload),
+    )
+
+
+@connectors_router.post("/v0/vnext/connectors/browser-clipper/capabilities")
+def create_vnext_browser_clip_capability(
+    request: VNextBrowserClipperCapabilityRequest,
+) -> JSONResponse:
+    settings = get_settings()
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            issued = issue_browser_clip_capability(
+                PostgresVNextStore(conn),
+                origin=request.origin,
+            )
+            payload = issued.to_record()
+    except BrowserClipCapabilityValidationError:
+        return _vnext_public_error_response(
+            status_code=400,
+            detail="vNext browser clip capability request is invalid",
+        )
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
     )
 
 

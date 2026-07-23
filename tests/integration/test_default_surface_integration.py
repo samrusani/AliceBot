@@ -21,7 +21,7 @@ from alicebot_api.vnext_store import PostgresVNextStore
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_HTTP_OPERATION_COUNT = 182
+DEFAULT_HTTP_OPERATION_COUNT = 183
 CORE_MCP_TOOL_NAMES = {
     "alice_capture",
     "alice_recall",

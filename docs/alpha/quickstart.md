@@ -94,9 +94,10 @@ variable or stored in local storage, a URL, logs, or errors. `trusted_local_agen
 for the full human/admin review surface.
 
 The browser-clipper bookmarklet deliberately cannot receive or prompt for this key because it runs
-inside the visited page. It works only while zero active agent keys exist. After key provisioning,
-use a trusted API client that sends both `Authorization: Bearer ...` and the configured
-`capture_token` to the clipper endpoint.
+inside the visited page. From the authenticated Alice console, enter the page URL and choose
+**Issue and copy one-time bookmarklet**. Alice binds a short-lived, single-use capability to that
+page origin; the reusable agent key and any configured `capture_token` remain in trusted clients.
+Prepare a fresh bookmarklet for every clip and verify the result in the Inbox.
 
 ## Configure Embeddings (Recommended)
 

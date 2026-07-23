@@ -42,6 +42,21 @@ export function MemoryLabelList({
     );
   }
 
+  if (source === "unavailable") {
+    return (
+      <SectionCard
+        eyebrow="Review labels"
+        title="Review labels unavailable"
+        description="Label records and counts stay undisclosed when the selected memory detail or label read is unavailable."
+      >
+        <div className="execution-summary__note execution-summary__note--danger" role="alert">
+          <p className="execution-summary__label">Label read unavailable</p>
+          <p>{unavailableReason ?? "Memory labels could not be loaded for this memory."}</p>
+        </div>
+      </SectionCard>
+    );
+  }
+
   return (
     <SectionCard
       eyebrow="Review labels"

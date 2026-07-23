@@ -328,7 +328,9 @@ def test_direct_unit_monkeypatches_follow_moved_definition_ownership() -> None:
         },
         "tests/unit/test_main.py": {
             "main_module": {
-                "get_settings": 4,
+                "_BROWSER_CLIP_SIMPLE_BODY_MAX_BYTES": 3,
+                "_resolve_vnext_http_auth": 1,
+                "get_settings": 5,
                 "ping_database": 2,
             },
             "providers_router": {

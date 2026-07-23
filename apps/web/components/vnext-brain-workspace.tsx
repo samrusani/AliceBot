@@ -39,6 +39,7 @@ import {
   generateVNextProjectUpdate,
   generateVNextWeeklySynthesis,
   getVNextWorkspace,
+  issueVNextBrowserClipCapability,
   patchVNextSchedulerWorkflow,
   rateVNextArtifactQuality,
   reviewVNextArtifact,
@@ -59,7 +60,6 @@ import { EmptyState } from "./empty-state";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
 import {
-  BROWSER_CLIPPER_BOOKMARKLET,
   COMPARISON_ARTIFACT_TYPES,
   FIXTURE_DOCTOR,
   INITIAL_CONNECTORS,
@@ -79,6 +79,7 @@ import {
   asDomain,
   asRecord,
   asSensitivity,
+  buildBrowserClipperBookmarklet,
   connectorHealth,
   createSummary,
   domainLabel,
@@ -121,12 +122,12 @@ export function VNextBrainWorkspace({
   const [pendingAction, setPendingAction] = useState("");
   const [statusText, setStatusText] = useState(
     liveModeReady
-      ? "Loading live vNext workspace from the local API."
-      : "Demo mode is using fixture data. Add local API config to use live mode.",
+      ? "Loading live vNext workspace from the trusted API."
+      : "Demo mode is using fixture data. Add trusted API config to use live mode.",
   );
   const [statusTone, setStatusTone] = useState<"info" | "success" | "danger">("info");
   const [actionLog, setActionLog] = useState<string[]>([
-    liveModeReady ? "Live workspace is default for this local configuration." : "Fixture demo mode is active.",
+    liveModeReady ? "Live workspace is default for this trusted configuration." : "Fixture demo mode is active.",
   ]);
   const [operatorAgentApiKey, setOperatorAgentApiKey] = useState("");
   const [operatorAgentApiKeyActive, setOperatorAgentApiKeyActive] = useState(false);
@@ -171,7 +172,7 @@ export function VNextBrainWorkspace({
   const [answer, setAnswer] = useState<AskAnswer>({
     question,
     summary:
-      "Ask Alice will call the live context-pack endpoint when local API configuration is present.",
+      "Ask Alice will call the live context-pack endpoint when trusted API configuration is present.",
     memoriesUsed: [],
     contradictions: [],
     why: ["No retrieval has run yet in this session."],
@@ -217,6 +218,8 @@ export function VNextBrainWorkspace({
   const [localFolderIgnores, setLocalFolderIgnores] = useState("generated,.git,node_modules,.venv,.cache");
   const [browserClipUrl, setBrowserClipUrl] = useState("https://example.test/article");
   const [browserClipSelection, setBrowserClipSelection] = useState("Fact: Browser clipper test content remains untrusted.");
+  const [browserClipperPreparedOrigin, setBrowserClipperPreparedOrigin] = useState("");
+  const [browserClipperExpiresAt, setBrowserClipperExpiresAt] = useState("");
 
   const dailyArtifact = latestArtifact(workspace.artifacts, "daily_brief");
   const weeklyArtifact = latestArtifact(workspace.artifacts, "weekly_synthesis");
@@ -321,6 +324,11 @@ export function VNextBrainWorkspace({
     }
   }, [selectedConnectorId, workspace.connectorHealth]);
 
+  useEffect(() => {
+    setBrowserClipperPreparedOrigin("");
+    setBrowserClipperExpiresAt("");
+  }, [apiBaseUrl, browserClipUrl, connectorDomain, connectorSensitivity, userId]);
+
   function handleOperatorAgentApiKeyChange(value: string) {
     clearVNextOperatorAgentApiKey();
     setOperatorAgentApiKeyActive(false);
@@ -364,7 +372,7 @@ export function VNextBrainWorkspace({
   async function runLiveAction(label: string, action: () => Promise<void>, successMessage: string) {
     if (!liveModeReady || !apiBaseUrl || !userId) {
       setStatusTone("danger");
-      setStatusText("Live write is unavailable without local API configuration. Use demo mode for fixture actions.");
+      setStatusText("Live write is unavailable without trusted API configuration. Use demo mode for fixture actions.");
       return;
     }
     setPendingAction(label);
@@ -1497,6 +1505,57 @@ export function VNextBrainWorkspace({
     );
   }
 
+  async function handlePrepareBrowserClipper() {
+    if (!liveModeReady || !apiBaseUrl || !userId) {
+      setStatusTone("danger");
+      setStatusText("A one-time browser clip requires a live local Alice API session.");
+      return;
+    }
+    if (!navigator.clipboard?.writeText) {
+      setStatusTone("danger");
+      setStatusText("Clipboard access is unavailable. Open Alice on localhost or HTTPS and allow clipboard access.");
+      return;
+    }
+
+    let origin: string;
+    try {
+      const targetUrl = new URL(browserClipUrl);
+      if (
+        (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") ||
+        targetUrl.origin === "null"
+      ) {
+        throw new TypeError("unsupported browser origin");
+      }
+      origin = targetUrl.origin;
+    } catch {
+      setStatusTone("danger");
+      setStatusText("Enter the full HTTP or HTTPS page URL you intend to clip.");
+      return;
+    }
+
+    await runLiveAction(
+      "Preparing one-time browser clip...",
+      async () => {
+        const issued = await issueVNextBrowserClipCapability(apiBaseUrl, {
+          user_id: userId,
+          origin,
+        });
+        const bookmarklet = buildBrowserClipperBookmarklet({
+          endpoint: browserClipperEndpoint,
+          userId,
+          capability: issued.capability,
+          origin: issued.origin,
+          domain: connectorDomain,
+          sensitivity: connectorSensitivity,
+        });
+        await navigator.clipboard.writeText(bookmarklet);
+        setBrowserClipperPreparedOrigin(issued.origin);
+        setBrowserClipperExpiresAt(issued.expires_at);
+      },
+      "One-time browser clipper copied. Paste it into a bookmark URL and use it before it expires.",
+    );
+  }
+
   async function handleRunDoctor(fixSafe: boolean) {
     if (fixSafe && typeof window !== "undefined" && !window.confirm("Run vNext doctor --fix-safe?")) {
       return;
@@ -1596,7 +1655,7 @@ export function VNextBrainWorkspace({
             />
             <p id="vnext-operator-agent-api-key-help" className="muted-copy">
               The key is held only in this mounted browser session, cleared on edit, clear, or
-              unmount, and forwarded only to loopback <code>/v0/vnext</code> requests. It is never
+              unmount, and forwarded only to trusted loopback or same-origin HTTPS <code>/v0/vnext</code> requests. It is never
               read from environment variables, local storage, URLs, logs, or error output.
             </p>
           </div>
@@ -2875,7 +2934,7 @@ export function VNextBrainWorkspace({
                 );
               })
             ) : (
-              <EmptyState title="No scheduler workflows" description="The local API will create disabled workflow defaults when live scheduler status is loaded." />
+              <EmptyState title="No scheduler workflows" description="The configured API will create disabled workflow defaults when live scheduler status is loaded." />
             )}
           </div>
         </SectionCard>
@@ -3084,7 +3143,7 @@ export function VNextBrainWorkspace({
             </div>
             {selectedConnector.id === "browser_clipper" ? (
               <div className="form-field">
-                <label htmlFor="vnext-connector-secret-ref">Secret ref</label>
+                <label htmlFor="vnext-connector-secret-ref">Trusted-client capture secret ref</label>
                 <input
                   id="vnext-connector-secret-ref"
                   value={connectorSecretRef}
@@ -3153,7 +3212,7 @@ export function VNextBrainWorkspace({
                   <span className="meta-pill">Default domain: {domainLabel(connector.defaultDomain)}</span>
                   <span className="meta-pill">Default sensitivity: {sensitivityLabel(connector.defaultSensitivity)}</span>
                   {connector.id === "browser_clipper" ? (
-                    <span className="meta-pill">Secret: {connectorHealth(workspace, connector.id)?.secret_configured ? "Configured" : "No secret"}</span>
+                    <span className="meta-pill">Direct API secret: {connectorHealth(workspace, connector.id)?.secret_configured ? "Configured" : "No secret"}</span>
                   ) : null}
                   <span className="meta-pill">Captured: {connectorHealth(workspace, connector.id)?.items_captured ?? 0}</span>
                   <span className="meta-pill">Failed: {connectorHealth(workspace, connector.id)?.items_failed ?? 0}</span>
@@ -3196,23 +3255,37 @@ export function VNextBrainWorkspace({
           </dl>
           {selectedConnector.id === "browser_clipper" ? (
             <div className="detail-stack">
-              <div className="form-field">
-                <label htmlFor="vnext-browser-bookmarklet">Bookmarklet</label>
-                <textarea id="vnext-browser-bookmarklet" readOnly value={BROWSER_CLIPPER_BOOKMARKLET} />
-              </div>
               <p className="section-note">
-                The bookmarklet never receives or prompts for an agent API key because it runs in
-                the visited page context. It works only in zero-active-key local compatibility
-                mode. After provisioning a key, capture with a trusted API client that sends both
-                Bearer authentication and the configured capture token.
+                Alice issues a short-lived, one-time bookmarklet for the origin of the page URL
+                below. The visited page receives neither your reusable capture token nor your
+                agent API key. Prepare a fresh bookmarklet for each clip, paste it into a bookmark
+                URL, and use it before expiry.
               </p>
+              <div className="button-row">
+                <button
+                  type="button"
+                  onClick={handlePrepareBrowserClipper}
+                  disabled={!liveModeReady || Boolean(pendingAction)}
+                >
+                  Issue and copy one-time bookmarklet
+                </button>
+              </div>
+              {browserClipperPreparedOrigin && browserClipperExpiresAt ? (
+                <p className="section-note" role="status">
+                  Prepared for {browserClipperPreparedOrigin}; expires at {browserClipperExpiresAt}.
+                  The capability remains only in the copied bookmarklet and is never rendered or persisted by this console.
+                </p>
+              ) : null}
+              {!liveModeReady ? (
+                <p className="section-note">Connect the local Alice API to issue a real one-time capability.</p>
+              ) : null}
             </div>
           ) : null}
           {selectedConnector.id === "browser_clipper" ? (
             <div className="detail-stack">
               <div className="form-grid">
                 <div className="form-field">
-                  <label htmlFor="vnext-browser-test-url">Test clip URL</label>
+                  <label htmlFor="vnext-browser-test-url">Page URL</label>
                   <input
                     id="vnext-browser-test-url"
                     value={browserClipUrl}

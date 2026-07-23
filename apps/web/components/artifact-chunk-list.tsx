@@ -47,7 +47,7 @@ export function ArtifactChunkList({
         <div className="detail-stack">
           <StatusBadge status="unavailable" label="Chunks unavailable" />
           {unavailableReason ? (
-            <div className="execution-summary__note execution-summary__note--danger">
+            <div className="execution-summary__note execution-summary__note--danger" role="alert">
               <p className="execution-summary__label">Chunk read</p>
               <p>{unavailableReason}</p>
             </div>
@@ -97,7 +97,11 @@ export function ArtifactChunkList({
           </div>
         </div>
 
-        {unavailableReason ? <p className="responsive-note">Live chunk read failed: {unavailableReason}</p> : null}
+        {unavailableReason ? (
+          <p className="responsive-note" role="alert">
+            Live chunk read failed: {unavailableReason}
+          </p>
+        ) : null}
 
         <div className="list-rows">
           {chunks.map((chunk) => (

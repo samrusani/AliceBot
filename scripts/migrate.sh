@@ -9,11 +9,6 @@ fail() {
   exit 1
 }
 
-PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
-if [ ! -x "${PYTHON_BIN}" ]; then
-  fail "Missing ${PYTHON_BIN}. Run 'make setup' before migrating Alice."
-fi
-
 if [ -f "${REPO_ROOT}/.env" ]; then
   "${REPO_ROOT}/scripts/validate_env.sh" "${REPO_ROOT}/.env"
   # Fill only variables not already set so explicitly exported values
@@ -37,6 +32,15 @@ if [ -f "${REPO_ROOT}/.env" ]; then
     fi
   done < "${REPO_ROOT}/.env"
   set +a
+fi
+
+if [ -z "${DATABASE_ADMIN_URL:-}" ]; then
+  fail "DATABASE_ADMIN_URL is required for migrations; inject the admin DSN into this migration process only."
+fi
+
+PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
+if [ ! -x "${PYTHON_BIN}" ]; then
+  fail "Missing ${PYTHON_BIN}. Run 'make setup' before migrating Alice."
 fi
 
 cd "${REPO_ROOT}"

@@ -91,6 +91,10 @@ the importing local user. Configure the intended embedding endpoint and run:
 alice-memory reindex-embeddings --db /path/to/restored-memory.db
 ```
 
+Portable JSONL does not contain embedding vectors. A successful import and FTS
+recall therefore do not prove vector-search readiness; reindex against the
+intended provider and verify its signed-vector coverage before cutover.
+
 For PostgreSQL upgrades or model changes, use
 `alicebot vnext memories backfill-embeddings`; it rebuilds missing, unsigned,
 and provider/model-incompatible vectors.
@@ -105,9 +109,14 @@ PostgreSQL utilities against the admin connection and protect the resulting
 file as sensitive plaintext:
 
 ```bash
-pg_dump --format=custom --file=alice.dump "$DATABASE_ADMIN_URL"
+export PGHOST=db.internal PGPORT=5432 PGUSER=alicebot_admin PGDATABASE=alicebot
+export PGPASSWORD='from-your-secret-manager'
+pg_dump --format=custom --file=alice.dump
 pg_restore --list alice.dump
 ```
+
+Using libpq environment variables keeps the credentialed DSN out of process
+arguments. Protect the environment and unset `PGPASSWORD` after the command.
 
 Restore into a new database, apply the same Alice release's migrations, then
 run integration and application smoke tests before cutover. Database roles,
@@ -126,3 +135,22 @@ Before `make migrate` on an existing installation:
 4. run the upgrade on that restored copy;
 5. verify capture, review/correction, recall, and export before upgrading the
    live database.
+
+## Executed Phase 5 evidence
+
+The repository drill performs a quiesced SQLite physical copy/restore, a
+portable export/import/re-export fidelity check, a v0.12.0-to-current upgrade,
+and a disposable PostgreSQL dump/restore and migration upgrade:
+
+```bash
+./.venv/bin/python scripts/run_phase5_ops_evidence.py --backend all \
+  --output artifacts/phase5/ops-evidence.json
+```
+
+See the [disaster-recovery runbook](../runbooks/disaster-recovery.md),
+[health and monitoring](../runbooks/health-and-monitoring.md), and
+[v0.12.0 upgrade procedure](../runbooks/upgrade-v0.12-to-current.md). The
+workflow receipt is sanitized and excludes database URLs, secrets, paths, and
+memory content. It identifies an uncommitted carrier with the source HEAD/tree,
+an explicit clean/dirty state, and a deterministic snapshot digest rather than
+claiming that HEAD contains the working changes.

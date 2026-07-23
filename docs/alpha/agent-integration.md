@@ -183,13 +183,17 @@ Custom agents calling the HTTP API authenticate with per-agent API keys. Create 
 alicebot agent keys create --agent-id openclaw --profile project_scoped_agent --label "OpenClaw laptop"
 ```
 
-The raw key (`alice_sk_...`) is printed exactly once; only its sha256 hash is stored. Export it and pass it on every agent HTTP call — never paste raw keys into scripts or docs:
+The raw key (`alice_sk_...`) is printed exactly once; only its sha256 hash is stored. Put it in an owner-only temporary curl config for HTTP calls. Curl receives only the config path in its process arguments; never paste raw keys into scripts or docs:
 
 ```bash
-export ALICE_AGENT_API_KEY="<paste the key printed by 'agent keys create'>"
+ALICE_AGENT_API_KEY="<paste the key printed by 'agent keys create'>"
+agent_curl_config="$(mktemp "${TMPDIR:-/tmp}/alice-agent-curl.XXXXXX")"
+chmod 600 "$agent_curl_config"
+trap 'rm -f "$agent_curl_config"' EXIT
+printf 'header = "Authorization: Bearer %s"\n' "$ALICE_AGENT_API_KEY" >"$agent_curl_config"
 
-curl -X POST http://127.0.0.1:8000/v0/vnext/memories/commit \
-  -H "Authorization: Bearer $ALICE_AGENT_API_KEY" \
+curl --config "$agent_curl_config" \
+  -X POST http://127.0.0.1:8000/v0/vnext/memories/commit \
   -H "Content-Type: application/json" \
   -d '{"user_id": "00000000-0000-0000-0000-000000000001", "title": "Preferred planning format", "canonical_text": "The user prefers concise daily planning summaries."}'
 ```

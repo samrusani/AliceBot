@@ -54,11 +54,14 @@ CARRIER_NAMES = tuple(
     _openapi_tag_for_path _OPENAPI_EXACT_RESPONSE_CONTRACTS
     _OPENAPI_CREATED_ONLY_OPERATIONS _OPENAPI_CONDITIONAL_SUCCESS_OPERATIONS
     LEGACY_HTTP_OPERATION_KEYS LEGACY_SURFACES_ENABLED
-    _openapi_live_operation_keys AliceFastAPI app HealthStatus ServiceStatus
+    _openapi_live_operation_keys AliceFastAPI app _alice_request_validation_error
+    HealthStatus ServiceStatus
     DatabaseServicePayload RedisServicePayload ObjectStorageServicePayload
     HealthServicesPayload HealthcheckPayload _rewrite_user_id_query_param
     _rewrite_user_id_json_body _VNEXT_ROUTE_LOCAL_POLICY
-    _VNEXT_CENTRAL_OPERATOR_ROUTES _matched_vnext_route_path
+    _VNEXT_CENTRAL_OPERATOR_ROUTES _BROWSER_CLIP_SIMPLE_CAPTURE_PATH
+    _BROWSER_CLIP_SIMPLE_BODY_MAX_BYTES _prepare_browser_clip_simple_request
+    _matched_vnext_route_path
     _vnext_central_route_policy _resolve_vnext_http_auth
     _vnext_protected_http_auth
     build_healthcheck_payload _request_client_is_loopback _append_vary_header
@@ -70,8 +73,8 @@ CARRIER_NAMES = tuple(
 
 EXPECTED_ROUTE_AST_SHA256 = "9e5d6c2c79cc1391688b74bb5138ccaa881033546e7b0cfd34ad92e8d98ba614"
 EXPECTED_SUPPORT_AST_SHA256 = "bb694bc545e514bb81e2aa568eba1cb72ba813373015d979bac452d23d4dbd74"
-EXPECTED_CARRIER_NAMES_SHA256 = "6cd0951deb96f86d9f6b5ba4c862698b615db12e6c3933749ce39aee34c858c6"
-EXPECTED_CARRIER_AST_SHA256 = "d2533461869ee4e696ad63173b948584546ee9d9de0b59f908a8c037d086a432"
+EXPECTED_CARRIER_NAMES_SHA256 = "00f4b8aba8e03d77e9936205d45003365df5f4f3afd0b7f6eced5b0b6ab49a9b"
+EXPECTED_CARRIER_AST_SHA256 = "1465fa9c2d60479ab41c44f2a2d9dbb2bca4319b4d8368c132b4b158241cf294"
 EXPECTED_ROUTE_NAME_MANIFEST_SHA256 = "1a438538e16120361f92d30375cc94679d598fe4b78ba5a58a7d8a4dda6af83c"
 EXPECTED_OPERATION_MANIFEST_SHA256 = "8b79ceaf996b8c51b5bb2f3f38a8c19a4e33796955d8b8f7a66e7ac01ea1732d"
 EXPECTED_IMPORT_MANIFEST_SHA256 = "17484ccdd460e42e2ad5c82a8ca867664694feaf871118c410a134996a532358"
@@ -501,7 +504,9 @@ def test_provider_routes_preserve_mount_order_origins_and_operation_ids() -> Non
 
 def test_provider_test_patches_follow_moved_definition_ownership() -> None:
     assert _setattr_attribute_counts("tests/unit/test_main.py", "main_module") == {
-        "get_settings": 4,
+        "_BROWSER_CLIP_SIMPLE_BODY_MAX_BYTES": 3,
+        "_resolve_vnext_http_auth": 1,
+        "get_settings": 5,
         "ping_database": 2,
     }
     assert _setattr_attribute_counts("tests/unit/test_main.py", "providers_router") == {

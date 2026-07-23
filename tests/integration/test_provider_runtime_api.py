@@ -1387,9 +1387,11 @@ def test_workspace_bootstrap_config_seeds_vllm_provider(
 def test_provider_invocation_telemetry_persists_for_test_and_runtime(
     migrated_database_urls,
     monkeypatch,
+    caplog,
 ) -> None:
     _configure_settings(migrated_database_urls, monkeypatch)
-    install_openai_compatible_success(
+    provider_secret = f"STAGE_A_PROVIDER_SECRET_{uuid4().hex}"
+    captured_requests = install_openai_compatible_success(
         monkeypatch,
         models=["gpt-5-mini"],
         response_text="Telemetry runtime response",
@@ -1405,7 +1407,7 @@ def test_provider_invocation_telemetry_persists_for_test_and_runtime(
             "provider_key": "openai_compatible",
             "display_name": "Telemetry OpenAI",
             "base_url": "https://provider.example/v1",
-            "api_key": "provider-secret-key",
+            "api_key": provider_secret,
             "default_model": "gpt-5-mini",
         },
         headers=identity_header(user_id),
@@ -1441,6 +1443,22 @@ def test_provider_invocation_telemetry_persists_for_test_and_runtime(
     assert runtime_status == 200
     assert runtime_payload["assistant"]["response_id"] == "resp_telemetry_1"
 
+    # Prove the configured sentinel was the credential exercised by both
+    # discovery/test and runtime transport, then prove it never crossed back
+    # into Alice's public payloads or logs.
+    assert captured_requests
+    assert all(
+        record["headers"].get("Authorization") == f"Bearer {provider_secret}"
+        for record in captured_requests
+    )
+    serialized_public_payloads = json.dumps(
+        [create_payload, provider_test_payload, runtime_payload],
+        default=str,
+        sort_keys=True,
+    )
+    assert provider_secret not in serialized_public_payloads
+    assert provider_secret not in caplog.text
+
     with psycopg.connect(migrated_database_urls["admin"]) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1450,7 +1468,8 @@ def test_provider_invocation_telemetry_persists_for_test_and_runtime(
                        thread_id,
                        response_id,
                        usage->>'total_tokens' AS total_tokens,
-                       runtime_provider
+                       runtime_provider,
+                       to_jsonb(provider_invocation_telemetry) AS complete_row
                 FROM provider_invocation_telemetry
                 WHERE workspace_id = %s
                   AND provider_id = %s
@@ -1473,6 +1492,11 @@ def test_provider_invocation_telemetry_persists_for_test_and_runtime(
     assert telemetry_rows[1][3] == "resp_telemetry_1"
     assert telemetry_rows[1][4] == "17"
     assert telemetry_rows[1][5] == "openai_responses"
+    assert provider_secret not in json.dumps(
+        [row[6] for row in telemetry_rows],
+        default=str,
+        sort_keys=True,
+    )
 
 
 def test_provider_invocation_telemetry_respects_workspace_rls(
@@ -2164,7 +2188,8 @@ def test_provider_error_reflection_and_persistence_are_sanitized(
     _configure_settings(migrated_database_urls, monkeypatch)
     install_openai_compatible_success(monkeypatch)
     user_id, _, user_account_id = _bootstrap_local_workspace("provider-security-sanitized-errors@example.com")
-    sensitive_detail = "UPSTREAM_SECRET_TOKEN_ABC123"
+    provider_secret = f"UPSTREAM_PROVIDER_SECRET_{uuid4().hex}"
+    sensitive_detail = provider_secret
 
     def fake_urlopen(request, timeout):
         del timeout
@@ -2185,7 +2210,7 @@ def test_provider_error_reflection_and_persistence_are_sanitized(
             "provider_key": "openai_compatible",
             "display_name": "OpenAI Sanitized Errors",
             "base_url": "https://provider.example/v1",
-            "api_key": "provider-secret-key",
+            "api_key": provider_secret,
             "default_model": "gpt-5-mini",
         },
         headers=identity_header(user_id),
@@ -2250,7 +2275,7 @@ def test_provider_error_reflection_and_persistence_are_sanitized(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT te.payload->>'error_message'
+                SELECT te.payload
                 FROM trace_events te
                 JOIN traces t
                   ON t.id = te.trace_id
@@ -2264,5 +2289,5 @@ def test_provider_error_reflection_and_persistence_are_sanitized(
             )
             trace_row = cur.fetchone()
     assert trace_row is not None
-    assert trace_row[0] == UPSTREAM_FAILURE.message
-    assert sensitive_detail not in trace_row[0]
+    assert trace_row[0]["error_message"] == UPSTREAM_FAILURE.message
+    assert sensitive_detail not in json.dumps(trace_row[0], default=str, sort_keys=True)

@@ -1,0 +1,72 @@
+name: Single-Tenant Deployment Guide Smoke
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  configuration-contract:
+    name: Fail-closed configuration contract (not cloud evidence)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.23.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+
+      - name: Install test dependencies
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install -e '.[dev]'
+
+      - name: Install web test dependencies
+        run: pnpm --dir apps/web install --frozen-lockfile
+
+      - name: Test the exact-origin web trust contract
+        run: pnpm --dir apps/web test -- lib/api.test.ts
+
+      - name: Test the deployment contract
+        run: >-
+          ./.venv/bin/python -m pytest
+          tests/unit/test_single_tenant_deployment.py
+          tests/unit/test_config.py::test_production_api_settings_do_not_require_migration_database_url
+          -q -p no:cacheprovider
+
+      - name: Emit explicitly non-cloud evidence
+        run: |
+          mkdir -p artifacts/phase5
+          ./.venv/bin/python scripts/run_single_tenant_deployment_smoke.py \
+            --environment ephemeral_ci \
+            --output artifacts/phase5/single-tenant-deployment-smoke.json
+
+      - name: Upload sanitized configuration receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: single-tenant-deployment-config-contract
+          path: artifacts/phase5/single-tenant-deployment-smoke.json
+          if-no-files-found: error
+          retention-days: 14

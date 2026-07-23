@@ -494,6 +494,42 @@ def test_browser_clip_capture_token_is_redacted_and_enforced() -> None:
     assert "clip-token" not in str(store.events)
 
 
+def test_browser_clip_capability_value_cannot_be_smuggled_into_persisted_content(caplog) -> None:
+    store = InMemoryConnectorSettingsStore()
+    capability = f"alice_clip_{'S' * 43}"
+
+    result = VNextConnectorService(store).capture_browser_clip(
+        {
+            "url": f"https://example.test/article?capability={capability}",
+            "title": f"Title {capability}",
+            "selected_text": f"Selected {capability}",
+            "page_text": f"Page {capability}",
+            "user_note": f"Note {capability}",
+            "capture_capability": capability,
+            "domain": "professional",
+            "sensitivity": "private",
+        },
+        capability_authorized=True,
+    )
+
+    persisted_and_returned = {
+        "sources": store.sources,
+        "chunks": store.chunks,
+        "memories": store.memories,
+        "events": store.events,
+        "state": store.connector_state,
+        "result": result.to_record(),
+        "logs": caplog.text,
+    }
+    serialized = str(persisted_and_returned)
+    assert capability not in serialized
+    assert "Selected ***" in serialized
+    assert "Page ***" in serialized
+    assert "Note ***" in serialized
+    assert "Title ***" in serialized
+    assert "capability=***" in serialized
+
+
 def test_agent_output_ingestion_creates_review_only_artifact_and_memory_proposal() -> None:
     store = InMemoryVNextConnectorStore()
 

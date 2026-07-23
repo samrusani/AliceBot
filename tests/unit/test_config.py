@@ -455,7 +455,6 @@ def test_core_only_production_settings_boot_without_s3_credentials(
             "APP_ENV": "production",
             "ALICEBOT_AUTH_USER_ID": "00000000-0000-4000-8000-000000000001",
             "DATABASE_URL": "postgresql://secure-app:secret@db/alicebot",
-            "DATABASE_ADMIN_URL": "postgresql://secure-admin:secret@db/alicebot",
             "CORS_ALLOWED_ORIGINS": "https://alice.example",
             **s3_environment,
         }
@@ -464,3 +463,17 @@ def test_core_only_production_settings_boot_without_s3_credentials(
     assert settings.app_env == "production"
     assert settings.s3_access_key == "alicebot"
     assert settings.s3_secret_key == "alicebot-secret"
+
+
+def test_production_api_settings_do_not_require_migration_database_url() -> None:
+    runtime_environment = {
+        "APP_ENV": "production",
+        "ALICEBOT_AUTH_USER_ID": "00000000-0000-4000-8000-000000000001",
+        "DATABASE_URL": "postgresql://alicebot_app:secret@db/alicebot",
+        "CORS_ALLOWED_ORIGINS": "https://alice.example",
+    }
+
+    settings = Settings.from_env(runtime_environment)
+
+    assert "DATABASE_ADMIN_URL" not in runtime_environment
+    assert settings.database_url == runtime_environment["DATABASE_URL"]

@@ -15,7 +15,7 @@ This alpha is intentionally limited.
 - OCR execution is not packaged
 - PDF OCR is not packaged
 - voice transcription execution is not packaged
-- browser clipper is a bookmarklet/MVP path only while zero active agent keys exist; once a key is provisioned, the bookmarklet cannot authenticate safely and capture requires a trusted API client with Bearer authentication plus `capture_token`
+- browser clipper remains a bookmarklet/MVP path: the trusted console must issue a new short-lived, origin-bound, one-time bookmarklet for each clip, and the user must verify opaque submissions in the Inbox
 - scheduler is local
 - model providers require user configuration
 - secrets fallback is alpha-grade unless OS or managed secret provider is configured

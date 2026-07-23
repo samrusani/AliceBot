@@ -12,6 +12,8 @@ from fastapi import (
     Request,
     Response,
 )
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from pydantic import TypeAdapter
 from fastapi.responses import JSONResponse
@@ -275,6 +277,7 @@ _OPENAPI_CREATED_ONLY_OPERATIONS = {
     ("POST", "/v0/vnext/projects"),
     ("POST", "/v0/vnext/connectors/telegram/sync"),
     ("POST", "/v0/vnext/connectors/local-folder/sync"),
+    ("POST", "/v0/vnext/connectors/browser-clipper/capabilities"),
     ("POST", "/v0/vnext/connectors/browser-clipper/capture"),
     ("POST", "/v0/vnext/agents/ingest-output"),
     ("POST", "/v0/vnext/artifacts/{artifact_id}/insight-feedback"),
@@ -497,6 +500,23 @@ class AliceFastAPI(FastAPI):
                     "description",
                     f"{summary}." if isinstance(summary, str) and summary else "AliceBot API operation.",
                 )
+                if operation_key == ("POST", "/v0/vnext/connectors/browser-clipper/capture"):
+                    request_body = operation.get("requestBody")
+                    if not isinstance(request_body, dict):  # pragma: no cover - FastAPI contract guard
+                        raise RuntimeError("browser clip capture request body is missing from OpenAPI")
+                    request_content = request_body.get("content")
+                    if not isinstance(request_content, dict):  # pragma: no cover - FastAPI contract guard
+                        raise RuntimeError("browser clip capture request content is missing from OpenAPI")
+                    request_content["text/plain"] = {
+                        "schema": {
+                            "type": "string",
+                            "contentMediaType": "application/json",
+                            "description": (
+                                "JSON-encoded VNextBrowserClipperCaptureRequest used by the "
+                                "CORS-safelisted one-time bookmarklet transport."
+                            ),
+                        }
+                    }
                 responses = operation.get("responses")
                 if not isinstance(responses, dict):
                     continue
@@ -551,6 +571,34 @@ app = AliceFastAPI(
     version=__version__,
     description="AliceBot local-first continuity, retrieval, and agentic-memory API.",
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def _alice_request_validation_error(
+    request: Request,
+    exc: RequestValidationError,
+) -> Response:
+    """Keep one-time browser credentials out of framework validation bodies."""
+
+    if (
+        request.method.upper() == "POST"
+        and request.url.path == "/v0/vnext/connectors/browser-clipper/capture"
+    ):
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": [
+                    {
+                        "type": "value_error",
+                        "loc": ["body"],
+                        "msg": "Input validation failed",
+                    }
+                ]
+            },
+        )
+    return await request_validation_exception_handler(request, exc)
+
+
 from alicebot_api.routers import providers  # noqa: E402
 from alicebot_api.routers.providers import redact_url_credentials  # noqa: E402
 from alicebot_api.routers import workspaces  # noqa: E402
@@ -701,6 +749,7 @@ _VNEXT_CENTRAL_OPERATOR_ROUTES = frozenset(
         ("GET", "/v0/vnext/workspace"),
         ("PATCH", "/v0/vnext/connectors/{connector_name}/config"),
         ("POST", "/v0/vnext/beliefs/{belief_id}/review"),
+        ("POST", "/v0/vnext/connectors/browser-clipper/capabilities"),
         ("POST", "/v0/vnext/connectors/browser-clipper/capture"),
         ("POST", "/v0/vnext/connectors/local-folder/sync"),
         ("POST", "/v0/vnext/connectors/telegram/sync"),
@@ -715,6 +764,78 @@ _VNEXT_CENTRAL_OPERATOR_ROUTES = frozenset(
         ("PUT", "/v0/vnext/settings/brain-charter"),
     }
 )
+
+_BROWSER_CLIP_SIMPLE_CAPTURE_PATH = "/v0/vnext/connectors/browser-clipper/capture"
+_BROWSER_CLIP_SIMPLE_BODY_MAX_BYTES = 3_000_000
+
+
+async def _prepare_browser_clip_simple_request(
+    request: Request,
+) -> tuple[Request, dict[str, object] | None]:
+    """Translate the clipper's CORS-safelisted body into the JSON contract.
+
+    A bookmarklet executes inside an untrusted visited page. Its one-time
+    capability is therefore sent as a simple ``text/plain`` request without
+    reusable credentials or custom headers. Keep this exception confined to
+    the exact capture route and bound the body before parsing it.
+    """
+
+    if request.method.upper() != "POST" or request.url.path != _BROWSER_CLIP_SIMPLE_CAPTURE_PATH:
+        return request, None
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().casefold()
+    if media_type != "text/plain":
+        return request, None
+
+    raw_content_length = request.headers.get("content-length")
+    if raw_content_length is not None:
+        try:
+            content_length = int(raw_content_length)
+        except ValueError as exc:
+            raise ValueError("browser clip request content length is invalid") from exc
+        if content_length < 0 or content_length > _BROWSER_CLIP_SIMPLE_BODY_MAX_BYTES:
+            raise ValueError("browser clip request body is too large")
+
+    buffered_body = bytearray()
+    async for chunk in request.stream():
+        if len(buffered_body) + len(chunk) > _BROWSER_CLIP_SIMPLE_BODY_MAX_BYTES:
+            raise ValueError("browser clip request body is too large")
+        buffered_body.extend(chunk)
+    raw_body = bytes(buffered_body)
+    if len(raw_body) > _BROWSER_CLIP_SIMPLE_BODY_MAX_BYTES:  # pragma: no cover - accumulator fence
+        raise ValueError("browser clip request body is too large")
+    # BaseHTTPMiddleware captured this original request's wrapped receiver
+    # before dispatch. Populate its replay cache only after bounded streaming;
+    # otherwise the downstream app sees an empty body.
+    request._body = raw_body  # type: ignore[attr-defined]
+    try:
+        parsed_body = json.loads(raw_body)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError("browser clip request body is invalid") from exc
+    if not isinstance(parsed_body, dict):
+        raise ValueError("browser clip request body must be an object")
+    capability = parsed_body.get("capture_capability")
+    if not isinstance(capability, str) or not capability.strip():
+        raise ValueError("browser clip simple requests require a capability")
+
+    headers = [
+        (name, value)
+        for name, value in request.scope.get("headers", [])
+        if name.lower() != b"content-type"
+    ]
+    headers.append((b"content-type", b"application/json"))
+    # BaseHTTPMiddleware dispatches the downstream app with the original ASGI
+    # scope, so mutate that shared scope in place before handing it a replayable
+    # request body.
+    request.scope["headers"] = headers
+
+    async def receive() -> dict[str, object]:
+        return {
+            "type": "http.request",
+            "body": raw_body,
+            "more_body": False,
+        }
+
+    return Request(request.scope, receive), parsed_body
 
 
 def _matched_vnext_route_path(request: Request) -> str:
@@ -798,8 +919,18 @@ async def _vnext_protected_http_auth(
     if request.method == "OPTIONS":
         return await call_next(request)
 
+    try:
+        request, simple_capture_payload = await _prepare_browser_clip_simple_request(request)
+    except ValueError:
+        return _vnext_public_error_response(
+            status_code=400,
+            detail="vNext browser clip capture request is invalid",
+        )
+
     payload: dict[str, object] = {}
-    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+    if simple_capture_payload is not None:
+        payload = simple_capture_payload
+    elif request.method not in {"GET", "HEAD", "OPTIONS"}:
         try:
             candidate = await request.json()
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -828,15 +959,32 @@ async def _vnext_protected_http_auth(
     try:
         settings = get_settings()
         route_path = _matched_vnext_route_path(request)
-        identity, route_decision = await run_in_threadpool(
-            _resolve_vnext_http_auth,
-            settings=settings,
-            user_id=user_id,
-            raw_key=agent_key_from_authorization(request.headers.get("authorization")),
-            payload=payload,
-            method=request.method,
-            route_path=route_path,
+        capability_capture = (
+            request.method.upper() == "POST"
+            and route_path == _BROWSER_CLIP_SIMPLE_CAPTURE_PATH
+            and isinstance(payload.get("capture_capability"), str)
+            and bool(str(payload["capture_capability"]).strip())
         )
+        if capability_capture:
+            # The capability is the narrow credential for this endpoint. Its
+            # hash/origin/user/expiry/consumption checks run atomically in the
+            # handler's capture transaction.
+            identity = None
+            route_decision = _vnext_central_route_policy(
+                identity=None,
+                method=request.method,
+                route_path=route_path,
+            )
+        else:
+            identity, route_decision = await run_in_threadpool(
+                _resolve_vnext_http_auth,
+                settings=settings,
+                user_id=user_id,
+                raw_key=agent_key_from_authorization(request.headers.get("authorization")),
+                payload=payload,
+                method=request.method,
+                route_path=route_path,
+            )
         if route_decision is not None and route_decision.decision == "blocked":
             return _vnext_permission_response(route_decision)
     except AgentKeyAuthenticationError as exc:
@@ -991,7 +1139,9 @@ async def enforce_authenticated_user_identity(
 
     settings = get_settings()
 
-    if settings.app_env not in {"development", "test"}:
+    if settings.app_env not in {"development", "test"} and not (
+        request.url.path == "/v0/vnext" or request.url.path.startswith("/v0/vnext/")
+    ):
         if not settings.legacy_v0_enabled_outside_dev:
             return JSONResponse(
                 status_code=404,

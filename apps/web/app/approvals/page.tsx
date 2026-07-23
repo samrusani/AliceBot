@@ -51,7 +51,7 @@ export default async function ApprovalsPage({
 
   const selected = items.find((item) => item.id === selectedId) ?? items[0] ?? null;
   let detail = selected;
-  let detailSource: ApiSource = selected ? listSource : "fixture";
+  let detailSource: ApiSource | "unavailable" = selected ? listSource : "fixture";
 
   if (selected && liveModeReady && listSource === "live") {
     try {
@@ -59,14 +59,18 @@ export default async function ApprovalsPage({
       detail = payload.approval;
       detailSource = "live";
     } catch {
-      detail = getFixtureApproval(selected.id) ?? selected;
-      detailSource = detail === selected ? "live" : "fixture";
+      const fixtureDetail = getFixtureApproval(selected.id);
+      detail = fixtureDetail ?? selected;
+      detailSource = fixtureDetail ? "fixture" : "unavailable";
     }
   }
 
-  let execution = detail ? getFixtureExecutionByApprovalId(detail.id) : null;
+  let execution = detailSource === "unavailable" || !detail ? null : getFixtureExecutionByApprovalId(detail.id);
   let executionSource: ApiSource | null = execution ? "fixture" : null;
-  let executionUnavailableMessage: string | null = null;
+  let executionUnavailableMessage: string | null =
+    detailSource === "unavailable"
+      ? "Execution review was not loaded because the selected approval detail is unavailable."
+      : null;
 
   if (detail && liveModeReady && detailSource === "live") {
     try {
@@ -98,7 +102,7 @@ export default async function ApprovalsPage({
 
   const pageMode = combinePageModes(
     listSource,
-    detail ? detailSource : null,
+    detail && detailSource !== "unavailable" ? detailSource : null,
     execution ? executionSource : null,
   );
 

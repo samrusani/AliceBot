@@ -78,6 +78,10 @@ from alicebot_api.vnext_stores.sqlite.columns import (
     PROVENANCE_COLUMNS as PROVENANCE_COLUMNS,
     REVISION_COLUMNS as REVISION_COLUMNS,
 )
+from alicebot_api.vnext_stores.sqlite.browser_clip_capabilities import (
+    consume_browser_clip_capability as _browser_clip_consume_capability,
+    create_browser_clip_capability as _browser_clip_create_capability,
+)
 from alicebot_api.vnext_stores.sqlite.embedding_cas import (
     _embedding_content_sha256_sqlite as _embedding_content_sha256_sqlite,
     _ensure_embedding_content_sha256_sqlite as _ensure_embedding_content_sha256_sqlite,
@@ -660,6 +664,9 @@ class SQLiteVNextStore:
             payload={"operation": "create", "fields": _sorted_field_names(source)},
         )
         return row
+
+    create_browser_clip_capability = _browser_clip_create_capability
+    consume_browser_clip_capability = _browser_clip_consume_capability
 
     def get_or_create_source(
         self,

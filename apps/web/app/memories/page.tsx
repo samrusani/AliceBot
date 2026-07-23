@@ -6,6 +6,7 @@ import { MemoryList } from "../../components/memory-list";
 import { MemoryRevisionList } from "../../components/memory-revision-list";
 import { MemorySummary } from "../../components/memory-summary";
 import { PageHeader } from "../../components/page-header";
+import { SectionCard } from "../../components/section-card";
 import type {
   ApiSource,
   MemoryHygieneDashboardSummary,
@@ -440,7 +441,9 @@ export default async function MemoriesPage({
     selectedQueueIndex >= 0 ? visibleMemories[selectedQueueIndex + 1]?.id ?? null : null;
 
   let selectedMemory = selectedFromVisibleList;
-  let selectedMemorySource: ApiSource | null = selectedMemory ? selectedListSource : null;
+  let selectedMemorySource: ApiSource | "unavailable" | null = selectedMemory
+    ? selectedListSource
+    : null;
   let selectedMemoryUnavailableReason: string | undefined;
 
   const selectedOpenLoopId = resolveSelectedOpenLoopId(requestedOpenLoopId, openLoops);
@@ -473,6 +476,8 @@ export default async function MemoriesPage({
         if (fixtureMemory) {
           selectedMemory = fixtureMemory;
           selectedMemorySource = "fixture";
+        } else {
+          selectedMemorySource = "unavailable";
         }
         selectedMemoryUnavailableReason =
           memoryDetailResult.reason instanceof Error
@@ -508,14 +513,30 @@ export default async function MemoriesPage({
   let revisionSummary: MemoryRevisionReviewListSummary | null = selectedMemory
     ? getFixtureMemoryRevisionSummary(selectedMemory.id)
     : null;
-  let revisionSource: ApiSource | "unavailable" | null = selectedMemory ? "fixture" : null;
+  let revisionSource: ApiSource | "unavailable" | null = selectedMemory
+    ? selectedMemorySource === "unavailable"
+      ? "unavailable"
+      : "fixture"
+    : null;
+  if (revisionSource === "unavailable") {
+    revisions = [];
+    revisionSummary = null;
+  }
   let revisionUnavailableReason: string | undefined;
 
   let labels = selectedMemory ? getFixtureMemoryLabels(selectedMemory.id) : [];
   let labelSummary: MemoryReviewLabelSummary | null = selectedMemory
     ? getFixtureMemoryLabelSummary(selectedMemory.id)
     : null;
-  let labelSource: ApiSource | "unavailable" | null = selectedMemory ? "fixture" : null;
+  let labelSource: ApiSource | "unavailable" | null = selectedMemory
+    ? selectedMemorySource === "unavailable"
+      ? "unavailable"
+      : "fixture"
+    : null;
+  if (labelSource === "unavailable") {
+    labels = [];
+    labelSummary = null;
+  }
   let labelUnavailableReason: string | undefined;
 
   if (selectedMemory && liveModeReady && selectedMemorySource === "live") {
@@ -557,7 +578,7 @@ export default async function MemoriesPage({
         labelSource = "fixture";
       } else {
         labels = [];
-        labelSummary = getFixtureMemoryLabelSummary(selectedMemory.id);
+        labelSummary = null;
         labelSource = "unavailable";
       }
       labelUnavailableReason =
@@ -574,7 +595,7 @@ export default async function MemoriesPage({
     trustDashboardSource,
     hygieneDashboardSource,
     openLoopSource,
-    selectedMemorySource,
+    selectedMemorySource === "unavailable" ? null : selectedMemorySource,
     selectedOpenLoopSource,
     revisionSource === "unavailable" ? null : revisionSource,
     labelSource === "unavailable" ? null : labelSource,
@@ -617,17 +638,11 @@ export default async function MemoriesPage({
         unavailableReason={hygieneDashboardUnavailableReason}
       />
 
-      <div className="section-card">
-        <header className="section-card__header">
-          <div>
-            <p className="section-card__eyebrow">Trust dashboard</p>
-            <h2 className="section-card__title">Canonical quality posture</h2>
-          </div>
-          <p className="section-card__description">
-            One deterministic view for gate posture, queue aging, retrieval quality, correction
-            recurrence, and recommended next review action.
-          </p>
-        </header>
+      <SectionCard
+        eyebrow="Trust dashboard"
+        title="Canonical quality posture"
+        description="One deterministic view for gate posture, queue aging, retrieval quality, correction recurrence, and recommended next review action."
+      >
         <div className="stack">
           <p className="muted-copy">
             Source: {trustDashboardSource === "live" ? "Live dashboard" : "Fixture dashboard"}
@@ -685,19 +700,13 @@ export default async function MemoriesPage({
           </dl>
           <p className="muted-copy">{trustDashboard.recommended_review.reason}</p>
         </div>
-      </div>
+      </SectionCard>
 
-      <div className="section-card">
-        <header className="section-card__header">
-          <div>
-            <p className="section-card__eyebrow">Open-loop backbone</p>
-            <h2 className="section-card__title">Unresolved commitment review</h2>
-          </div>
-          <p className="section-card__description">
-            Review unresolved loops with deterministic ordering and inspect one selected loop in detail.
-          </p>
-        </header>
-
+      <SectionCard
+        eyebrow="Open-loop backbone"
+        title="Unresolved commitment review"
+        description="Review unresolved loops with deterministic ordering and inspect one selected loop in detail."
+      >
         <div className="stack">
           <p className="muted-copy">
             Source: {openLoopSource === "live" ? "Live list" : "Fixture list"}
@@ -767,7 +776,7 @@ export default async function MemoriesPage({
             </p>
           )}
         </div>
-      </div>
+      </SectionCard>
 
       <div className="memory-layout">
         <MemoryList
@@ -789,16 +798,11 @@ export default async function MemoriesPage({
         />
       </div>
 
-      <div className="section-card">
-        <header className="section-card__header">
-          <div>
-            <p className="section-card__eyebrow">Typed metadata</p>
-            <h2 className="section-card__title">Memory classification and confidence</h2>
-          </div>
-          <p className="section-card__description">
-            Typed metadata remains visible in the review workspace with explicit safe fallbacks.
-          </p>
-        </header>
+      <SectionCard
+        eyebrow="Typed metadata"
+        title="Memory classification and confidence"
+        description="Typed metadata remains visible in the review workspace with explicit safe fallbacks."
+      >
         {selectedMemory ? (
           <dl className="key-value-grid key-value-grid--compact">
             <div>
@@ -833,7 +837,7 @@ export default async function MemoriesPage({
         ) : (
           <p className="muted-copy">Select a memory to inspect typed metadata fields.</p>
         )}
-      </div>
+      </SectionCard>
 
       <div className="memory-followup-grid">
         <MemoryRevisionList

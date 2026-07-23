@@ -68,9 +68,10 @@ def test_postgres_matrix_has_a_required_flag_off_default_surface_row() -> None:
         "unset ALICE_LEGACY_SURFACES ALICE_MCP_LEGACY_TOOLS ALICE_AGENT_API_KEY"
     ) in integration_job
     assert (
-        "./.venv/bin/python -m pytest "
-        "tests/integration/test_default_surface_integration.py -q -p no:cacheprovider "
-        "--require-executed-tests"
+        "./.venv/bin/python -m pytest \\\n"
+        "            tests/integration/test_default_surface_integration.py \\\n"
+        "            tests/integration/test_openai_agents_sdk_tool.py \\\n"
+        "            -q -p no:cacheprovider --require-executed-tests"
     ) in integration_job
     assert "ALICE_LEGACY_SURFACES:" not in integration_job.split("    steps:", 1)[0]
 

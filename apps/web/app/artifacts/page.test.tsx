@@ -3,6 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ArtifactsPage from "./page";
+import ArtifactsLoading from "./loading";
 import { taskArtifactFixtures } from "../../lib/fixtures";
 
 const {
@@ -68,6 +69,13 @@ describe("ArtifactsPage", () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it("announces the loading route without interrupting the operator", () => {
+    const { container } = render(<ArtifactsLoading />);
+
+    expect(container.firstElementChild).toHaveAttribute("aria-busy", "true");
+    expect(container.firstElementChild).toHaveAttribute("aria-live", "polite");
   });
 
   it("keeps route state explicit when live chunks fall back to fixture", async () => {
@@ -188,5 +196,38 @@ describe("ArtifactsPage", () => {
     expect(listTaskArtifactChunksMock).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("heading", { name: "Persisted identity" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "No persisted chunks" })).toBeInTheDocument();
+  });
+
+  it("marks a failed live detail read unavailable and does not invent chunk state", async () => {
+    const artifact = {
+      id: "artifact-live-without-fixture",
+      task_id: "task-live-1",
+      task_workspace_id: "workspace-live-1",
+      status: "registered",
+      ingestion_status: "ingested",
+      relative_path: "reports/live-only.md",
+      media_type_hint: "text/markdown",
+      created_at: "2026-07-21T09:00:00Z",
+      updated_at: "2026-07-21T09:05:00Z",
+    };
+    getApiConfigMock.mockReturnValue({ apiBaseUrl: "https://api.example.com", userId: "user-1" });
+    hasLiveApiConfigMock.mockReturnValue(true);
+    listTaskArtifactsMock.mockResolvedValue({
+      items: [artifact],
+      summary: { total_count: 1, order: ["created_at_asc", "id_asc"] },
+    });
+    getTaskArtifactDetailMock.mockRejectedValue(new Error("artifact detail down"));
+
+    render(
+      await ArtifactsPage({
+        searchParams: Promise.resolve({ artifact: artifact.id }),
+      }),
+    );
+
+    expect(screen.getByText("Detail unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("Live detail")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Chunk review unavailable" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("artifact detail down");
+    expect(listTaskArtifactChunksMock).not.toHaveBeenCalled();
   });
 });

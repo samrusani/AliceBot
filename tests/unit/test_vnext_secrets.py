@@ -7,6 +7,7 @@ from alicebot_api.vnext_secrets import (
     InMemorySecretProvider,
     LocalEncryptedFileSecretProvider,
     redact_secret_fields,
+    redact_secret_value,
 )
 
 
@@ -53,5 +54,26 @@ def test_secret_redaction_recurses_through_payloads() -> None:
         "capture_token": "***",
         "nested": {"provider_secret": "***"},
         "items": [{"api_key": "***"}],
+        "safe": "visible",
+    }
+
+
+def test_secret_value_redaction_removes_nested_values_keys_and_substrings() -> None:
+    secret = "alice_clip_secret-value"
+
+    redacted = redact_secret_value(
+        {
+            "url": f"https://example.test/article?cap={secret}",
+            "nested": [{"title": f"before {secret} after"}],
+            f"key-{secret}": secret,
+            "safe": "visible",
+        },
+        secret,
+    )
+
+    assert redacted == {
+        "url": "https://example.test/article?cap=***",
+        "nested": [{"title": "before *** after"}],
+        "key-***": "***",
         "safe": "visible",
     }

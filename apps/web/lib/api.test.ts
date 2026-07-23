@@ -72,6 +72,7 @@ import {
   getContinuityRetrievalEvaluation,
   hasLiveApiConfig,
   isLocalApiBaseUrl,
+  issueVNextBrowserClipCapability,
   requestJson,
   sanitizeApiBaseUrl,
   sanitizePublicErrorText,
@@ -117,7 +118,7 @@ describe("api helpers", () => {
     expect(pageModeLabel("mixed")).toBe("Mixed fallback");
   });
 
-  it("keeps live console reads loopback-only", () => {
+  it("allows live console reads only on loopback or the exact browser HTTPS origin", () => {
     expect(isLocalApiBaseUrl("http://127.0.0.1:8000")).toBe(true);
     expect(isLocalApiBaseUrl("https://[::1]:8443")).toBe(true);
     expect(isLocalApiBaseUrl("ftp://localhost:8000")).toBe(false);
@@ -128,15 +129,53 @@ describe("api helpers", () => {
         userId: "user-1",
       }),
     ).toBe(true);
+
+    vi.stubGlobal("window", { location: { origin: "https://alice.example.com" } });
     expect(
       hasLiveApiConfig({
-        apiBaseUrl: "https://api.example.com",
+        apiBaseUrl: "https://alice.example.com",
+        userId: "user-1",
+      }),
+    ).toBe(true);
+    expect(
+      hasLiveApiConfig({
+        apiBaseUrl: "https://evil.example",
         userId: "user-1",
       }),
     ).toBe(false);
     expect(
       hasLiveApiConfig({
-        apiBaseUrl: "http://api.example.com",
+        apiBaseUrl: "http://alice.example.com",
+        userId: "user-1",
+      }),
+    ).toBe(false);
+    expect(
+      hasLiveApiConfig({
+        apiBaseUrl: "https://alice.example.com/api",
+        userId: "user-1",
+      }),
+    ).toBe(false);
+    expect(
+      hasLiveApiConfig({
+        apiBaseUrl: "https://user:secret@alice.example.com",
+        userId: "user-1",
+      }),
+    ).toBe(false);
+  });
+
+  it("uses the exact PUBLIC_ORIGIN for server-rendered live mode", () => {
+    vi.stubGlobal("window", undefined);
+    vi.stubEnv("PUBLIC_ORIGIN", "https://alice.example.com");
+
+    expect(
+      hasLiveApiConfig({
+        apiBaseUrl: "https://alice.example.com",
+        userId: "user-1",
+      }),
+    ).toBe(true);
+    expect(
+      hasLiveApiConfig({
+        apiBaseUrl: "https://evil.example",
         userId: "user-1",
       }),
     ).toBe(false);
@@ -297,8 +336,41 @@ describe("api helpers", () => {
     );
   });
 
-  it("attaches the in-memory operator key only to loopback vNext routes", async () => {
+  it("issues browser-clip capabilities through the trusted vNext client without URL leakage", async () => {
+    const response = {
+      status: "issued" as const,
+      capability: "alice_clip_one_time_secret",
+      origin: "https://example.com",
+      expires_at: "2026-07-21T12:02:00Z",
+      one_time: true as const,
+    };
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(
+      issueVNextBrowserClipCapability("http://127.0.0.1:8000", {
+        user_id: "user-1",
+        origin: "https://example.com",
+      }),
+    ).resolves.toEqual(response);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:8000/v0/vnext/connectors/browser-clipper/capabilities");
+    expect(url).not.toContain(response.capability);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      user_id: "user-1",
+      origin: "https://example.com",
+    });
+  });
+
+  it("attaches the in-memory operator key only to trusted vNext routes", async () => {
     const agentApiKey = "alice_sk_operator_session_secret";
+    vi.stubGlobal("window", { location: { origin: "https://alice.example.com" } });
     setVNextOperatorAgentApiKey(agentApiKey);
     fetchMock.mockImplementation(() =>
       Promise.resolve(
@@ -311,7 +383,10 @@ describe("api helpers", () => {
 
     await requestJson("http://127.0.0.1:8000", "/v0/vnext");
     await requestJson("https://localhost:8443", "/v0/vnext/workspace");
-    await requestJson("https://api.example.com", "/v0/vnext/workspace");
+    await requestJson("https://alice.example.com", "/v0/vnext/workspace");
+    await requestJson("https://evil.example", "/v0/vnext/workspace");
+    await requestJson("http://alice.example.com", "/v0/vnext/workspace");
+    await requestJson("https://alice.example.com/api", "/v0/vnext/workspace");
     await requestJson("http://127.0.0.1:8000", "/v0/threads");
     await requestJson("http://127.0.0.1:8000", "/v1/providers");
     await requestJson("http://127.0.0.1:8000", "/v0/vnextish/workspace");
@@ -323,6 +398,9 @@ describe("api helpers", () => {
     expect(authorizationHeaders).toEqual([
       `Bearer ${agentApiKey}`,
       `Bearer ${agentApiKey}`,
+      `Bearer ${agentApiKey}`,
+      null,
+      null,
       null,
       null,
       null,
@@ -336,6 +414,7 @@ describe("api helpers", () => {
   });
 
   it("keeps explicit Authorization headers authoritative over the in-memory operator key", async () => {
+    vi.stubGlobal("window", { location: { origin: "https://alice.example.com" } });
     setVNextOperatorAgentApiKey("alice_sk_operator_session_secret");
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
@@ -344,7 +423,7 @@ describe("api helpers", () => {
       }),
     );
 
-    await requestJson("http://127.0.0.1:8000", "/v0/vnext/workspace", {
+    await requestJson("https://alice.example.com", "/v0/vnext/workspace", {
       headers: { Authorization: "Bearer explicit-session-token" },
     });
 

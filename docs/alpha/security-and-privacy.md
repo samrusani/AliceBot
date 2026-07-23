@@ -2,6 +2,20 @@
 
 Alice public preview is local-first.
 
+## Deployment Trust Boundary
+
+**Keyless is local-machine-owner mode, not anonymous network mode.** Keep the
+API and web app on loopback and use an SSH tunnel for headless access. In a
+keyless deployment, local callers can select the Alice `user_id`; that value is
+not an authentication credential. Do not expose the API port to a LAN, public
+interface, container network with untrusted peers, or an untrusted browser.
+
+Once any active agent API key exists for a user, protected `/v0/vnext` requests
+for that user reject keyless access. Remote access requires active keys plus a
+TLS-terminating authenticated reverse proxy, a restrictive CORS allowlist, and
+host/firewall controls. Agent keys authenticate Alice calls; they do not encrypt
+traffic or harden the host.
+
 Security posture:
 
 - source evidence is review-only
@@ -18,9 +32,13 @@ Security posture:
 - artifact get, feedback, quality-rating, review, export, and trace operations authorize the persisted artifact project/domain/sensitivity before returning content or applying a side effect; trace sources are filtered by the same exact-target policy
 - the local `/vnext` console accepts an unbound `trusted_local_agent` or `admin_agent` key only through its password field, keeps it only in browser memory for the mounted session, and forwards it only to loopback `/v0/vnext` routes; it never reads the key from environment variables, local storage, URLs, logs, or errors
 - `trusted_local_agent` does not grant human/admin review decisions such as artifact acceptance; use a dedicated unbound `admin_agent` key when those actions are needed and revoke it when no longer needed
-- the browser-clipper bookmarklet never embeds or prompts for an agent key because visited-page JavaScript is not a trusted credential context; it is a zero-active-key compatibility path only, and keyed deployments must use a trusted API client with Bearer authentication plus `capture_token`
+- the browser-clipper bookmarklet never embeds or prompts for an agent key or a reusable `capture_token`; a trusted Alice UI issues a short-lived, origin-bound, one-time capture capability, while trusted non-browser API clients may use Bearer authentication plus `capture_token`
 - MCP servers bound with `ALICE_AGENT_API_KEY` expose only the core surface; legacy handlers fail closed because they do not all implement the same persisted-target authorization contract
 - the managed SQLite directory is owner-only; database sidecars and exports are also owner-only
+
+The complete shipped-product threat model, evidence ledger, and open proof gaps
+are in [`docs/security/`](../security/README.md). Those Stage A materials prepare
+an independent review; they are not a security certification.
 
 Recommended alpha defaults:
 
