@@ -141,9 +141,7 @@ search degrades to full-text only and says so explicitly in the retrieval trace.
 
 ## Status
 
-The `v0.14.0` candidate (Phase 5 enterprise track) is in release preparation.
-
-`v0.13.1` is the latest published release and remains the install, checksum,
+`v0.14.0` is the latest published release and remains the install, checksum,
 and release-note baseline (the `v0.13.0` tag was never published;
 superseded). Its tag, release record, and published artifacts
 are immutable.
@@ -185,7 +183,7 @@ What that means in practice:
 - [v0.11.0 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.11.0-release-notes.md)
 - [v0.11.1 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.11.1-release-notes.md)
 - [v0.12.0 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.12.0-release-notes.md)
-- [v0.13.1 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.13.1-release-notes.md)
+- [v0.14.0 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.14.0-release-notes.md)
 - [Release procedure](https://github.com/samrusani/AliceBot/blob/main/RELEASING.md)
 - [Architecture](https://github.com/samrusani/AliceBot/blob/main/ARCHITECTURE.md)
 - [Roadmap](https://github.com/samrusani/AliceBot/blob/main/ROADMAP.md)
