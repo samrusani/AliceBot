@@ -2,9 +2,7 @@
 
 
 
-The `v0.14.0` candidate (Phase 5 enterprise track) is in release preparation.
-
-`v0.13.1` is the latest published release and remains the checksum/install
+`v0.14.0` is the latest published release and remains the checksum/install
 baseline.
 Preparing candidate documents does not authorize a tag, PyPI upload, or GitHub
 Release.

@@ -3,14 +3,11 @@
 ## Scope Boundary
 
 
-- **Candidate boundary:** the `v0.14.0` candidate carries the Phase 5
-  enterprise-track work and is in release preparation.
-
-- **Published boundary:** `v0.13.1` is the latest published release,
+- **Published boundary:** `v0.14.0` is the latest published release,
   carrying the Phase 4 core-roadmap work (replicated benchmark evidence,
   SQLite vector scale, reference integrations, trace-only count
   diagnostics); artifact digests are in
-  `docs/release/v0.13.1-checksums.txt`.
+  `docs/release/v0.14.0-checksums.txt`.
 - **Prior published:** `v0.12.0` is the prior published release. It is
   tagged and immutable, passed the exact-SHA CI, semantic, and
   repository-control gates, and is published on PyPI with Trusted Publishing
@@ -226,8 +223,9 @@ usage justifies a separately reviewed boundary.
 
 ## Current Architectural Posture
 
-- `v0.13.1` is the latest published release and reconciles runtime and product
-  identity around the agent interface plus retrieval/memory quality.
+- `v0.14.0` is the latest published release and reconciles runtime and product
+  identity around the agent interface, retrieval/memory quality, and a
+  real-host-proven single-tenant deployment contract.
 - Phase 3 reduces `main.py` to app assembly and shared middleware,
   extracts domain routers, mirrors PostgreSQL and SQLite vNext store seams,
   splits the surviving legacy store and pure contracts, and moves MCP/CLI
