@@ -8,6 +8,8 @@ capture, hardened connector settings/state/secrets, agent-facing context packs
 and context trees, governed agent proposals, and a local scheduler runtime.
 
 The vNext architecture is now the active Alice product line.
+The `v0.14.0` candidate (Phase 5 enterprise track) is in release preparation.
+
 `v0.13.1` is the latest published release and remains the install, checksum,
 and latest-release-notes baseline. Its tag, release record, and published
 artifacts are immutable.

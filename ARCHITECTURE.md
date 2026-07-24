@@ -3,6 +3,9 @@
 ## Scope Boundary
 
 
+- **Candidate boundary:** the `v0.14.0` candidate carries the Phase 5
+  enterprise-track work and is in release preparation.
+
 - **Published boundary:** `v0.13.1` is the latest published release,
   carrying the Phase 4 core-roadmap work (replicated benchmark evidence,
   SQLite vector scale, reference integrations, trace-only count
