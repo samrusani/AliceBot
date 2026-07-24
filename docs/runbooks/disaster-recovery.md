@@ -29,16 +29,47 @@ randomly named `alice_phase5_ops_*` PostgreSQL databases:
   --output artifacts/phase5/ops-evidence.json
 ```
 
-It requires `DATABASE_ADMIN_URL`, `DATABASE_URL`, PostgreSQL 16 `pg_dump` and
-`pg_restore`, a PostgreSQL 16 server, and the `alicebot_app` role. The drill
-validates all three major versions before creating a disposable database and
-fails closed on missing, malformed, or mismatched version evidence. Do not use
-a newer client major: its archive prologue may contain settings PostgreSQL 16
-cannot restore. Exit `0` and report status `passed` are required. The
-JSON report is sanitized; the temporary databases, dumps, and memory text are
-removed on exit. Failure to drop the randomly named PostgreSQL database is a
-failed drill with `postgres_cleanup_failed`, never a passed receipt; an
-operator must remove the named-by-prefix fixture before retrying. CI runs the same command in
+PostgreSQL mode requires `DATABASE_LIFECYCLE_URL`, `DATABASE_ADMIN_URL`,
+`DATABASE_URL`, and `DATABASE_BACKUP_URL`, PostgreSQL 16 `pg_dump` and
+`pg_restore`, a PostgreSQL 16 server, and four distinct roles:
+
+- `alicebot_drill` is used by the drill only to create, grant, and drop random
+  disposable databases. It needs `CREATEDB`, but it remains `NOSUPERUSER`,
+  `NOCREATEROLE`, and `NOBYPASSRLS`;
+- `alicebot_admin` runs migrations, verification, and restore with
+  `NOSUPERUSER`, `NOCREATEDB`, and `NOBYPASSRLS`;
+- `alicebot_app` performs authenticated application verification;
+- `alicebot_backup` runs only the dump. It is a non-superuser read role with
+  `BYPASSRLS`, which is required to read forced-RLS tables completely.
+
+The lifecycle identity owns the disposable database. It grants
+`alicebot_admin` database `CONNECT` and `CREATE`, plus `USAGE` and `CREATE`
+with grant option on the disposable `public` schema. It grants the app and
+backup roles database access and explicit `USAGE` on `public`, but it does not
+run migrations, dumps, restores, or application queries. Compatible `pgcrypto`
+and `vector` extensions must be preinstalled in `template1` by the database
+operator so each disposable target inherits them. A same-host
+peer-authenticated lifecycle URL is valid only when the drill process runs
+under the peer-mapped operating-system account.
+
+PostgreSQL cannot restrict `CREATEDB` to the drill database-name prefix, so a
+compromised lifecycle credential could create arbitrary databases and exhaust
+cluster storage. Restrict its login source, protect and rotate it, monitor
+database creation, and revoke it when automated drills are not required. A
+manual same-host lifecycle can instead use the local PostgreSQL superuser
+through peer authentication, outside the automated script contract.
+
+The drill validates all three major versions before creating a disposable
+database and fails closed on missing, malformed, or mismatched version
+evidence. Do not use a newer client major: its archive prologue may contain
+settings PostgreSQL 16 cannot restore. Exit `0` and report status `passed` are
+required. The JSON report is sanitized; the temporary databases, dumps, and
+memory text are removed on exit. A failed subprocess writes bounded,
+credential-scrubbed stderr to the process stderr under its stable failure code.
+That diagnostic never enters the JSON receipt. Failure to drop the randomly
+named PostgreSQL database is a failed drill with `postgres_cleanup_failed`,
+never a passed receipt. An operator must remove the named-by-prefix fixture
+before retrying. CI runs the same command in
 `.github/workflows/ops-evidence.yml` and retains only the sanitized report.
 
 Receipt identity does not pretend that Git `HEAD` contains an uncommitted
@@ -111,25 +142,92 @@ provider and reindex before cutover.
 ## PostgreSQL recovery
 
 Run PostgreSQL 16 client tools against the PostgreSQL 16 server with libpq
-environment variables so credentials do not appear in process arguments:
+environment variables so credentials do not appear in process arguments.
+Create the dedicated backup login as a database superuser or another identity
+allowed to manage role attributes:
+
+```sql
+CREATE ROLE alicebot_backup
+  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS;
+GRANT CONNECT ON DATABASE alicebot TO alicebot_backup;
+\connect alicebot
+GRANT USAGE ON SCHEMA public TO alicebot_backup;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO alicebot_backup;
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO alicebot_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE alicebot_admin IN SCHEMA public
+  GRANT SELECT ON TABLES TO alicebot_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE alicebot_admin IN SCHEMA public
+  GRANT SELECT ON SEQUENCES TO alicebot_backup;
+```
+
+`BYPASSRLS` can read every Alice row. Restrict this login to the backup path,
+protect and rotate its credential, and do not use it for migrations or restore.
+On a co-located database, a manual `sudo -u postgres pg_dump` over the local
+Unix socket avoids a stored backup credential. That peer-authenticated
+alternative does not apply to a remote database.
 
 ```bash
-export PGHOST=db.internal PGPORT=5432 PGUSER=alicebot_admin PGDATABASE=alicebot
+export PGHOST=db.internal PGPORT=5432 PGUSER=alicebot_backup PGDATABASE=alicebot
 export PGSSLMODE=verify-full
-export PGSSLROOTCERT=/run/secrets/alicebot/postgres-ca.pem
+export PGSSLROOTCERT=/etc/alicebot/postgres-ca.pem
 export PGPASSWORD='from-your-secret-manager'
-pg_dump --format=custom --file=alice.dump
+pg_dump --format=custom --no-comments --file=alice.dump
 pg_restore --list alice.dump
 sha256sum alice.dump
 ```
 
-Provision a new database with PostgreSQL 16 and pgvector 0.8 or newer. Ensure
-the `alicebot_app` role exists, then restore without changing ownership:
+Provision a new database with PostgreSQL 16 and pgvector 0.8 or newer. A
+database operator must create the compatible `pgcrypto` and `vector` extensions
+before restore, or the disposable target must inherit them from `template1`.
+Ensure the `alicebot_app` role exists. Create the target through the lifecycle
+identity, then restore without changing ownership as `alicebot_admin`:
 
 ```bash
-createdb alice_restore_test
-pg_restore --exit-on-error --no-owner --dbname=alice_restore_test alice.dump
+PGUSER=alicebot_drill PGDATABASE=postgres \
+  PGPASSWORD='drill-password-from-your-secret-manager' \
+  createdb alice_restore_test
+PGUSER=alicebot_drill PGDATABASE=postgres \
+  PGPASSWORD='drill-password-from-your-secret-manager' \
+  psql --set=ON_ERROR_STOP=1 <<'SQL'
+GRANT CONNECT, CREATE ON DATABASE alice_restore_test TO alicebot_admin;
+GRANT CONNECT, TEMPORARY ON DATABASE alice_restore_test TO alicebot_app;
+GRANT CONNECT ON DATABASE alice_restore_test TO alicebot_backup;
+SQL
+PGUSER=alicebot_drill PGDATABASE=alice_restore_test \
+  PGPASSWORD='drill-password-from-your-secret-manager' \
+  psql --set=ON_ERROR_STOP=1 <<'SQL'
+GRANT USAGE, CREATE ON SCHEMA public
+  TO alicebot_admin WITH GRANT OPTION;
+GRANT USAGE ON SCHEMA public TO alicebot_app, alicebot_backup;
+SQL
+umask 077
+PGUSER=alicebot_admin PGDATABASE=alice_restore_test \
+  PGPASSWORD='admin-password-from-your-secret-manager' \
+  pg_restore --list alice.dump > alice.restore.full.list
+public_schema_acl_count="$(
+  awk '$4 == "ACL" && $5 == "-" && $6 == "SCHEMA" && $7 == "public" {
+    count++
+  } END { print count + 0 }' alice.restore.full.list
+)"
+test "${public_schema_acl_count}" -eq 1
+awk '$4 == "ACL" && $5 == "-" && $6 == "SCHEMA" && $7 == "public" {
+  next
+} { print }' alice.restore.full.list > alice.restore.list
+PGUSER=alicebot_admin PGDATABASE=alice_restore_test \
+  PGPASSWORD='admin-password-from-your-secret-manager' \
+  pg_restore --exit-on-error --no-owner --no-comments \
+  --use-list=alice.restore.list \
+  --dbname=alice_restore_test alice.dump
 ```
+
+`--no-comments` on the dump prevents new archives from carrying extension
+comments. The restore flag also ignores comments in an older archive, avoiding
+an extension-ownership failure without making the restoring role a superuser.
+The private restore list removes exactly `ACL - SCHEMA public`. The lifecycle
+step reconstructs public-schema privileges for admin, app, and backup on the
+fresh target. Table, sequence, and non-public schema ACL entries remain in the
+restore list. Do not use `--no-acl`, which would also remove the application
+privileges defined by migrations.
 
 Against the restored database, verify:
 

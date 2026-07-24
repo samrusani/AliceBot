@@ -268,8 +268,8 @@ def test_installation_issue_regressions_are_guarded() -> None:
     assert "run_in_install_dir" in installer
     assert "-c apps/api/alembic.ini" in installer
     assert "seed_default_user_from_env" in installer
-    assert "INSERT INTO users (id, email, display_name)" in installer
-    assert "ON CONFLICT (id) DO UPDATE" in installer
+    assert '"${INSTALL_DIR}/scripts/seed_local_user.py"' in installer
+    assert "INSERT INTO users (id, email, display_name)" not in installer
     assert "write_lite_env_if_missing" in installer
     assert "write_web_env_if_missing" in installer
     assert "validate_env_files" in installer

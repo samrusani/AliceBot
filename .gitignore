@@ -1,7 +1,7 @@
 .DS_Store
 .env
 .env.lite
-apps/web/.env.local
+apps/web/.env*.local
 apps/web/.env.local.*
 !apps/web/.env.local.example
 *.db
@@ -18,6 +18,8 @@ __pycache__/
 apps/web/.next/
 apps/web/node_modules/
 artifacts/
+!apps/web/app/artifacts/
+!apps/web/app/artifacts/**
 
 # Internal operating docs (keep local, exclude from public repo)
 .ai/*
@@ -29,6 +31,8 @@ artifacts/
 !.ai/handoff/CURRENT_STATE.md
 BUILD_REPORT.md
 REVIEW_REPORT.md
+!docs/archive/process/BUILD_REPORT.md
+!docs/archive/process/REVIEW_REPORT.md
 !docs/handoff/2026-07-13-v0.10-audit-remediation/BUILD_REPORT.md
 !docs/handoff/2026-07-13-v0.10-audit-remediation/REVIEW_REPORT.md
 !docs/handoff/2026-07-14-v0.10.4-remediation/BUILD_REPORT.md
@@ -43,6 +47,8 @@ REVIEW_REPORT.md
 !docs/handoff/2026-07-19-v0.13.0-phase4-sprint4-synthesis/REVIEW_REPORT.md
 !docs/handoff/2026-07-21-v0.14.0-phase5-enterprise-track/BUILD_REPORT.md
 !docs/handoff/2026-07-21-v0.14.0-phase5-enterprise-track/REVIEW_REPORT.md
+!docs/handoff/2026-07-24-v0.14.0-deployment-guide-fixes/BUILD_REPORT.md
+!docs/handoff/2026-07-24-v0.14.0-deployment-guide-fixes/REVIEW_REPORT.md
 ARCHIVE_RECOMMENDATIONS.md
 RECOMMENDED_ADRS.md
 

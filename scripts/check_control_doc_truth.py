@@ -513,15 +513,13 @@ def _has_exact_release_state_keys(state: object) -> bool:
     return isinstance(state, dict) and set(state) == _RELEASE_DOCUMENT_STATE_KEYS
 
 
-def _latest_structured_published_version(*, root_dir: Path, candidate_version: str) -> str | None:
-    """Resolve candidate-mode publication truth from structured historical notes."""
+def _latest_structured_published_version(*, root_dir: Path) -> str | None:
+    """Resolve publication truth solely from structured release records."""
 
     release_dir = root_dir / "docs" / "release"
     published: list[tuple[tuple[int, int, int], str]] = []
     for path in release_dir.glob("v*-release-notes.md"):
         version = path.name.removeprefix("v").removesuffix("-release-notes.md")
-        if version == candidate_version:
-            continue
         key = _semantic_version_key(version)
         if key is None:
             continue
@@ -663,11 +661,7 @@ def run_control_doc_truth_check(
     issues.extend(_validate_active_sprint_packet(root_dir))
     release_mode, release_state_issues = _read_release_document_mode(root_dir=root_dir, version=version)
     issues.extend(release_state_issues)
-    latest_published_version = (
-        _latest_structured_published_version(root_dir=root_dir, candidate_version=version)
-        if release_mode == "candidate"
-        else version
-    )
+    latest_published_version = _latest_structured_published_version(root_dir=root_dir)
 
     for rule in rules:
         doc_path = root_dir / rule.relative_path

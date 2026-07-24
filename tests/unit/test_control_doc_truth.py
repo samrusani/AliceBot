@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import subprocess
+import tomllib
 
 import pytest
 
@@ -14,11 +16,20 @@ def _checksum_manifest(version: str, digit: str = "0") -> str:
     )
 
 
-def _seed_truth_docs(tmp_path: Path, *, published: bool = False, version: str = "9.8.7") -> None:
+def _seed_truth_docs(
+    tmp_path: Path,
+    *,
+    published: bool = False,
+    version: str = "9.8.7",
+    latest_published_version: str | None = None,
+) -> None:
     (tmp_path / "pyproject.toml").write_text(
         f'[project]\nname = "alice-memory"\nversion = "{version}"\nreadme = "docs/pypi-description.md"\n',
         encoding="utf-8",
     )
+    web_package = tmp_path / "apps" / "web" / "package.json"
+    web_package.parent.mkdir(parents=True, exist_ok=True)
+    web_package.write_text(f'{{"name":"alice-web","version":"{version}"}}\n', encoding="utf-8")
     description = tmp_path / control_doc_truth.PACKAGE_DESCRIPTION_RELATIVE_PATH
     description.parent.mkdir(parents=True, exist_ok=True)
     description.write_text(
@@ -46,6 +57,18 @@ def _seed_truth_docs(tmp_path: Path, *, published: bool = False, version: str = 
             _checksum_manifest(version),
             encoding="utf-8",
         )
+    elif latest_published_version is not None:
+        (release_dir / f"v{latest_published_version}-release-notes.md").write_text(
+            f"# Alice v{latest_published_version} Release Notes\n"
+            '<!-- alice-release-state: {"schema_version":"alice_release_document_state_v1",'
+            f'"version":"{latest_published_version}",'
+            '"publication_status":"published","checksums_status":"recorded"} -->\n\nPublished.\n',
+            encoding="utf-8",
+        )
+        (release_dir / f"v{latest_published_version}-checksums.txt").write_text(
+            _checksum_manifest(latest_published_version),
+            encoding="utf-8",
+        )
 
     for rule in control_doc_truth.VERSION_ALIGNED_DOC_RULES:
         doc_path = tmp_path / rule.relative_path
@@ -64,18 +87,36 @@ def _seed_truth_docs(tmp_path: Path, *, published: bool = False, version: str = 
                 if rule.relative_path.endswith("CURRENT_STATE.md"):
                     handle.write(f"## What `v{version}` Targets\n")
 
-    if published:
+    documented_published_version = version if published else latest_published_version
+    if documented_published_version is not None:
+        if not published:
+            for rule in control_doc_truth.VERSION_ALIGNED_DOC_RULES:
+                doc_path = tmp_path / rule.relative_path
+                with doc_path.open("a", encoding="utf-8") as handle:
+                    if rule.relative_path == "docs/integrations/reference-paths.md":
+                        handle.write(
+                            f"\nlatest published `v{documented_published_version}` baseline\n"
+                        )
+                    elif rule.relative_path == "docs/alpha/headless-ubuntu-install.md":
+                        handle.write(
+                            f"\nlatest published release tag\n(`v{documented_published_version}`)\n"
+                        )
+                    else:
+                        handle.write(
+                            f"\n`v{documented_published_version}` is the latest published release\n"
+                        )
         for relative_path in ("README.md", "docs/vnext/README.md"):
             target = tmp_path / relative_path
             target.write_text(
                 target.read_text(encoding="utf-8")
-                + f"\n[Release notes](docs/release/v{version}-release-notes.md)\n",
+                + f"\n[Release notes](docs/release/v{documented_published_version}-release-notes.md)\n",
                 encoding="utf-8",
             )
         for relative_path in ("ARCHITECTURE.md", "PRODUCT_BRIEF.md", "ROADMAP.md"):
             target = tmp_path / relative_path
             target.write_text(
-                target.read_text(encoding="utf-8") + f"\ndocs/release/v{version}-checksums.txt\n",
+                target.read_text(encoding="utf-8")
+                + f"\ndocs/release/v{documented_published_version}-checksums.txt\n",
                 encoding="utf-8",
             )
         for relative_path in ("CURRENT_STATE.md", ".ai/handoff/CURRENT_STATE.md"):
@@ -83,13 +124,13 @@ def _seed_truth_docs(tmp_path: Path, *, published: bool = False, version: str = 
             target.write_text(
                 target.read_text(encoding="utf-8").replace(
                     "## Release Boundary\n",
-                    f"## Release Boundary\ndocs/release/v{version}-checksums.txt\n",
+                    f"## Release Boundary\ndocs/release/v{documented_published_version}-checksums.txt\n",
                 ),
                 encoding="utf-8",
             )
         install = tmp_path / "docs" / "alpha" / "headless-ubuntu-install.md"
         install.write_text(
-            install.read_text(encoding="utf-8") + f"\nUse --tag v{version}.\n",
+            install.read_text(encoding="utf-8") + f"\nUse --tag v{documented_published_version}.\n",
             encoding="utf-8",
         )
 
@@ -409,17 +450,61 @@ def test_phase2_post_freeze_docs_point_to_final_reports_and_external_release_wor
     assert "`BUILD_REPORT.md`" in release_notes
     assert "`REVIEW_REPORT.md`" in release_notes
     assert "still follow this\n  documentation freeze" not in release_notes
-    # Durable form: the roadmap names the CURRENT governed version as the
-    # latest published release (transitioned each post-publication sweep).
-    import tomllib as _tomllib
-    with (repo_root / "pyproject.toml").open("rb") as _handle:
-        _version = _tomllib.load(_handle)["project"]["version"]
-    assert f"`v{_version}` is the latest published release." in roadmap
+    # Durable form: the roadmap follows the structured publication record,
+    # independently of any pending governed-version bump.
+    latest_published = control_doc_truth._latest_structured_published_version(root_dir=repo_root)
+    assert latest_published is not None
+    assert f"`v{latest_published}` is the latest published release." in roadmap
     assert "**Verify and release the completed v0.12.0 structural handoff.**" not in roadmap
     assert "**Verify and publish the completed v0.11.1 handoff.**" not in roadmap
     assert "final `BUILD_REPORT.md`" in fix_matrix
     assert "reviewer-authored `REVIEW_REPORT.md`" in fix_matrix
     assert "After reviewer approval, the only remaining gates" in fix_matrix
+
+
+def test_pending_v0140_roadmap_uses_latest_structured_published_record(tmp_path: Path) -> None:
+    _seed_truth_docs(
+        tmp_path,
+        version="0.14.0",
+        latest_published_version="0.13.1",
+    )
+
+    with (tmp_path / "pyproject.toml").open("rb") as handle:
+        package_version = tomllib.load(handle)["project"]["version"]
+    web_version = json.loads((tmp_path / "apps/web/package.json").read_text(encoding="utf-8"))["version"]
+    roadmap = (tmp_path / "ROADMAP.md").read_text(encoding="utf-8")
+
+    assert package_version == web_version == "0.14.0"
+    assert control_doc_truth._latest_structured_published_version(root_dir=tmp_path) == "0.13.1"
+    assert "`v0.13.1` is the latest published release" in roadmap
+    assert "`v0.14.0` is the latest published release" not in roadmap
+    assert control_doc_truth.run_control_doc_truth_check(root_dir=tmp_path) == []
+
+
+def test_published_v0140_roadmap_uses_new_structured_published_record(tmp_path: Path) -> None:
+    _seed_truth_docs(tmp_path, published=True, version="0.14.0")
+
+    roadmap = (tmp_path / "ROADMAP.md").read_text(encoding="utf-8")
+
+    assert control_doc_truth._latest_structured_published_version(root_dir=tmp_path) == "0.14.0"
+    assert "`v0.14.0` is the latest published release" in roadmap
+    assert control_doc_truth.run_control_doc_truth_check(root_dir=tmp_path) == []
+
+
+def test_published_v0140_rejects_wrong_roadmap_latest_version(tmp_path: Path) -> None:
+    _seed_truth_docs(tmp_path, published=True, version="0.14.0")
+    roadmap = tmp_path / "ROADMAP.md"
+    roadmap.write_text(
+        roadmap.read_text(encoding="utf-8").replace(
+            "`v0.14.0` is the latest published release",
+            "`v0.13.1` is the latest published release",
+        ),
+        encoding="utf-8",
+    )
+
+    issues = control_doc_truth.run_control_doc_truth_check(root_dir=tmp_path)
+
+    assert "ROADMAP.md: names v0.13.1 as latest published instead of v0.14.0" in issues
 
 
 def test_release_notes_pin_manual_only_publish_trigger_and_scheduler_once() -> None:
