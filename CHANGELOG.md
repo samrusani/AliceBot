@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## v0.14.0 — 2026-07-24
+
+- Single-tenant self-hosted deployment contract: hardened guide, mutual-TLS
+  Caddy example, environment contract, and a CI configuration smoke, exercised
+  end to end on a real public host with an owner deployment receipt (29 of 29
+  checks; sanitized, no infrastructure identifiers).
+- Least-privilege deployment path proven under a non-superuser,
+  non-BYPASSRLS admin role: RLS-safe local user seed helper shared by the
+  installer and the manual guide, forced-RLS-safe backup and restore
+  procedure, migration 0093 bracketed so it repairs rows without BYPASSRLS,
+  and a full-history ops CI lane that provisions distinct root, admin, app,
+  backup, and lifecycle roles.
+- Executed backup, destroy-restore, portable export and import, v0.12-to-
+  current upgrade, health, and monitoring evidence for both SQLite and
+  PostgreSQL 16, with sanitized receipts.
+- Short-lived, origin-bound, one-time browser-clip capability; raw value never
+  stored, not replayable, rejected cross-origin.
+- Five deployment-guide defects found by the first real-host execution fixed:
+  missing local-user provisioning, uncovered web env file dirtying the
+  carrier state, backup dump role unable to dump under forced row-level
+  security, restore drill failing on extension comments under least
+  privilege, and volatile tmpfs secret paths.
+- Security posture: automated security scanning and internal adversarial
+  review, findings triaged and fixed. Aggregate CodeQL alerts cleared without
+  suppressions. Not independently audited and not penetration tested.
+
 ## v0.13.1 — 2026-07-20
 
 (The v0.13.0 tag was never published; superseded by v0.13.1 — see the

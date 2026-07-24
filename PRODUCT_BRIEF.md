@@ -15,6 +15,9 @@ Agent developers — people building or operating AI agents who need durable, ex
 - Local-first: your data stays on your machine; models and embeddings are pluggable via OpenAI-compatible endpoints.
 
 ## Current Posture
+- The `v0.14.0` candidate (Phase 5 enterprise track: real-host single-tenant
+  deployment contract and least-privilege operations) is in release preparation.
+
 - `v0.13.1` is the latest published release and immutable baseline. It
   carries the Phase 4 core-roadmap work (replicated benchmark, SQLite
   scale, reference integrations). Its PyPI wheel and source distribution

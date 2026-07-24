@@ -2,6 +2,9 @@
 
 ## Snapshot
 
+- The `v0.14.0` candidate carries the Phase 5 enterprise-track work; its exact
+  scope is in the dated handoff packages and the pending release notes.
+
 - `v0.13.1` is the latest published release. It is available from PyPI and
   GitHub; exact artifact digests are in
   `docs/release/v0.13.1-checksums.txt`. It shipped the Phase 4
@@ -97,6 +100,16 @@ superseded by `v0.13.1` because stable tags are immutable.
 `v0.11.1` is the prior published release; its records remain at
 `docs/release/v0.11.1-release-notes.md` and
 `docs/release/v0.11.1-checksums.txt`.
+
+## What `v0.14.0` Targets
+
+The Phase 5 enterprise track: the single-tenant self-hosted deployment
+contract executed on a real public host with an owner deployment receipt,
+least-privilege operations proven under a non-superuser admin role, executed
+backup and restore evidence on both backends, the one-time origin-bound
+browser-clip capability, and the five deployment-guide fixes surfaced by the
+first real-host execution. Scope details are in the dated handoff packages and
+the pending `v0.14.0` release notes.
 
 ## What `v0.13.1` Shipped
 

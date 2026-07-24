@@ -191,9 +191,9 @@ def test_sprint4_versions_and_protected_scope_remain_at_base() -> None:
     # The carrier held versions at 0.12.0; the release engineer cut them to
     # 0.13.0 at release-prep time (phase 3 established this transition form).
     with (_ROOT / "pyproject.toml").open("rb") as handle:
-        assert tomllib.load(handle)["project"]["version"] == "0.13.1"
+        assert tomllib.load(handle)["project"]["version"] == "0.14.0"
     package = (_ROOT / "apps/web/package.json").read_text(encoding="utf-8")
-    assert re.search(r'"version"\s*:\s*"0\.13\.1"', package)
+    assert re.search(r'"version"\s*:\s*"0\.14\.0"', package)
     assert _git("rev-parse", f"{_BASE}^{{tree}}").stdout.decode().strip() == _BASE_TREE
 
     carrier = set(_CARRIER_PATHS)

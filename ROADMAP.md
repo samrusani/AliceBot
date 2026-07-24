@@ -2,6 +2,9 @@
 
 ## Baseline (Not Roadmap Work)
 
+- The `v0.14.0` candidate carries the Phase 5 enterprise-track work and is in
+  release preparation.
+
 - `v0.13.1` is the latest published release. Its immutable release record is
   `docs/release/v0.13.1-release-notes.md`, with artifact digests in
   `docs/release/v0.13.1-checksums.txt`. (The `v0.13.0` tag was never

@@ -141,6 +141,8 @@ search degrades to full-text only and says so explicitly in the retrieval trace.
 
 ## Status
 
+The `v0.14.0` candidate (Phase 5 enterprise track) is in release preparation.
+
 `v0.13.1` is the latest published release and remains the install, checksum,
 and release-note baseline (the `v0.13.0` tag was never published;
 superseded). Its tag, release record, and published artifacts
