@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -43,9 +44,7 @@ def _require_baseline_tag() -> None:
 
 def test_sqlite_operations_evidence_executes_full_physical_portable_and_upgrade_drill(tmp_path) -> None:
     _require_baseline_tag()
-    args = ops._build_parser().parse_args(
-        ["--backend", "sqlite", "--work-dir", str(tmp_path / "private")]
-    )
+    args = ops._build_parser().parse_args(["--backend", "sqlite", "--work-dir", str(tmp_path / "private")])
 
     report = ops.run_evidence(args)
 
@@ -61,14 +60,10 @@ def test_sqlite_operations_evidence_executes_full_physical_portable_and_upgrade_
     checks = report["checks"]
     assert checks["sqlite_physical_backup_restore"]["destroy_restore"] == "proved"
     assert checks["sqlite_physical_backup_restore"]["embedding_signature"] == "current"
-    assert checks["portable_export_import"]["fidelity"] == (
-        "canonical_digest_and_counts_match"
-    )
+    assert checks["portable_export_import"]["fidelity"] == ("canonical_digest_and_counts_match")
     assert checks["portable_export_import"]["embeddings"] == "omitted_by_contract"
     assert checks["sqlite_v0_12_upgrade"]["source_method"] == "git_archive_no_checkout"
-    assert checks["sqlite_v0_12_upgrade"]["embedding_stamp"] == (
-        "one_nonempty_stable_row"
-    )
+    assert checks["sqlite_v0_12_upgrade"]["embedding_stamp"] == ("one_nonempty_stable_row")
     serialized = json.dumps(report, sort_keys=True)
     assert ops.SEED_QUERY not in serialized
     assert str(tmp_path) not in serialized
@@ -117,10 +112,7 @@ def test_carrier_identity_binds_tracked_and_untracked_changes_without_following_
     assert tracked_deletion["source_head_tree"] == clean["source_head_tree"]
     assert tracked_deletion["carrier_state"] == "dirty"
     assert tracked_deletion["carrier_snapshot_sha256"] != clean["carrier_snapshot_sha256"]
-    assert (
-        tracked_deletion["carrier_snapshot_sha256"]
-        != tracked_change["carrier_snapshot_sha256"]
-    )
+    assert tracked_deletion["carrier_snapshot_sha256"] != tracked_change["carrier_snapshot_sha256"]
 
     tracked.write_text("original\n", encoding="utf-8")
     untracked = repo / "new-evidence.txt"
@@ -220,11 +212,11 @@ def test_sanitized_report_guard_rejects_credentials_paths_and_seed_content(paylo
 def test_postgres_cli_environment_keeps_credentials_out_of_command_arguments() -> None:
     dsn = (
         "postgresql://alicebot_admin:s3cret@db.example.invalid:5544/alice"
-        "?sslmode=verify-full&sslrootcert=%2Frun%2Fsecrets%2Falicebot%2Fpostgres-ca.pem"
+        "?sslmode=verify-full&sslrootcert=%2Fetc%2Falicebot%2Fpostgres-ca.pem"
     )
 
     env = ops._libpq_env(dsn)
-    command = ["pg_dump", "--format=custom", "--file=alice.dump"]
+    command = ["pg_dump", "--format=custom", "--no-comments", "--file=alice.dump"]
 
     assert env["PGHOST"] == "db.example.invalid"
     assert env["PGPORT"] == "5544"
@@ -232,8 +224,91 @@ def test_postgres_cli_environment_keeps_credentials_out_of_command_arguments() -
     assert env["PGPASSWORD"] == "s3cret"
     assert env["PGDATABASE"] == "alice"
     assert env["PGSSLMODE"] == "verify-full"
-    assert env["PGSSLROOTCERT"] == "/run/secrets/alicebot/postgres-ca.pem"
+    assert env["PGSSLROOTCERT"] == "/etc/alicebot/postgres-ca.pem"
     assert all("s3cret" not in argument and "postgresql://" not in argument for argument in command)
+
+
+def test_restore_list_excludes_only_public_schema_acl_and_is_private(tmp_path) -> None:
+    listing = (
+        ";\n"
+        "; Archive created by pg_dump\n"
+        "10; 0 0 ACL - SCHEMA public alicebot_drill\n"
+        "11; 0 0 ACL public TABLE users alicebot_admin\n"
+        "12; 0 0 ACL public SEQUENCE events_id_seq alicebot_admin\n"
+        "13; 0 0 ACL - SCHEMA app alicebot_admin\n"
+    )
+    restore_list = tmp_path / "postgres.restore.list"
+
+    ops._write_restore_list(listing, restore_list)
+
+    written = restore_list.read_text(encoding="utf-8")
+    assert "ACL - SCHEMA public" not in written
+    assert "ACL public TABLE users" in written
+    assert "ACL public SEQUENCE events_id_seq" in written
+    assert "ACL - SCHEMA app" in written
+    assert stat.S_IMODE(restore_list.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        "10; 0 0 ACL public TABLE users alicebot_admin\n",
+        ("10; 0 0 ACL - SCHEMA public alicebot_drill\n11; 0 0 ACL - SCHEMA public alicebot_admin\n"),
+    ],
+)
+def test_restore_list_fails_closed_when_public_schema_acl_is_absent_or_ambiguous(
+    tmp_path,
+    listing,
+) -> None:
+    restore_list = tmp_path / "postgres.restore.list"
+
+    with pytest.raises(ops.EvidenceError) as raised:
+        ops._write_restore_list(listing, restore_list)
+
+    assert raised.value.codes == ("postgres_public_schema_acl_toc_invalid",)
+    assert not restore_list.exists()
+
+
+def test_failed_binary_subprocess_emits_bounded_scrubbed_stderr_only(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    secret = "diagnostic-password"
+    raw_stderr = (
+        "pg_restore: error: must be owner of extension pgcrypto\n"
+        f"dsn=postgresql://alicebot_admin:{secret}@db.example.invalid/alice\n"
+        f"seed={ops.SEED_QUERY}\n" + ("x" * (ops._DIAGNOSTIC_LIMIT * 2))
+    ).encode()
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["pg_restore"],
+            1,
+            b"",
+            raw_stderr,
+        ),
+    )
+
+    with pytest.raises(ops.EvidenceError) as raised:
+        ops._run(
+            ["pg_restore"],
+            code="postgres_restore_failed",
+            env={"PGPASSWORD": secret},
+            stdout_file=tmp_path / "restore-output",
+        )
+
+    captured = capsys.readouterr()
+    assert raised.value.codes == ("postgres_restore_failed",)
+    assert captured.out == ""
+    assert "phase5_ops_evidence[postgres_restore_failed] subprocess stderr:" in captured.err
+    assert "must be owner of extension pgcrypto" in captured.err
+    assert "[stderr truncated]" in captured.err
+    assert secret not in captured.err
+    assert ops.SEED_QUERY not in captured.err
+    assert "postgresql://alicebot_admin:" not in captured.err
+    assert len(captured.err) < ops._DIAGNOSTIC_LIMIT + 512
 
 
 def test_v0_12_rating_seed_sets_deterministic_timestamps_at_insert_only() -> None:
@@ -244,6 +319,8 @@ def test_v0_12_rating_seed_sets_deterministic_timestamps_at_insert_only() -> Non
     assert "created_at," in source
     assert '"2020-01-01T00:00:00Z"' in source
     assert '"2021-01-01T00:00:00Z"' in source
+    assert source.count("direct_user_connection(admin_database_url, USER_ID)") == 2
+    assert "psycopg.connect(admin_database_url)" not in source
 
 
 def test_postgres_count_probe_uses_named_dict_row_shape() -> None:
@@ -315,6 +392,178 @@ def test_postgres_server_version_probe_rejects_malformed_output(monkeypatch) -> 
         ops._postgres_server_major("postgresql://db.example.invalid/alice")
 
     assert raised.value.codes == ("postgres_server_version_invalid",)
+
+
+@pytest.mark.parametrize(
+    ("row", "expected_createdb", "expected_bypassrls", "should_pass"),
+    [
+        (("alicebot_admin", False, False, False, False), False, False, True),
+        (("alicebot_admin", True, False, False, False), False, False, False),
+        (("alicebot_admin", False, True, False, False), False, False, False),
+        (("alicebot_backup", False, False, False, True), False, True, True),
+        (("alicebot_backup", False, False, False, False), False, True, False),
+        (("alicebot_drill", False, True, False, False), True, False, True),
+    ],
+)
+def test_postgres_role_posture_probe_enforces_operational_privilege_boundaries(
+    monkeypatch,
+    row,
+    expected_createdb,
+    expected_bypassrls,
+    should_pass,
+) -> None:
+    class FakeResult:
+        def fetchone(self):
+            return row
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def execute(self, _query):
+            return FakeResult()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "psycopg",
+        SimpleNamespace(connect=lambda _url: FakeConnection()),
+    )
+    role = str(row[0])
+    if should_pass:
+        ops._validate_postgres_role_posture(
+            f"postgresql://{role}@db.example.invalid/alice",
+            expected_role=role,
+            expected_createdb=expected_createdb,
+            expected_bypassrls=expected_bypassrls,
+            code="postgres_role_posture_invalid",
+        )
+    else:
+        with pytest.raises(ops.EvidenceError) as raised:
+            ops._validate_postgres_role_posture(
+                f"postgresql://{role}@db.example.invalid/alice",
+                expected_role=role,
+                expected_createdb=expected_createdb,
+                expected_bypassrls=expected_bypassrls,
+                code="postgres_role_posture_invalid",
+            )
+        assert raised.value.codes == ("postgres_role_posture_invalid",)
+
+
+@pytest.mark.parametrize(
+    ("row", "should_pass"),
+    [
+        ((True, True, True, True), True),
+        ((False, True, True, True), False),
+        ((True, False, True, True), False),
+        ((True, True, False, True), False),
+        ((True, True, True, False), False),
+    ],
+)
+def test_post_restore_role_probe_requires_app_and_backup_schema_table_access(
+    monkeypatch,
+    row,
+    should_pass,
+) -> None:
+    class FakeResult:
+        def fetchone(self):
+            return row
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def execute(self, query, parameters):
+            assert "aclexplode" in query
+            assert "has_table_privilege" in query
+            assert parameters == (
+                "alicebot_app",
+                "alicebot_app",
+                "alicebot_backup",
+                "alicebot_backup",
+            )
+            return FakeResult()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "psycopg",
+        SimpleNamespace(connect=lambda _url: FakeConnection()),
+    )
+    if should_pass:
+        ops._verify_restored_role_access(
+            "postgresql://alicebot_admin@db.example.invalid/alice",
+            app_role="alicebot_app",
+            backup_role="alicebot_backup",
+        )
+    else:
+        with pytest.raises(ops.EvidenceError) as raised:
+            ops._verify_restored_role_access(
+                "postgresql://alicebot_admin@db.example.invalid/alice",
+                app_role="alicebot_app",
+                backup_role="alicebot_backup",
+            )
+        assert raised.value.codes == ("postgres_restored_role_privileges_invalid",)
+
+
+def test_lifecycle_database_creation_reconstructs_explicit_public_schema_grants(
+    monkeypatch,
+) -> None:
+    statements: list[str] = []
+    connections: list[str] = []
+
+    class FakeSQL:
+        def __init__(self, value):
+            self.value = value
+
+        def format(self, *values):
+            return self.value.format(*values)
+
+    class FakeConnection:
+        def __init__(self, url):
+            self.url = url
+
+        def __enter__(self):
+            connections.append(self.url)
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def execute(self, query):
+            statements.append(str(query))
+
+    fake_sql = SimpleNamespace(
+        SQL=FakeSQL,
+        Identifier=lambda value: value,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "psycopg",
+        SimpleNamespace(
+            connect=lambda url, **_kwargs: FakeConnection(url),
+            sql=fake_sql,
+        ),
+    )
+
+    ops._create_database(
+        "postgresql://alicebot_drill@db.example.invalid/postgres",
+        "alice_phase5_ops_test",
+        admin_role="alicebot_admin",
+        app_role="alicebot_app",
+        backup_role="alicebot_backup",
+    )
+
+    assert connections == [
+        "postgresql://alicebot_drill@db.example.invalid/postgres",
+        "postgresql://alicebot_drill@db.example.invalid/alice_phase5_ops_test",
+    ]
+    assert "GRANT USAGE, CREATE ON SCHEMA public TO alicebot_admin WITH GRANT OPTION" in statements
+    assert "GRANT USAGE ON SCHEMA public TO alicebot_app, alicebot_backup" in statements
 
 
 @pytest.mark.parametrize(
@@ -397,6 +646,18 @@ def _mock_successful_postgres_drill(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(ops, "_require_tool", lambda name: name)
     monkeypatch.setattr(ops, "_extract_baseline", lambda _work_dir: tmp_path / "baseline")
     monkeypatch.setattr(ops, "_create_database", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ops, "_drop_database", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ops, "_grant_backup_access", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        ops,
+        "_verify_restored_role_access",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        ops,
+        "_validate_postgres_role_posture",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(ops, "_seed_postgres_baseline", lambda **_kwargs: None)
     monkeypatch.setattr(ops, "_dynamic_alembic_head", lambda: "current_head")
     monkeypatch.setattr(ops, "_migrate_postgres", lambda *_args, **_kwargs: None)
@@ -410,10 +671,13 @@ def _mock_successful_postgres_drill(monkeypatch, tmp_path) -> None:
             "embedding_signature": "current",
         },
     )
+
     def fake_run(command, **_kwargs):
         output = ""
         if command[-1] == "--version":
             output = f"{Path(command[0]).name} (PostgreSQL) 16.13"
+        elif "--list" in command:
+            output = "10; 0 0 ACL - SCHEMA public alicebot_drill\n11; 0 0 ACL public TABLE users alicebot_admin\n"
         return subprocess.CompletedProcess(command, 0, output, "")
 
     monkeypatch.setattr(ops, "_run", fake_run)
@@ -446,9 +710,114 @@ def _run_mocked_postgres_evidence(tmp_path, capsys) -> tuple[int, dict[str, obje
             "postgresql://alicebot_admin:admin@db.example.invalid/postgres",
             "--database-url",
             "postgresql://alicebot_app:app@db.example.invalid/postgres",
+            "--database-backup-url",
+            "postgresql://alicebot_backup:backup@db.example.invalid/postgres",
+            "--database-lifecycle-url",
+            "postgresql://alicebot_drill:drill@db.example.invalid/postgres",
         ]
     )
     return exit_code, json.loads(capsys.readouterr().out)
+
+
+def test_postgres_drill_dumps_as_backup_and_restores_as_admin(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _mock_successful_postgres_drill(monkeypatch, tmp_path)
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def record_run(command, **kwargs):
+        env = dict(kwargs.get("env") or {})
+        calls.append((list(command), env))
+        output = ""
+        if command[-1] == "--version":
+            output = f"{Path(command[0]).name} (PostgreSQL) 16.13"
+        elif "--list" in command:
+            output = "10; 0 0 ACL - SCHEMA public alicebot_drill\n11; 0 0 ACL public TABLE users alicebot_admin\n"
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(ops, "_run", record_run)
+
+    result = ops._postgres_drill(
+        tmp_path,
+        baseline=tmp_path / "baseline",
+        root_lifecycle_url=("postgresql://alicebot_drill:drill@db.example.invalid/postgres"),
+        root_admin_url=("postgresql://alicebot_admin:admin@db.example.invalid/postgres"),
+        root_app_url=("postgresql://alicebot_app:app@db.example.invalid/postgres"),
+        root_backup_url=("postgresql://alicebot_backup:backup@db.example.invalid/postgres"),
+    )
+
+    dump_calls = [(command, env) for command, env in calls if command[0] == "pg_dump" and "--version" not in command]
+    restore_calls = [
+        (command, env)
+        for command, env in calls
+        if command[0] == "pg_restore" and "--list" not in command and "--version" not in command
+    ]
+    assert len(dump_calls) == 1
+    assert dump_calls[0][0] == ["pg_dump", "--format=custom", "--no-comments"]
+    assert dump_calls[0][1]["PGUSER"] == "alicebot_backup"
+    assert len(restore_calls) == 1
+    assert "--no-owner" in restore_calls[0][0]
+    assert "--no-comments" in restore_calls[0][0]
+    assert any(argument.startswith("--use-list=") for argument in restore_calls[0][0])
+    assert "--no-acl" not in restore_calls[0][0]
+    assert restore_calls[0][1]["PGUSER"] == "alicebot_admin"
+    assert result["status"] == "passed"
+
+
+def test_migration_0093_uniqueness_probe_uses_nested_savepoint_not_outer_rollback() -> None:
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+    function = source[
+        source.index("def _verify_migration_0093(") : source.index(
+            "\ndef _seed_postgres_baseline(", source.index("def _verify_migration_0093(")
+        )
+    ]
+
+    assert "with direct_user_connection(admin_url, USER_ID) as conn:" in function
+    assert "with conn.transaction():" in function
+    assert "conn.rollback()" not in function
+
+
+@pytest.mark.parametrize(
+    ("overrides", "failure_code"),
+    [
+        (
+            {"root_admin_url": "postgresql://postgres@db.example.invalid/postgres"},
+            "postgres_admin_role_must_be_alicebot_admin",
+        ),
+        (
+            {"root_backup_url": ("postgresql://alicebot_admin@db.example.invalid/postgres")},
+            "postgres_backup_role_must_be_alicebot_backup",
+        ),
+        (
+            {"root_lifecycle_url": ("postgresql://alicebot_admin@db.example.invalid/postgres")},
+            "postgres_lifecycle_role_must_be_alicebot_drill",
+        ),
+    ],
+)
+def test_postgres_drill_rejects_wrong_or_reused_operational_roles(
+    monkeypatch,
+    tmp_path,
+    overrides,
+    failure_code,
+) -> None:
+    _mock_successful_postgres_drill(monkeypatch, tmp_path)
+    arguments = {
+        "root_lifecycle_url": ("postgresql://alicebot_drill@db.example.invalid/postgres"),
+        "root_admin_url": ("postgresql://alicebot_admin@db.example.invalid/postgres"),
+        "root_app_url": "postgresql://alicebot_app@db.example.invalid/postgres",
+        "root_backup_url": ("postgresql://alicebot_backup@db.example.invalid/postgres"),
+    }
+    arguments.update(overrides)
+
+    with pytest.raises(ops.EvidenceError) as raised:
+        ops._postgres_drill(
+            tmp_path,
+            baseline=tmp_path / "baseline",
+            **arguments,
+        )
+
+    assert raised.value.codes == (failure_code,)
 
 
 def test_postgres_toolchain_mismatch_fails_before_disposable_database_creation(
@@ -527,17 +896,40 @@ def test_postgres_create_grant_and_cleanup_failures_are_both_reported(
 
 @pytest.mark.parametrize("backend", ["postgres", "all"])
 @pytest.mark.parametrize(
-    ("admin_url", "app_url"),
+    ("lifecycle_url", "admin_url", "app_url", "backup_url"),
     [
-        ("", ""),
-        ("postgresql://alicebot_admin@example.invalid/alice", ""),
-        ("", "postgresql://alicebot_app@example.invalid/alice"),
+        (
+            "",
+            "postgresql://alicebot_admin@example.invalid/alice",
+            "postgresql://alicebot_app@example.invalid/alice",
+            "postgresql://alicebot_backup@example.invalid/alice",
+        ),
+        (
+            "postgresql://alicebot_drill@example.invalid/alice",
+            "",
+            "postgresql://alicebot_app@example.invalid/alice",
+            "postgresql://alicebot_backup@example.invalid/alice",
+        ),
+        (
+            "postgresql://alicebot_drill@example.invalid/alice",
+            "postgresql://alicebot_admin@example.invalid/alice",
+            "",
+            "postgresql://alicebot_backup@example.invalid/alice",
+        ),
+        (
+            "postgresql://alicebot_drill@example.invalid/alice",
+            "postgresql://alicebot_admin@example.invalid/alice",
+            "postgresql://alicebot_app@example.invalid/alice",
+            "",
+        ),
     ],
 )
-def test_postgres_mode_fails_closed_without_both_role_separated_urls(
+def test_postgres_mode_fails_closed_without_all_role_separated_urls(
     backend,
+    lifecycle_url,
     admin_url,
     app_url,
+    backup_url,
     monkeypatch,
     tmp_path,
     capsys,
@@ -559,6 +951,10 @@ def test_postgres_mode_fails_closed_without_both_role_separated_urls(
             admin_url,
             "--database-url",
             app_url,
+            "--database-backup-url",
+            backup_url,
+            "--database-lifecycle-url",
+            lifecycle_url,
             "--output",
             str(output),
         ]
@@ -582,44 +978,25 @@ def test_ops_workflow_has_required_triggers_full_history_and_atomic_pins() -> No
     assert "fetch-depth: 0" in workflow
     assert "postgresql-client-16" in workflow
     assert 'echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"' in workflow
-    assert (
-        "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7" in workflow
-    )
-    assert (
-        "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6" in workflow
-    )
-    assert (
-        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7"
-        in workflow
-    )
-    assert (
-        "pgvector/pgvector:pg16@sha256:"
-        "1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb"
-        in workflow
-    )
+    assert "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7" in workflow
+    assert "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6" in workflow
+    assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7" in workflow
+    assert "pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb" in workflow
     assert "scripts/run_phase5_ops_evidence.py" in workflow
     assert "--backend all" in workflow
 
 
 def test_ops_docs_name_executed_commands_and_honest_boundaries() -> None:
-    disaster = (ROOT / "docs" / "runbooks" / "disaster-recovery.md").read_text(
-        encoding="utf-8"
-    )
-    monitoring = (ROOT / "docs" / "runbooks" / "health-and-monitoring.md").read_text(
-        encoding="utf-8"
-    )
-    upgrade = (ROOT / "docs" / "runbooks" / "upgrade-v0.12-to-current.md").read_text(
-        encoding="utf-8"
-    )
-    backup = (ROOT / "docs" / "alpha" / "backup-and-restore.md").read_text(
-        encoding="utf-8"
-    )
+    disaster = (ROOT / "docs" / "runbooks" / "disaster-recovery.md").read_text(encoding="utf-8")
+    monitoring = (ROOT / "docs" / "runbooks" / "health-and-monitoring.md").read_text(encoding="utf-8")
+    upgrade = (ROOT / "docs" / "runbooks" / "upgrade-v0.12-to-current.md").read_text(encoding="utf-8")
+    backup = (ROOT / "docs" / "alpha" / "backup-and-restore.md").read_text(encoding="utf-8")
 
     assert "run_phase5_ops_evidence.py --backend all" in disaster
     assert "wal_checkpoint(TRUNCATE)" in disaster
     assert "pg_dump" in disaster and "pg_restore" in disaster
     assert "postgres_cleanup_failed" in disaster
-    assert "PGSSLROOTCERT=/run/secrets/alicebot/postgres-ca.pem" in disaster
+    assert "PGSSLROOTCERT=/etc/alicebot/postgres-ca.pem" in disaster
     assert "PostgreSQL 16 `pg_dump`" in disaster
     assert "validates all three major versions" in disaster
     assert "not_checked" in monitoring

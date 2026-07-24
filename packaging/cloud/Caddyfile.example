@@ -14,7 +14,7 @@ alice.example.com {
 		# client certificate per authorized browser or agent at this path.
 		client_auth {
 			mode require_and_verify
-			trust_pool file /run/secrets/alicebot/client-ca.pem
+			trust_pool file /etc/alicebot/client-ca.pem
 		}
 	}
 

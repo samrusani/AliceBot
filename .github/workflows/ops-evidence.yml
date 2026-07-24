@@ -19,19 +19,20 @@ jobs:
       postgres:
         image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
         env:
-          POSTGRES_USER: alicebot_admin
-          POSTGRES_PASSWORD: ci
-          POSTGRES_DB: alicebot
+          POSTGRES_USER: alicebot_root
+          POSTGRES_PASSWORD: ci-root
+          POSTGRES_DB: postgres
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U alicebot_admin -d alicebot"
+          --health-cmd "pg_isready -U alicebot_root -d postgres"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
     env:
-      DATABASE_ADMIN_URL: postgresql://alicebot_admin:ci@localhost:5432/alicebot
-      DATABASE_URL: postgresql://alicebot_app:ci@localhost:5432/alicebot
+      DATABASE_ADMIN_URL: postgresql://alicebot_admin:ci-admin@localhost:5432/alicebot
+      DATABASE_URL: postgresql://alicebot_app:ci-app@localhost:5432/alicebot
+      DATABASE_BACKUP_URL: postgresql://alicebot_backup:ci-backup@localhost:5432/alicebot
     steps:
       - name: Checkout full history
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -57,24 +58,105 @@ jobs:
           python -m venv .venv
           ./.venv/bin/python -m pip install -e '.[dev]'
 
-      - name: Bootstrap the role-separated application role
+      - name: Bootstrap extensions and least-privilege roles
         env:
           PGHOST: localhost
-          PGPASSWORD: ci
-          POSTGRES_USER: alicebot_admin
-          POSTGRES_DB: alicebot
-          ALICEBOT_APP_USER: alicebot_app
-          ALICEBOT_APP_PASSWORD: ci
-        run: infra/postgres/init/001_roles.sh
+          PGUSER: alicebot_root
+          PGPASSWORD: ci-root
+        run: |
+          psql --dbname template1 --set ON_ERROR_STOP=1 <<'SQL'
+          CREATE EXTENSION IF NOT EXISTS pgcrypto;
+          CREATE EXTENSION IF NOT EXISTS vector;
+          SQL
+
+          psql --dbname postgres --set ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE alicebot_admin
+            LOGIN PASSWORD 'ci-admin'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+          CREATE ROLE alicebot_app
+            LOGIN PASSWORD 'ci-app'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+          CREATE ROLE alicebot_backup
+            LOGIN PASSWORD 'ci-backup'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS;
+          CREATE ROLE alicebot_drill
+            LOGIN PASSWORD 'ci-drill'
+            NOSUPERUSER CREATEDB NOCREATEROLE NOBYPASSRLS;
+          SQL
+
+          psql --dbname postgres --set ON_ERROR_STOP=1 \
+            --command "CREATE DATABASE alicebot OWNER alicebot_admin TEMPLATE template1"
+          psql --dbname alicebot --set ON_ERROR_STOP=1 \
+            --command "GRANT CONNECT ON DATABASE alicebot TO alicebot_app, alicebot_backup"
+
+          test "$(
+            psql --dbname postgres --tuples-only --no-align --command "
+              SELECT rolname, rolsuper, rolcreatedb, rolcreaterole, rolbypassrls
+              FROM pg_roles
+              WHERE rolname IN (
+                'alicebot_admin',
+                'alicebot_app',
+                'alicebot_backup',
+                'alicebot_drill'
+              )
+              ORDER BY rolname
+            "
+          )" = "alicebot_admin|f|f|f|f
+          alicebot_app|f|f|f|f
+          alicebot_backup|f|f|f|t
+          alicebot_drill|f|t|f|f"
+          test "$(
+            psql --dbname postgres --tuples-only --no-align --command "
+              SELECT rolsuper
+              FROM pg_roles
+              WHERE rolname = 'alicebot_root'
+            "
+          )" = "t"
+          test "$(
+            psql --dbname template1 --tuples-only --no-align --command "
+              SELECT string_agg(extname, ',' ORDER BY extname)
+              FROM pg_extension
+              WHERE extname IN ('pgcrypto', 'vector')
+            "
+          )" = "pgcrypto,vector"
+          test "$(
+            psql --dbname alicebot --tuples-only --no-align --command "
+              SELECT string_agg(extname, ',' ORDER BY extname)
+              FROM pg_extension
+              WHERE extname IN ('pgcrypto', 'vector')
+            "
+          )" = "pgcrypto,vector"
 
       - name: Run evidence contract tests
         run: >-
           ./.venv/bin/python -m pytest
           tests/unit/test_phase5_ops_evidence.py
+          tests/unit/test_least_privilege_deployment_workflow.py
           tests/unit/test_phase5_enterprise_handoff_truth.py
+          tests/unit/test_v0140_deployment_guide_fixes_handoff_truth.py
           -q -p no:cacheprovider
 
-      - name: Execute both backend drills
+      - name: Migrate the deployment database as the non-superuser admin
+        run: ./scripts/migrate.sh
+
+      - name: Prove empty-user seed and workspace bootstrap
+        env:
+          ALICEBOT_LEAST_PRIVILEGE_DEPLOYMENT: "1"
+        run: >-
+          ./.venv/bin/python -m pytest
+          tests/integration/test_local_workspace_bootstrap_api.py::test_documented_empty_users_seed_then_workspace_bootstrap_under_least_privilege_roles
+          -q -p no:cacheprovider --require-executed-tests
+
+      - name: Emit the deployment configuration contract
+        run: |
+          mkdir -p artifacts/phase5
+          ./.venv/bin/python scripts/run_single_tenant_deployment_smoke.py \
+            --environment ephemeral_ci \
+            --output artifacts/phase5/single-tenant-deployment-smoke.json
+
+      - name: Execute both backend drills with the dedicated backup role
+        env:
+          DATABASE_LIFECYCLE_URL: postgresql://alicebot_drill:ci-drill@localhost:5432/postgres
         run: |
           mkdir -p artifacts/phase5
           ./.venv/bin/python scripts/run_phase5_ops_evidence.py \
@@ -87,6 +169,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: phase5-ops-evidence
-          path: artifacts/phase5/ops-evidence.json
+          path: |
+            artifacts/phase5/ops-evidence.json
+            artifacts/phase5/single-tenant-deployment-smoke.json
           if-no-files-found: error
           retention-days: 14

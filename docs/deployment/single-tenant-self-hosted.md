@@ -17,7 +17,8 @@ This guide covers:
 - Caddy as the only public process, terminating public TLS, requiring a valid
   operator client certificate, and proxying to the two loopback services;
 - PostgreSQL 16 with pgvector 0.8 or newer over certificate-verified TLS;
-- separate `alicebot_admin` migration and `alicebot_app` runtime roles;
+- separate `alicebot_admin` migration, `alicebot_app` runtime,
+  `alicebot_backup` read-only dump, and `alicebot_drill` lifecycle roles;
 - deployment-time environment/secret injection, scheduled encrypted backups,
   restore drills, and conservative upgrades.
 
@@ -86,7 +87,13 @@ reference assets use host processes and no container image. If an operator
 translates them to containers, every image must use an immutable
 `@sha256:<digest>` reference; a floating tag is not equivalent evidence.
 
+The reference unit names both the service account and its primary group
+`alicebot`. Provision that named non-root account and group through the host's
+configuration-management layer before installing files, then verify them:
+
 ```bash
+id alicebot
+getent group alicebot
 git clone https://github.com/samrusani/AliceBot.git /opt/alicebot
 cd /opt/alicebot
 git fetch --tags --force
@@ -112,24 +119,50 @@ Start from
 [`packaging/cloud/single-tenant.env.example`](../../packaging/cloud/single-tenant.env.example).
 It is a template, not a usable environment file. A deployment system or secret
 manager must replace `${ALICEBOT_DB_APP_PASSWORD}` while rendering an
-owner-only API runtime file. Do not ask systemd `EnvironmentFile=` to expand
-it; it does not perform shell interpolation. Install the PostgreSQL CA bundle
-separately at `/run/secrets/alicebot/postgres-ca.pem` and make both artifacts
-readable only by the Alice service account.
+API runtime file at `/etc/alicebot/runtime.env`. Do not ask systemd
+`EnvironmentFile=` to expand it; it does not perform shell interpolation.
+Keep host configuration on persistent storage rather than `/run`, which is
+normally cleared at reboot. A reference host prepares it as follows:
 
-Migration and recovery automation must render the separate admin DSN below
-directly into the one-shot process environment. This is a shape contract, not
-a usable credential:
-
-```dotenv
-DATABASE_ADMIN_URL="postgresql://alicebot_admin:${ALICEBOT_DB_ADMIN_PASSWORD}@db.alice.internal:5432/alicebot?sslmode=verify-full&sslrootcert=/run/secrets/alicebot/postgres-ca.pem"
+```bash
+sudo install -d -o root -g root -m 0755 /etc/alicebot
+sudo install -o root -g alicebot -m 0640 "$RENDERED_RUNTIME_ENV" \
+  /etc/alicebot/runtime.env
+sudo install -o root -g alicebot -m 0640 "$RENDERED_RECOVERY_ENV" \
+  /etc/alicebot/backup-restore.env
+sudo install -o root -g root -m 0644 "$POSTGRES_CA_BUNDLE" \
+  /etc/alicebot/postgres-ca.pem
+sudo install -o root -g root -m 0644 "$CLIENT_CA_CERTIFICATE" \
+  /etc/alicebot/client-ca.pem
 ```
 
-The runtime and admin examples deliberately name the same normalized
-host, port, database, TLS mode, and CA while using distinct roles and passwords.
+The two environment files contain credentials and are readable only by root
+and the Alice service group. Persisting them makes host storage encryption,
+backups, access control, and rotation operator responsibilities. The CA
+certificates are public trust anchors, not private keys, but root ownership
+protects their integrity. Never store a CA private key or a client private key
+in `/etc/alicebot`.
+
+Migration and recovery automation must render the separate privileged DSNs
+below directly into the appropriate one-shot process environments. These are
+shape contracts, not usable credentials:
+
+```dotenv
+DATABASE_ADMIN_URL="postgresql://alicebot_admin:${ALICEBOT_DB_ADMIN_PASSWORD}@db.alice.internal:5432/alicebot?sslmode=verify-full&sslrootcert=/etc/alicebot/postgres-ca.pem"
+DATABASE_BACKUP_URL="postgresql://alicebot_backup:${ALICEBOT_DB_BACKUP_PASSWORD}@db.alice.internal:5432/alicebot?sslmode=verify-full&sslrootcert=/etc/alicebot/postgres-ca.pem"
+DATABASE_LIFECYCLE_URL="postgresql://alicebot_drill:${ALICEBOT_DB_DRILL_PASSWORD}@db.alice.internal:5432/postgres?sslmode=verify-full&sslrootcert=/etc/alicebot/postgres-ca.pem"
+```
+
+The runtime, admin, backup, and lifecycle examples deliberately name the same
+normalized host, port, TLS mode, and CA while using distinct roles and
+passwords. Runtime, admin, and backup name the `alicebot` database; lifecycle
+names the `postgres` maintenance database.
 DATABASE_ADMIN_URL is required for migrations, but it is not a production API
 startup requirement. DATABASE_ADMIN_URL is absent from the API runtime
 environment and must not be copied into its supervisor unit.
+DATABASE_BACKUP_URL and DATABASE_LIFECYCLE_URL are restricted to external
+backup and recovery jobs and must not be copied into the API runtime
+environment.
 
 Before substitution, **percent-encode each database password as URL userinfo**
 (RFC 3986), or generate it exclusively from the URL-safe unreserved alphabet
@@ -147,17 +180,18 @@ Required invariants:
 - no wildcard CORS and `CORS_ALLOW_CREDENTIALS=false`;
 - `TRUST_PROXY_HEADERS=true` with the exact trusted peer
   `TRUSTED_PROXY_IPS=127.0.0.1`;
-- unique runtime and migration database passwords injected into their
-  respective process environments at deploy time, never committed;
-- `sslmode=verify-full` and the same absolute `sslrootcert` path in both the
-  runtime and migration URLs;
+- unique runtime, migration, backup, and lifecycle database passwords injected
+  into their respective process environments at deploy time, never committed;
+- `sslmode=verify-full` and the same absolute `sslrootcert` path in the
+  runtime, migration, backup, and lifecycle URLs;
 - the same stable user UUID in `ALICEBOT_AUTH_USER_ID` and
   `NEXT_PUBLIC_ALICEBOT_USER_ID`.
 
-Migration commands consume their one-shot `DATABASE_ADMIN_URL`; application
-queries consume the runtime `DATABASE_URL`. The API must always run through
-`alicebot_app`, and its service environment must never contain the admin DSN.
-Restrict access to both separately rendered environments.
+Migration commands consume their one-shot `DATABASE_ADMIN_URL`; backup and
+drill lifecycle commands consume their own one-shot URLs; application queries
+consume the runtime `DATABASE_URL`. The API must always run through
+`alicebot_app`, and its service environment must never contain any privileged
+DSN. Restrict access to the separately rendered environments.
 
 Connector and model credentials are separate secret-manager injections. For
 the surviving Telegram connector, inject `TELEGRAM_BOT_TOKEN` into the service
@@ -172,15 +206,24 @@ Do not commit a raw connector token or put provider API keys in
 `WORKSPACE_PROVIDER_CONFIGS_JSON`. The `env:TELEGRAM_BOT_TOKEN` value is an
 identifier; the environment value it resolves is the secret.
 
-`NEXT_PUBLIC_*` values are build-time public configuration. Render a separate
-`apps/web/.env.production.local` containing the public API origin, user UUID,
-and the same server-only `PUBLIC_ORIGIN`, then build. The web supervisor must
-also inject `PUBLIC_ORIGIN` at runtime. Rebuild the web app whenever any of
-those values changes:
+`NEXT_PUBLIC_*` values are build-time public configuration. Before every
+build, atomically re-render a mode `0600`
+`apps/web/.env.production.local` containing only the public API origin, user
+UUID, and the same server-only `PUBLIC_ORIGIN`. Never put database credentials,
+provider keys, connector tokens, or other secrets in this file. It is
+intentionally Git-ignored deployment-local input and may remain in place for
+reproducible rebuilds. The web supervisor must also inject `PUBLIC_ORIGIN` at
+runtime. Rebuild the web app whenever any of those values changes:
 
 ```bash
+git check-ignore -v apps/web/.env.production.local
 pnpm --dir apps/web build
 ```
+
+The ignored file and the ignored `.next` output are excluded from the Git
+carrier/source identity. That identity proves the source carrier, not the
+rendered deployment configuration or built web artifact. The deployment
+receipt and external probes prove the configured public deployment separately.
 
 In this hardened topology, **/vnext is the only live authenticated browser console**.
 Its client-side workspace accepts the browser-memory operator key,
@@ -196,10 +239,97 @@ client-side refactor and is out of scope for this guide.
 
 ## 3. Prepare and verify PostgreSQL
 
-Provision PostgreSQL 16 and install pgvector 0.8 or newer. Create distinct
-login roles named exactly `alicebot_admin` and `alicebot_app`; the migrations
-grant to `alicebot_app` by name. The database should be owned by the admin role,
-while the runtime role receives only migration-defined grants.
+Provision PostgreSQL 16 and install pgvector 0.8 or newer. Create four distinct
+login roles:
+
+- `alicebot_admin` is `NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`; it
+  owns the production database and runs migrations and restores.
+- `alicebot_app` is `NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`; it
+  receives only migration-defined runtime grants.
+- `alicebot_backup` is `NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS`; it
+  receives only the read grants required for a complete dump.
+- `alicebot_drill` is `NOSUPERUSER CREATEDB NOCREATEROLE NOBYPASSRLS`; the
+  drill script uses it to create, grant access to, and drop randomly named
+  disposable drill databases.
+
+A DBA or local PostgreSQL superuser must create the backup role because only a
+superuser can grant `BYPASSRLS`. After migrations create the production
+objects, apply and retain these read grants:
+
+```sql
+GRANT CONNECT ON DATABASE alicebot TO alicebot_backup;
+GRANT USAGE ON SCHEMA public TO alicebot_backup;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO alicebot_backup;
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO alicebot_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE alicebot_admin IN SCHEMA public
+  GRANT SELECT ON TABLES TO alicebot_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE alicebot_admin IN SCHEMA public
+  GRANT SELECT ON SEQUENCES TO alicebot_backup;
+```
+
+The backup role has no ownership or write privileges. `BYPASSRLS` is still
+powerful because it can read every tenant row in the granted objects. Protect
+and rotate its credential and restrict its network access. For a database on
+this same host, the retained backup job may instead run `pg_dump` as the local
+PostgreSQL superuser through Unix-socket peer authentication, which avoids a
+stored database credential. That alternative does not apply to a remote
+database.
+
+`CREATEDB` is cluster-wide. PostgreSQL does not enforce the script's
+`alice_phase5_ops_*` naming restriction, so a stolen or misused
+`alicebot_drill` credential could create arbitrary databases and consume disk.
+Protect and rotate it, restrict its network access, and alert on unexpected
+database creation.
+
+The drill script connects `alicebot_drill` to the maintenance database. It
+creates each disposable database as the lifecycle role, grants
+`alicebot_admin` `CONNECT,CREATE` at the database level, grants
+`alicebot_app` `CONNECT,TEMPORARY`, grants `alicebot_backup` `CONNECT`, and
+grants `alicebot_admin` `USAGE,CREATE` on schema `public` with grant option.
+Extensions must already be inherited from `template1`. Admin then migrates and
+restores while lifecycle remains responsible only for database creation,
+access grants, and cleanup. The automated script requires the exact
+`alicebot_drill` role and rejects a superuser lifecycle identity. A same-host
+peer-superuser is only a manual lifecycle alternative outside the automated
+script contract, and it is valid only when that manual process runs under the
+peer-mapped operating-system account. A passwordless peer URL does not work
+from `User=alicebot` and must not be passed to the script.
+
+For a manual disposable target, the lifecycle connection applies the same
+grants before admin restore:
+
+```sql
+CREATE DATABASE alice_restore_test;
+GRANT CONNECT, CREATE ON DATABASE alice_restore_test TO alicebot_admin;
+GRANT CONNECT, TEMPORARY ON DATABASE alice_restore_test TO alicebot_app;
+GRANT CONNECT ON DATABASE alice_restore_test TO alicebot_backup;
+```
+
+After reconnecting to `alice_restore_test` as `alicebot_drill`:
+
+```sql
+GRANT USAGE, CREATE ON SCHEMA public
+  TO alicebot_admin WITH GRANT OPTION;
+GRANT USAGE ON SCHEMA public TO alicebot_app, alicebot_backup;
+```
+
+The disposable database must inherit `pgcrypto` and `vector` from `template1`.
+On a same-host PostgreSQL installation, the local superuser performs this
+one-time cluster operation:
+
+```bash
+sudo -u postgres psql --dbname template1 --set ON_ERROR_STOP=1 <<'SQL'
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS vector;
+SQL
+```
+
+This changes the baseline for every future database created from `template1`.
+For remote PostgreSQL, the database provider's DBA or superuser must perform
+the equivalent operation through its privileged administration path. If the
+provider forbids `template1` customization and offers no equivalent
+pre-provisioning hook, the reference disposable-restore drill is unsupported
+on that service and must not be reported as passed.
 
 With `DATABASE_ADMIN_URL` injected into this one-shot verification process,
 verify the server and certificate without putting a credentialed URL in
@@ -245,17 +375,27 @@ absent; it never falls back to the runtime DSN.
 ```bash
 ./scripts/migrate.sh
 ./.venv/bin/alicebot vnext migrations status
+./.venv/bin/python scripts/seed_local_user.py
 ```
+
+Run the seed command after migration and before API workspace bootstrap. It
+requires the one-shot `DATABASE_ADMIN_URL` and the configured
+`ALICEBOT_AUTH_USER_ID`. The helper sets transaction-local
+`app.current_user_id` before its idempotent insert so the forced row-level
+security policy permits exactly the configured local user. It does not change
+runtime API behavior. If the seed step is skipped, workspace bootstrap returns
+`404 not_found` until the local user row exists.
 
 Then discard the one-shot migration environment and start the API with the
 runtime template, whose `DATABASE_URL` names `alicebot_app` and which contains
-no `DATABASE_ADMIN_URL`. Start the web server with explicit loopback flags. A
-supervisor should load the rendered runtime environment at process start,
-restart on failure with backoff, set a sensible file-descriptor limit, and
-capture stdout/stderr without environment dumps.
+no `DATABASE_ADMIN_URL`, `DATABASE_BACKUP_URL`, or
+`DATABASE_LIFECYCLE_URL`. Start the web server with explicit loopback flags. A
+supervisor should load `/etc/alicebot/runtime.env` at process start, restart on
+failure with backoff, set a sensible file-descriptor limit, and capture
+stdout/stderr without environment dumps.
 
 ```bash
-env -u DATABASE_ADMIN_URL ./.venv/bin/python -m alicebot_api.local_server
+env -u DATABASE_ADMIN_URL -u DATABASE_BACKUP_URL -u DATABASE_LIFECYCLE_URL ./.venv/bin/python -m alicebot_api.local_server
 pnpm --dir apps/web start --hostname 127.0.0.1 --port 3000
 ```
 
@@ -279,7 +419,12 @@ try:
     process_environment = dict(
         entry.split(b"=", 1) for entry in raw_environment.split(b"\0") if b"=" in entry
     )
-    if b"DATABASE_ADMIN_URL" in process_environment:
+    privileged_names = {
+        b"DATABASE_ADMIN_URL",
+        b"DATABASE_BACKUP_URL",
+        b"DATABASE_LIFECYCLE_URL",
+    }
+    if privileged_names.intersection(process_environment):
         raise RuntimeError
     runtime_url = process_environment.get(b"DATABASE_URL")
     if runtime_url is None:
@@ -293,15 +438,16 @@ try:
 except Exception:
     print("api_runtime_db_boundary=failed")
     raise SystemExit(1)
-print("api_runtime_db_boundary=passed role=alicebot_app admin_dsn_present=false")
+print("api_runtime_db_boundary=passed role=alicebot_app privileged_dsns_present=false")
 PY
 ```
 
 The owner receipt records only pass/fail and timestamp for this probe. It must
 attest `runtime DB role=alicebot_app` for both the PostgreSQL session and
-effective roles, plus `admin DSN absent from API service environment`; do not
-record either DSN, the process environment, PID, host, or database error
-details.
+effective roles, plus `admin DSN absent from API service environment`,
+`backup DSN absent from API service environment`, and
+`lifecycle DSN absent from API service environment`; do not record any DSN,
+the process environment, PID, host, or database error details.
 
 Before Caddy or the public firewall is enabled, verify both listeners from the
 host:
@@ -361,7 +507,7 @@ binary selected by the operator, and install it as an owner-controlled config.
 The file routes API paths without stripping them and sends all other requests
 to the web process. Caddy's admin listener and both upstreams are loopback. It
 requires and verifies a client certificate against the operator-controlled CA
-at `/run/secrets/alicebot/client-ca.pem`, enables strict SNI/Host matching, and
+at `/etc/alicebot/client-ca.pem`, enables strict SNI/Host matching, and
 preserves Caddy's normal real-client `X-Forwarded-For` behavior. Protect the CA
 and client private keys outside the repository. Issue a separate short-lived
 client certificate for each authorized browser or agent; rotation or revocation
@@ -465,13 +611,17 @@ the archive, encrypt it before upload, keep an off-host encrypted copy, apply a
 documented retention policy, and emit a secret-free success/failure signal.
 
 Schedule the 5.2 PostgreSQL backup/restore drill with a one-shot service like
-the following. Render `/run/secrets/alicebot/backup-restore.env` separately
-with the role-separated `DATABASE_ADMIN_URL` and `DATABASE_URL` shapes shown
-above; both URLs must retain
-`sslrootcert=/run/secrets/alicebot/postgres-ca.pem`. The CA bundle must exist at
-that exact path on a VM, or be mounted there read-only in a container. The
-service passes DSNs only through its environment, never through command-line
-arguments:
+the following. Render `/etc/alicebot/backup-restore.env` separately with the
+role-separated `DATABASE_ADMIN_URL`, `DATABASE_URL`, `DATABASE_BACKUP_URL`, and
+`DATABASE_LIFECYCLE_URL` shapes shown above; all four URLs must retain
+`sslrootcert=/etc/alicebot/postgres-ca.pem`. Keep the file root-owned,
+group-readable by `alicebot`, and mode `0640`. The CA bundle must exist at that
+exact persistent path on a VM, or be mounted there read-only in a container.
+The dump runs with `alicebot_backup` and `--no-comments`; restore and migration
+remain `alicebot_admin` operations, application verification remains an
+`alicebot_app` operation, and disposable database create/drop uses
+`alicebot_drill`. The service passes DSNs only through its environment, never
+through command-line arguments:
 
 ```ini
 [Unit]
@@ -480,8 +630,8 @@ Description=Alice PostgreSQL backup and disposable-restore drill
 [Service]
 Type=oneshot
 User=alicebot
-EnvironmentFile=/run/secrets/alicebot/backup-restore.env
-BindReadOnlyPaths=/run/secrets/alicebot/postgres-ca.pem
+EnvironmentFile=/etc/alicebot/backup-restore.env
+BindReadOnlyPaths=/etc/alicebot/postgres-ca.pem
 ExecStart=/opt/alicebot/.venv/bin/python /opt/alicebot/scripts/run_phase5_ops_evidence.py --backend postgres --work-dir /var/lib/alicebot/backup-drill --output /var/lib/alicebot/evidence/postgres-backup-restore.json
 ```
 
@@ -490,6 +640,38 @@ ExecStart=/opt/alicebot/.venv/bin/python /opt/alicebot/scripts/run_phase5_ops_ev
 OnCalendar=weekly
 Persistent=true
 ```
+
+The drill writes the `pg_restore --list` output to a private mode `0600` TOC
+file and removes exactly the `ACL - SCHEMA public` entry. The archive's public
+schema ACL belongs to the source database owner and cannot be replayed by the
+least-privilege admin against a target schema owned by `alicebot_drill`. The
+entire public-schema ACL is deliberately reconstructed target-side by the
+explicit lifecycle grants above, including `USAGE` for `alicebot_app` and
+`alicebot_backup`. All table, sequence, and non-public-schema object ACL
+entries must remain in the restore list.
+
+For a manual restore, reproduce the exact filter and fail unless the archive
+contains exactly one matching entry:
+
+```bash
+umask 077
+pg_restore --list alice.dump > alice.restore.full.list
+public_schema_acl_count="$(
+  awk '$4 == "ACL" && $5 == "-" && $6 == "SCHEMA" && $7 == "public" { count += 1 } END { print count + 0 }' \
+    alice.restore.full.list
+)"
+test "$public_schema_acl_count" = 1
+awk '!($4 == "ACL" && $5 == "-" && $6 == "SCHEMA" && $7 == "public")' \
+  alice.restore.full.list > alice.restore.list
+chmod 0600 alice.restore.full.list alice.restore.list
+PGUSER=alicebot_admin PGDATABASE=alice_restore_test \
+  PGPASSWORD='admin-password-from-your-secret-manager' \
+  pg_restore --exit-on-error --no-owner --no-comments \
+  --use-list=alice.restore.list --dbname=alice_restore_test alice.dump
+```
+
+Do not use `--no-acl`. That broad option would also discard table, sequence,
+and non-public-schema object grants that the restored service needs.
 
 This drill proves dump/restore mechanics and deletes its disposable database;
 it is not the retained production backup. The external backup job must still
@@ -550,7 +732,7 @@ source_head_commit=<Git object id>
 source_head_tree=<Git tree object id>
 carrier_state=clean|dirty
 carrier_snapshot_sha256=<SHA-256>
-validated_asset_sha256=<five logical-name SHA-256 values>
+validated_asset_sha256=<six logical-name SHA-256 values>
 ```
 
 It checks examples, exact origins, loopback binds/upstreams, database role and
@@ -562,10 +744,10 @@ real backup schedule. The owner real-host receipt remains blocking.
 The source commit/tree identify HEAD. `carrier_state` and the carrier digest
 bind the actual tracked plus nonignored-untracked working bytes, including
 tracked deletions, file modes, and symlink target text without following the
-link. The five per-asset hashes separately bind this guide, the environment
-example, the Caddyfile, the workflow, and the web API source whose exact-origin
-trust contract the smoke validates. Paths and file contents never enter the
-JSON receipt.
+link. The six per-asset hashes separately bind this guide, the environment
+example, the Caddyfile, the workflow, the local-user seed helper, and the web
+API source whose exact-origin trust contract the smoke validates. Paths and
+file contents never enter the JSON receipt.
 
 Before anyone claims the guide was exercised, the owner must add an out-of-band
 sanitized receipt named `owner_real_host_deployment_receipt` with:
@@ -584,7 +766,8 @@ sanitized receipt named `owner_real_host_deployment_receipt` with:
 - confirmation that only Caddy is publicly reachable and the API/web/database
   ports are not;
 - pass/fail and timestamp proving the live API service has runtime DB
-  role=`alicebot_app` and its process environment has no `DATABASE_ADMIN_URL`;
+  role=`alicebot_app` and its process environment has no `DATABASE_ADMIN_URL`,
+  `DATABASE_BACKUP_URL`, or `DATABASE_LIFECYCLE_URL`;
 - `remote-v1-not-api`, `remote-non-vnext-v0-not-api`, and
   `remote-vnext-lookalike-not-api` pass/fail with timestamps;
 - reviewer identity and date.

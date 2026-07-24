@@ -1,5 +1,18 @@
 """Bind each artifact quality rating to one reviewer row.
 
+``artifact_quality_ratings`` has forced row-level security, while the migration
+owner intentionally has no ``BYPASSRLS`` privilege. Bracketing the dedupe and
+constraint creation with ``NO FORCE`` and ``FORCE`` lets that owner repair all
+rows. Alembic runs the upgrade in one transaction, so concurrent sessions never
+observe the relaxed policy; a failure rolls the bracket and all intervening
+work back together.
+
+Editing this revision in place is safe because no published release contains
+0093. A database already stamped at 0093 does not rerun the body, and its
+successful unique-constraint application proves the original dedupe left no
+duplicate reviewer rows. Its final schema therefore already matches this
+revision, including the idempotent trailing ``FORCE ROW LEVEL SECURITY``.
+
 Revision ID: 20260721_0093
 Revises: 20260716_0092
 """
@@ -16,6 +29,7 @@ depends_on = None
 
 
 _UPGRADE_STATEMENTS: tuple[str, ...] = (
+    "ALTER TABLE artifact_quality_ratings NO FORCE ROW LEVEL SECURITY",
     """
     WITH ranked_ratings AS (
       SELECT
@@ -37,6 +51,7 @@ _UPGRADE_STATEMENTS: tuple[str, ...] = (
       ADD CONSTRAINT artifact_quality_ratings_artifact_reviewer_key
       UNIQUE (artifact_id, reviewer_id)
     """,
+    "ALTER TABLE artifact_quality_ratings FORCE ROW LEVEL SECURITY",
 )
 
 

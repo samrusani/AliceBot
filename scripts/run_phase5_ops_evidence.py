@@ -48,6 +48,8 @@ SEED_QUERY = "cobalt recovery beacon"
 REPORT_VERSION = "phase5_ops_evidence.v1"
 _SAFE_CODE = re.compile(r"^[a-z0-9_.:-]+$")
 _CREDENTIAL_URL = re.compile(r"(?:postgres(?:ql)?|redis)://[^\s/@:]+:[^\s/@]+@", re.IGNORECASE)
+_PUBLIC_SCHEMA_ACL_TOC = re.compile(r"^\s*[0-9]+;\s+[0-9]+\s+[0-9]+\s+ACL\s+-\s+SCHEMA\s+public(?:\s|$)")
+_DIAGNOSTIC_LIMIT = 16 * 1024
 
 
 class EvidenceError(RuntimeError):
@@ -60,6 +62,53 @@ class EvidenceError(RuntimeError):
         super().__init__(",".join(codes))
         self.code = codes[0]
         self.codes = codes
+
+
+def _emit_subprocess_stderr(
+    code: str,
+    stderr: str | bytes | None,
+    *,
+    env: Mapping[str, str] | None,
+) -> None:
+    if not stderr:
+        return
+    if isinstance(stderr, bytes):
+        diagnostic = stderr.decode("utf-8", errors="replace")
+    else:
+        diagnostic = stderr
+    sensitive_values = {
+        value
+        for key, value in (env or {}).items()
+        if value
+        and (
+            key
+            in {
+                "PGPASSWORD",
+                "DATABASE_ADMIN_URL",
+                "DATABASE_BACKUP_URL",
+                "DATABASE_LIFECYCLE_URL",
+                "DATABASE_URL",
+            }
+            or key.lower().endswith(("password", "_secret"))
+        )
+    }
+    sensitive_values.update(
+        {
+            SEED_QUERY,
+            "phase5-ops@example.invalid",
+        }
+    )
+    for sensitive in sorted(sensitive_values, key=len, reverse=True):
+        diagnostic = diagnostic.replace(sensitive, "<redacted>")
+    diagnostic = _CREDENTIAL_URL.sub("<redacted-database-url>", diagnostic)
+    diagnostic = diagnostic.strip()
+    if not diagnostic:
+        return
+    if len(diagnostic) > _DIAGNOSTIC_LIMIT:
+        half = (_DIAGNOSTIC_LIMIT - len("\n...[stderr truncated]...\n")) // 2
+        diagnostic = diagnostic[:half] + "\n...[stderr truncated]...\n" + diagnostic[-half:]
+    print(f"phase5_ops_evidence[{code}] subprocess stderr:", file=sys.stderr)
+    print(diagnostic, file=sys.stderr)
 
 
 def _sha256_file(path: Path) -> str:
@@ -96,6 +145,7 @@ def _run(
                     timeout=timeout,
                 )
             if completed.returncode != 0:
+                _emit_subprocess_stderr(code, completed.stderr, env=env)
                 raise EvidenceError(code)
             return subprocess.CompletedProcess(command, completed.returncode, "", "")
         completed_text = subprocess.run(
@@ -109,12 +159,16 @@ def _run(
             text=True,
             timeout=timeout,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        _emit_subprocess_stderr(code, exc.stderr, env=env)
+        raise EvidenceError(code) from exc
+    except OSError as exc:
         raise EvidenceError(code) from exc
     finally:
         if input_stream is not None:
             input_stream.close()
     if completed_text.returncode != 0:
+        _emit_subprocess_stderr(code, completed_text.stderr, env=env)
         raise EvidenceError(code)
     return completed_text
 
@@ -552,8 +606,7 @@ def _sqlite_upgrade_drill(work_dir: Path, baseline: Path) -> dict[str, object]:
     raw = sqlite3.connect(db_path)
     try:
         old_tables = {
-            str(row[0])
-            for row in raw.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            str(row[0]) for row in raw.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
         }
         if "embedding_stamp" in old_tables:
             raise EvidenceError("baseline_sqlite_stamp_unexpected")
@@ -591,26 +644,44 @@ def _sqlite_upgrade_drill(work_dir: Path, baseline: Path) -> dict[str, object]:
 
 def _database_url_for(root_url: str, database_name: str) -> str:
     parsed = urlsplit(root_url)
-    if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
+    if parsed.scheme not in {"postgres", "postgresql"}:
+        raise EvidenceError("postgres_url_invalid")
+    try:
+        query = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+    except ValueError as exc:
+        raise EvidenceError("postgres_url_query_invalid") from exc
+    socket_hosts = query.get("host", [])
+    if parsed.hostname is None and (len(socket_hosts) != 1 or not socket_hosts[0].startswith("/")):
         raise EvidenceError("postgres_url_invalid")
     return urlunsplit((parsed.scheme, parsed.netloc, f"/{database_name}", parsed.query, ""))
 
 
-def _app_role_from_url(app_url: str) -> str:
-    role = unquote(urlsplit(app_url).username or "")
-    if role != "alicebot_app":
-        raise EvidenceError("postgres_app_role_must_be_alicebot_app")
+def _required_role_from_url(database_url: str, *, expected: str, code: str) -> str:
+    role = unquote(urlsplit(database_url).username or "")
+    if role != expected:
+        raise EvidenceError(code)
     return role
 
 
 def _libpq_env(database_url: str) -> dict[str, str]:
     parsed = urlsplit(database_url)
-    if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
+    if parsed.scheme not in {"postgres", "postgresql"}:
         raise EvidenceError("postgres_url_invalid")
+    try:
+        query = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+    except ValueError as exc:
+        raise EvidenceError("postgres_url_query_invalid") from exc
+    socket_hosts = query.get("host", [])
+    if parsed.hostname is None:
+        if len(socket_hosts) != 1 or not socket_hosts[0].startswith("/"):
+            raise EvidenceError("postgres_url_invalid")
+        host = socket_hosts[0]
+    else:
+        host = parsed.hostname
     env = os.environ.copy()
     env.update(
         {
-            "PGHOST": parsed.hostname,
+            "PGHOST": host,
             "PGPORT": str(parsed.port or 5432),
             "PGUSER": unquote(parsed.username or ""),
             "PGDATABASE": unquote(parsed.path.removeprefix("/")),
@@ -619,10 +690,6 @@ def _libpq_env(database_url: str) -> dict[str, str]:
     password = unquote(parsed.password or "")
     if password:
         env["PGPASSWORD"] = password
-    try:
-        query = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
-    except ValueError as exc:
-        raise EvidenceError("postgres_url_query_invalid") from exc
     for query_name, environment_name in (
         ("sslmode", "PGSSLMODE"),
         ("sslrootcert", "PGSSLROOTCERT"),
@@ -676,6 +743,55 @@ def _postgres_server_major(root_url: str) -> int:
     return int(value) // 10000
 
 
+def _validate_postgres_role_posture(
+    database_url: str,
+    *,
+    expected_role: str,
+    expected_createdb: bool,
+    expected_bypassrls: bool,
+    code: str,
+) -> None:
+    import psycopg
+
+    try:
+        with psycopg.connect(database_url) as conn:
+            row = conn.execute(
+                """
+                SELECT
+                  current_user::text AS role_name,
+                  rolsuper,
+                  rolcreatedb,
+                  rolcreaterole,
+                  rolbypassrls
+                FROM pg_roles
+                WHERE rolname = current_user
+                """
+            ).fetchone()
+    except Exception as exc:
+        raise EvidenceError(code) from exc
+    if isinstance(row, Mapping):
+        values = (
+            row.get("role_name"),
+            row.get("rolsuper"),
+            row.get("rolcreatedb"),
+            row.get("rolcreaterole"),
+            row.get("rolbypassrls"),
+        )
+    elif isinstance(row, (tuple, list)) and len(row) == 5:
+        values = tuple(row)
+    else:
+        raise EvidenceError(code)
+    expected = (
+        expected_role,
+        False,
+        expected_createdb,
+        False,
+        expected_bypassrls,
+    )
+    if values != expected:
+        raise EvidenceError(code)
+
+
 def _validate_postgres_toolchain(
     *,
     root_admin_url: str,
@@ -692,28 +808,152 @@ def _validate_postgres_toolchain(
         raise EvidenceError("postgres_server_major_mismatch")
 
 
-def _create_database(root_url: str, database_name: str, *, app_role: str) -> None:
+def _create_database(
+    lifecycle_url: str,
+    database_name: str,
+    *,
+    admin_role: str,
+    app_role: str,
+    backup_role: str,
+) -> None:
     import psycopg
     from psycopg import sql
 
-    with psycopg.connect(root_url, autocommit=True) as conn:
+    with psycopg.connect(lifecycle_url, autocommit=True) as conn:
         conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database_name)))
+        conn.execute(
+            sql.SQL("GRANT CONNECT, CREATE ON DATABASE {} TO {}").format(
+                sql.Identifier(database_name),
+                sql.Identifier(admin_role),
+            )
+        )
         conn.execute(
             sql.SQL("GRANT CONNECT, TEMPORARY ON DATABASE {} TO {}").format(
                 sql.Identifier(database_name),
                 sql.Identifier(app_role),
             )
         )
+        conn.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                sql.Identifier(database_name),
+                sql.Identifier(backup_role),
+            )
+        )
+    target_lifecycle_url = _database_url_for(lifecycle_url, database_name)
+    with psycopg.connect(target_lifecycle_url) as conn:
+        conn.execute(
+            sql.SQL("GRANT USAGE, CREATE ON SCHEMA public TO {} WITH GRANT OPTION").format(sql.Identifier(admin_role))
+        )
+        conn.execute(
+            sql.SQL("GRANT USAGE ON SCHEMA public TO {}, {}").format(
+                sql.Identifier(app_role),
+                sql.Identifier(backup_role),
+            )
+        )
 
 
-def _drop_database(root_url: str, database_name: str) -> None:
+def _drop_database(lifecycle_url: str, database_name: str) -> None:
     import psycopg
     from psycopg import sql
 
-    with psycopg.connect(root_url, autocommit=True) as conn:
+    with psycopg.connect(lifecycle_url, autocommit=True) as conn:
+        conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(database_name)))
+
+
+def _grant_backup_access(admin_url: str, *, admin_role: str, backup_role: str) -> None:
+    import psycopg
+    from psycopg import sql
+
+    with psycopg.connect(admin_url) as conn:
+        conn.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(sql.Identifier(backup_role)))
+        conn.execute(sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA public TO {}").format(sql.Identifier(backup_role)))
         conn.execute(
-            sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(database_name))
+            sql.SQL("GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO {}").format(sql.Identifier(backup_role))
         )
+        conn.execute(
+            sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public GRANT SELECT ON TABLES TO {}").format(
+                sql.Identifier(admin_role),
+                sql.Identifier(backup_role),
+            )
+        )
+        conn.execute(
+            sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public GRANT SELECT ON SEQUENCES TO {}").format(
+                sql.Identifier(admin_role),
+                sql.Identifier(backup_role),
+            )
+        )
+
+
+def _write_restore_list(archive_listing: str, path: Path) -> None:
+    retained: list[str] = []
+    excluded = 0
+    for line in archive_listing.splitlines(keepends=True):
+        if _PUBLIC_SCHEMA_ACL_TOC.match(line):
+            excluded += 1
+            continue
+        retained.append(line)
+    if excluded != 1:
+        raise EvidenceError("postgres_public_schema_acl_toc_invalid")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    fd = os.open(path, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.writelines(retained)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def _verify_restored_role_access(
+    admin_url: str,
+    *,
+    app_role: str,
+    backup_role: str,
+) -> None:
+    import psycopg
+
+    with psycopg.connect(admin_url) as conn:
+        row = conn.execute(
+            """
+            SELECT
+              EXISTS (
+                SELECT 1
+                FROM pg_namespace AS app_namespace
+                CROSS JOIN LATERAL aclexplode(app_namespace.nspacl) AS app_acl
+                JOIN pg_roles AS app_grantee
+                  ON app_grantee.oid = app_acl.grantee
+                WHERE app_namespace.nspname = 'public'
+                  AND app_grantee.rolname = %s
+                  AND app_acl.privilege_type = 'USAGE'
+              ),
+              has_table_privilege(%s, 'public.memories', 'SELECT'),
+              EXISTS (
+                SELECT 1
+                FROM pg_namespace AS backup_namespace
+                CROSS JOIN LATERAL aclexplode(backup_namespace.nspacl)
+                  AS backup_acl
+                JOIN pg_roles AS backup_grantee
+                  ON backup_grantee.oid = backup_acl.grantee
+                WHERE backup_namespace.nspname = 'public'
+                  AND backup_grantee.rolname = %s
+                  AND backup_acl.privilege_type = 'USAGE'
+              ),
+              COALESCE(
+                bool_and(has_table_privilege(%s, relation.oid, 'SELECT')),
+                false
+              )
+            FROM pg_class AS relation
+            JOIN pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = 'public'
+              AND relation.relkind IN ('r', 'p')
+            """,
+            (app_role, app_role, backup_role, backup_role),
+        ).fetchone()
+    if row != (True, True, True, True):
+        raise EvidenceError("postgres_restored_role_privileges_invalid")
 
 
 def _dynamic_alembic_head() -> str:
@@ -758,23 +998,18 @@ def _postgres_counts(conn: Any) -> dict[str, int]:
 
 
 def _verify_postgres_store(admin_url: str, app_url: str, *, expected_head: str) -> dict[str, object]:
-    import psycopg
-    from psycopg.rows import dict_row
-
     from alicebot_api.db import direct_user_connection
     from alicebot_api.vnext_embeddings import memory_embedding_signature_is_current
     from alicebot_api.vnext_store import PostgresVNextStore
 
-    with psycopg.connect(admin_url, row_factory=dict_row) as conn:
+    with direct_user_connection(admin_url, USER_ID) as conn:
         revision_row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
         if revision_row is None:
             raise EvidenceError("postgres_alembic_version_missing")
         revision = str(revision_row["version_num"])
         if revision != expected_head:
             raise EvidenceError("postgres_alembic_head_mismatch")
-        capabilities_row = conn.execute(
-            "SELECT to_regclass('public.browser_clip_capabilities')"
-        ).fetchone()
+        capabilities_row = conn.execute("SELECT to_regclass('public.browser_clip_capabilities')").fetchone()
         if capabilities_row is None or capabilities_row["to_regclass"] is None:
             raise EvidenceError("postgres_migration_0094_table_missing")
         vector_row = conn.execute(
@@ -783,9 +1018,7 @@ def _verify_postgres_store(admin_url: str, app_url: str, *, expected_head: str) 
         ).fetchone()
         if vector_row is None:
             raise EvidenceError("postgres_seed_memory_missing")
-        vector_present = bool(
-            vector_row["present"]
-        )
+        vector_present = bool(vector_row["present"])
         counts = _postgres_counts(conn)
     if not vector_present:
         raise EvidenceError("postgres_embedding_missing")
@@ -810,10 +1043,10 @@ def _verify_postgres_store(admin_url: str, app_url: str, *, expected_head: str) 
 
 
 def _verify_migration_0093(admin_url: str) -> None:
-    import psycopg
     from psycopg import errors
+    from alicebot_api.db import direct_user_connection
 
-    with psycopg.connect(admin_url) as conn:
+    with direct_user_connection(admin_url, USER_ID) as conn:
         rows = conn.execute(
             """
             SELECT id::text, usefulness
@@ -822,19 +1055,21 @@ def _verify_migration_0093(admin_url: str) -> None:
             """,
             (ARTIFACT_ID, REVIEWER_ID),
         ).fetchall()
-        if rows != [(NEWER_RATING_ID, 5)]:
+        normalized_rows = [(str(row["id"]), int(row["usefulness"])) for row in rows]
+        if normalized_rows != [(NEWER_RATING_ID, 5)]:
             raise EvidenceError("migration_0093_survivor_mismatch")
         try:
-            conn.execute(
-                """
-                INSERT INTO artifact_quality_ratings (
-                  user_id, artifact_id, reviewer_id, usefulness, verbosity
-                ) VALUES (%s, %s, %s, 1, 'right_sized')
-                """,
-                (USER_ID, ARTIFACT_ID, REVIEWER_ID),
-            )
+            with conn.transaction():
+                conn.execute(
+                    """
+                    INSERT INTO artifact_quality_ratings (
+                      user_id, artifact_id, reviewer_id, usefulness, verbosity
+                    ) VALUES (%s, %s, %s, 1, 'right_sized')
+                    """,
+                    (USER_ID, ARTIFACT_ID, REVIEWER_ID),
+                )
         except errors.UniqueViolation:
-            conn.rollback()
+            pass
         else:
             raise EvidenceError("migration_0093_unique_not_enforced")
 
@@ -870,14 +1105,74 @@ def _postgres_drill(
     work_dir: Path,
     *,
     baseline: Path,
+    root_lifecycle_url: str,
     root_admin_url: str,
     root_app_url: str,
+    root_backup_url: str,
 ) -> dict[str, object]:
     import psycopg
 
     pg_dump = _require_tool("pg_dump")
     pg_restore = _require_tool("pg_restore")
-    app_role = _app_role_from_url(root_app_url)
+    admin_role = _required_role_from_url(
+        root_admin_url,
+        expected="alicebot_admin",
+        code="postgres_admin_role_must_be_alicebot_admin",
+    )
+    app_role = _required_role_from_url(
+        root_app_url,
+        expected="alicebot_app",
+        code="postgres_app_role_must_be_alicebot_app",
+    )
+    backup_role = _required_role_from_url(
+        root_backup_url,
+        expected="alicebot_backup",
+        code="postgres_backup_role_must_be_alicebot_backup",
+    )
+    lifecycle_role = _required_role_from_url(
+        root_lifecycle_url,
+        expected="alicebot_drill",
+        code="postgres_lifecycle_role_must_be_alicebot_drill",
+    )
+    if len({lifecycle_role, admin_role, app_role, backup_role}) != 4:
+        raise EvidenceError("postgres_operational_roles_not_distinct")
+    for database_url, expected_role, expected_createdb, expected_bypassrls, code in (
+        (
+            root_lifecycle_url,
+            lifecycle_role,
+            True,
+            False,
+            "postgres_lifecycle_role_posture_invalid",
+        ),
+        (
+            root_admin_url,
+            admin_role,
+            False,
+            False,
+            "postgres_admin_role_posture_invalid",
+        ),
+        (
+            root_app_url,
+            app_role,
+            False,
+            False,
+            "postgres_app_role_posture_invalid",
+        ),
+        (
+            root_backup_url,
+            backup_role,
+            False,
+            True,
+            "postgres_backup_role_posture_invalid",
+        ),
+    ):
+        _validate_postgres_role_posture(
+            database_url,
+            expected_role=expected_role,
+            expected_createdb=expected_createdb,
+            expected_bypassrls=expected_bypassrls,
+            code=code,
+        )
     _validate_postgres_toolchain(
         root_admin_url=root_admin_url,
         pg_dump=pg_dump,
@@ -887,11 +1182,19 @@ def _postgres_drill(
     database_name = f"alice_phase5_ops_{suffix}"
     admin_url = _database_url_for(root_admin_url, database_name)
     app_url = _database_url_for(root_app_url, database_name)
+    backup_url = _database_url_for(root_backup_url, database_name)
     dump_path = work_dir / "postgres.dump"
+    restore_list_path = work_dir / "postgres.restore.list"
     result: dict[str, object] | None = None
     primary_error: Exception | None = None
     try:
-        _create_database(root_admin_url, database_name, app_role=app_role)
+        _create_database(
+            root_lifecycle_url,
+            database_name,
+            admin_role=admin_role,
+            app_role=app_role,
+            backup_role=backup_role,
+        )
         _seed_postgres_baseline(baseline=baseline, admin_url=admin_url, app_url=app_url)
         with psycopg.connect(admin_url) as conn:
             old_head_row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
@@ -905,30 +1208,56 @@ def _postgres_drill(
         _migrate_postgres(admin_url)
         _verify_migration_0093(admin_url)
         before = _verify_postgres_store(admin_url, app_url, expected_head=current_head)
+        _grant_backup_access(
+            admin_url,
+            admin_role=admin_role,
+            backup_role=backup_role,
+        )
 
         _run(
-            [pg_dump, "--format=custom"],
+            [pg_dump, "--format=custom", "--no-comments"],
             code="postgres_dump_failed",
-            env=_libpq_env(admin_url),
+            env=_libpq_env(backup_url),
             stdout_file=dump_path,
             timeout=600,
         )
-        _run(
+        archive_listing = _run(
             [pg_restore, "--list"],
             code="postgres_dump_archive_invalid",
-            env=_libpq_env(admin_url),
+            env=_libpq_env(backup_url),
             stdin_file=dump_path,
-        )
+        ).stdout
+        if re.search(r"(?m)^[0-9]+;\s+[0-9]+\s+[0-9]+\s+COMMENT\b", archive_listing):
+            raise EvidenceError("postgres_dump_comments_present")
+        _write_restore_list(archive_listing, restore_list_path)
         dump_sha256 = _sha256_file(dump_path)
 
-        _drop_database(root_admin_url, database_name)
-        _create_database(root_admin_url, database_name, app_role=app_role)
+        _drop_database(root_lifecycle_url, database_name)
+        _create_database(
+            root_lifecycle_url,
+            database_name,
+            admin_role=admin_role,
+            app_role=app_role,
+            backup_role=backup_role,
+        )
         _run(
-            [pg_restore, "--exit-on-error", "--no-owner", f"--dbname={database_name}"],
+            [
+                pg_restore,
+                "--exit-on-error",
+                "--no-owner",
+                "--no-comments",
+                f"--use-list={restore_list_path}",
+                f"--dbname={database_name}",
+            ],
             code="postgres_restore_failed",
             env=_libpq_env(admin_url),
             stdin_file=dump_path,
             timeout=600,
+        )
+        _verify_restored_role_access(
+            admin_url,
+            app_role=app_role,
+            backup_role=backup_role,
         )
         after = _verify_postgres_store(admin_url, app_url, expected_head=current_head)
         _verify_migration_0093(admin_url)
@@ -953,7 +1282,7 @@ def _postgres_drill(
     try:
         # The name is random and DROP is idempotent, so always clean up.  This
         # also covers CREATE succeeding before its subsequent GRANT fails.
-        _drop_database(root_admin_url, database_name)
+        _drop_database(root_lifecycle_url, database_name)
     except Exception as exc:
         cleanup_error = exc
 
@@ -1113,9 +1442,7 @@ def _write_report(path: Path, report: dict[str, object]) -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Execute Phase 5 operations evidence with sanitized JSON output."
-    )
+    parser = argparse.ArgumentParser(description="Execute Phase 5 operations evidence with sanitized JSON output.")
     parser.add_argument("--backend", choices=("sqlite", "postgres", "all"), default="all")
     parser.add_argument(
         "--work-dir",
@@ -1124,6 +1451,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--database-admin-url", default=os.getenv("DATABASE_ADMIN_URL"))
     parser.add_argument("--database-url", default=os.getenv("DATABASE_URL"))
+    parser.add_argument("--database-backup-url", default=os.getenv("DATABASE_BACKUP_URL"))
+    parser.add_argument(
+        "--database-lifecycle-url",
+        default=os.getenv("DATABASE_LIFECYCLE_URL"),
+    )
     parser.add_argument("--output", default=None, help="Optional durable sanitized JSON report path.")
     return parser
 
@@ -1138,8 +1470,14 @@ def _scope_proof_gaps(backend: str) -> list[str]:
 
 def run_evidence(args: argparse.Namespace) -> dict[str, object]:
     requested = args.backend
-    if requested in {"postgres", "all"} and (
-        not args.database_admin_url or not args.database_url
+    if requested in {"postgres", "all"} and any(
+        not value
+        for value in (
+            args.database_lifecycle_url,
+            args.database_admin_url,
+            args.database_url,
+            args.database_backup_url,
+        )
     ):
         raise EvidenceError("missing_prerequisite:postgres_urls")
     parent = Path(args.work_dir).expanduser() if args.work_dir else None
@@ -1163,8 +1501,10 @@ def run_evidence(args: argparse.Namespace) -> dict[str, object]:
             checks["postgres_backup_restore_upgrade"] = _postgres_drill(
                 work_dir,
                 baseline=baseline,
+                root_lifecycle_url=args.database_lifecycle_url,
                 root_admin_url=args.database_admin_url,
                 root_app_url=args.database_url,
+                root_backup_url=args.database_backup_url,
             )
         checks["health_and_monitoring"] = _monitoring_drill()
 

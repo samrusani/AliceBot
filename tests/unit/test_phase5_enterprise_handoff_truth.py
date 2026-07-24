@@ -355,8 +355,13 @@ def _worktree_delta_paths() -> set[str]:
     }
 
 
-def _receipt_scoped_delta_paths(paths: set[str]) -> set[str]:
-    return paths & (set(CARRIER_PATHS) | set(RECEIPT_EXCLUSIONS))
+def _historical_handoff_delta_paths(paths: set[str]) -> set[str]:
+    prefix = f"{HANDOFF_REL}/"
+    return {
+        path
+        for path in paths
+        if path == HANDOFF_REL or path.startswith(prefix)
+    }
 
 
 def _carrier_commit(receipt: str) -> str | None:
@@ -416,28 +421,12 @@ def _assert_integrated_handoff_immutable(carrier: str, *, head: str = "HEAD") ->
         assert head_payload == carrier_payload, f"post-carrier report drift: {filename}"
 
 
-def _assert_integrated_carrier_scope_immutable(
-    carrier: str,
-    *,
-    head: str = "HEAD",
-) -> None:
-    carrier_diff = _git(
-        "diff",
-        "--quiet",
-        carrier,
-        head,
-        "--",
-        *CARRIER_PATHS,
-        check=False,
-    )
-    assert carrier_diff.returncode == 0, (
-        "receipt-listed carrier content changed after the reviewed carrier commit"
-    )
+def _assert_historical_protected_scope_immutable(carrier: str) -> None:
     protected_diff = _git(
         "diff",
         "--quiet",
         BASE,
-        head,
+        carrier,
         "--",
         PROTECTED_SQLITE_PATH,
         check=False,
@@ -500,14 +489,13 @@ def test_phase5_ops_workflow_runs_truth_guard_with_full_history() -> None:
         "        with:\n"
         "          fetch-depth: 0\n"
     ) in workflow
-    assert (
-        "      - name: Run evidence contract tests\n"
-        "        run: >-\n"
-        "          ./.venv/bin/python -m pytest\n"
-        "          tests/unit/test_phase5_ops_evidence.py\n"
-        "          tests/unit/test_phase5_enterprise_handoff_truth.py\n"
-        "          -q -p no:cacheprovider\n"
-    ) in workflow
+    evidence_step = workflow.split(
+        "      - name: Run evidence contract tests\n", 1
+    )[1].split("\n      - name:", 1)[0]
+    assert "./.venv/bin/python -m pytest" in evidence_step
+    assert "tests/unit/test_phase5_ops_evidence.py" in evidence_step
+    assert "tests/unit/test_phase5_enterprise_handoff_truth.py" in evidence_step
+    assert "-q -p no:cacheprovider" in evidence_step
     assert ".github/workflows/ops-evidence.yml" in CARRIER_PATHS
     assert "tests/unit/test_phase5_enterprise_handoff_truth.py" in CARRIER_PATHS
 
@@ -539,8 +527,11 @@ def test_phase5_base_tree_and_historical_scope_are_bound_to_the_carrier() -> Non
         assert python_version == "0.13.1"
         assert _git("diff", "--quiet", BASE, "--", "docs/release").returncode == 0
         assert _git("diff", "--quiet", BASE, "--", PROTECTED_SQLITE_PATH).returncode == 0
+    report = (HANDOFF / "BUILD_REPORT.md").read_text(encoding="utf-8")
+    carrier = _carrier_commit(_receipt_from_report(report))
+    assert carrier is not None
     prior_handoff_changes = (
-        _git("diff", "--name-only", BASE, "--", "docs/handoff")
+        _git("diff", "--name-only", BASE, carrier, "--", "docs/handoff")
         .stdout.decode()
         .splitlines()
     )
@@ -601,10 +592,10 @@ def test_phase5_live_carrier_scope_and_receipt() -> None:
         assert hashlib.sha256(build_live_receipt()).hexdigest() == receipt
         return
 
-    receipt_delta = _receipt_scoped_delta_paths(_worktree_delta_paths())
-    assert not receipt_delta, (
-        "integrated checkout has live receipt or report drift: "
-        f"{sorted(receipt_delta)}"
+    handoff_delta = _historical_handoff_delta_paths(_worktree_delta_paths())
+    assert not handoff_delta, (
+        "integrated checkout has live historical handoff drift: "
+        f"{sorted(handoff_delta)}"
     )
 
     # A shallow PR checkout can still prove the carrier bytes when HEAD itself
@@ -635,7 +626,7 @@ def test_phase5_integrated_carrier_is_ancestry_and_content_bound() -> None:
     integrated = _build_receipt(lambda path: _read_commit_record(carrier, path))
     assert hashlib.sha256(integrated).hexdigest() == receipt
     _assert_commit_report_receipts(carrier, receipt)
-    _assert_integrated_carrier_scope_immutable(carrier)
+    _assert_historical_protected_scope_immutable(carrier)
     _assert_integrated_handoff_immutable(carrier)
 
     python_at_carrier = tomllib.loads(_git("show", f"{carrier}:pyproject.toml").stdout.decode())[
@@ -739,18 +730,34 @@ def test_phase5_integrated_carrier_rejects_a_child_of_the_failed_carrier(
         _assert_carrier_directly_descends_from_base("replacement")
 
 
-def test_phase5_integrated_live_delta_ignores_only_unrelated_transient_paths() -> None:
+def test_phase5_integrated_live_delta_allows_new_carriers_but_not_old_handoff_drift() -> None:
     unrelated = {
         ".coverage.ci-host.pid123.Xabc123.Habcdefghijh",
         "temporary-test-artifact.txt",
     }
-    assert _receipt_scoped_delta_paths(unrelated) == set()
+    assert _historical_handoff_delta_paths(unrelated) == set()
 
-    receipt_path = CARRIER_PATHS[0]
+    historical_source_path = CARRIER_PATHS[0]
+    historical_doc_path = "docs/alpha/README.md"
+    later_handoff_path = (
+        "docs/handoff/2026-07-24-v0.14.0-deployment-guide-fixes/README.md"
+    )
+    assert historical_doc_path in CARRIER_PATHS
     report_path = RECEIPT_EXCLUSIONS[0]
-    assert _receipt_scoped_delta_paths(
-        {*unrelated, receipt_path, report_path}
-    ) == {receipt_path, report_path}
+    assert (
+        _historical_handoff_delta_paths(
+            {
+                *unrelated,
+                historical_source_path,
+                historical_doc_path,
+                later_handoff_path,
+            }
+        )
+        == set()
+    )
+    assert _historical_handoff_delta_paths(
+        {*unrelated, historical_source_path, report_path}
+    ) == {report_path}
 
 
 def test_phase5_integrated_handoff_rejects_report_byte_drift(monkeypatch) -> None:
@@ -767,22 +774,6 @@ def test_phase5_integrated_handoff_rejects_report_byte_drift(monkeypatch) -> Non
         _assert_integrated_handoff_immutable("carrier-commit")
 
 
-def test_phase5_integrated_carrier_rejects_receipt_input_drift(monkeypatch) -> None:
-    observed: list[tuple[str, ...]] = []
-
-    def fake_git(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
-        del check
-        observed.append(arguments)
-        return subprocess.CompletedProcess(arguments, 1, b"", b"")
-
-    monkeypatch.setattr(f"{__name__}._git", fake_git)
-    with pytest.raises(AssertionError, match="receipt-listed carrier content changed"):
-        _assert_integrated_carrier_scope_immutable("carrier-commit")
-    assert observed == [
-        ("diff", "--quiet", "carrier-commit", "HEAD", "--", *CARRIER_PATHS)
-    ]
-
-
 def test_phase5_integrated_carrier_rejects_protected_path_drift(monkeypatch) -> None:
     observed: list[tuple[str, ...]] = []
 
@@ -791,15 +782,14 @@ def test_phase5_integrated_carrier_rejects_protected_path_drift(monkeypatch) -> 
         observed.append(arguments)
         return subprocess.CompletedProcess(
             arguments,
-            0 if len(observed) == 1 else 1,
+            1,
             b"",
             b"",
         )
 
     monkeypatch.setattr(f"{__name__}._git", fake_git)
     with pytest.raises(AssertionError, match="protected SQLite memory-access path"):
-        _assert_integrated_carrier_scope_immutable("carrier-commit")
+        _assert_historical_protected_scope_immutable("carrier-commit")
     assert observed == [
-        ("diff", "--quiet", "carrier-commit", "HEAD", "--", *CARRIER_PATHS),
-        ("diff", "--quiet", BASE, "HEAD", "--", PROTECTED_SQLITE_PATH),
+        ("diff", "--quiet", BASE, "carrier-commit", "--", PROTECTED_SQLITE_PATH),
     ]

@@ -105,25 +105,109 @@ syntactically complete file was not truncated.
 ## PostgreSQL
 
 The SQLite JSONL command is not a PostgreSQL disaster-recovery tool. Use the
-PostgreSQL utilities against the admin connection and protect the resulting
-file as sensitive plaintext:
+PostgreSQL utilities through a dedicated backup identity and protect the
+resulting file as sensitive plaintext. Tables use forced row-level security,
+so the database owner cannot produce a complete dump unless it also holds
+`BYPASSRLS`. Do not add that privilege to `alicebot_admin`.
+
+Create a separate `alicebot_backup` login as a PostgreSQL superuser or other
+role permitted to manage role attributes. It must be a non-superuser with
+`BYPASSRLS`, no database-creation privilege, and no role-creation privilege:
+
+```sql
+CREATE ROLE alicebot_backup
+  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS;
+GRANT CONNECT ON DATABASE alicebot TO alicebot_backup;
+```
+
+On the Alice database, grant only the object reads needed by `pg_dump`. The
+default-privilege grants keep later `alicebot_admin` migrations dumpable:
+
+```sql
+GRANT USAGE ON SCHEMA public TO alicebot_backup;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO alicebot_backup;
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO alicebot_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE alicebot_admin IN SCHEMA public
+  GRANT SELECT ON TABLES TO alicebot_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE alicebot_admin IN SCHEMA public
+  GRANT SELECT ON SEQUENCES TO alicebot_backup;
+```
+
+`BYPASSRLS` lets this role read every Alice row. Restrict its login source,
+rotate and protect its credential, and use it only for backups. It must not run
+migrations or restores. A same-host operator can instead run `pg_dump` as the
+local PostgreSQL superuser through Unix-socket peer authentication. That
+alternative avoids a stored backup credential, but it applies only when the
+database and backup process share the host.
+
+Use the dedicated role for the dump and pass `--no-comments`, which omits all
+object comments from the archive. This includes extension comments that would
+otherwise require extension ownership during a least-privilege restore:
 
 ```bash
-export PGHOST=db.internal PGPORT=5432 PGUSER=alicebot_admin PGDATABASE=alicebot
+export PGHOST=db.internal PGPORT=5432 PGUSER=alicebot_backup PGDATABASE=alicebot
+export PGSSLMODE=verify-full
+export PGSSLROOTCERT=/etc/alicebot/postgres-ca.pem
 export PGPASSWORD='from-your-secret-manager'
-pg_dump --format=custom --file=alice.dump
+pg_dump --format=custom --no-comments --file=alice.dump
 pg_restore --list alice.dump
 ```
 
 Using libpq environment variables keeps the credentialed DSN out of process
 arguments. Protect the environment and unset `PGPASSWORD` after the command.
 
-Restore into a new database, apply the same Alice release's migrations, then
-run integration and application smoke tests before cutover. Database roles,
-extensions, and grants are deployment concerns; record them alongside the
-backup without committing credentials. For a production deployment, add
-scheduled backups, retention, off-machine encrypted copies, and periodic
-restore drills appropriate to the operator's recovery objectives.
+Restore as `alicebot_admin`, which must remain `NOSUPERUSER`, `NOCREATEDB`, and
+`NOBYPASSRLS`. The target must already contain compatible `pgcrypto` and
+`vector` extensions installed by a database operator. The automated disposable
+drill inherits them from `template1`; production restore targets can instead
+have them provisioned before the restore. Use `--no-comments` on restore too,
+so an older archive containing extension comments does not fail:
+
+```bash
+export PGUSER=alicebot_drill PGDATABASE=postgres
+export PGPASSWORD='drill-password-from-your-secret-manager'
+createdb alice_restore_test
+psql --dbname=postgres --set=ON_ERROR_STOP=1 <<'SQL'
+GRANT CONNECT, CREATE ON DATABASE alice_restore_test TO alicebot_admin;
+GRANT CONNECT, TEMPORARY ON DATABASE alice_restore_test TO alicebot_app;
+GRANT CONNECT ON DATABASE alice_restore_test TO alicebot_backup;
+SQL
+psql --dbname=alice_restore_test --set=ON_ERROR_STOP=1 <<'SQL'
+GRANT USAGE, CREATE ON SCHEMA public
+  TO alicebot_admin WITH GRANT OPTION;
+GRANT USAGE ON SCHEMA public TO alicebot_app, alicebot_backup;
+SQL
+export PGUSER=alicebot_admin PGDATABASE=alice_restore_test
+export PGPASSWORD='admin-password-from-your-secret-manager'
+umask 077
+pg_restore --list alice.dump > alice.restore.full.list
+public_schema_acl_count="$(
+  awk '$4 == "ACL" && $5 == "-" && $6 == "SCHEMA" && $7 == "public" {
+    count++
+  } END { print count + 0 }' alice.restore.full.list
+)"
+test "${public_schema_acl_count}" -eq 1
+awk '$4 == "ACL" && $5 == "-" && $6 == "SCHEMA" && $7 == "public" {
+  next
+} { print }' alice.restore.full.list > alice.restore.list
+pg_restore --exit-on-error --no-owner --no-comments \
+  --use-list=alice.restore.list \
+  --dbname=alice_restore_test alice.dump
+```
+
+The create and grant commands are lifecycle steps, not `alicebot_admin`
+capabilities. Apply the same Alice release's migrations, then run integration
+and application smoke tests before cutover. Database roles, extensions, and
+grants are deployment concerns; record them alongside the backup without
+committing credentials. For a production deployment, add scheduled backups,
+retention, off-machine encrypted copies, and periodic restore drills
+appropriate to the operator's recovery objectives.
+
+The restore list removes exactly the `ACL - SCHEMA public` entry. The lifecycle
+step reconstructs the public-schema privileges for admin, app, and backup on
+the fresh target. Table, sequence, and non-public schema ACL entries remain in
+the restore list. Do not replace it with `--no-acl`; that would discard the
+migration-defined application privileges the restored service needs.
 
 ## Upgrade checkpoint
 
@@ -146,6 +230,35 @@ and a disposable PostgreSQL dump/restore and migration upgrade:
 ./.venv/bin/python scripts/run_phase5_ops_evidence.py --backend all \
   --output artifacts/phase5/ops-evidence.json
 ```
+
+PostgreSQL mode requires four role-separated URLs supplied through the
+environment:
+
+- `DATABASE_LIFECYCLE_URL` is used by the drill only to create, grant, and drop
+  its random disposable databases. The required `alicebot_drill` role needs
+  `CREATEDB` but remains `NOSUPERUSER`, `NOCREATEROLE`, and `NOBYPASSRLS`.
+- `DATABASE_ADMIN_URL` runs migrations, verification, and `pg_restore` as
+  `alicebot_admin`.
+- `DATABASE_URL` verifies runtime access as `alicebot_app`.
+- `DATABASE_BACKUP_URL` runs only `pg_dump` as `alicebot_backup`.
+
+The lifecycle role owns the disposable database and grants `alicebot_admin`
+database `CONNECT` and `CREATE`, plus `USAGE` and `CREATE` with grant option on
+its `public` schema. It grants the app and backup roles database access and
+explicit `USAGE` on `public`. It never runs migrations, dumps, restores, or
+application queries. A peer-authenticated lifecycle URL is suitable only when
+the drill process runs as the peer-mapped operating-system account.
+
+PostgreSQL cannot scope `CREATEDB` to a database-name prefix. A compromised
+`alicebot_drill` credential could create arbitrary databases and exhaust
+cluster storage. Restrict its login source, protect and rotate the credential,
+monitor database creation, and revoke the role when automated drills are not
+required. A manual same-host lifecycle can instead use the local PostgreSQL
+superuser through peer authentication, outside the automated script contract.
+
+If a subprocess fails, the command writes bounded, credential-scrubbed
+subprocess stderr to its own stderr with the stable failure code. Diagnostic
+text is never copied into the sanitized JSON receipt.
 
 See the [disaster-recovery runbook](../runbooks/disaster-recovery.md),
 [health and monitoring](../runbooks/health-and-monitoring.md), and

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 import os
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 from uuid import uuid4
 
 from alembic import command
@@ -47,30 +47,50 @@ def swap_database_name(database_url: str, database_name: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, f"/{database_name}", parsed.query, parsed.fragment))
 
 
+def database_role(database_url: str) -> str:
+    role = unquote(urlsplit(database_url).username or "")
+    if not role:
+        raise ValueError("database URL must include a role")
+    return role
+
+
 @pytest.fixture
 def database_urls() -> Iterator[dict[str, str]]:
     admin_root_url = os.getenv("DATABASE_ADMIN_URL", DEFAULT_ADMIN_URL)
     app_root_url = os.getenv("DATABASE_URL", DEFAULT_APP_URL)
+    lifecycle_root_url = os.getenv("DATABASE_LIFECYCLE_URL", admin_root_url)
     database_name = f"alicebot_test_{uuid4().hex[:12]}"
     admin_database_url = swap_database_name(admin_root_url, database_name)
     app_database_url = swap_database_name(app_root_url, database_name)
+    lifecycle_database_url = swap_database_name(lifecycle_root_url, database_name)
+    admin_role = database_role(admin_root_url)
+    app_role = database_role(app_root_url)
 
-    with psycopg.connect(admin_root_url, autocommit=True) as conn:
+    with psycopg.connect(lifecycle_root_url, autocommit=True) as conn:
         with conn.cursor() as cur:
             cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database_name)))
             cur.execute(
-                sql.SQL("GRANT CONNECT, TEMPORARY ON DATABASE {} TO alicebot_app").format(
-                    sql.Identifier(database_name)
+                sql.SQL("GRANT CONNECT, CREATE ON DATABASE {} TO {}").format(
+                    sql.Identifier(database_name),
+                    sql.Identifier(admin_role),
+                )
+            )
+            cur.execute(
+                sql.SQL("GRANT CONNECT, TEMPORARY ON DATABASE {} TO {}").format(
+                    sql.Identifier(database_name),
+                    sql.Identifier(app_role),
                 )
             )
 
+    with psycopg.connect(lifecycle_database_url, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql.SQL("GRANT CREATE, USAGE ON SCHEMA public TO {}").format(sql.Identifier(admin_role)))
+
     yield {"admin": admin_database_url, "app": app_database_url}
 
-    with psycopg.connect(admin_root_url, autocommit=True) as conn:
+    with psycopg.connect(lifecycle_root_url, autocommit=True) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(database_name))
-            )
+            cur.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(database_name)))
 
 
 @pytest.fixture

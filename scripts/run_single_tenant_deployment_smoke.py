@@ -31,10 +31,15 @@ CADDY_RELATIVE_PATH = Path("packaging/cloud/Caddyfile.example")
 GUIDE_RELATIVE_PATH = Path("docs/deployment/single-tenant-self-hosted.md")
 WORKFLOW_RELATIVE_PATH = Path(".github/workflows/deployment-guide-smoke.yml")
 WEB_API_SOURCE_RELATIVE_PATH = Path("apps/web/lib/api.ts")
+SEED_HELPER_RELATIVE_PATH = Path("scripts/seed_local_user.py")
+POSTGRES_CA_PATH = "/etc/alicebot/postgres-ca.pem"
+CLIENT_CA_PATH = "/etc/alicebot/client-ca.pem"
+RECOVERY_ENV_PATH = "/etc/alicebot/backup-restore.env"
 VALIDATED_ASSETS = {
     "caddyfile_example": CADDY_RELATIVE_PATH,
     "deployment_guide": GUIDE_RELATIVE_PATH,
     "environment_example": ENV_RELATIVE_PATH,
+    "local_user_seed_helper": SEED_HELPER_RELATIVE_PATH,
     "web_api_source": WEB_API_SOURCE_RELATIVE_PATH,
     "workflow": WORKFLOW_RELATIVE_PATH,
 }
@@ -50,6 +55,8 @@ _SECRET_MARKERS = (
     "BEGIN PRIVATE KEY",
     "ALICEBOT_DB_APP_PASSWORD",
     "ALICEBOT_DB_ADMIN_PASSWORD",
+    "ALICEBOT_DB_BACKUP_PASSWORD",
+    "ALICEBOT_DB_DRILL_PASSWORD",
 )
 
 
@@ -336,6 +343,7 @@ def _validate_database_url(
     *,
     expected_user: str,
     expected_placeholder: str,
+    expected_database: str = "alicebot",
 ) -> tuple[str, tuple[str, int, str]]:
     try:
         parsed = urlsplit(value)
@@ -345,7 +353,7 @@ def _validate_database_url(
     _require(parsed.username == expected_user, "database_role_invalid")
     _require(parsed.password == expected_placeholder, "database_secret_placeholder_invalid")
     _require(parsed.hostname not in {None, "", "localhost", "127.0.0.1", "::1"}, "database_host_invalid")
-    _require(parsed.path == "/alicebot", "database_name_invalid")
+    _require(parsed.path == f"/{expected_database}", "database_name_invalid")
     try:
         port = parsed.port or 5432
     except ValueError as exc:
@@ -353,7 +361,7 @@ def _validate_database_url(
     query = parse_qs(parsed.query, keep_blank_values=True)
     _require(query.get("sslmode") == ["verify-full"], "database_tls_invalid")
     _require(
-        query.get("sslrootcert") == ["/run/secrets/alicebot/postgres-ca.pem"],
+        query.get("sslrootcert") == [POSTGRES_CA_PATH],
         "database_ca_path_invalid",
     )
     return expected_user, ((parsed.hostname or "").lower(), port, parsed.path)
@@ -410,6 +418,8 @@ def validate_environment(values: Mapping[str, str]) -> None:
 
     for forbidden in (
         "DATABASE_ADMIN_URL",
+        "DATABASE_BACKUP_URL",
+        "DATABASE_LIFECYCLE_URL",
         "S3_ACCESS_KEY",
         "S3_SECRET_KEY",
         "WORKSPACE_PROVIDER_CONFIGS_JSON",
@@ -421,21 +431,48 @@ def validate_role_separated_database_contract(
     values: Mapping[str, str],
     guide_text: str,
 ) -> None:
-    match = re.search(r'(?m)^DATABASE_ADMIN_URL="([^"\n]+)"$', guide_text)
-    if match is None:
+    admin_match = re.search(r'(?m)^DATABASE_ADMIN_URL="([^"\n]+)"$', guide_text)
+    backup_match = re.search(r'(?m)^DATABASE_BACKUP_URL="([^"\n]+)"$', guide_text)
+    lifecycle_match = re.search(r'(?m)^DATABASE_LIFECYCLE_URL="([^"\n]+)"$', guide_text)
+    if admin_match is None:
         raise DeploymentContractError("migration_admin_database_example_missing")
+    if backup_match is None:
+        raise DeploymentContractError("backup_database_example_missing")
+    if lifecycle_match is None:
+        raise DeploymentContractError("lifecycle_database_example_missing")
     runtime_role, runtime_endpoint = _validate_database_url(
         values["DATABASE_URL"],
         expected_user="alicebot_app",
         expected_placeholder="${ALICEBOT_DB_APP_PASSWORD}",
     )
     admin_role, admin_endpoint = _validate_database_url(
-        match.group(1),
+        admin_match.group(1),
         expected_user="alicebot_admin",
         expected_placeholder="${ALICEBOT_DB_ADMIN_PASSWORD}",
     )
-    _require(runtime_role != admin_role, "database_roles_not_separated")
-    _require(runtime_endpoint == admin_endpoint, "database_endpoints_mismatch")
+    backup_role, backup_endpoint = _validate_database_url(
+        backup_match.group(1),
+        expected_user="alicebot_backup",
+        expected_placeholder="${ALICEBOT_DB_BACKUP_PASSWORD}",
+    )
+    lifecycle_role, lifecycle_endpoint = _validate_database_url(
+        lifecycle_match.group(1),
+        expected_user="alicebot_drill",
+        expected_placeholder="${ALICEBOT_DB_DRILL_PASSWORD}",
+        expected_database="postgres",
+    )
+    _require(
+        len({runtime_role, admin_role, backup_role, lifecycle_role}) == 4,
+        "database_roles_not_separated",
+    )
+    _require(
+        runtime_endpoint == admin_endpoint == backup_endpoint,
+        "database_endpoints_mismatch",
+    )
+    _require(
+        lifecycle_endpoint[:2] == runtime_endpoint[:2],
+        "database_endpoints_mismatch",
+    )
 
 
 def validate_caddyfile(text: str) -> None:
@@ -451,7 +488,7 @@ def validate_caddyfile(text: str) -> None:
     _require("client_auth" in normalized, "caddy_authentication_missing")
     _require("mode require_and_verify" in normalized, "caddy_mtls_not_fail_closed")
     _require(
-        "trust_pool file /run/secrets/alicebot/client-ca.pem" in normalized,
+        f"trust_pool file {CLIENT_CA_PATH}" in normalized,
         "caddy_mtls_trust_pool_missing",
     )
     _require(("reverse_proxy", "127.0.0.1:8000") in directives, "caddy_api_upstream_invalid")
@@ -529,18 +566,73 @@ def validate_guide(text: str) -> None:
         "HSTS and clickjacking response headers",
         "DATABASE_ADMIN_URL is absent from the API runtime environment",
         "DATABASE_ADMIN_URL is required for migrations",
-        "EnvironmentFile=/run/secrets/alicebot/backup-restore.env",
-        "BindReadOnlyPaths=/run/secrets/alicebot/postgres-ca.pem",
+        "DATABASE_BACKUP_URL",
+        "DATABASE_LIFECYCLE_URL",
+        "`alicebot_admin` is `NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`",
+        "`alicebot_app` is `NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`",
+        "`alicebot_backup` is `NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS`",
+        "`alicebot_drill` is `NOSUPERUSER CREATEDB NOCREATEROLE NOBYPASSRLS`",
+        "`CREATEDB` is cluster-wide",
+        "CREATE EXTENSION IF NOT EXISTS pgcrypto",
+        "CREATE EXTENSION IF NOT EXISTS vector",
+        "template1",
+        "GRANT CONNECT, CREATE ON DATABASE alice_restore_test TO alicebot_admin",
+        "GRANT CONNECT, TEMPORARY ON DATABASE alice_restore_test TO alicebot_app",
+        "GRANT CONNECT ON DATABASE alice_restore_test TO alicebot_backup",
+        "GRANT USAGE, CREATE ON SCHEMA public",
+        "TO alicebot_admin WITH GRANT OPTION",
+        "GRANT USAGE ON SCHEMA public TO alicebot_app, alicebot_backup",
+        "--no-comments",
+        "ACL - SCHEMA public",
+        '$4 == "ACL" && $5 == "-" && $6 == "SCHEMA" && $7 == "public"',
+        'test "$public_schema_acl_count" = 1',
+        "--use-list=alice.restore.list",
+        "Do not use `--no-acl`",
+        "entire public-schema ACL is deliberately reconstructed target-side",
+        "All table, sequence, and non-public-schema object ACL entries must remain",
+        "./.venv/bin/python scripts/seed_local_user.py",
+        "transaction-local",
+        "id alicebot",
+        "getent group alicebot",
+        "env -u DATABASE_ADMIN_URL -u DATABASE_BACKUP_URL -u DATABASE_LIFECYCLE_URL",
+        "Git-ignored deployment-local input",
+        "excluded from the Git carrier/source identity",
+        "root-owned, group-readable by `alicebot`, and mode `0640`",
+        f"EnvironmentFile={RECOVERY_ENV_PATH}",
+        f"BindReadOnlyPaths={POSTGRES_CA_PATH}",
         "run_phase5_ops_evidence.py --backend postgres",
         "runtime DB role=alicebot_app",
         "SELECT session_user, current_user",
         "admin DSN absent from API service environment",
+        "backup DSN absent from API service environment",
+        "lifecycle DSN absent from API service environment",
         "remote-v1-not-api",
         "remote-non-vnext-v0-not-api",
         "remote-vnext-lookalike-not-api",
     )
     for phrase in required_phrases:
         _require(phrase in normalized, "deployment_guide_contract_incomplete")
+    transient_secret_prefix = "/run" + "/secrets/alicebot"
+    _require(
+        transient_secret_prefix not in normalized,
+        "deployment_guide_transient_secret_path",
+    )
+
+
+def validate_seed_helper_contract(source: str) -> None:
+    for fragment in (
+        "from alicebot_api.db import set_current_user",
+        "with conn.transaction():",
+        "set_current_user(conn, user_id)",
+        'current_env.get("DATABASE_ADMIN_URL", "").strip()',
+        'current_env.get("ALICEBOT_AUTH_USER_ID", "").strip()',
+        "ON CONFLICT (id) DO UPDATE",
+    ):
+        _require(fragment in source, "local_user_seed_contract_invalid")
+    _require(
+        'current_env.get("DATABASE_URL"' not in source,
+        "local_user_seed_runtime_dsn_fallback",
+    )
 
 
 def _typescript_function_source(source: str, name: str) -> str:
@@ -637,7 +729,14 @@ def _assert_report_safe(report: Mapping[str, object]) -> None:
     serialized = json.dumps(report, sort_keys=True)
     for marker in _SECRET_MARKERS:
         _require(marker not in serialized, "report_contains_secret_marker")
-    _require(re.search(r"(?:^|[\s\"'])/(?:Users|home|private|tmp|var)/", serialized) is None, "report_contains_path")
+    _require(
+        re.search(
+            r"(?:^|[\s\"'])/(?:Users|etc|home|private|run|tmp|var)/",
+            serialized,
+        )
+        is None,
+        "report_contains_path",
+    )
 
 
 def _decode_asset(assets: Mapping[str, bytes], logical_name: str) -> str:
@@ -657,6 +756,7 @@ def _validated_report(
     caddy_text = _decode_asset(assets, "caddyfile_example")
     guide_text = _decode_asset(assets, "deployment_guide")
     workflow_text = _decode_asset(assets, "workflow")
+    seed_helper_source = _decode_asset(assets, "local_user_seed_helper")
     web_api_source = _decode_asset(assets, "web_api_source")
 
     values = parse_env_example(env_text)
@@ -664,6 +764,7 @@ def _validated_report(
     validate_role_separated_database_contract(values, guide_text)
     validate_caddyfile(caddy_text)
     validate_guide(guide_text)
+    validate_seed_helper_contract(seed_helper_source)
     validate_web_trust_contract(web_api_source)
     pins = validate_supply_chain_pins(workflow_text)
 
@@ -676,6 +777,7 @@ def _validated_report(
             "database_role_and_tls_contract": "passed",
             "exact_https_origin": "passed",
             "proxy_trust_boundary": "passed",
+            "local_user_seed_contract": "passed",
             "web_exact_origin_trust": "passed",
             "guide_claim_boundaries": "passed",
             "supply_chain_pins": {"status": "passed", **pins},

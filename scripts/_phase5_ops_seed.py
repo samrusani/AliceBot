@@ -77,12 +77,8 @@ def _seed_sqlite(db_path: Path, *, label: str) -> dict[str, object]:
         _signed_vector(store, memory)
         counts = {
             "users": int(conn.execute("SELECT count(*) AS count FROM users").fetchone()["count"]),
-            "memories": int(
-                conn.execute("SELECT count(*) AS count FROM memories").fetchone()["count"]
-            ),
-            "event_log": int(
-                conn.execute("SELECT count(*) AS count FROM event_log").fetchone()["count"]
-            ),
+            "memories": int(conn.execute("SELECT count(*) AS count FROM memories").fetchone()["count"]),
+            "event_log": int(conn.execute("SELECT count(*) AS count FROM event_log").fetchone()["count"]),
         }
     return {"backend": "sqlite", "counts": counts, "seeded": True}
 
@@ -95,15 +91,15 @@ def _seed_postgres(
     migrate_to_head: bool,
     seed_migration_0093_fixture: bool,
 ) -> dict[str, object]:
-    import psycopg
-
     if migrate_to_head:
         from alembic import command
         from alicebot_api.migrations import make_alembic_config
 
         command.upgrade(make_alembic_config(admin_database_url), "head")
 
-    with psycopg.connect(admin_database_url) as conn:
+    from alicebot_api.db import direct_user_connection
+
+    with direct_user_connection(admin_database_url, USER_ID) as conn:
         conn.execute(
             """
             INSERT INTO users (id, email, display_name)
@@ -113,7 +109,6 @@ def _seed_postgres(
             (USER_ID, "phase5-ops@example.invalid", "Phase 5 Ops"),
         )
 
-    from alicebot_api.db import direct_user_connection
     from alicebot_api.vnext_store import PostgresVNextStore
 
     with direct_user_connection(app_database_url, USER_ID) as conn:
@@ -172,16 +167,16 @@ def _seed_postgres(
                     ),
                 )
 
-    with psycopg.connect(admin_database_url) as conn:
+    with direct_user_connection(admin_database_url, USER_ID) as conn:
         users_row = conn.execute("SELECT count(*) FROM users").fetchone()
         memories_row = conn.execute("SELECT count(*) FROM memories").fetchone()
         events_row = conn.execute("SELECT count(*) FROM event_log").fetchone()
         if users_row is None or memories_row is None or events_row is None:
             raise RuntimeError("PostgreSQL seed count query returned no row")
         counts = {
-            "users": int(users_row[0]),
-            "memories": int(memories_row[0]),
-            "event_log": int(events_row[0]),
+            "users": int(users_row["count"]),
+            "memories": int(memories_row["count"]),
+            "event_log": int(events_row["count"]),
         }
     return {"backend": "postgres", "counts": counts, "seeded": True}
 

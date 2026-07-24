@@ -41,6 +41,8 @@ def _valid_env() -> dict[str, str]:
 
 
 def _copy_contract_tree(target: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ROOT / ".gitignore", target / ".gitignore")
     for relative_path in deployment.CONTRACT_INPUTS.values():
         destination = target / relative_path
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -75,6 +77,7 @@ def test_checked_in_configuration_contract_passes_without_cloud_claims() -> None
         "api_and_web_loopback",
         "database_role_and_tls_contract",
         "exact_https_origin",
+        "local_user_seed_contract",
         "proxy_trust_boundary",
         "web_exact_origin_trust",
         "guide_claim_boundaries",
@@ -138,6 +141,7 @@ def test_web_trust_source_contract_fails_closed_if_exact_origin_checks_are_remov
         ("caddyfile_example", deployment.CADDY_RELATIVE_PATH, b"\n# carrier mutation\n"),
         ("deployment_guide", deployment.GUIDE_RELATIVE_PATH, b"\n<!-- carrier mutation -->\n"),
         ("environment_example", deployment.ENV_RELATIVE_PATH, b"\n# carrier mutation\n"),
+        ("local_user_seed_helper", deployment.SEED_HELPER_RELATIVE_PATH, b"\n# carrier mutation\n"),
         ("web_api_source", deployment.WEB_API_SOURCE_RELATIVE_PATH, b"\n// carrier mutation\n"),
         ("workflow", deployment.WORKFLOW_RELATIVE_PATH, b"\n# carrier mutation\n"),
     ),
@@ -182,6 +186,37 @@ def test_carrier_snapshot_hashes_symlink_target_without_following_external_bytes
     assert str(tmp_path) not in serialized
 
 
+def test_rendered_web_environment_is_ignored_without_hiding_tracked_sources(
+    tmp_path: Path,
+) -> None:
+    ignored = _git(ROOT, "check-ignore", "-v", "apps/web/.env.production.local")
+    assert "apps/web/.env*.local" in ignored
+    assert (
+        _git(ROOT, "ls-files", "--error-unmatch", "apps/web/.env.local.example")
+        == "apps/web/.env.local.example"
+    )
+    assert _git(ROOT, "ls-files", "-i", "-c", "--exclude-standard") == ""
+
+    repo = tmp_path / "repo"
+    _copy_contract_tree(repo)
+    clean = deployment.run_smoke(root=repo, environment="ephemeral_ci")
+    web_env = repo / "apps" / "web" / ".env.production.local"
+    web_env.write_text(
+        "NEXT_PUBLIC_ALICEBOT_API_BASE_URL=https://alice.example.com\n",
+        encoding="utf-8",
+    )
+    first_render = deployment.run_smoke(root=repo, environment="ephemeral_ci")
+    web_env.write_text(
+        "NEXT_PUBLIC_ALICEBOT_API_BASE_URL=https://alice.changed.example\n",
+        encoding="utf-8",
+    )
+    second_render = deployment.run_smoke(root=repo, environment="ephemeral_ci")
+
+    assert _git(repo, "check-ignore", "-v", "apps/web/.env.production.local")
+    assert first_render == clean
+    assert second_render == clean
+
+
 def test_environment_example_is_production_loopback_exact_origin_and_role_separated() -> None:
     values = _valid_env()
     guide = _asset(deployment.GUIDE_RELATIVE_PATH)
@@ -202,8 +237,32 @@ def test_environment_example_is_production_loopback_exact_origin_and_role_separa
     assert "alicebot_app:${ALICEBOT_DB_APP_PASSWORD}" in values["DATABASE_URL"]
     assert "DATABASE_ADMIN_URL" not in values
     assert "alicebot_admin:${ALICEBOT_DB_ADMIN_PASSWORD}" in guide
+    assert "alicebot_backup:${ALICEBOT_DB_BACKUP_PASSWORD}" in guide
+    assert "alicebot_drill:${ALICEBOT_DB_DRILL_PASSWORD}" in guide
     assert "sslmode=verify-full" in values["DATABASE_URL"]
-    assert "sslrootcert=/run/secrets/alicebot/postgres-ca.pem" in values["DATABASE_URL"]
+    assert f"sslrootcert={deployment.POSTGRES_CA_PATH}" in values["DATABASE_URL"]
+
+
+def test_local_user_seed_helper_uses_admin_dsn_and_transaction_local_rls_context() -> None:
+    source = _asset(deployment.SEED_HELPER_RELATIVE_PATH)
+
+    deployment.validate_seed_helper_contract(source)
+
+    with pytest.raises(deployment.DeploymentContractError) as exc_info:
+        deployment.validate_seed_helper_contract(
+            source.replace("set_current_user(conn, user_id)", "pass", 1)
+        )
+    assert exc_info.value.code == "local_user_seed_contract_invalid"
+
+    with pytest.raises(deployment.DeploymentContractError) as fallback_error:
+        deployment.validate_seed_helper_contract(
+            source.replace(
+                'current_env.get("DATABASE_ADMIN_URL", "").strip()',
+                'current_env.get("DATABASE_URL", "").strip()',
+                1,
+            )
+        )
+    assert fallback_error.value.code == "local_user_seed_contract_invalid"
 
 
 @pytest.mark.parametrize(
@@ -248,7 +307,7 @@ def test_environment_validation_fails_closed_on_network_boundary_drift(
         ),
         (
             "migration",
-            "sslrootcert=/run/secrets/alicebot/postgres-ca.pem",
+            f"sslrootcert={deployment.POSTGRES_CA_PATH}",
             "sslrootcert=/tmp/untrusted-ca.pem",
             "database_ca_path_invalid",
         ),
@@ -276,6 +335,18 @@ def test_environment_validation_fails_closed_on_network_boundary_drift(
             "db.alice.internal:5433",
             "database_endpoints_mismatch",
         ),
+        (
+            "backup",
+            "alicebot_backup:${ALICEBOT_DB_BACKUP_PASSWORD}",
+            "alicebot_app:${ALICEBOT_DB_BACKUP_PASSWORD}",
+            "database_role_invalid",
+        ),
+        (
+            "lifecycle",
+            "db.alice.internal:5432/postgres",
+            "db.alice.internal:5432/alicebot",
+            "database_name_invalid",
+        ),
     ),
 )
 def test_database_contract_rejects_weak_tls_paths_literal_secrets_and_shared_roles(
@@ -298,11 +369,39 @@ def test_database_contract_rejects_weak_tls_paths_literal_secrets_and_shared_rol
     assert exc_info.value.code == failure_code
 
 
-def test_runtime_environment_rejects_migration_admin_dsn() -> None:
+@pytest.mark.parametrize(
+    ("key", "role", "placeholder", "database"),
+    (
+        (
+            "DATABASE_ADMIN_URL",
+            "alicebot_admin",
+            "${ALICEBOT_DB_ADMIN_PASSWORD}",
+            "alicebot",
+        ),
+        (
+            "DATABASE_BACKUP_URL",
+            "alicebot_backup",
+            "${ALICEBOT_DB_BACKUP_PASSWORD}",
+            "alicebot",
+        ),
+        (
+            "DATABASE_LIFECYCLE_URL",
+            "alicebot_drill",
+            "${ALICEBOT_DB_DRILL_PASSWORD}",
+            "postgres",
+        ),
+    ),
+)
+def test_runtime_environment_rejects_privileged_dsns(
+    key: str,
+    role: str,
+    placeholder: str,
+    database: str,
+) -> None:
     values = _valid_env()
-    values["DATABASE_ADMIN_URL"] = (
-        "postgresql://alicebot_admin:${ALICEBOT_DB_ADMIN_PASSWORD}@db.alice.internal:5432/"
-        "alicebot?sslmode=verify-full&sslrootcert=/run/secrets/alicebot/postgres-ca.pem"
+    values[key] = (
+        f"postgresql://{role}:{placeholder}@db.alice.internal:5432/"
+        f"{database}?sslmode=verify-full&sslrootcert={deployment.POSTGRES_CA_PATH}"
     )
 
     with pytest.raises(deployment.DeploymentContractError) as exc_info:
@@ -344,7 +443,7 @@ def test_caddy_example_requires_mtls_and_preserves_real_client_ip() -> None:
 
     assert "client_auth" in caddyfile
     assert "mode require_and_verify" in caddyfile
-    assert "trust_pool file /run/secrets/alicebot/client-ca.pem" in caddyfile
+    assert f"trust_pool file {deployment.CLIENT_CA_PATH}" in caddyfile
     assert "strict_sni_host on" in caddyfile
     assert "header_up X-Forwarded-For" not in caddyfile
     assert "/v0/vnext /v0/vnext/*" in caddyfile
@@ -460,8 +559,11 @@ def test_workflow_uses_full_action_shas_and_no_unpinned_images() -> None:
     (
         {"status": "failed", "detail": "postgresql://alice:secret@db/alice"},
         {"status": "failed", "detail": "/Users/operator/private/alice.env"},
+        {"status": "failed", "detail": "/etc/alicebot/runtime.env"},
         {"status": "failed", "detail": "/tmp/alice-secret"},
         {"status": "failed", "detail": "alice_sk_example"},
+        {"status": "failed", "detail": "ALICEBOT_DB_BACKUP_PASSWORD"},
+        {"status": "failed", "detail": "ALICEBOT_DB_DRILL_PASSWORD"},
     ),
 )
 def test_receipt_sanitizer_rejects_secret_and_path_markers(unsafe_report) -> None:
@@ -542,11 +644,43 @@ def test_guide_names_operational_probes_backup_restore_upgrade_and_claim_limits(
         "HSTS and clickjacking response headers",
         "DATABASE_ADMIN_URL is absent from the API runtime environment",
         "DATABASE_ADMIN_URL is required for migrations",
-        "EnvironmentFile=/run/secrets/alicebot/backup-restore.env",
-        "BindReadOnlyPaths=/run/secrets/alicebot/postgres-ca.pem",
+        "DATABASE_BACKUP_URL",
+        "DATABASE_LIFECYCLE_URL",
+        "alicebot_backup",
+        "alicebot_drill",
+        "BYPASSRLS",
+        "`CREATEDB` is cluster-wide",
+        "CREATE EXTENSION IF NOT EXISTS pgcrypto",
+        "CREATE EXTENSION IF NOT EXISTS vector",
+        "template1",
+        "GRANT CONNECT, CREATE ON DATABASE alice_restore_test TO alicebot_admin",
+        "GRANT CONNECT, TEMPORARY ON DATABASE alice_restore_test TO alicebot_app",
+        "GRANT CONNECT ON DATABASE alice_restore_test TO alicebot_backup",
+        "GRANT USAGE, CREATE ON SCHEMA public",
+        "TO alicebot_admin WITH GRANT OPTION",
+        "GRANT USAGE ON SCHEMA public TO alicebot_app, alicebot_backup",
+        "--no-comments",
+        "ACL - SCHEMA public",
+        '$4 == "ACL" && $5 == "-" && $6 == "SCHEMA" && $7 == "public"',
+        'test "$public_schema_acl_count" = 1',
+        "--use-list=alice.restore.list",
+        "Do not use `--no-acl`",
+        "entire public-schema ACL is deliberately reconstructed target-side",
+        "All table, sequence, and non-public-schema object ACL entries must remain",
+        "./.venv/bin/python scripts/seed_local_user.py",
+        "transaction-local",
+        "id alicebot",
+        "getent group alicebot",
+        "env -u DATABASE_ADMIN_URL -u DATABASE_BACKUP_URL -u DATABASE_LIFECYCLE_URL",
+        "Git-ignored deployment-local input",
+        "excluded from the Git carrier/source identity",
+        f"EnvironmentFile={deployment.RECOVERY_ENV_PATH}",
+        f"BindReadOnlyPaths={deployment.POSTGRES_CA_PATH}",
         "run_phase5_ops_evidence.py --backend postgres",
         "runtime DB role=alicebot_app",
         "admin DSN absent from API service environment",
+        "backup DSN absent from API service environment",
+        "lifecycle DSN absent from API service environment",
         "remote-v1-not-api",
         "remote-non-vnext-v0-not-api",
         "remote-vnext-lookalike-not-api",
@@ -557,6 +691,41 @@ def test_guide_names_operational_probes_backup_restore_upgrade_and_claim_limits(
     assert "systemctl show --property Environment" not in guide
     assert '"SELECT session_user, current_user"' in guide
     assert 'session_role != "alicebot_app" or effective_role != "alicebot_app"' in guide
+
+
+def test_guide_restore_filter_keeps_non_public_schema_acls() -> None:
+    guide = _asset(deployment.GUIDE_RELATIVE_PATH)
+    predicate = '$4 == "ACL" && $5 == "-" && $6 == "SCHEMA" && $7 == "public"'
+
+    assert predicate in guide
+    assert 'test "$public_schema_acl_count" = 1' in guide
+    assert "--use-list=alice.restore.list" in guide
+    assert "Do not use `--no-acl`" in guide
+
+    with pytest.raises(deployment.DeploymentContractError) as broad_acl_error:
+        deployment.validate_guide(
+            guide.replace("--use-list=alice.restore.list", "--no-acl", 1)
+        )
+    assert broad_acl_error.value.code == "deployment_guide_contract_incomplete"
+
+    with pytest.raises(deployment.DeploymentContractError) as broad_filter_error:
+        deployment.validate_guide(guide.replace(predicate, '$4 == "ACL"'))
+    assert broad_filter_error.value.code == "deployment_guide_contract_incomplete"
+
+
+def test_owned_deployment_contract_has_no_transient_secret_path() -> None:
+    old_prefix = "/run" + "/secrets/alicebot"
+    owned_paths = (
+        Path(".gitignore"),
+        deployment.ENV_RELATIVE_PATH,
+        deployment.CADDY_RELATIVE_PATH,
+        deployment.GUIDE_RELATIVE_PATH,
+        Path("scripts/run_single_tenant_deployment_smoke.py"),
+        Path("tests/unit/test_single_tenant_deployment.py"),
+    )
+
+    for relative_path in owned_paths:
+        assert old_prefix not in _asset(relative_path)
 
 
 def test_workflow_records_ephemeral_non_cloud_truth_and_uploads_only_sanitized_receipt() -> None:
