@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -240,3 +240,396 @@ def test_parse_event_datetime_rejects_garbage() -> None:
     assert parse_event_datetime("undated") is None
     assert parse_event_datetime("2023/15/40 (Xxx) 09:99") is None
     assert parse_event_datetime(12345) is None
+
+
+# ---------------------------------------------------------------------------
+# Relative past windows: a span running from an offset up to the reference.
+#
+# The window is the whole units of calendar time ENDING with the reference
+# day: half-open [start, end) as everywhere else in this module, end at the
+# midnight that closes the reference day (matching "today", which already
+# spans that day end to end), start exactly N units before that bound. So
+# "the past two weeks" is 14 calendar days and the day exactly fourteen days
+# back is outside it.
+# ---------------------------------------------------------------------------
+
+
+# REF is Tuesday 2023-04-18, so every window below ends 2023-04-19 00:00.
+PAST_WINDOW_CASES = [
+    ("how many times did I bake in the past two weeks?", _utc(2023, 4, 5), "the past two weeks"),
+    ("what did I cook in the past week", _utc(2023, 4, 12), "the past week"),
+    ("dinner parties in the past month", _utc(2023, 3, 19), "the past month"),
+    ("everything over the past year", _utc(2022, 4, 19), "the past year"),
+    ("what happened during the past three days", _utc(2023, 4, 16), "the past three days"),
+    ("bills within the last 6 weeks", _utc(2023, 3, 8), "the last 6 weeks"),
+    ("I have been ill for the past 2 months", _utc(2023, 2, 19), "the past 2 months"),
+    ("meetings throughout the past week", _utc(2023, 4, 12), "the past week"),
+    ("jewelry I acquired in the last two months", _utc(2023, 2, 19), "the last two months"),
+    # Bare singular means one unit.
+    ("what did I spend in the past day", _utc(2023, 4, 18), "the past day"),
+    ("what did I spend in the past 1 day", _utc(2023, 4, 18), "the past 1 day"),
+    # Spelled-out, digit, and multiword counts all resolve the same way.
+    ("trips in the past twelve months", _utc(2022, 4, 19), "the past twelve months"),
+    ("trips in the past 12 months", _utc(2022, 4, 19), "the past 12 months"),
+    ("trips in the past couple of weeks", _utc(2023, 4, 5), "the past couple of weeks"),
+    ("trips in the last one year", _utc(2022, 4, 19), "the last one year"),
+    # Case and surrounding text do not matter.
+    ("IN THE PAST TWO WEEKS", _utc(2023, 4, 5), "THE PAST TWO WEEKS"),
+    ("in the past three months, what did I buy?", _utc(2023, 1, 19), "the past three months"),
+]
+
+PAST_WINDOW_NONE_CASES = [
+    # No definite quantity: the module refuses rather than picking one.
+    "what did I bake in the past few weeks",
+    "what did I bake in the past several months",
+    "what did I bake in the past couple weeks",
+    "what did I bake in the past weeks",
+    "what did I bake in the past many days",
+    "what did I bake in the past",
+    # A vague tail is the same problem stated at the end of the phrase.
+    "what did I bake in the past month or so",
+    "what did I bake in the past year and a half",
+    "what did I bake in the past day or two",
+    "what did I bake in the past week and a bit",
+    # A RE-ANCHORED span ends somewhere other than now: at a named period's
+    # edge, at a named event, or starting from one. Every one of these is a
+    # wrong span rather than a narrow one if resolved as a window ending
+    # today.
+    "what did I bake in the last 3 months of 2022",
+    "what did I bake in the past two weeks of the trip",
+    "what did I bake in the last 2 weeks before the wedding",
+    "what did I bake in the past 6 months prior to surgery",
+    "what did I bake in the last three months leading up to the show",
+    "what did I bake in the past two weeks leading to the show",
+    "what did I bake in the past two weeks running up to the show",
+    "what did I bake in the past two weeks up to the wedding",
+    "what did I bake in the past two weeks preceding the wedding",
+    "what did I bake in the past two weeks ahead of the wedding",
+    "what did I bake in the past two weeks following surgery",
+    "what did I bake in the past two weeks after surgery",
+    "what did I bake in the past two weeks since surgery",
+    "what did I bake in the past two weeks until the wedding",
+    "what did I bake in the past two weeks till the wedding",
+    "what did I bake in the past two weeks ending Friday",
+    "what did I bake in the past two weeks starting Monday",
+    "what did I bake in the past two weeks beginning Monday",
+    "what did I bake in the past two weeks from Monday",
+    # An EXCLUSION in front of the phrase asks about the complement of the
+    # span, so resolving the span answers the opposite question.
+    "what did I bake except for the past two weeks",
+    "what did I bake, not in the past two weeks",
+    "what did I bake other than in the past two weeks",
+    "what did I bake excluding the past two weeks",
+    "what did I bake apart from the past two weeks",
+    "what did I bake outside of the past two weeks",
+    "what did I bake ignoring the past two weeks",
+    "what did I bake without the past two weeks",
+    "what did I bake rather than in the past two weeks",
+    "everything but not in the past two weeks",
+    # A plural count with a SINGULAR unit is an attributive compound, not a
+    # span: the noun it modifies is the head and this pattern never saw it.
+    "what did I bake in the past 3 day trip",
+    "what did I bake in the past 2 week holiday",
+    "what did I bake in the past 6 month lease",
+    "what did I bake in the past 12 month period",
+    "what did I bake in the past two week break",
+    # Units this module does not carry anywhere else, plus the ambiguous one.
+    "what did I bake in the past 24 hours",
+    "what did I bake in the past fortnight",
+    "what did I bake in the past quarter",
+    "what did I bake in the past decade",
+    # A zero-length or unrepresentable span is never invented.
+    "what did I bake in the past 0 days",
+    "what did I bake in the past 999 years",
+    # The phrase needs both an anchoring preposition and the article.
+    "what did I bake in past two weeks",
+    "the past two weeks were busy",
+    "these past two weeks were busy",
+    "what did I bake in this past week",
+    "what did I bake in these past two weeks",
+    "what did I bake since the past two weeks",
+    # Not a temporal phrase at all.
+    "what did I bake in the past monthly report",
+]
+
+
+@pytest.mark.parametrize(("query", "start", "parsed_from"), PAST_WINDOW_CASES)
+def test_a_relative_past_window_spans_the_offset_up_to_the_reference_day(
+    query: str, start: datetime, parsed_from: str
+) -> None:
+    anchor = parse_temporal_anchor(query, reference_time=REF)
+
+    assert anchor is not None, query
+    assert anchor.window_start == start
+    # Every one of these ends with the reference day, never open-ended.
+    assert anchor.window_end == _utc(2023, 4, 19)
+    assert anchor.window_end != WINDOW_CEILING
+    assert anchor.parsed_from == parsed_from
+
+
+@pytest.mark.parametrize("query", PAST_WINDOW_NONE_CASES)
+def test_a_span_that_pins_down_no_single_window_is_refused(query: str) -> None:
+    assert parse_temporal_anchor(query, reference_time=REF) is None
+
+
+def test_past_window_boundaries_are_half_open_and_exactly_n_units_long() -> None:
+    """The reference day is in; the day exactly N units back is out."""
+
+    anchor = parse_temporal_anchor("what did I bake in the past two weeks", reference_time=REF)
+
+    assert anchor is not None
+    # 14 calendar days, not 15.
+    assert (anchor.window_end - anchor.window_start).days == 14
+    # The reference day is inside the window.
+    assert anchor.window_start <= REF < anchor.window_end
+    # The first instant of the window is included, the last excluded.
+    assert anchor.window_start == _utc(2023, 4, 5)
+    assert anchor.window_end == _utc(2023, 4, 19)
+    # The day exactly fourteen days before the reference day is outside.
+    assert _utc(2023, 4, 4) < anchor.window_start
+
+    week = parse_temporal_anchor("what did I bake in the past week", reference_time=REF)
+    assert week is not None
+    assert (week.window_end - week.window_start).days == 7
+
+
+def test_a_past_window_is_never_the_offset_window_of_the_same_unit_count() -> None:
+    """A span phrase and an offset phrase name different periods.
+
+    "in the past two weeks" runs up to now; "two weeks ago" names the
+    calendar week holding the point two weeks back, which closes before the
+    reference day. Answering either with the other counts over a period
+    nobody asked about.
+    """
+
+    span = parse_temporal_anchor("what did I bake in the past two weeks", reference_time=REF)
+    offset = parse_temporal_anchor("what did I bake two weeks ago", reference_time=REF)
+
+    assert span is not None and offset is not None
+    assert (span.window_start, span.window_end) == (_utc(2023, 4, 5), _utc(2023, 4, 19))
+    assert (offset.window_start, offset.window_end) == (_utc(2023, 4, 3), _utc(2023, 4, 10))
+    assert offset.window_end < span.window_end
+    # The offset window reaches back further than the span does.
+    assert offset.window_start < span.window_start
+
+
+def test_phrases_that_already_resolved_keep_the_window_they_always_had() -> None:
+    """Relative past windows are additive: they never retarget an old parse.
+
+    "in the last month" has always meant the previous CALENDAR month here,
+    through ``_LAST_THIS_UNIT``, and it still does. Only forms that parsed
+    to nothing before ("in the past month", "in the last 1 month") reach the
+    new span rule, which is why the two now differ.
+    """
+
+    calendar = parse_temporal_anchor("expenses in the last month", reference_time=REF)
+    assert calendar is not None
+    assert (calendar.window_start, calendar.window_end) == (_utc(2023, 3, 1), _utc(2023, 4, 1))
+    assert calendar.parsed_from == "last month"
+
+    for query in ("expenses in the last week", "expenses in this week", "expenses in the last year"):
+        anchor = parse_temporal_anchor(query, reference_time=REF)
+        assert anchor is not None
+        assert anchor.parsed_from in ("last week", "this week", "last year")
+
+    span = parse_temporal_anchor("expenses in the past month", reference_time=REF)
+    assert span is not None
+    assert (span.window_start, span.window_end) == (_utc(2023, 3, 19), _utc(2023, 4, 19))
+
+    explicit = parse_temporal_anchor("expenses in the last 1 month", reference_time=REF)
+    assert explicit is not None
+    assert (explicit.window_start, explicit.window_end) == (_utc(2023, 3, 19), _utc(2023, 4, 19))
+
+
+def test_an_explicit_calendar_point_still_outranks_a_relative_past_window() -> None:
+    anchor = parse_temporal_anchor(
+        "what did I buy in March 2023 and in the past two weeks",
+        reference_time=REF,
+    )
+
+    assert anchor is not None
+    assert anchor.parsed_from == "March 2023"
+    assert (anchor.window_start, anchor.window_end) == (_utc(2023, 3, 1), _utc(2023, 4, 1))
+
+
+@pytest.mark.parametrize(
+    ("reference", "start", "end"),
+    [
+        # Month arithmetic goes through _add_months, so a month-end
+        # reference clamps rather than overflowing into the next month.
+        (_utc(2023, 3, 31), _utc(2023, 3, 1), _utc(2023, 4, 1)),
+        (_utc(2023, 3, 30), _utc(2023, 2, 28), _utc(2023, 3, 31)),
+        (_utc(2024, 3, 30), _utc(2024, 2, 29), _utc(2024, 3, 31)),
+        (_utc(2023, 1, 31), _utc(2023, 1, 1), _utc(2023, 2, 1)),
+        (_utc(2023, 12, 31), _utc(2023, 12, 1), _utc(2024, 1, 1)),
+    ],
+)
+def test_a_one_month_span_clamps_at_month_ends_without_inverting(
+    reference: datetime, start: datetime, end: datetime
+) -> None:
+    anchor = parse_temporal_anchor("what did I bake in the past month", reference_time=reference)
+
+    assert anchor is not None
+    assert (anchor.window_start, anchor.window_end) == (start, end)
+    assert anchor.window_start < anchor.window_end
+
+
+@pytest.mark.parametrize(
+    ("reference", "start", "end"),
+    [
+        (_utc(2024, 2, 28), _utc(2023, 2, 28), _utc(2024, 2, 29)),
+        (_utc(2024, 2, 29), _utc(2023, 3, 1), _utc(2024, 3, 1)),
+        (_utc(2023, 2, 28), _utc(2022, 3, 1), _utc(2023, 3, 1)),
+    ],
+)
+def test_a_one_year_span_crosses_a_leap_day_without_inverting(
+    reference: datetime, start: datetime, end: datetime
+) -> None:
+    anchor = parse_temporal_anchor("what did I bake in the past year", reference_time=reference)
+
+    assert anchor is not None
+    assert (anchor.window_start, anchor.window_end) == (start, end)
+    assert anchor.window_start < anchor.window_end
+
+
+def test_no_reference_day_or_count_produces_an_inverted_or_open_window() -> None:
+    """Swept, not argued: every day of two years crossed with every unit."""
+
+    checked = 0
+    day = date(2023, 1, 1)
+    while day < date(2025, 1, 1):
+        reference = datetime(day.year, day.month, day.day, 13, 45, tzinfo=UTC)
+        for count in (1, 2, 3, 7, 12, 52, 99):
+            for unit in ("day", "week", "month", "year"):
+                anchor = parse_temporal_anchor(
+                    f"what did I bake in the past {count} {unit}s",
+                    reference_time=reference,
+                )
+                assert anchor is not None, (reference, count, unit)
+                assert anchor.window_start < anchor.window_end
+                assert anchor.window_start >= WINDOW_FLOOR
+                assert anchor.window_end != WINDOW_CEILING
+                # The span always covers the reference day and never runs on
+                # past it.
+                assert anchor.window_start <= reference < anchor.window_end
+                day_start = datetime(day.year, day.month, day.day, tzinfo=UTC)
+                assert anchor.window_end == day_start + timedelta(days=1)
+                checked += 1
+        day += timedelta(days=1)
+
+    assert checked == 731 * 28
+
+    # Reaching back past WINDOW_FLOOR refuses instead of clamping to it:
+    # clamping would turn a bounded span into an effectively open-ended one.
+    assert parse_temporal_anchor("what did I bake in the past 300 years", reference_time=REF) is None
+    assert parse_temporal_anchor("what did I bake in the past 99 years", reference_time=REF) is not None
+
+
+def test_a_past_window_is_deterministic_and_reference_driven() -> None:
+    query = "what did I bake in the past two weeks"
+
+    assert parse_temporal_anchor(query, reference_time=REF) == parse_temporal_anchor(
+        query, reference_time=REF.replace(tzinfo=None)
+    )
+    later = parse_temporal_anchor(query, reference_time=REF + timedelta(days=1))
+    assert later is not None
+    assert later.window_end == _utc(2023, 4, 20)
+
+
+def test_past_window_cases_are_utc_and_forward() -> None:
+    for query, *_rest in PAST_WINDOW_CASES:
+        anchor = parse_temporal_anchor(query, reference_time=REF)
+        assert anchor is not None
+        assert anchor.window_start.tzinfo is UTC
+        assert anchor.window_end.tzinfo is UTC
+        assert anchor.window_start < anchor.window_end
+
+
+def test_a_reference_time_at_the_edge_of_the_datetime_range_refuses_rather_than_raising() -> None:
+    """This runs inside pack compilation, so it must not propagate.
+
+    The offset phrases already raise on the same inputs (``"two weeks ago"``
+    overflows at year 1, ``"today"`` overflows at year 9999); that is
+    pre-existing and untouched here. The span rule refuses instead.
+    """
+
+    for reference in (
+        datetime(1, 1, 2, tzinfo=UTC),
+        datetime(1, 1, 1, tzinfo=UTC),
+        datetime(9999, 12, 31, tzinfo=UTC),
+    ):
+        for query in (
+            "what did I bake in the past two weeks",
+            "what did I bake in the past month",
+            "what did I bake in the past 3 years",
+            "what did I bake in the past day",
+        ):
+            assert parse_temporal_anchor(query, reference_time=reference) is None
+
+
+def test_the_span_count_bound_is_three_digits_and_refuses_beyond_it() -> None:
+    """The count width matches ``_UNITS_AGO``'s, and nothing wider parses.
+
+    Without this pin the digit bound is free to widen silently, and a wider
+    one would take "in the past 1000 days" (a typo, or a number that means
+    something else entirely) for a span nearly three years long.
+    """
+
+    inside = parse_temporal_anchor("what did I bake in the past 999 days", reference_time=REF)
+    assert inside is not None
+    assert inside.window_start == _utc(2020, 7, 24)
+    assert inside.window_end == _utc(2023, 4, 19)
+
+    for query in (
+        "what did I bake in the past 1000 days",
+        "what did I bake in the past 1234 weeks",
+        "what did I bake in the past 10000 years",
+        "what did I bake in the past 0999 days",
+    ):
+        assert parse_temporal_anchor(query, reference_time=REF) is None, query
+
+
+def test_a_re_anchored_or_excluded_span_never_becomes_a_window_ending_now() -> None:
+    """The two classes above, asserted against the windows they would take.
+
+    Each case is checked against the window the phrase's own span WOULD have
+    resolved to, so a future edit that admits any of them fails here with the
+    wrong window in hand rather than merely with a non-None anchor.
+    """
+
+    plain = parse_temporal_anchor("what did I bake in the past two weeks", reference_time=REF)
+    assert plain is not None
+    span = (plain.window_start, plain.window_end)
+
+    for query in (
+        "what did I bake in the past two weeks before the wedding",
+        "what did I bake in the past two weeks prior to surgery",
+        "what did I bake in the past two weeks leading up to the show",
+        "what did I bake except for the past two weeks",
+        "what did I bake, not in the past two weeks",
+    ):
+        anchor = parse_temporal_anchor(query, reference_time=REF)
+        assert anchor is None, (query, anchor, span)
+
+    # The same sentence WITHOUT the re-anchoring tail still resolves, so the
+    # refusals above come from the tail and not from breaking the family.
+    assert parse_temporal_anchor("what did I bake in the past two weeks", reference_time=REF) is not None
+
+
+def test_an_exclusion_guard_never_swallows_an_ordinary_verb() -> None:
+    """The exclusion words fire on the phrase's preposition, not on a verb.
+
+    "not" is the one that could over-reach, so it is pinned from both sides:
+    it refuses "not IN the past two weeks" and leaves an ordinary negated
+    clause alone, because there the verb sits between "not" and "in".
+    """
+
+    for query in (
+        "what did I save in the past two weeks",
+        "I did not bake in the past two weeks",
+        "how many times did I not visit the museum in the past two weeks",
+        "what did I spend but forgot in the past two weeks",
+    ):
+        anchor = parse_temporal_anchor(query, reference_time=REF)
+        assert anchor is not None, query
+        assert (anchor.window_start, anchor.window_end) == (_utc(2023, 4, 5), _utc(2023, 4, 19))

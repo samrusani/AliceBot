@@ -63,6 +63,7 @@ from alicebot_api.vnext_retrieval import (
     query_terms,
     reciprocal_rank_fusion,
 )
+from alicebot_api.vnext_temporal_query import WINDOW_CEILING, WINDOW_FLOOR
 
 
 _UNSET = object()
@@ -9050,3 +9051,204 @@ def test_a_summative_adverbial_query_reaches_the_signed_occurrence_reader() -> N
     assert pack["aggregation"]["kind"] == "occurrence_count"
     assert pack["aggregation"]["lower_bound"] == 2
     assert any(call["selector_key"] == "v1|a=exact:visit|o=exact:museum" for call in store.occurrence_search_calls)
+
+
+# ---------------------------------------------------------------------------
+# Relative past windows ("in the past two weeks") meeting the count parser.
+# The window is enforced by the reader from the anchor, never by the plan, so
+# these cases assert BOTH halves: the plan is the plain one, and the anchor
+# survives to bound the read.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("query", "plain"),
+    [
+        (
+            "How many times did I visit the museum in the past two weeks?",
+            "How many times did I visit the museum?",
+        ),
+        # A wildcard object, the "have I <verb>ed" auxiliary, and an object
+        # carrying a prepositional narrowing: the three shapes a span phrase
+        # has to survive alongside.
+        (
+            "How many times did I cook something in the past month?",
+            "How many times did I cook something?",
+        ),
+        (
+            "How many book clubs have I joined in the past month?",
+            "How many book clubs have I joined?",
+        ),
+        (
+            "How many cups of coffee did I drink in the last two months?",
+            "How many cups of coffee did I drink?",
+        ),
+        (
+            "How many books did I read during the past year?",
+            "How many books did I read?",
+        ),
+        (
+            "How many times did I visit the museum in the past 3 weeks?",
+            "How many times did I visit the museum?",
+        ),
+        # The summative adverbial peels on either side of the span phrase.
+        (
+            "How many times did I visit the museum in the past month, in total?",
+            "How many times did I visit the museum?",
+        ),
+        (
+            "How many times did I visit the museum in total in the past month?",
+            "How many times did I visit the museum?",
+        ),
+    ],
+)
+def test_a_relative_past_window_leaves_the_plain_count_plan_and_a_bounded_window(
+    query: str,
+    plain: str,
+) -> None:
+    anchor = vnext_retrieval_module.parse_temporal_anchor(
+        query,
+        reference_time=_OCCURRENCE_PLAN_REFERENCE_TIME,
+    )
+    plan = _occurrence_plan_for(query)
+    plain_plan = _occurrence_plan_for(plain)
+
+    assert plain_plan is not None
+    assert plan is not None
+    assert plan.selector_keys == plain_plan.selector_keys
+    assert plan.aggregation_basis == plain_plan.aggregation_basis
+    assert _occurrence_plan_atoms(plan) == _occurrence_plan_atoms(plain_plan)
+    # The span phrase must not survive as an object qualifier: a stored unit
+    # carries no "past"/"two"/"week" qualifier, so leaving one there would
+    # silently guarantee a non-match. (Qualifiers the OBJECT itself carries,
+    # like "pieces of jewelry", are kept, which is why this checks the span
+    # tokens rather than emptiness.)
+    span_tokens = {
+        "past",
+        "last",
+        "in",
+        "during",
+        "two",
+        "three",
+        "day",
+        "days",
+        "week",
+        "weeks",
+        "month",
+        "months",
+        "year",
+        "years",
+    }
+    for _action, object_leaf, qualifiers in _occurrence_plan_atoms(plan):
+        assert span_tokens.isdisjoint(qualifiers)
+        assert object_leaf not in span_tokens
+    # ...and the window must still be there, closed on both sides, or the
+    # count would silently answer over all time.
+    assert anchor is not None
+    assert anchor.window_start > WINDOW_FLOOR
+    assert anchor.window_end < WINDOW_CEILING
+    assert anchor.window_start < anchor.window_end
+    assert anchor.window_start <= _OCCURRENCE_PLAN_REFERENCE_TIME < anchor.window_end
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many times did I visit the museum in the past few weeks?",
+        "How many times did I visit the museum in the past couple weeks?",
+        "How many times did I visit the museum in the past month or so?",
+        "How many times did I visit the museum in the past 24 hours?",
+        "How many times did I visit the museum in the past quarter?",
+        "How many times did I visit the museum in the last 3 months of 2022?",
+        "How many times did I bake bread in the past several months?",
+    ],
+)
+def test_a_span_phrase_the_anchor_refuses_never_becomes_the_counted_object(
+    query: str,
+) -> None:
+    """An unresolvable span leaves the query refused, not counted over all time."""
+
+    assert (
+        vnext_retrieval_module.parse_temporal_anchor(
+            query,
+            reference_time=_OCCURRENCE_PLAN_REFERENCE_TIME,
+        )
+        is None
+    )
+    assert _occurrence_plan_for(query) is None
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many times did I visit the museum over the past year?",
+        "How many times did I visit the museum within the past year?",
+        "How many times did I visit the museum for the past year?",
+        "How many times did I visit the museum throughout the past year?",
+    ],
+)
+def test_a_span_preposition_the_stripper_cannot_remove_refuses_the_count(
+    query: str,
+) -> None:
+    """The anchor resolves these; the count still refuses, and that is right.
+
+    ``_occurrence_query_without_anchor`` only removes the preposition set it
+    knows ("on/in/during/before/after/since"). With "over"/"within"/"for"/
+    "throughout" the preposition would be left behind as object residue, so
+    the stripper returns ``None`` and the whole query is refused. Refusing is
+    the safe outcome: the alternative is a selector carrying a stray
+    preposition, which reads as legitimate and can never match.
+    """
+
+    anchor = vnext_retrieval_module.parse_temporal_anchor(
+        query,
+        reference_time=_OCCURRENCE_PLAN_REFERENCE_TIME,
+    )
+
+    assert anchor is not None
+    assert vnext_retrieval_module._occurrence_query_without_anchor(query, anchor) is None
+    assert _occurrence_plan_for(query) is None
+
+
+def test_a_relative_past_window_query_bounds_the_signed_occurrence_read() -> None:
+    """End to end: the span reaches the reader AND narrows what it reads."""
+
+    memories, units, evidence = _reviewed_occurrence_rows(2)
+    for index, unit in enumerate(units):
+        _retarget_occurrence_test_unit(
+            unit,
+            [evidence[index]],
+            action="visit",
+            object_leaf="museum",
+            count_key="visit museum",
+            canonical_text="I visited the museum.",
+        )
+    for memory in memories:
+        memory["canonical_text"] = "I visited the museum."
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I visit the museum in the past year?",
+            reference_time=_OCCURRENCE_PLAN_REFERENCE_TIME,
+        )
+    )
+
+    # The fixture's occurrences sit at 2026-01-10, inside a one-year span
+    # ending on the 2026-07-24 reference day.
+    assert pack["aggregation"]["kind"] == "occurrence_count"
+    assert pack["aggregation"]["lower_bound"] == 2
+    windowed = [
+        call for call in store.occurrence_search_calls if call.get("selector_key") == "v1|a=exact:visit|o=exact:museum"
+    ]
+    assert windowed
+    for call in windowed:
+        assert call["occurred_at_start"] == datetime(2025, 7, 25, tzinfo=UTC)
+        # The reader clips the window's end to its own as_of, so the read
+        # never runs past the reference instant.
+        assert call["occurred_at_end"] == _OCCURRENCE_PLAN_REFERENCE_TIME

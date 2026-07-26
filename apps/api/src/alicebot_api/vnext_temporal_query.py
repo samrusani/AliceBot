@@ -15,6 +15,15 @@ name with no anchoring preposition or year — think "May I ask") return
 ``None``. Month/day mentions without a year resolve to the most recent
 occurrence at or before ``reference_time``, matching how people query a
 memory system about the past.
+
+Offset phrases and span phrases are kept apart because they denote
+different periods: "two weeks ago" is the calendar week holding the point
+two weeks back, while "in the past two weeks" is the continuous span from
+two weeks back up to now. Resolving either as the other would count over
+the wrong window and report it with the same confidence as a right one.
+A span with no definite quantity ("in the past few weeks", "in the past
+month or so") falls under the conservatism rule above and returns
+``None``.
 """
 
 from __future__ import annotations
@@ -120,6 +129,97 @@ _TODAY = re.compile(r"\btoday\b", re.IGNORECASE)
 _LAST_THIS_UNIT = re.compile(r"\b(last|this)\s+(week|month|year)\b", re.IGNORECASE)
 _UNITS_AGO = re.compile(
     rf"\b({_NUMBER_WORD_PATTERN}|\d{{1,3}})\s+(day|week|month|year)s?\s+ago\b", re.IGNORECASE
+)
+
+# A window running from a past offset UP TO the reference, which is NOT the
+# span _UNITS_AGO resolves. "two weeks ago" names the calendar week holding
+# the point two weeks back; "in the past two weeks" names the continuous
+# span from two weeks back until now. Those are different periods, and
+# answering one with the other returns a confident count over the wrong
+# window, so the two patterns share no semantics.
+#
+# The phrase needs one of these prepositions in front of it. A bare "the
+# past two weeks" is left alone: the module already refuses weak references
+# that no preposition anchors (see _ANCHOR_BEFORE), and the same
+# conservatism applies here.
+_PAST_WINDOW_PREPOSITIONS = ("in", "over", "during", "within", "throughout", "for")
+# The definite article is also required, and it belongs to the phrase:
+# "in past two weeks" is not ordinary English, and callers that strip
+# ``parsed_from`` from the query text rely on the article staying inside
+# the phrase and the preposition staying outside it, exactly as "in March"
+# leaves "March". Demonstratives ("this past week", "these past two
+# weeks") are a different determiner class that reads far more often
+# without any preposition at all ("this past week I baked twice"), which
+# this pattern does not admit either; they refuse.
+#
+# Two negative lookaheads keep genuinely different phrases out.
+#
+# The first is the RE-ANCHORED span: a word after the phrase that moves its
+# terminus off "now" and onto a named event. Every one of these denotes a
+# span that ends somewhere other than the reference day, so resolving it as
+# a window ending now is a wrong span rather than a narrow one:
+#
+#     in the last week OF March                 the final week of a month
+#     in the last 2 weeks BEFORE the wedding    a span ending at the wedding
+#     in the past 6 months PRIOR TO surgery     a span ending at surgery
+#     in the last 3 months LEADING UP TO the show
+#     in the past two weeks FOLLOWING surgery   a span that starts at surgery
+#
+# The list is closed and refusals-only. A terminus word this misses leaves
+# the phrase resolving as it does today; one listed in error only costs a
+# refusal.
+_PAST_WINDOW_TERMINUS_WORDS = (
+    r"of",
+    r"before",
+    r"after",
+    r"since",
+    r"until",
+    r"till",
+    r"following",
+    r"preceding",
+    r"ending",
+    r"starting",
+    r"beginning",
+    r"from",
+    r"prior\s+to",
+    r"up\s+to",
+    r"leading\s+(?:up\s+)?to",
+    r"running\s+up\s+to",
+    r"ahead\s+of",
+)
+_PAST_WINDOW_RETERMINUS = r"(?!\s+(?:" + "|".join(_PAST_WINDOW_TERMINUS_WORDS) + r")\b)"
+# The second is a vague tail: "in the past week or so", "in the past month
+# and a half" do not pin down one window, so they follow the module's
+# conservatism rule and refuse.
+_PAST_WINDOW_VAGUE_TAIL = r"(?!\s+(?:and\s+a\s+(?:half|bit)|or\s+(?:so|two|three|more|less))\b)"
+_PAST_WINDOW = re.compile(
+    r"\b(?:" + "|".join(_PAST_WINDOW_PREPOSITIONS) + r")\s+"
+    rf"(?P<phrase>the\s+(?:past|last)\s+"
+    rf"(?:(?P<count>{_NUMBER_WORD_PATTERN}|\d{{1,3}})\s+)?"
+    rf"(?P<unit>day|week|month|year)(?P<plural>s?))\b" + _PAST_WINDOW_RETERMINUS + _PAST_WINDOW_VAGUE_TAIL,
+    re.IGNORECASE,
+)
+# An exclusion in front of the phrase inverts what is being asked for:
+# "except for the past two weeks" and "not in the past two weeks" ask about
+# everything OUTSIDE the span, so resolving the span itself answers the
+# complement of the question. Checked against the text before the match the
+# same way ``_ANCHOR_BEFORE`` and ``_OPEN_BEFORE`` are, because Python's
+# lookbehind cannot take alternatives of differing width.
+#
+# Only the words that can stand IMMEDIATELY before the phrase's own
+# preposition belong here, and only where they cannot also read as an
+# ordinary verb. "not" qualifies: it fires on "not IN the past two weeks",
+# never on "I did not bake in the past two weeks", where the verb sits
+# between. Archaic "save for" is deliberately absent, because catching it
+# would mean listing bare "save", which would refuse "what did I save in
+# the past two weeks".
+_PAST_WINDOW_EXCLUDED_BEFORE = re.compile(
+    r"(?:^|[\s(,;:])(?:"
+    r"except(?:\s+for)?|excepting|excluding|not|other\s+than|rather\s+than|"
+    r"apart\s+from|aside\s+from|besides|outside(?:\s+of)?|ignoring|without|"
+    r"but\s+not|minus"
+    r")\s*$",
+    re.IGNORECASE,
 )
 
 
@@ -438,6 +538,82 @@ def _open_adjusted(
     return TemporalAnchor(start, end, match.group(0))
 
 
+def _past_window(match: re.Match[str], reference: datetime) -> tuple[datetime, datetime] | None:
+    """Whole units of calendar time ending with the reference day, or ``None``.
+
+    Boundary convention, chosen to match this module's existing relative
+    windows rather than to invent a new one: all of them cover whole UTC
+    days, and "today" already spans the reference day end to end. So a past
+    window ENDS at the end of the reference day (the exclusive bound is the
+    next midnight) and STARTS exactly ``count`` units before that bound.
+    "In the past two weeks" asked on a Tuesday is therefore the 14 calendar
+    days ending with that Tuesday, and the day exactly fourteen days back
+    falls OUTSIDE the window.
+
+    That start edge is the narrowest of the three readings available (the
+    other two being the 15 calendar days from ``today - count`` and the
+    instant-based ``reference - count`` units), and narrow is the safe
+    direction: a count is reported as "at least N in <window>", so a window
+    that is too wide can make the claim false while one that is too narrow
+    only weakens it.
+
+    Month and year offsets go through ``_add_months``, so a month-end
+    reference clamps ("one month back from March 31" is February 28).
+    Clamping can only widen the span -- by at most three days on a month and
+    one on a leap year -- and can never invert or empty it: for any count of
+    one or more the start day is strictly earlier than the end day.
+
+    ``None`` when the phrase does not pin down one window (a bare plural,
+    "in the past weeks", or a zero count) or when the start would fall
+    outside the module's representable range. Clamping such a start to
+    ``WINDOW_FLOOR`` is deliberately NOT done: that would quietly turn a
+    bounded relative window into an open-ended one.
+    """
+    raw_count = match.group("count")
+    if raw_count is None:
+        if match.group("plural"):
+            return None  # "in the past weeks" names no definite number
+        count = 1
+    else:
+        normalized_count = " ".join(raw_count.casefold().split())
+        looked_up = _NUMBER_WORDS.get(normalized_count)
+        if looked_up is None:
+            try:
+                looked_up = int(normalized_count)
+            except ValueError:
+                return None
+        count = looked_up
+    if count < 1:
+        return None
+    if count > 1 and not match.group("plural"):
+        # Number agreement is what separates a span from an attributive
+        # compound: "in the past 3 days" is a span, "in the past 3 day trip"
+        # is a noun phrase whose head this pattern never saw. English marks
+        # the compound by keeping the unit singular after a plural count.
+        return None
+    unit = match.group("unit").casefold()
+    try:
+        end_day = reference.date() + timedelta(days=1)
+        if unit == "day":
+            start_day = end_day - timedelta(days=count)
+        elif unit == "week":
+            start_day = end_day - timedelta(days=7 * count)
+        elif unit == "month":
+            start_day = _add_months(end_day, -count)
+        else:
+            start_day = _add_months(end_day, -12 * count)
+    except (OverflowError, ValueError):
+        # A reference time at the very edge of ``datetime``'s range. Refusing
+        # beats propagating: this runs inside pack compilation.
+        return None
+    if start_day < WINDOW_FLOOR.date() or start_day >= end_day:
+        return None
+    return (
+        datetime(start_day.year, start_day.month, start_day.day, tzinfo=UTC),
+        datetime(end_day.year, end_day.month, end_day.day, tzinfo=UTC),
+    )
+
+
 def _relative_window(text: str, reference: datetime) -> TemporalAnchor | None:
     match = _YESTERDAY.search(text)
     if match is not None:
@@ -478,6 +654,20 @@ def _relative_window(text: str, reference: datetime) -> TemporalAnchor | None:
         else:
             start, end = _year_window(reference.year - count)
         return _open_adjusted(text, match, start, end)
+    # Checked last on purpose. Every branch above keeps the exact window it
+    # resolved today: "in the last month" stays the previous CALENDAR month
+    # via _LAST_THIS_UNIT, because that phrase already parses and changing a
+    # window that parses is not this pattern's business.
+    match = _PAST_WINDOW.search(text)
+    if match is not None and _PAST_WINDOW_EXCLUDED_BEFORE.search(text[: match.start()]) is None:
+        window = _past_window(match, reference)
+        if window is not None:
+            # No _open_adjusted call: the phrase carries its own preposition,
+            # so an open-range keyword can never sit adjacent to it ("since
+            # in the past two weeks" is not a sentence). ``parsed_from`` is
+            # the phrase without that preposition, matching how "in March"
+            # reports "March".
+            return TemporalAnchor(window[0], window[1], match.group("phrase"))
     return None
 
 
@@ -694,10 +884,19 @@ def parse_temporal_anchor(query: str, *, reference_time: datetime) -> TemporalAn
     4. Relative phrases resolved against ``reference_time``: "yesterday",
        "today", "last/this week|month|year", "two months ago" — each maps
        to the calendar day/week/month/year containing the shifted point.
+    5. Relative past windows: "in the past two weeks", "over the last
+       three months", "during the past year". Each is the continuous span
+       of that many whole units ending with the reference day, never the
+       single calendar unit sitting at the offset. Checked after 4, so a
+       phrase 4 already resolves ("in the last month" -> the previous
+       calendar month) keeps the window it has always had.
 
     Ambiguity returns ``None``: bare months or years without an anchoring
     preposition ("May I ask", "pre-1920 coins"), "recently", "a while
-    ago", and any text with no recognized phrase. ``reference_time`` may
+    ago", spans with no definite quantity ("in the past few weeks", "in
+    the past month or so"), "the last week OF March" and its kin (which
+    name the final unit of a named period rather than a window ending
+    now), and any text with no recognized phrase. ``reference_time`` may
     be naive (treated as UTC); the result is always UTC-aware with
     ``window_start < window_end``.
     """
