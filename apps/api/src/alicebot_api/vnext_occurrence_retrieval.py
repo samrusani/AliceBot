@@ -218,11 +218,59 @@ class _OccurrenceQueryPlan:
 
 
 _OCCURRENCE_QUERY_WORD = r"[A-Za-z][A-Za-z0-9_-]*"
+# Query shapes this substrate cannot answer from completed-event units.
+#
+# ``distinct``/``unique``/``types``/``kinds``/``categories`` ask for a
+# type count rather than an event count. ``per``/``each``/``every`` ask
+# for a per-group breakdown. The remainder are the two families that look
+# like count questions but are not counts of stored events:
+#
+# * present-tense STATE ("currently", "now", "still"): "how many bikes do
+#   I still own" asks what is true today. The substrate stores acquisition
+#   and disposal EVENTS, never a present inventory, so counting acquisition
+#   events would answer a different question and would over-count anything
+#   later sold, lost, or given away.
+# * HABITUAL RATE ("usually", "often", "typical", "average", "regularly",
+#   "daily"..."annually"): "how many times do I go to the gym in a typical
+#   week" asks for a rate. A total over a window is not a rate, and the
+#   substrate holds no denominator, so no honest conversion exists.
+#
+# Both are refused deliberately here rather than left to fail by accident
+# on the auxiliary alternation below.
 _OCCURRENCE_QUERY_UNSUPPORTED_SHAPE = re.compile(
     r"\b(?:distinct|unique|different|types?|kinds?|categories|"
-    r"per|each|every|usually|often|currently|now)\b",
+    r"per|each|every|usually|often|currently|now|still|"
+    r"typical|typically|average|normally|regularly|routinely|habitually|"
+    r"daily|weekly|monthly|yearly|annually)\b",
     re.IGNORECASE,
 )
+# A stative possessive ("how many bikes have I got") reuses the completed
+# -event auxiliary but asks what is held today, exactly like "do I still
+# own". ``get`` is a reviewed action leaf, so without this the query would
+# parse into an acquisition-event selector and answer a different question.
+_OCCURRENCE_QUERY_STATIVE_POSSESSIVE = re.compile(
+    r"\b(?:have|has|had)\s+(?:i|we)\s+got\b",
+    re.IGNORECASE,
+)
+# A trailing summative adverbial is semantically inert on a count: "how
+# many times did I visit the museum in total" asks exactly what "how many
+# times did I visit the museum" asks. It is removed before the templates
+# below match, so it can neither be swallowed as a verb particle ("read"
+# + "in") nor pollute the object phrase with "in"/"total" qualifiers that
+# no stored predicate can carry. Only unambiguously adverbial forms are
+# admitted: bare trailing "total" is left alone because it can be a real
+# object head ("how many times did I check the total").
+#
+# Sentence-final punctuation is consumed by the pattern rather than
+# normalized away beforehand. Callers only strip "?", so "... in total."
+# and "... in total?!" would otherwise slip past the end anchor and leave
+# the adverbial sitting in the object phrase, which is the exact defect
+# this pass exists to remove.
+_OCCURRENCE_QUERY_SUMMATIVE_TAIL = re.compile(
+    r"[\s,;]+(?:in\s+total|in\s+all|altogether|overall)[\s.!?]*$",
+    re.IGNORECASE,
+)
+_OCCURRENCE_QUERY_MAX_SUMMATIVE_TAILS = 3
 _OCCURRENCE_QUERY_OBJECT_DETERMINERS = {
     "a",
     "an",
@@ -234,6 +282,9 @@ _OCCURRENCE_QUERY_OBJECT_DETERMINERS = {
     "these",
     "those",
 }
+# Mirrors ``vnext_occurrence_write._OBJECT_RELATION_WORDS``. These end the
+# object head and open a narrowing phrase; the relation word and its
+# complement stay in the qualifier set, which can only narrow the match.
 _OCCURRENCE_QUERY_OBJECT_PREPOSITIONS = {
     "at",
     "during",
@@ -246,6 +297,266 @@ _OCCURRENCE_QUERY_OBJECT_PREPOSITIONS = {
     "to",
     "with",
 }
+# ``vnext_occurrence_write._DANGLING_OBJECT_TAIL_WORDS`` minus the relation
+# words above: function words the write path proves can never be an object
+# head, and which it strips off the end of an object phrase. None of them
+# ends the head the way a relation word does, so on the query side one of
+# them is an adverbial tail or an unrepresented relation, and leaving it in
+# place would let it become the counted object.
+_OCCURRENCE_QUERY_OBJECT_TAIL_WORDS = frozenset(
+    {
+        "about",
+        "again",
+        "along",
+        "around",
+        "away",
+        "back",
+        "off",
+        "out",
+        "over",
+        "roughly",
+        "since",
+        "then",
+        "through",
+        "up",
+    }
+)
+# Temporal residue the anchor could not resolve into ``[start, end)``.
+#
+# Deliberately NOT a blanket list of time nouns. "night", "morning", "week"
+# and "season" are ordinary object heads the write path stores verbatim
+# ("board game night"), and refusing them wholesale would drop reachable
+# matches. What is refused is the shape that makes such a noun temporal: a
+# time-restricting modifier standing inside the object phrase, or a word
+# that can only ever be a time adverb. The remaining risk is not symmetric,
+# which is why these refuse rather than get dropped: silently discarding
+# "last summer" would count over all time and answer a strictly broader
+# question than the one asked.
+_OCCURRENCE_QUERY_TEMPORAL_MODIFIERS = frozenset(
+    {
+        "coming",
+        "following",
+        "last",
+        "next",
+        "past",
+        "previous",
+        "prior",
+        "recent",
+        "these",
+        "this",
+        "upcoming",
+    }
+)
+_OCCURRENCE_QUERY_TEMPORAL_ADVERBS = frozenset(
+    {
+        "ago",
+        "already",
+        "afterwards",
+        "autumn",
+        "earlier",
+        "lately",
+        "later",
+        "meanwhile",
+        "midnight",
+        "nowadays",
+        "previously",
+        "recently",
+        "summer",
+        "today",
+        "tomorrow",
+        "tonight",
+        "winter",
+        "yesterday",
+        "yet",
+        "april",
+        "august",
+        "december",
+        "february",
+        "friday",
+        "january",
+        "july",
+        "june",
+        "march",
+        "may",
+        "monday",
+        "november",
+        "october",
+        "saturday",
+        "september",
+        "sunday",
+        "thursday",
+        "tuesday",
+        "wednesday",
+    }
+)
+# Adverbs that are never the thing a count question counts. Without these a
+# trailing adverb becomes the object head ("... the museum together" reads as
+# counting "togethers"), which is a selector that looks legitimate and means
+# something the question never asked.
+_OCCURRENCE_QUERY_OBJECT_ADVERBS = frozenset(
+    {
+        "ahead",
+        "alone",
+        "also",
+        "altogether",
+        "anymore",
+        "anyway",
+        "anywhere",
+        "apart",
+        "aside",
+        "elsewhere",
+        "ever",
+        "everywhere",
+        "indeed",
+        "instead",
+        "just",
+        "nowhere",
+        "once",
+        "only",
+        "otherwise",
+        "overall",
+        "quite",
+        "rather",
+        "really",
+        "somewhere",
+        "together",
+        "too",
+        "truly",
+        "twice",
+    }
+)
+# Words that never name a countable object themselves but are perfectly
+# ordinary as a modifier of one: "how many times did I shop online" heads on
+# an adverb, while "how many online orders did I place" heads on "orders"
+# and keeps "online" as a qualifier. Refused in head position at any index,
+# admitted everywhere else.
+_OCCURRENCE_QUERY_NON_NOUN_HEADS = frozenset(
+    {
+        "abroad",
+        "indoors",
+        "offline",
+        "online",
+        "outdoors",
+        "overseas",
+        "solo",
+    }
+)
+# Words that are ordinary nouns on their own ("how many times did I clean my
+# home") but adverbial when they trail another noun ("... ride my bike
+# home"). They are refused only in head position behind other tokens, the
+# same rule the "-ly" test below applies.
+_OCCURRENCE_QUERY_TRAILING_ADVERBIAL_HEADS = frozenset(
+    {
+        "downstairs",
+        "downtown",
+        "first",
+        "forward",
+        "home",
+        "inside",
+        "outside",
+        "straight",
+        "upstairs",
+        "well",
+    }
+)
+# A subordinate or relative clause narrows the question in a way the
+# predicate schema cannot express, and its verb would otherwise be taken for
+# the object head ("... the museum where Bob works" heads on "works").
+_OCCURRENCE_QUERY_CLAUSE_MARKERS = frozenset(
+    {
+        "after",
+        "although",
+        "because",
+        "before",
+        "excluding",
+        "if",
+        "including",
+        "not",
+        # Leading determiners are stripped before this check, so a surviving
+        # "that" is a relative pronoun opening a clause, not a determiner.
+        "that",
+        "though",
+        "unless",
+        "until",
+        "when",
+        "whenever",
+        "where",
+        "whereas",
+        "which",
+        "while",
+        "who",
+        "whom",
+        "whose",
+        "why",
+    }
+)
+# Referring expressions that name no object. "How many times did I read it"
+# depends on a referent this parser cannot resolve, so an ``o=exact:it``
+# selector would mean the literal token rather than the thing meant.
+# ``anything``/``something`` stay out: they are the explicit wildcard.
+_OCCURRENCE_QUERY_OBJECT_PLACEHOLDERS = frozenset(
+    {
+        "another",
+        "any",
+        "anybody",
+        "anyone",
+        "everybody",
+        "everyone",
+        "everything",
+        "he",
+        "here",
+        "herself",
+        "him",
+        "himself",
+        "i",
+        "it",
+        "itself",
+        "me",
+        "myself",
+        "none",
+        "nobody",
+        "nothing",
+        "one",
+        "ones",
+        "other",
+        "others",
+        "ourselves",
+        "same",
+        "some",
+        "somebody",
+        "someone",
+        "stuff",
+        "she",
+        "themselves",
+        "there",
+        "thing",
+        "things",
+        "them",
+        "they",
+        "us",
+        "we",
+        "you",
+        "yourself",
+    }
+)
+_OCCURRENCE_QUERY_OBJECT_REFUSED_WORDS = (
+    _OCCURRENCE_QUERY_OBJECT_TAIL_WORDS
+    | _OCCURRENCE_QUERY_TEMPORAL_MODIFIERS
+    | _OCCURRENCE_QUERY_TEMPORAL_ADVERBS
+    | _OCCURRENCE_QUERY_OBJECT_ADVERBS
+    | _OCCURRENCE_QUERY_CLAUSE_MARKERS
+    | _OCCURRENCE_QUERY_OBJECT_PLACEHOLDERS
+)
+# Punctuation inside an object phrase marks a list, an apposition, or a
+# subordinate clause. A bare noun phrase has none.
+_OCCURRENCE_QUERY_OBJECT_PUNCTUATION = re.compile(r"[,;:()\[\]{}\"/\\]|\s-\s")
+# Characters the ASCII word tokenizer below silently discards: digits and
+# non-ASCII letters. A discarded token is the one failure mode that WIDENS
+# rather than narrows. "How many times did I visit the museum 2023" would
+# otherwise become the all-time question, and a wholly non-ASCII object
+# would vanish the same way. Refuse instead, and leave the anchor to handle
+# the prepositional date forms ("... in 2023") it can actually resolve.
+_OCCURRENCE_QUERY_OBJECT_UNTOKENIZED = re.compile(r"[0-9]|[^\x00-\x7f]")
 
 
 def _occurrence_query_without_anchor(
@@ -293,18 +604,49 @@ def _occurrence_query_without_anchor(
 def _occurrence_query_object(
     value: str,
 ) -> tuple[str, tuple[str, ...]] | None:
+    """Project an object head plus its qualifiers, or refuse.
+
+    A prepositional narrowing is kept, not dropped: the relation word and
+    its complement stay in the qualifier set, and because
+    ``build_occurrence_aggregation`` requires the query atom's qualifier
+    tuple to equal a signed unit's exactly, the extra qualifiers can only
+    ever narrow. A query that asks about "the museum with Bob" therefore
+    never counts plain museum visits. Dropping the narrowing instead would
+    answer a strictly broader question, which is the failure this parser
+    exists to avoid.
+
+    What is refused outright is text that would make the WRONG token the
+    head, because that yields a selector which reads as legitimate but
+    denotes something the question did not ask about, and text carrying a
+    narrowing that this parser would silently DROP, because dropping one
+    answers a strictly broader question than the one asked:
+
+    * temporal residue the anchor could not resolve ("... last summer",
+      "... this week"), and bare numbers the word tokenizer would discard
+      ("... the museum 2023").
+    * dangling function words and adverbial tails ("... again", "... over",
+      "... together", "... briefly"), which can never be an object head.
+    * subordinate and relative clauses ("... where Bob works").
+    * referring expressions with no resolvable referent ("it", "them").
+    * coordination, which is under-determined between union and intersection.
+    """
+
     value = re.sub(
         r"(?i)(?P<owner>[A-Za-z])['’]s\b",
         r"\g<owner>",
         value,
     )
+    if _OCCURRENCE_QUERY_OBJECT_PUNCTUATION.search(value) or _OCCURRENCE_QUERY_OBJECT_UNTOKENIZED.search(value):
+        return None
     raw_tokens = [token.casefold() for token in re.findall(_OCCURRENCE_QUERY_WORD, value)]
     while raw_tokens and raw_tokens[0] in _OCCURRENCE_QUERY_OBJECT_DETERMINERS:
         raw_tokens.pop(0)
-    if not raw_tokens or any(token in {"and", "or"} for token in raw_tokens):
+    if not raw_tokens or any(token in {"and", "or", "nor", "but"} for token in raw_tokens):
         return None
     if raw_tokens in (["anything"], ["something"]):
         return "*", ()
+    if any(token in _OCCURRENCE_QUERY_OBJECT_REFUSED_WORDS for token in raw_tokens):
+        return None
     first_preposition = next(
         (index for index, token in enumerate(raw_tokens) if token in _OCCURRENCE_QUERY_OBJECT_PREPOSITIONS),
         None,
@@ -312,7 +654,20 @@ def _occurrence_query_object(
     head_index = len(raw_tokens) - 1 if first_preposition is None else first_preposition - 1
     if head_index < 0:
         return None
-    object_leaf = canonical_object_leaf(raw_tokens[head_index])
+    head_token = raw_tokens[head_index]
+    if head_token in _OCCURRENCE_QUERY_NON_NOUN_HEADS or (
+        head_index > 0 and (head_token.endswith("ly") or head_token in _OCCURRENCE_QUERY_TRAILING_ADVERBIAL_HEADS)
+    ):
+        # A head sitting behind other tokens that is adverb-shaped ("... the
+        # museum briefly") or adverbial in that position ("... my bike home")
+        # is a tail, not the noun the question counts. Refusing costs the rare
+        # compound whose head genuinely ends in "-ly"; accepting would count
+        # the adverb. A lone token is left alone so ordinary nouns ("family",
+        # "my home") still parse.
+        return None
+    object_leaf = canonical_object_leaf(head_token)
+    if not object_leaf:
+        return None
     qualifiers = tuple(
         sorted(
             {
@@ -325,20 +680,85 @@ def _occurrence_query_object(
     return object_leaf, qualifiers
 
 
+def _occurrence_query_without_summative_tail(query: str) -> str | None:
+    """Drop a trailing summative adverbial, which cannot change a count.
+
+    "... in total", "... in all", "... altogether" and "... overall" restate
+    that the whole history is wanted; they neither narrow nor widen the
+    question. Removing them before the templates match is what lets an
+    ordinary "how many books did I read in total" reach the same plan as
+    "how many books did I read", instead of the adverb being swallowed as a
+    verb particle or landing in the object phrase as a qualifier no stored
+    predicate can carry.
+
+    Stacked forms ("... in total, altogether") are peeled under a fixed
+    bound so the pass stays terminating and deterministic; anything still
+    adverbial after that is refused by the object parser rather than
+    approximated.
+
+    Called twice per plan: once on the raw query, and again once the anchor
+    stripper has removed a resolved temporal phrase, because the adverbial
+    can legitimately sit on either side of that phrase ("... in March in
+    total" and "... in total in March" ask the same thing). Blank input
+    returns ``None`` rather than reaching the façade validator, so the
+    second call cannot raise out of a parser that runs outside the reader's
+    exception boundary.
+    """
+
+    if not query.strip():
+        return None
+    stripped = _normalize_query(query).strip().rstrip("?").strip()
+    for _ in range(_OCCURRENCE_QUERY_MAX_SUMMATIVE_TAILS):
+        peeled = _OCCURRENCE_QUERY_SUMMATIVE_TAIL.sub("", stripped).strip(" ,;:")
+        if peeled == stripped:
+            break
+        stripped = peeled
+    return stripped or None
+
+
 def _occurrence_query_plan(
     query: str,
     intent: vnext_coverage_query.AggregationIntent | None,
     *,
     anchor: TemporalAnchor | None,
 ) -> _OccurrenceQueryPlan | None:
-    """Parse a bounded exact/wildcard/OR occurrence formula from query text."""
+    """Parse a bounded exact/wildcard/OR occurrence formula from query text.
+
+    Every relaxation here fails closed. A shape that is not proven produces
+    ``None``, which leaves Alice silent; a shape parsed into the wrong
+    selector would run the aggregation against a predicate the question did
+    not ask about and dress the result in real provenance.
+    """
 
     if not _occurrence_query_supports_signed_count(query, intent):
         return None
-    normalized = _occurrence_query_without_anchor(query, anchor)
+    summative_free = _occurrence_query_without_summative_tail(query)
+    if summative_free is None:
+        return None
+    normalized = _occurrence_query_without_anchor(summative_free, anchor)
+    if normalized is not None:
+        # Peel again: the adverbial sits on either side of a temporal phrase
+        # ("... in March in total" as readily as "... in total in March"),
+        # and only now is the anchor text out of the way.
+        normalized = _occurrence_query_without_summative_tail(normalized)
     if (
         normalized is None
         or _OCCURRENCE_QUERY_UNSUPPORTED_SHAPE.search(normalized)
+        or _OCCURRENCE_QUERY_STATIVE_POSSESSIVE.search(normalized)
+        # Coordination stays refused, and this bail is NOT redundant with the
+        # object parser's own "and" check. ``_OCCURRENCE_QUERY_WORD`` matches
+        # the literal token "and", so a coordinated SUBJECT ("how many times
+        # did I and my wife visit the museum") puts "and" in the ACTION
+        # capture, which the object parser never inspects, and the plan comes
+        # out as ``a=exact:and``. Predicate and object coordination ("bake and
+        # cook", "cakes and pies") are separately refused downstream, but the
+        # subject case reaches nothing else.
+        #
+        # Widening this to split coordination is also not on the table:
+        # splitting is exactly the mechanism that produced a wrong
+        # attribution on the write side, and "did I bake and cook" is
+        # under-determined between the union of two predicates and the events
+        # that were both.
         or re.search(r"\band\b", normalized, re.IGNORECASE)
     ):
         return None
@@ -362,6 +782,14 @@ def _occurrence_query_plan(
         action_text = match.group("action")
         object_text = match.group("object")
     else:
+        # The action must still END the string. The two tails that reach
+        # here are handled before this point or refused on purpose: a
+        # summative adverbial was already removed, a resolved temporal
+        # phrase was already removed by the anchor stripper, and anything
+        # else ("... from the bookstore", "... for the party", "... last
+        # summer") narrows the question in a way the predicate schema
+        # cannot express. Admitting such a tail and ignoring it would count
+        # a strictly larger set than the question asked about.
         match = re.fullmatch(
             rf"how\s+many\s+(?P<object>.+?)\s+"
             rf"(?:did|have)\s+(?:i|we)\s+"
@@ -385,6 +813,13 @@ def _occurrence_query_plan(
         part.strip() for part in re.split(r"\s+or\s+", object_text, flags=re.IGNORECASE) if part.strip()
     )
     if not raw_actions or not raw_objects or len(raw_actions) * len(raw_objects) > 8:
+        return None
+    if any(re.search(r"\s", raw_action) for raw_action in raw_actions):
+        # A verb-plus-particle action ("go to", "eat out") canonicalizes to a
+        # multiword leaf, and the write path only ever hands the taxonomy a
+        # single verb token, so no accepted unit can carry one. Emitting such
+        # a selector would search for a predicate that cannot exist. Say so
+        # instead of running the reader against a leaf nothing can produce.
         return None
 
     selectors: list[str] = []

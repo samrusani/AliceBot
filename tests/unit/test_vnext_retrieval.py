@@ -8382,3 +8382,671 @@ def test_occurrence_reader_rejects_stale_or_scope_leaking_evidence() -> None:
     )
 
     assert "aggregation" not in pack
+
+
+# ---------------------------------------------------------------------------
+# Occurrence query-plan grammar: ordinary English shapes, and the shapes the
+# parser refuses on purpose. Every case here is asserted at the plan level,
+# where a wrong selector would be produced, rather than at the aggregation
+# level, where a wrong selector is currently masked by the zero-match guard.
+# ---------------------------------------------------------------------------
+
+
+_OCCURRENCE_PLAN_REFERENCE_TIME = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+
+
+def _occurrence_plan_for(query: str) -> vnext_retrieval_module._OccurrenceQueryPlan | None:
+    intent = vnext_retrieval_module.vnext_coverage_query.detect_aggregation_intent(query)
+    anchor = vnext_retrieval_module.parse_temporal_anchor(
+        query,
+        reference_time=_OCCURRENCE_PLAN_REFERENCE_TIME,
+    )
+    return vnext_retrieval_module._occurrence_query_plan(query, intent, anchor=anchor)
+
+
+def _occurrence_plan_atoms(
+    plan: vnext_retrieval_module._OccurrenceQueryPlan,
+) -> list[tuple[str, str, tuple[str, ...]]]:
+    return [
+        (
+            str(atom["action"]["leaf"]),
+            str(atom["object"]["leaf"]),
+            tuple(str(value) for value in atom["object"]["qualifiers"]),
+        )
+        for atom in plan.predicate_atoms
+    ]
+
+
+@pytest.mark.parametrize(
+    ("query", "plain"),
+    [
+        (
+            "How many times did I visit the museum in total?",
+            "How many times did I visit the museum?",
+        ),
+        (
+            "How many times have I visited the museum altogether?",
+            "How many times have I visited the museum?",
+        ),
+        (
+            "How many books did I read in total?",
+            "How many books did I read?",
+        ),
+        (
+            "How many cakes did I bake in all?",
+            "How many cakes did I bake?",
+        ),
+        (
+            "How many pizzas did I make overall?",
+            "How many pizzas did I make?",
+        ),
+        (
+            "How many times did I bake bread, in total?",
+            "How many times did I bake bread?",
+        ),
+        (
+            "How many books did I read in total, altogether?",
+            "How many books did I read?",
+        ),
+    ],
+)
+def test_a_trailing_summative_adverbial_reaches_the_plain_count_plan(
+    query: str,
+    plain: str,
+) -> None:
+    """ "... in total" restates the whole history; it cannot change a count."""
+
+    plan = _occurrence_plan_for(query)
+    plain_plan = _occurrence_plan_for(plain)
+
+    assert plain_plan is not None
+    assert plan is not None
+    assert plan.selector_keys == plain_plan.selector_keys
+    assert plan.aggregation_basis == plain_plan.aggregation_basis
+    assert _occurrence_plan_atoms(plan) == _occurrence_plan_atoms(plain_plan)
+    # The adverbial must not survive as an object qualifier: a stored unit
+    # carries no "in"/"total" qualifier, so leaving it here would silently
+    # guarantee a non-match.
+    for _action, _object_leaf, qualifiers in _occurrence_plan_atoms(plan):
+        assert "total" not in qualifiers
+        assert "in" not in qualifiers
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("How many times did I check the total?", ("check", "total", ())),
+        ("How many overalls did I buy?", ("acquire", "overall", ())),
+        ("How many times did I paint the hall?", ("paint", "hall", ())),
+    ],
+)
+def test_a_summative_adverbial_never_eats_a_real_object_head(
+    query: str,
+    expected: tuple[str, str, tuple[str, ...]],
+) -> None:
+    """Only unambiguously adverbial trailing forms are removed."""
+
+    plan = _occurrence_plan_for(query)
+
+    assert plan is not None
+    assert _occurrence_plan_atoms(plan) == [expected]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many times did I visit the museum yesterday in total?",
+        "How many books did I read last year in total?",
+        "How many times did I bake bread this week altogether?",
+    ],
+)
+def test_a_summative_adverbial_leaves_a_resolved_window_still_bounding_the_read(
+    query: str,
+) -> None:
+    """Removing the adverbial re-exposes a temporal anchor to the stripper.
+
+    The window itself is enforced by the reader from the anchor, not by the
+    plan, so the plan must be the plain one AND the anchor must still be
+    present for the read to stay bounded.
+    """
+
+    anchor = vnext_retrieval_module.parse_temporal_anchor(
+        query,
+        reference_time=_OCCURRENCE_PLAN_REFERENCE_TIME,
+    )
+    plan = _occurrence_plan_for(query)
+
+    assert anchor is not None
+    assert anchor.window_start is not None and anchor.window_end is not None
+    assert plan is not None
+    for _action, _object_leaf, qualifiers in _occurrence_plan_atoms(plan):
+        assert qualifiers == ()
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many times did I visit the museum last summer?",
+        "How many times did I visit the museum this weekend?",
+        "How many times did I go swimming yesterday morning?",
+        "How many times did I read the paper last night?",
+        "How many times did I visit the museum the following week?",
+        "How many times did I visit the museum a week ago?",
+        "How many times did I bake bread recently?",
+        "How many times did I visit the museum next month?",
+        # Bare time adverbs and date names the anchor cannot resolve without
+        # an anchoring preposition, so nothing upstream removes them.
+        "How many times did I visit the museum tonight?",
+        "How many times did I visit the museum earlier?",
+        "How many times did I visit the museum Saturday?",
+        "How many times did I bake bread August?",
+        "How many times did I visit the museum summer?",
+    ],
+)
+def test_an_unresolved_temporal_tail_never_becomes_the_counted_object(
+    query: str,
+) -> None:
+    """A window the anchor could not resolve must not be read as an object.
+
+    Both outcomes of accepting one are wrong: heading on the time noun
+    counts a predicate nobody asked about, and dropping it counts over all
+    time, which answers a strictly broader question.
+    """
+
+    assert _occurrence_plan_for(query) is None
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many times did I visit the museum again?",
+        "How many times did I visit the museum briefly?",
+        "How many times did I visit the museum together?",
+        "How many times did I visit the museum alone?",
+        "How many times did I visit the museum twice?",
+        "How many times did I visit the museum myself?",
+        "How many times did I ride my bike home?",
+        "How many times did I bake bread over?",
+    ],
+)
+def test_an_adverbial_tail_never_becomes_the_counted_object(query: str) -> None:
+    """An adverb is never the thing a count question counts."""
+
+    assert _occurrence_plan_for(query) is None
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many times did I visit the museum, the gallery?",
+        "How many times did I visit the museum (with Bob)?",
+        "How many times did I read the book; the magazine?",
+    ],
+)
+def test_punctuation_inside_an_object_phrase_is_refused(query: str) -> None:
+    """A bare noun phrase has no internal punctuation.
+
+    Without this, "the museum, the gallery" heads on "gallery" and quietly
+    drops the museum, which is a selector that means something else.
+    """
+
+    assert _occurrence_plan_for(query) is None
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many times did I visit the museum where Bob works?",
+        "How many times did I visit the museum that I like?",
+        "How many times did I visit the museum I like?",
+        "How many times did I visit the museum when Bob called?",
+        "How many times did I visit the museum because it rained?",
+    ],
+)
+def test_a_subordinate_clause_never_becomes_the_counted_object(query: str) -> None:
+    """A clause narrows the question and its verb is not the object head."""
+
+    assert _occurrence_plan_for(query) is None
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many times did I visit the museum 2023?",
+        "How many times did I visit the museum summer 2023?",
+        "How many times did I run 5k?",
+        "How many times did I eat at 3 restaurants?",
+        "How many times did I visit the café?",
+        "How many times did I visit the museum 東京?",
+    ],
+)
+def test_an_object_narrowing_the_tokenizer_would_discard_is_refused(
+    query: str,
+) -> None:
+    """A discarded token is the one failure mode that widens the question.
+
+    "the museum 2023" must not silently become the all-time question, and a
+    wholly non-ASCII object must not vanish into an unqualified head.
+    """
+
+    assert _occurrence_plan_for(query) is None
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many bikes do I currently have?",
+        "How many cars do I still own?",
+        "How many bikes have I got?",
+        "How many cars have we got?",
+        "How many times do I go to the gym in a typical week?",
+        "How many times did I visit the gym regularly?",
+        "How many times did I visit the museum typically?",
+        "How many books did I read on average?",
+        "How many times did I swim weekly?",
+        "How many times did I swim regularly?",
+    ],
+)
+def test_present_state_and_habitual_rate_questions_are_refused(query: str) -> None:
+    """Neither family is a count of stored completed events.
+
+    A present-tense state question asks what is true now; the substrate
+    stores acquisitions, not an inventory, so counting them would over-count
+    anything since sold or given away. A habitual-rate question asks for a
+    rate, and the substrate holds no denominator to divide by.
+    """
+
+    assert _occurrence_plan_for(query) is None
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many times did I read it?",
+        "How many times did I watch them?",
+        "How many times did I buy one?",
+        "How many times did I clean everything?",
+    ],
+)
+def test_a_referring_expression_never_becomes_the_counted_object(query: str) -> None:
+    """An unresolvable referent would make the literal token the object."""
+
+    assert _occurrence_plan_for(query) is None
+
+
+def test_a_prepositional_narrowing_stays_in_the_query_qualifiers() -> None:
+    """The narrowing is kept, never dropped, so the match can only narrow.
+
+    ``build_occurrence_aggregation`` compares qualifier tuples exactly, so
+    carrying "with Bob" into the atom is what stops a "museum with Bob"
+    question from counting plain museum visits.
+    """
+
+    narrowed = _occurrence_plan_for("How many times did I visit the museum with Bob?")
+    plain = _occurrence_plan_for("How many times did I visit the museum?")
+
+    assert narrowed is not None and plain is not None
+    assert _occurrence_plan_atoms(plain) == [("visit", "museum", ())]
+    assert _occurrence_plan_atoms(narrowed) == [("visit", "museum", ("bob", "with"))]
+    assert _occurrence_plan_atoms(narrowed) != _occurrence_plan_atoms(plain)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many books did I buy from the bookstore?",
+        "How many cakes did I bake for the party?",
+        "How many movies did I watch with my sister?",
+        "How many meals did I eat at the restaurant?",
+        "How many books did I read for work?",
+    ],
+)
+def test_an_object_cardinality_tail_the_schema_cannot_express_is_refused(
+    query: str,
+) -> None:
+    """The object-cardinality action must still end the question.
+
+    A summative adverbial and a resolvable temporal phrase are removed
+    before this point. Any other trailing complement narrows the question
+    in a way the predicate schema records nothing about, so admitting it
+    and ignoring it would count a strictly larger set.
+    """
+
+    assert _occurrence_plan_for(query) is None
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many times did I go to the gym?",
+        "How many times did I eat out?",
+        "How many times did I pick up the parcel?",
+    ],
+)
+def test_a_multiword_action_no_write_path_can_produce_is_refused(query: str) -> None:
+    """A verb-plus-particle leaf is unreachable from the write path.
+
+    ``vnext_occurrence_write`` only ever hands the taxonomy a single verb
+    token, so an ``a=exact:go_to`` selector searches for a predicate that
+    cannot exist.
+    """
+
+    assert _occurrence_plan_for(query) is None
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many times did I bake and cook?",
+        "How many books did I read from my mum and dad?",
+        "How many cakes and pies did I bake?",
+    ],
+)
+def test_coordination_stays_refused_in_a_count_query(query: str) -> None:
+    """ "and" is under-determined between union and intersection here."""
+
+    assert _occurrence_plan_for(query) is None
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many times did I and my wife visit the museum?",
+        "How many times did we and the kids visit the zoo?",
+        "How many times did I and Bob bake bread?",
+        "How many times did I and my brother watch movies?",
+        "How many times have I and my wife visited the museum?",
+    ],
+)
+def test_a_coordinated_subject_never_becomes_the_counted_action(
+    query: str,
+) -> None:
+    """A coordinated SUBJECT is the case only the query-level bail catches.
+
+    ``_OCCURRENCE_QUERY_WORD`` matches the literal token "and", so in "how
+    many times did I and my wife visit the museum" the conjunction lands in
+    the ACTION capture, not the object phrase. The object parser's own "and"
+    check never sees it and the plan comes out as ``a=exact:and`` with a
+    perfectly ordinary-looking object. Predicate and object coordination are
+    refused elsewhere; this shape reaches nothing else.
+    """
+
+    assert _occurrence_plan_for(query) is None
+
+
+@pytest.mark.parametrize(
+    ("query", "plain"),
+    [
+        (
+            "How many times did I visit the museum in total.",
+            "How many times did I visit the museum?",
+        ),
+        (
+            "How many times did I visit the museum in total?!",
+            "How many times did I visit the museum?",
+        ),
+        (
+            "How many times did I visit the museum in total!",
+            "How many times did I visit the museum?",
+        ),
+        (
+            "How many books did I read altogether.",
+            "How many books did I read?",
+        ),
+    ],
+)
+def test_a_summative_adverbial_is_stripped_under_sentence_punctuation(
+    query: str,
+    plain: str,
+) -> None:
+    """Callers only normalize away "?", so the pattern owns the rest.
+
+    A trailing "." or "!" must not leave the adverbial sitting in the object
+    phrase, which is the exact defect the strip exists to remove.
+    """
+
+    plan = _occurrence_plan_for(query)
+    plain_plan = _occurrence_plan_for(plain)
+
+    assert plain_plan is not None
+    assert plan is not None
+    assert _occurrence_plan_atoms(plan) == _occurrence_plan_atoms(plain_plan)
+    for _action, _object_leaf, qualifiers in _occurrence_plan_atoms(plan):
+        assert "total" not in qualifiers
+        assert "in" not in qualifiers
+
+
+@pytest.mark.parametrize(
+    ("query", "plain"),
+    [
+        (
+            "How many times did I visit the museum in total in March?",
+            "How many times did I visit the museum?",
+        ),
+        (
+            "How many times did I visit the museum in total last month?",
+            "How many times did I visit the museum?",
+        ),
+        (
+            "How many books did I read in total in 2023?",
+            "How many books did I read?",
+        ),
+        (
+            "How many times did I bake bread altogether this week?",
+            "How many times did I bake bread?",
+        ),
+    ],
+)
+def test_a_summative_adverbial_is_stripped_on_either_side_of_the_anchor(
+    query: str,
+    plain: str,
+) -> None:
+    """The adverbial reads naturally before OR after the temporal phrase.
+
+    Stripping only before the anchor resolves leaves "... in total in March"
+    carrying ("in", "total") as object qualifiers once the anchor text is
+    removed, so the strip runs again on the anchor-free text. The window
+    itself stays enforced by the reader from the anchor.
+    """
+
+    anchor = vnext_retrieval_module.parse_temporal_anchor(
+        query,
+        reference_time=_OCCURRENCE_PLAN_REFERENCE_TIME,
+    )
+    plan = _occurrence_plan_for(query)
+    plain_plan = _occurrence_plan_for(plain)
+
+    assert anchor is not None
+    assert plain_plan is not None
+    assert plan is not None
+    assert _occurrence_plan_atoms(plan) == _occurrence_plan_atoms(plain_plan)
+    for _action, _object_leaf, qualifiers in _occurrence_plan_atoms(plan):
+        assert qualifiers == ()
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "How many books did I read in total, altogether",
+            "How many books did I read",
+        ),
+        (
+            "How many books did I read in total, altogether, overall",
+            "How many books did I read",
+        ),
+        (
+            "How many times did I visit the museum in total.",
+            "How many times did I visit the museum",
+        ),
+        (
+            "How many times did I visit the museum overall!",
+            "How many times did I visit the museum",
+        ),
+        # A real object head is never an adverbial tail.
+        (
+            "How many times did I check the total",
+            "How many times did I check the total",
+        ),
+        (
+            "How many times did I visit the museum",
+            "How many times did I visit the museum",
+        ),
+    ],
+)
+def test_the_summative_strip_peels_a_stacked_tail_in_one_call(
+    text: str,
+    expected: str,
+) -> None:
+    """The helper's own contract, independent of how often it is called.
+
+    ``_occurrence_query_plan`` happens to invoke it twice (once before the
+    anchor stripper and once after), which would mask a single-pass peel. This
+    asserts the function fully peels on its own, so the bound stays honest.
+    """
+
+    assert vnext_retrieval_module._occurrence_query_without_summative_tail(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("How many times did I check the total.", ("check", "total", ())),
+        ("How many times did I check the total?", ("check", "total", ())),
+    ],
+)
+def test_punctuation_tolerance_never_eats_a_real_object_head(
+    query: str,
+    expected: tuple[str, str, tuple[str, ...]],
+) -> None:
+    plan = _occurrence_plan_for(query)
+
+    assert plan is not None
+    assert _occurrence_plan_atoms(plan) == [expected]
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("How many times did I host board game night?", ("host", "night", ("board", "game"))),
+        ("How many times did I attend the movie night?", ("attend", "night", ("movie",))),
+        ("How many times did I read the morning paper?", ("read", "paper", ("morning",))),
+        ("How many times did I clean my home?", ("clean", "home", ())),
+        ("How many times did I call my family?", ("call", "family", ())),
+        ("How many times did I visit the art museum?", ("visit", "museum", ("art",))),
+    ],
+)
+def test_an_ordinary_noun_head_that_reads_temporal_still_parses(
+    query: str,
+    expected: tuple[str, str, tuple[str, ...]],
+) -> None:
+    """The temporal refusal keys on the shape, not on a list of time nouns.
+
+    "night", "morning" and "home" are ordinary object heads the write path
+    stores verbatim; only a time-restricting modifier standing beside them,
+    or a word that can only be a time adverb, makes the phrase temporal.
+    """
+
+    plan = _occurrence_plan_for(query)
+
+    assert plan is not None
+    assert _occurrence_plan_atoms(plan) == [expected]
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("How many online orders did I place?", ("place", "order", ("online",))),
+        ("How many solo albums did I buy?", ("acquire", "album", ("solo",))),
+        ("How many offline backups did I make?", ("make", "backup", ("offline",))),
+    ],
+)
+def test_an_attributive_modifier_is_not_mistaken_for_an_adverb(
+    query: str,
+    expected: tuple[str, str, tuple[str, ...]],
+) -> None:
+    """ "online" modifies a countable noun; only as a HEAD is it adverbial.
+
+    Refusing these words outright would drop ordinary noun phrases, so the
+    refusal is scoped to head position instead.
+    """
+
+    plan = _occurrence_plan_for(query)
+
+    assert plan is not None
+    assert _occurrence_plan_atoms(plan) == [expected]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many times did I shop online?",
+        "How many times did I work offline?",
+        "How many times did I travel overseas?",
+    ],
+)
+def test_a_modifier_standing_as_the_head_names_no_countable_object(
+    query: str,
+) -> None:
+    assert _occurrence_plan_for(query) is None
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_selectors"),
+    [
+        (
+            "How many times did I buy anything?",
+            ("v1|a=exact:acquire|o=*",),
+        ),
+        (
+            "How many times did I visit the museum or the gallery?",
+            ("v1|a=exact:visit|o=exact:museum", "v1|a=exact:visit|o=exact:gallery"),
+        ),
+        (
+            "How many times did I bake or cook bread?",
+            ("v1|a=exact:bake|o=exact:bread", "v1|a=exact:cook|o=exact:bread"),
+        ),
+    ],
+)
+def test_the_established_wildcard_and_or_shapes_still_plan(
+    query: str,
+    expected_selectors: tuple[str, ...],
+) -> None:
+    plan = _occurrence_plan_for(query)
+
+    assert plan is not None
+    assert plan.selector_keys == expected_selectors
+
+
+def test_a_summative_adverbial_query_reaches_the_signed_occurrence_reader() -> None:
+    """End to end: the adverbial no longer costs the whole aggregation."""
+
+    memories, units, evidence = _reviewed_occurrence_rows(2)
+    for index, unit in enumerate(units):
+        _retarget_occurrence_test_unit(
+            unit,
+            [evidence[index]],
+            action="visit",
+            object_leaf="museum",
+            count_key="visit museum",
+            canonical_text="I visited the museum.",
+        )
+    for memory in memories:
+        memory["canonical_text"] = "I visited the museum."
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I visit the museum in total?",
+            reference_time=_OCCURRENCE_PLAN_REFERENCE_TIME,
+        )
+    )
+
+    assert pack["aggregation"]["kind"] == "occurrence_count"
+    assert pack["aggregation"]["lower_bound"] == 2
+    assert any(call["selector_key"] == "v1|a=exact:visit|o=exact:museum" for call in store.occurrence_search_calls)

@@ -66,6 +66,7 @@ from alicebot_api.vnext_occurrence_retrieval import (
     _occurrence_query_plan as _occurrence_query_plan,
     _occurrence_query_supports_signed_count as _occurrence_query_supports_signed_count,
     _occurrence_query_without_anchor as _occurrence_query_without_anchor,
+    _occurrence_query_without_summative_tail as _occurrence_query_without_summative_tail,
     _occurrence_token_root as _occurrence_token_root,
 )
 
