@@ -893,6 +893,14 @@ class VNextProjectService:
             memory_key = str(candidate_memory.get("memory_key") or "").strip()
             if memory_key == "":
                 raise VNextProjectValidationError("candidate memory is missing memory_key")
+            VNextMemoryCommitService(
+                cast(PostgresVNextStore, self.store),
+                defer_embeddings=self._defer_embeddings,
+            ).retire_memory_occurrence_state(
+                candidate_memory,
+                stage="project_update_review_reject",
+                reason="Project update candidate rejected by review action.",
+            )
             rejected_memory = self.store.update_memory(
                 memory_id=candidate_memory_id,
                 patch={
@@ -994,7 +1002,7 @@ class VNextProjectService:
             cast(PostgresVNextStore, self.store),
             defer_embeddings=self._defer_embeddings,
         )
-        memory_service.refresh_memory_derived_state(
+        updated_memory = memory_service.refresh_memory_derived_state(
             updated_memory,
             stage="project_update_review",
         )

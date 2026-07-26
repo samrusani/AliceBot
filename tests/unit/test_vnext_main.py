@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import sqlite3
 from urllib.parse import urlencode
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import anyio
 import pytest
@@ -28,11 +28,105 @@ from alicebot_api.routers import workspaces as workspaces_router
 from alicebot_api.routers import _vnext_shared as vnext_shared
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
+from alicebot_api.store import ContinuityStoreInvariantError
 from alicebot_api.vnext_event_log import build_event_log_record
 from alicebot_api.vnext_memory_commit import VNextMemoryCommitService
 from alicebot_api.vnext_memory_version import memory_version_snapshot
 from alicebot_api.vnext_projects import VNextProjectService
 from alicebot_api.vnext_project_scope import memory_project_scope
+
+
+def _openapi_schema_accepts(
+    value: object,
+    schema: dict[str, object],
+) -> bool:
+    """Validate the JSON Schema subset used by the context-pack contract."""
+
+    if "const" in schema and value != schema["const"]:
+        return False
+    enum = schema.get("enum")
+    if isinstance(enum, list) and value not in enum:
+        return False
+    all_of = schema.get("allOf")
+    if isinstance(all_of, list) and not all(
+        isinstance(candidate, dict) and _openapi_schema_accepts(value, candidate) for candidate in all_of
+    ):
+        return False
+    any_of = schema.get("anyOf")
+    if isinstance(any_of, list) and not any(
+        isinstance(candidate, dict) and _openapi_schema_accepts(value, candidate) for candidate in any_of
+    ):
+        return False
+    one_of = schema.get("oneOf")
+    if isinstance(one_of, list):
+        matching = sum(
+            1 for candidate in one_of if isinstance(candidate, dict) and _openapi_schema_accepts(value, candidate)
+        )
+        if matching != 1:
+            return False
+    negated = schema.get("not")
+    if isinstance(negated, dict) and _openapi_schema_accepts(value, negated):
+        return False
+    condition = schema.get("if")
+    if isinstance(condition, dict):
+        branch_name = "then" if _openapi_schema_accepts(value, condition) else "else"
+        branch = schema.get(branch_name)
+        if isinstance(branch, dict) and not _openapi_schema_accepts(
+            value,
+            branch,
+        ):
+            return False
+
+    schema_type = schema.get("type")
+    if schema_type == "null":
+        return value is None
+    if schema_type == "boolean" and not isinstance(value, bool):
+        return False
+    if schema_type == "integer":
+        if not isinstance(value, int) or isinstance(value, bool):
+            return False
+        minimum = schema.get("minimum")
+        if isinstance(minimum, int) and value < minimum:
+            return False
+    if schema_type == "string" and not isinstance(value, str):
+        return False
+    if schema_type == "array":
+        if not isinstance(value, list):
+            return False
+        min_items = schema.get("minItems")
+        if isinstance(min_items, int) and len(value) < min_items:
+            return False
+        if schema.get("uniqueItems") is True and len({json.dumps(item, sort_keys=True) for item in value}) != len(
+            value
+        ):
+            return False
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict) and not all(_openapi_schema_accepts(item, item_schema) for item in value):
+            return False
+
+    required = schema.get("required")
+    if isinstance(required, list):
+        if not isinstance(value, dict) or not set(required) <= set(value):
+            return False
+    properties = schema.get("properties")
+    if isinstance(properties, dict) and isinstance(value, dict):
+        if schema.get("additionalProperties") is False and not set(value) <= set(properties):
+            return False
+        for field, field_value in value.items():
+            field_schema = properties.get(field)
+            if isinstance(field_schema, dict) and not _openapi_schema_accepts(
+                field_value,
+                field_schema,
+            ):
+                return False
+    dependent_required = schema.get("dependentRequired")
+    if isinstance(dependent_required, dict) and isinstance(value, dict):
+        for field, dependencies in dependent_required.items():
+            if field not in value or not isinstance(dependencies, list):
+                continue
+            if not set(dependencies) <= set(value):
+                return False
+    return schema_type != "object" or isinstance(value, dict)
 
 
 class FakeVNextStore:
@@ -105,6 +199,15 @@ class FakeVNextStore:
         if source is not None and source.get("deleted_at") is None:
             return source
         return None
+
+    def lock_source_occurrence_envelope(
+        self,
+        source_id: str,
+    ) -> dict[str, object]:
+        source = self.get_source(source_id)
+        if source is None:
+            raise ContinuityStoreInvariantError("source occurrence envelope lock requires a current owned source")
+        return source
 
     def list_sources(self, **kwargs) -> list[dict[str, object]]:
         return list(self.sources.values())[: kwargs.get("limit", 20)]
@@ -581,10 +684,7 @@ class FakeVNextStore:
         reviewer_id = rating.get("reviewer_id")
         if reviewer_id is not None:
             for row in self.quality_ratings:
-                if (
-                    row.get("artifact_id") == rating.get("artifact_id")
-                    and row.get("reviewer_id") == reviewer_id
-                ):
+                if row.get("artifact_id") == rating.get("artifact_id") and row.get("reviewer_id") == reviewer_id:
                     row.update(rating)
                     return row
         row = {**rating, "id": f"quality-{len(self.quality_ratings) + 1}"}
@@ -2424,11 +2524,200 @@ def test_create_vnext_context_pack_endpoint_keeps_uncorroborated_count_trace_onl
     assert trace_count["count"] == 2
     assert trace_count["is_answer"] is False
     assert trace_count["supports_numeric_sum"] is False
-    response_contract = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[
-        ("POST", "/v0/vnext/context-packs")
-    ][1]
+    response_contract = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[("POST", "/v0/vnext/context-packs")][1]
     assert "aggregation" not in response_contract["required"]
-    assert "aggregation" not in response_contract["properties"]
+    aggregation_contract = response_contract["properties"]["aggregation"]
+    assert aggregation_contract["type"] == "object"
+    assert aggregation_contract["additionalProperties"] is False
+    assert aggregation_contract["properties"]["count"] == {
+        "type": "integer",
+        "minimum": 0,
+    }
+
+
+def test_create_vnext_context_pack_endpoint_and_openapi_publish_signed_aggregation(
+    monkeypatch,
+) -> None:
+    from tests.unit.test_vnext_retrieval import (
+        _configure_sqlite_occurrence_coverage,
+        _create_sqlite_reviewed_occurrence,
+    )
+
+    store = _sqlite_vnext_store()
+    try:
+        _create_sqlite_reviewed_occurrence(
+            store,
+            index=1,
+            occurred_at="2026-07-01T12:00:00Z",
+        )
+        _configure_sqlite_occurrence_coverage(
+            store,
+            complete_through=datetime(2030, 1, 1, tzinfo=UTC),
+        )
+        store.conn.commit()
+        _install_fake_vnext_store(monkeypatch, store)
+
+        response = vnext_retrieval_router.create_vnext_context_pack(
+            vnext_retrieval_router.VNextContextPackRequest(
+                user_id=UUID(store.user_id),
+                query="How many times did I service my bike?",
+                scope={
+                    "domains": ["personal"],
+                    "projects": ["bike"],
+                },
+                options={
+                    "sensitivity_allowed": ["private"],
+                    "max_items": 4,
+                },
+            )
+        )
+
+        payload = json.loads(response.body)
+        aggregation = payload["aggregation"]
+        assert response.status_code == 201
+        assert aggregation["answer_kind"] == "exact"
+        assert aggregation["count"] == 1
+        assert aggregation["answer_sufficient"] is True
+
+        operation_key = ("POST", "/v0/vnext/context-packs")
+        component_name, response_contract = main_module.OPENAPI_OPERATION_RESPONSE_SCHEMAS[operation_key]
+        assert "aggregation" not in response_contract["required"]
+        aggregation_contract = response_contract["properties"]["aggregation"]
+        assert aggregation_contract["type"] == "object"
+        assert aggregation_contract["additionalProperties"] is False
+        assert set(aggregation) == set(aggregation_contract["properties"])
+        assert set(aggregation_contract["required"]) == set(aggregation) - {"count"}
+        assert _openapi_schema_accepts(aggregation, aggregation_contract)
+
+        range_aggregation = deepcopy(aggregation)
+        range_aggregation.update(
+            {
+                "answer_kind": "range",
+                "exact": False,
+                "upper_bound": 2,
+                "answer_sufficient": False,
+            }
+        )
+        range_aggregation.pop("count")
+        assert _openapi_schema_accepts(range_aggregation, aggregation_contract)
+
+        at_least_aggregation = deepcopy(range_aggregation)
+        at_least_aggregation.update(
+            {
+                "answer_kind": "at_least",
+                "upper_bound": None,
+            }
+        )
+        assert _openapi_schema_accepts(
+            at_least_aggregation,
+            aggregation_contract,
+        )
+
+        exact_without_count = deepcopy(aggregation)
+        exact_without_count.pop("count")
+        assert not _openapi_schema_accepts(
+            exact_without_count,
+            aggregation_contract,
+        )
+        range_with_count = deepcopy(range_aggregation)
+        range_with_count["count"] = 1
+        assert not _openapi_schema_accepts(
+            range_with_count,
+            aggregation_contract,
+        )
+        at_least_with_count = deepcopy(at_least_aggregation)
+        at_least_with_count["count"] = 1
+        assert not _openapi_schema_accepts(
+            at_least_with_count,
+            aggregation_contract,
+        )
+
+        exact_with_false_flag = deepcopy(aggregation)
+        exact_with_false_flag["exact"] = False
+        assert not _openapi_schema_accepts(
+            exact_with_false_flag,
+            aggregation_contract,
+        )
+        range_without_upper_bound = deepcopy(range_aggregation)
+        range_without_upper_bound["upper_bound"] = None
+        assert not _openapi_schema_accepts(
+            range_without_upper_bound,
+            aggregation_contract,
+        )
+        at_least_with_upper_bound = deepcopy(at_least_aggregation)
+        at_least_with_upper_bound["upper_bound"] = 2
+        assert not _openapi_schema_accepts(
+            at_least_with_upper_bound,
+            aggregation_contract,
+        )
+        insufficient_exact = deepcopy(aggregation)
+        insufficient_exact["answer_sufficient"] = False
+        assert not _openapi_schema_accepts(
+            insufficient_exact,
+            aggregation_contract,
+        )
+
+        object_member_aggregation = deepcopy(aggregation)
+        object_member_aggregation.update(
+            {
+                "aggregation_basis": "object_member",
+                "unit": "reviewed_object_members",
+            }
+        )
+        assert _openapi_schema_accepts(
+            object_member_aggregation,
+            aggregation_contract,
+        )
+        mismatched_basis_and_unit = deepcopy(aggregation)
+        mismatched_basis_and_unit["unit"] = "reviewed_object_members"
+        assert not _openapi_schema_accepts(
+            mismatched_basis_and_unit,
+            aggregation_contract,
+        )
+
+        provenance_contract = aggregation_contract["properties"]["provenance"]["items"]
+        evidence_contract = provenance_contract["properties"]["evidence"]["items"]
+        assert set(aggregation["provenance"][0]) == set(provenance_contract["properties"])
+        assert set(aggregation["provenance"][0]["evidence"][0]) == set(evidence_contract["properties"])
+        evidence = aggregation["provenance"][0]["evidence"][0]
+        assert _openapi_schema_accepts(evidence, evidence_contract)
+
+        memory_evidence = deepcopy(evidence)
+        memory_evidence.pop("source_id")
+        memory_evidence.pop("source_chunk_id")
+        assert _openapi_schema_accepts(memory_evidence, evidence_contract)
+        source_evidence = deepcopy(evidence)
+        source_evidence.pop("memory_id")
+        source_evidence.pop("source_chunk_id")
+        assert _openapi_schema_accepts(source_evidence, evidence_contract)
+
+        carrierless_evidence = deepcopy(evidence)
+        carrierless_evidence.pop("memory_id")
+        carrierless_evidence.pop("source_id")
+        carrierless_evidence.pop("source_chunk_id")
+        assert not _openapi_schema_accepts(
+            carrierless_evidence,
+            evidence_contract,
+        )
+        orphaned_chunk_evidence = deepcopy(evidence)
+        orphaned_chunk_evidence.pop("memory_id")
+        orphaned_chunk_evidence.pop("source_id")
+        assert not _openapi_schema_accepts(
+            orphaned_chunk_evidence,
+            evidence_contract,
+        )
+        assert set(aggregation["coverage"]) == set(aggregation_contract["properties"]["coverage"]["properties"])
+        assert set(aggregation["accepted_units"]) == set(
+            aggregation_contract["properties"]["accepted_units"]["properties"]
+        )
+        assert set(aggregation["unresolved_claims"]) == set(
+            aggregation_contract["properties"]["unresolved_claims"]["properties"]
+        )
+
+        generated_contract = main_module.app.openapi()["components"]["schemas"][component_name]
+        assert generated_contract["properties"]["aggregation"] == aggregation_contract
+    finally:
+        store.conn.close()
 
 
 def test_vnext_brain_artifact_generation_endpoints(monkeypatch) -> None:
@@ -3941,6 +4230,54 @@ def test_http_terminal_reviews_close_nested_confirmation_metadata(
         assert confirmation["confirmed_at"] == memory["last_confirmed_at"]
 
 
+@pytest.mark.parametrize(
+    ("action", "expected_status"),
+    [("reject", "rejected"), ("private", "private_only")],
+)
+def test_http_review_retires_occurrences_before_memory_leaves_active_status(
+    monkeypatch,
+    action: str,
+    expected_status: str,
+) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    memory_id = _seed_active_memory(store, text="I visited the museum.")
+    retirement_calls: list[tuple[str, str]] = []
+
+    def retire(
+        _service,
+        memory,
+        *,
+        identity=None,
+        stage: str,
+        reason: str,
+        _defer_occurrence_accounting: bool = False,
+    ) -> list[str]:
+        assert identity is None
+        assert reason
+        retirement_calls.append((str(memory["status"]), stage))
+        return []
+
+    monkeypatch.setattr(
+        VNextMemoryCommitService,
+        "retire_memory_occurrence_state",
+        retire,
+    )
+
+    response = vnext_memories_router.review_vnext_memory(
+        main_module.UUID(memory_id),
+        vnext_memories_router.VNextMemoryReviewRequest(
+            user_id=uuid4(),
+            action=action,
+            reason="This event did not happen.",
+        ),
+    )
+
+    assert response.status_code == 200
+    assert retirement_calls == [("active", f"http_review_{action}")]
+    assert store.get_memory(memory_id)["status"] == expected_status
+
+
 def test_assign_project_replaces_canonical_memory_scope_used_by_retrieval(monkeypatch) -> None:
     store = FakeVNextStore(None)
     _install_fake_vnext_store(monkeypatch, store)
@@ -3989,6 +4326,893 @@ def test_assign_project_replaces_canonical_memory_scope_used_by_retrieval(monkey
 
     assert scoped_pack("project-old")["relevant_memories"] == []
     assert [row["id"] for row in scoped_pack("project-new")["relevant_memories"]] == [memory_id]
+
+
+def test_assign_project_reconciles_occurrence_after_scope_update(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    memory_id = _seed_active_memory(store, text="I visited the release museum.")
+    memory = store.get_memory(memory_id)
+    assert memory is not None
+    memory.update(
+        {
+            "domain": "project",
+            "project_id": "project-old",
+            "metadata_json": {"project_scope": ["project-old"]},
+        }
+    )
+    reconciled_scopes: list[list[str]] = []
+
+    def reconcile(
+        _service,
+        updated,
+        *,
+        identity=None,
+        stage: str,
+    ):
+        assert identity is None
+        assert stage == "http_review_assign_project"
+        scope = updated["metadata_json"]["project_scope"]
+        assert isinstance(scope, list)
+        reconciled_scopes.append(scope)
+        return updated
+
+    monkeypatch.setattr(
+        VNextMemoryCommitService,
+        "reconcile_memory_occurrence_state",
+        reconcile,
+    )
+
+    response = vnext_memories_router.review_vnext_memory(
+        main_module.UUID(memory_id),
+        vnext_memories_router.VNextMemoryReviewRequest(
+            user_id=uuid4(),
+            action="assign_project",
+            project_id="project-new",
+        ),
+    )
+
+    assert response.status_code == 200
+    assert reconciled_scopes == [["project-new"]]
+
+
+def test_http_source_delete_reconciles_occurrences_before_soft_delete(
+    monkeypatch,
+) -> None:
+    order: list[str] = []
+
+    class OrderedSourceDeleteStore(FakeVNextStore):
+        def lock_source_occurrence_envelope(
+            self,
+            source_id: str,
+        ) -> dict[str, object]:
+            order.append("lock")
+            return super().lock_source_occurrence_envelope(source_id)
+
+        def delete_source(
+            self,
+            *,
+            source_id: str,
+            **kwargs,
+        ) -> dict[str, object]:
+            order.append("delete")
+            return super().delete_source(source_id=source_id, **kwargs)
+
+    store = OrderedSourceDeleteStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    source = store.create_source(
+        {
+            "source_type": "document",
+            "title": "Occurrence source",
+            "content_hash": f"sha256:{uuid4()}",
+            "domain": "personal",
+            "sensitivity": "private",
+            "metadata_json": {},
+        }
+    )
+    calls: list[tuple[str, bool]] = []
+
+    def retire_source(
+        _service,
+        source_id: str,
+        *,
+        identity=None,
+        stage: str,
+        reason: str,
+    ) -> list[str]:
+        assert identity is None
+        assert reason
+        existing = store.get_source(source_id)
+        order.append("retire")
+        calls.append((stage, existing is not None))
+        return []
+
+    monkeypatch.setattr(
+        VNextMemoryCommitService,
+        "retire_source_occurrence_state",
+        retire_source,
+    )
+
+    response = vnext_memories_router.delete_vnext_source(
+        main_module.UUID(str(source["id"])),
+        uuid4(),
+    )
+
+    assert response.status_code == 200
+    assert calls == [("http_source_delete", True)]
+    assert order == ["lock", "retire", "delete"]
+    assert store.get_source(str(source["id"])) is None
+
+
+def _seed_source_for_occurrence_lifecycle(
+    store: FakeVNextStore,
+    *,
+    chunk_count: int = 1,
+) -> dict[str, object]:
+    source = store.create_source(
+        {
+            "source_type": "document",
+            "title": "Occurrence lifecycle source",
+            "content_hash": f"sha256:{uuid4()}",
+            "domain": "personal",
+            "sensitivity": "private",
+            "metadata_json": {"project_scope": ["project-old"]},
+        }
+    )
+    for index in range(chunk_count):
+        store.create_source_chunk(
+            {
+                "source_id": str(source["id"]),
+                "chunk_index": index,
+                "text": f"[USER]: I visited museum {index + 1} last Thursday.",
+            }
+        )
+    return source
+
+
+def _install_rollbacking_source_transaction(
+    monkeypatch,
+    store: FakeVNextStore,
+) -> None:
+    @contextmanager
+    def rollbacking_user_connection(database_url, current_user_id):
+        assert database_url == "postgresql://db"
+        assert current_user_id is not None
+        snapshot = deepcopy(
+            (
+                store.sources,
+                store.source_by_hash,
+                store.events,
+                store.edges,
+            )
+        )
+        try:
+            yield object()
+        except BaseException:
+            (
+                store.sources,
+                store.source_by_hash,
+                store.events,
+                store.edges,
+            ) = snapshot
+            raise
+
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "user_connection",
+        rollbacking_user_connection,
+    )
+
+
+def test_http_source_archive_aborts_before_delete_when_occurrence_retirement_fails(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    class DeleteMustNotRunStore(FakeVNextStore):
+        def lock_source_occurrence_envelope(
+            self,
+            source_id: str,
+        ) -> dict[str, object]:
+            calls.append("lock")
+            return super().lock_source_occurrence_envelope(source_id)
+
+        def delete_source(self, *, source_id: str, **_kwargs) -> dict[str, object]:
+            raise AssertionError(f"source {source_id} was deleted before occurrence retirement succeeded")
+
+    store = DeleteMustNotRunStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    source = _seed_source_for_occurrence_lifecycle(store)
+    source_before = deepcopy(source)
+
+    def reject_retirement(
+        _service,
+        source_id: str,
+        *,
+        identity=None,
+        stage: str,
+        reason: str,
+        _defer_occurrence_accounting: bool = False,
+    ) -> list[str]:
+        assert identity is None
+        assert source_id == source["id"]
+        assert stage == "http_source_review_archive"
+        assert reason
+        calls.append("retire")
+        raise ContinuityStoreInvariantError("occurrence retirement failed")
+
+    monkeypatch.setattr(
+        VNextMemoryCommitService,
+        "retire_source_occurrence_state",
+        reject_retirement,
+    )
+
+    response = vnext_memories_router.review_vnext_source(
+        main_module.UUID(str(source["id"])),
+        vnext_memories_router.VNextSourceReviewRequest(
+            user_id=uuid4(),
+            action="archive",
+            review_note="Archive only after occurrence retirement.",
+        ),
+    )
+
+    assert response.status_code == 409
+    assert calls == ["lock", "retire"]
+    assert store.get_source(str(source["id"])) == source_before
+    assert not store.events
+
+
+def test_http_source_envelope_change_aborts_before_update_when_occurrence_retirement_fails(
+    monkeypatch,
+) -> None:
+    class UpdateMustNotRunStore(FakeVNextStore):
+        def update_source(
+            self,
+            *,
+            source_id: str,
+            patch: dict[str, object],
+            **_kwargs,
+        ) -> dict[str, object]:
+            del patch
+            raise AssertionError(f"source {source_id} changed before occurrence retirement succeeded")
+
+    store = UpdateMustNotRunStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    source = _seed_source_for_occurrence_lifecycle(store)
+    source_before = deepcopy(source)
+    calls: list[str] = []
+
+    def reject_retirement(
+        _service,
+        source_id: str,
+        *,
+        identity=None,
+        stage: str,
+        reason: str,
+        _defer_occurrence_accounting: bool = False,
+    ) -> list[str]:
+        assert identity is None
+        assert source_id == source["id"]
+        assert stage == "http_source_review_envelope_change"
+        assert _defer_occurrence_accounting is True
+        assert reason
+        calls.append("retire")
+        raise ContinuityStoreInvariantError("occurrence envelope retirement failed")
+
+    monkeypatch.setattr(
+        VNextMemoryCommitService,
+        "retire_source_occurrence_state",
+        reject_retirement,
+    )
+
+    response = vnext_memories_router.review_vnext_source(
+        main_module.UUID(str(source["id"])),
+        vnext_memories_router.VNextSourceReviewRequest(
+            user_id=uuid4(),
+            action="assign_project",
+            project_id="project-new",
+            domain="professional",
+            sensitivity="internal",
+            review_note="Move the complete source envelope.",
+        ),
+    )
+
+    assert response.status_code == 409
+    assert calls == ["retire"]
+    assert store.get_source(str(source["id"])) == source_before
+    assert not store.edges
+    assert not store.events
+
+
+@pytest.mark.parametrize(
+    ("request_kwargs", "expected_title", "expected_domain", "expected_sensitivity", "expected_scope"),
+    [
+        (
+            {"action": "assign_project", "project_id": "project-new"},
+            "Occurrence lifecycle source",
+            "personal",
+            "private",
+            ("project-new",),
+        ),
+        (
+            {"action": "update", "domain": "professional"},
+            "Occurrence lifecycle source",
+            "professional",
+            "private",
+            ("project-old",),
+        ),
+        (
+            {"action": "update", "sensitivity": "internal"},
+            "Occurrence lifecycle source",
+            "personal",
+            "internal",
+            ("project-old",),
+        ),
+        (
+            {"action": "update", "title": "Retitled occurrence source"},
+            "Retitled occurrence source",
+            "personal",
+            "private",
+            ("project-old",),
+        ),
+    ],
+    ids=["project", "domain", "sensitivity", "title"],
+)
+def test_http_source_occurrence_input_change_reestablishes_every_chunk_after_update(
+    monkeypatch,
+    request_kwargs: dict[str, object],
+    expected_title: str,
+    expected_domain: str,
+    expected_sensitivity: str,
+    expected_scope: tuple[str, ...],
+) -> None:
+    order: list[str] = []
+
+    class OrderedOccurrenceInputStore(FakeVNextStore):
+        def lock_source_occurrence_envelope(
+            self,
+            source_id: str,
+        ) -> dict[str, object]:
+            order.append("lock")
+            return super().lock_source_occurrence_envelope(source_id)
+
+        def update_source(
+            self,
+            *,
+            source_id: str,
+            patch: dict[str, object],
+            **kwargs,
+        ) -> dict[str, object]:
+            order.append("update")
+            return super().update_source(
+                source_id=source_id,
+                patch=patch,
+                **kwargs,
+            )
+
+    store = OrderedOccurrenceInputStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    source = _seed_source_for_occurrence_lifecycle(store, chunk_count=2)
+    chunks = store.list_source_chunks(str(source["id"]))
+
+    def retire_source(
+        _service,
+        source_id: str,
+        *,
+        identity=None,
+        stage: str,
+        reason: str,
+        _defer_occurrence_accounting: bool = False,
+    ) -> list[str]:
+        assert identity is None
+        assert source_id == source["id"]
+        assert stage == "http_source_review_envelope_change"
+        assert _defer_occurrence_accounting is True
+        assert reason
+        order.append("retire")
+        return []
+
+    def establish_chunk(
+        candidate_store,
+        *,
+        source: dict[str, object],
+        source_chunk: dict[str, object],
+        actor_type: str,
+        stage: str,
+    ) -> list[dict[str, object]]:
+        assert candidate_store is store
+        assert source == store.get_source(str(source["id"]))
+        assert source["title"] == expected_title
+        assert source["domain"] == expected_domain
+        assert source["sensitivity"] == expected_sensitivity
+        assert vnext_memories_router.resource_project_scope(source) == expected_scope
+        assert source_chunk["source_id"] == source["id"]
+        assert actor_type == "user"
+        assert stage == "http_source_review_envelope_change"
+        order.append(f"establish:{source_chunk['id']}")
+        return []
+
+    def finalize_accounting(
+        candidate_store,
+        *,
+        reason: str,
+        actor_type: str,
+        actor_id: str,
+        source_chunk_id: str,
+    ) -> None:
+        assert candidate_store is store
+        assert reason == (
+            "Source occurrence evidence was detached before its "
+            "title/project/domain/sensitivity occurrence inputs changed. "
+            "(http_source_review_envelope_change)"
+        )
+        assert actor_type == "user"
+        assert actor_id
+        order.append(f"accounting:{source_chunk_id}")
+
+    monkeypatch.setattr(
+        VNextMemoryCommitService,
+        "retire_source_occurrence_state",
+        retire_source,
+    )
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "establish_source_chunk_occurrences",
+        establish_chunk,
+    )
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "invalidate_occurrence_accounting",
+        finalize_accounting,
+    )
+
+    response = vnext_memories_router.review_vnext_source(
+        main_module.UUID(str(source["id"])),
+        vnext_memories_router.VNextSourceReviewRequest(
+            user_id=uuid4(),
+            review_note="Rebuild every source-only occurrence under the new inputs.",
+            **request_kwargs,
+        ),
+    )
+
+    assert response.status_code == 200
+    assert order == [
+        "lock",
+        "retire",
+        "update",
+        *(f"establish:{chunk['id']}" for chunk in chunks),
+        *(f"accounting:{chunk['id']}" for chunk in chunks),
+    ]
+
+
+def test_http_snapshot_equivalent_title_update_does_not_retire_occurrences(
+    monkeypatch,
+) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    source = _seed_source_for_occurrence_lifecycle(store)
+    equivalent_title = "  Occurrence\u00a0lifecycle\u001csource.  "
+
+    def reject_retirement(*_args, **_kwargs) -> list[str]:
+        raise AssertionError("a snapshot-equivalent title must not retire occurrences")
+
+    def reject_establishment(*_args, **_kwargs) -> list[dict[str, object]]:
+        raise AssertionError("a snapshot-equivalent title must not rebuild occurrence evidence")
+
+    monkeypatch.setattr(
+        VNextMemoryCommitService,
+        "retire_source_occurrence_state",
+        reject_retirement,
+    )
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "establish_source_chunk_occurrences",
+        reject_establishment,
+    )
+
+    response = vnext_memories_router.review_vnext_source(
+        main_module.UUID(str(source["id"])),
+        vnext_memories_router.VNextSourceReviewRequest(
+            user_id=uuid4(),
+            action="update",
+            title=equivalent_title,
+            review_note="Preserve the canonical occurrence snapshot.",
+        ),
+    )
+
+    assert response.status_code == 200
+    updated = store.get_source(str(source["id"]))
+    assert updated is not None
+    assert updated["title"] == equivalent_title
+
+
+def test_http_source_review_reestablishes_changed_envelope_before_signing(
+    monkeypatch,
+) -> None:
+    order: list[str] = []
+
+    class OrderedEnvelopeReviewStore(FakeVNextStore):
+        def lock_source_occurrence_envelope(
+            self,
+            source_id: str,
+        ) -> dict[str, object]:
+            order.append("lock")
+            return super().lock_source_occurrence_envelope(source_id)
+
+        def update_source(
+            self,
+            *,
+            source_id: str,
+            patch: dict[str, object],
+            **kwargs,
+        ) -> dict[str, object]:
+            order.append("update")
+            return super().update_source(
+                source_id=source_id,
+                patch=patch,
+                **kwargs,
+            )
+
+    store = OrderedEnvelopeReviewStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    source = _seed_source_for_occurrence_lifecycle(store, chunk_count=2)
+    chunks = store.list_source_chunks(str(source["id"]))
+    established_chunk_ids: set[str] = set()
+
+    def retire_source(
+        _service,
+        source_id: str,
+        *,
+        identity=None,
+        stage: str,
+        reason: str,
+        _defer_occurrence_accounting: bool = False,
+    ) -> list[str]:
+        assert identity is None
+        assert source_id == source["id"]
+        assert stage == "http_source_review_envelope_change"
+        assert _defer_occurrence_accounting is True
+        assert reason
+        order.append("retire")
+        return []
+
+    def establish_chunk(
+        candidate_store,
+        *,
+        source: dict[str, object],
+        source_chunk: dict[str, object],
+        actor_type: str,
+        stage: str,
+    ) -> list[dict[str, object]]:
+        assert candidate_store is store
+        assert source["title"] == "Reviewed occurrence source"
+        assert source["domain"] == "professional"
+        assert actor_type == "user"
+        assert stage == "http_source_review_envelope_change"
+        chunk_id = str(source_chunk["id"])
+        established_chunk_ids.add(chunk_id)
+        order.append(f"establish:{chunk_id}")
+        return []
+
+    def review_chunk(
+        candidate_store,
+        *,
+        source_chunk_id: str,
+        reviewer_id: str,
+        reason: str,
+        actor_type: str,
+        stage: str,
+        _defer_occurrence_accounting: bool = False,
+    ) -> list[str]:
+        assert candidate_store is store
+        assert source_chunk_id in established_chunk_ids
+        assert reviewer_id
+        assert reason == "Rebuild before signing the reviewed envelope."
+        assert actor_type == "user"
+        assert stage == "http_source_review"
+        assert _defer_occurrence_accounting is True
+        order.append(f"review:{source_chunk_id}")
+        return [f"claim:{source_chunk_id}"]
+
+    def finalize_reviewed_accounting(
+        candidate_store,
+        *,
+        source_chunk_id: str,
+        actor_type: str,
+        reviewer_id: str,
+        reason: str,
+    ) -> None:
+        assert candidate_store is store
+        assert actor_type == "user"
+        assert reviewer_id
+        assert reason == (
+            "Rebuild before signing the reviewed envelope. "
+            "Extraction disposition reviewed during http_source_review."
+        )
+        order.append(f"accounting:{source_chunk_id}")
+
+    monkeypatch.setattr(
+        VNextMemoryCommitService,
+        "retire_source_occurrence_state",
+        retire_source,
+    )
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "establish_source_chunk_occurrences",
+        establish_chunk,
+    )
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "review_source_chunk_occurrences",
+        review_chunk,
+    )
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "reconcile_chunk_extraction_disposition",
+        finalize_reviewed_accounting,
+    )
+
+    response = vnext_memories_router.review_vnext_source(
+        main_module.UUID(str(source["id"])),
+        vnext_memories_router.VNextSourceReviewRequest(
+            user_id=uuid4(),
+            action="review",
+            title="Reviewed occurrence source",
+            domain="professional",
+            review_note="Rebuild before signing the reviewed envelope.",
+        ),
+    )
+
+    assert response.status_code == 200
+    assert order == [
+        "lock",
+        "retire",
+        "update",
+        *(f"establish:{chunk['id']}" for chunk in chunks),
+        *(f"review:{chunk['id']}" for chunk in chunks),
+        *(f"accounting:{chunk['id']}" for chunk in chunks),
+    ]
+
+
+def test_http_source_occurrence_reestablishment_failure_rolls_back_source_update(
+    monkeypatch,
+) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    _install_rollbacking_source_transaction(monkeypatch, store)
+    source = _seed_source_for_occurrence_lifecycle(store, chunk_count=2)
+    source_before = deepcopy(source)
+    calls: list[str] = []
+
+    def retire_source(
+        _service,
+        source_id: str,
+        *,
+        identity=None,
+        stage: str,
+        reason: str,
+        _defer_occurrence_accounting: bool = False,
+    ) -> list[str]:
+        assert identity is None
+        assert source_id == source["id"]
+        assert stage == "http_source_review_envelope_change"
+        assert _defer_occurrence_accounting is True
+        assert reason
+        calls.append("retire")
+        return []
+
+    def reject_establishment(
+        candidate_store,
+        *,
+        source: dict[str, object],
+        source_chunk: dict[str, object],
+        actor_type: str,
+        stage: str,
+    ) -> list[dict[str, object]]:
+        assert candidate_store is store
+        assert source["domain"] == "professional"
+        assert source_chunk["source_id"] == source["id"]
+        assert actor_type == "user"
+        assert stage == "http_source_review_envelope_change"
+        calls.append(f"establish:{source_chunk['id']}")
+        raise ContinuityStoreInvariantError("source occurrence re-establishment failed")
+
+    monkeypatch.setattr(
+        VNextMemoryCommitService,
+        "retire_source_occurrence_state",
+        retire_source,
+    )
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "establish_source_chunk_occurrences",
+        reject_establishment,
+    )
+
+    response = vnext_memories_router.review_vnext_source(
+        main_module.UUID(str(source["id"])),
+        vnext_memories_router.VNextSourceReviewRequest(
+            user_id=uuid4(),
+            action="update",
+            domain="professional",
+            review_note="This update must remain atomic.",
+        ),
+    )
+
+    assert response.status_code == 409
+    assert calls == ["retire", f"establish:{store.chunks[0]['id']}"]
+    assert store.get_source(str(source["id"])) == source_before
+    assert not store.events
+
+
+def test_http_source_review_signs_each_chunk_after_source_review_update(
+    monkeypatch,
+) -> None:
+    order: list[str] = []
+
+    class OrderedSourceReviewStore(FakeVNextStore):
+        def update_source(
+            self,
+            *,
+            source_id: str,
+            patch: dict[str, object],
+            **kwargs,
+        ) -> dict[str, object]:
+            order.append("update")
+            return super().update_source(
+                source_id=source_id,
+                patch=patch,
+                **kwargs,
+            )
+
+        def append_event(self, event: dict[str, object]) -> dict[str, object]:
+            if event.get("event_type") == "source.reviewed":
+                order.append("event")
+            return super().append_event(event)
+
+    store = OrderedSourceReviewStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    source = _seed_source_for_occurrence_lifecycle(store, chunk_count=2)
+    chunks = store.list_source_chunks(str(source["id"]))
+    request_user_id = uuid4()
+
+    def review_chunk(
+        candidate_store,
+        *,
+        source_chunk_id: str,
+        reviewer_id: str,
+        reason: str,
+        actor_type: str,
+        stage: str,
+        _defer_occurrence_accounting: bool = False,
+    ) -> list[str]:
+        assert candidate_store is store
+        assert reviewer_id == str(request_user_id)
+        assert reason == "Review every current source chunk."
+        assert actor_type == "user"
+        assert stage == "http_source_review"
+        assert _defer_occurrence_accounting is False
+        reviewed_source = store.get_source(str(source["id"]))
+        assert reviewed_source is not None
+        assert reviewed_source["metadata_json"]["review_status"] == "reviewed"
+        order.append(f"review:{source_chunk_id}")
+        return [f"claim:{source_chunk_id}"]
+
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "review_source_chunk_occurrences",
+        review_chunk,
+    )
+
+    response = vnext_memories_router.review_vnext_source(
+        main_module.UUID(str(source["id"])),
+        vnext_memories_router.VNextSourceReviewRequest(
+            user_id=request_user_id,
+            action="review",
+            review_note="Review every current source chunk.",
+        ),
+    )
+
+    assert response.status_code == 200
+    assert order == [
+        "update",
+        *(f"review:{chunk['id']}" for chunk in chunks),
+        "event",
+    ]
+
+
+def test_http_source_review_rolls_back_update_when_disposition_signing_fails(
+    monkeypatch,
+) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    _install_rollbacking_source_transaction(monkeypatch, store)
+    source = _seed_source_for_occurrence_lifecycle(store, chunk_count=2)
+    source_before = deepcopy(source)
+    calls: list[str] = []
+
+    def reject_review(
+        candidate_store,
+        *,
+        source_chunk_id: str,
+        reviewer_id: str,
+        reason: str,
+        actor_type: str,
+        stage: str,
+        _defer_occurrence_accounting: bool = False,
+    ) -> list[str]:
+        assert candidate_store is store
+        assert reviewer_id
+        assert reason
+        assert actor_type == "user"
+        assert stage == "http_source_review"
+        assert _defer_occurrence_accounting is False
+        calls.append(source_chunk_id)
+        raise ContinuityStoreInvariantError("occurrence disposition signing failed")
+
+    monkeypatch.setattr(
+        vnext_memories_router,
+        "review_source_chunk_occurrences",
+        reject_review,
+    )
+
+    response = vnext_memories_router.review_vnext_source(
+        main_module.UUID(str(source["id"])),
+        vnext_memories_router.VNextSourceReviewRequest(
+            user_id=uuid4(),
+            action="review",
+            review_note="This transaction must roll back.",
+        ),
+    )
+
+    assert response.status_code == 409
+    assert calls == [str(store.chunks[0]["id"])]
+    assert store.get_source(str(source["id"])) == source_before
+    assert not store.events
+
+
+def test_http_source_delete_aborts_without_mutation_when_occurrence_retirement_fails(
+    monkeypatch,
+) -> None:
+    class DeleteMustNotRunStore(FakeVNextStore):
+        def delete_source(self, *, source_id: str, **_kwargs) -> dict[str, object]:
+            raise AssertionError(f"source {source_id} was deleted before occurrence retirement succeeded")
+
+    store = DeleteMustNotRunStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    source = _seed_source_for_occurrence_lifecycle(store)
+    source_before = deepcopy(source)
+    calls: list[str] = []
+
+    def reject_retirement(
+        _service,
+        source_id: str,
+        *,
+        identity=None,
+        stage: str,
+        reason: str,
+    ) -> list[str]:
+        assert identity is None
+        assert source_id == source["id"]
+        assert stage == "http_source_delete"
+        assert reason
+        calls.append("retire")
+        raise ContinuityStoreInvariantError("occurrence deletion retirement failed")
+
+    monkeypatch.setattr(
+        VNextMemoryCommitService,
+        "retire_source_occurrence_state",
+        reject_retirement,
+    )
+
+    response = vnext_memories_router.delete_vnext_source(
+        main_module.UUID(str(source["id"])),
+        uuid4(),
+    )
+
+    assert response.status_code == 409
+    assert calls == ["retire"]
+    assert store.get_source(str(source["id"])) == source_before
+    assert not store.events
 
 
 def test_vnext_memory_expire_and_unexpire_endpoints(monkeypatch) -> None:

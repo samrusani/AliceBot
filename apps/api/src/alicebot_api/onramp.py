@@ -58,12 +58,12 @@ import sqlite3
 import sys
 import tempfile
 import unicodedata
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import IO
+from typing import IO, cast
 from uuid import UUID
 
 from alicebot_api import __version__
@@ -77,6 +77,11 @@ from alicebot_api.sqlite_store import (
     EVENT_LOG_COLUMNS,
     GRAPH_EDGE_COLUMNS,
     MEMORY_COLUMNS,
+    OCCURRENCE_CLAIM_COLUMNS,
+    OCCURRENCE_COVERAGE_COLUMNS,
+    OCCURRENCE_EVIDENCE_COLUMNS,
+    OCCURRENCE_EXTRACTION_DISPOSITION_COLUMNS,
+    OCCURRENCE_UNIT_COLUMNS,
     OPEN_LOOP_COLUMNS,
     PROVENANCE_COLUMNS,
     REVISION_COLUMNS,
@@ -132,9 +137,7 @@ _ERROR_CONTRACTS: dict[str, str] = {
     "restore_committed_hardening_failed": (
         "The restore committed, but database permissions were not hardened; do not retry blindly"
     ),
-    "restore_committed_summary_failed": (
-        "The restore committed, but summary output failed; do not retry blindly"
-    ),
+    "restore_committed_summary_failed": ("The restore committed, but summary output failed; do not retry blindly"),
     "restore_committed_hardening_and_summary_failed": (
         "The restore committed, but permission hardening and summary output failed; do not retry blindly"
     ),
@@ -162,18 +165,16 @@ def _emit_error(code: str) -> None:
         flush=True,
     )
 
+
 # ``MEMORY_COLUMNS`` intentionally omits provider-specific embeddings and
 # derived fact keys from ordinary store reads. Embeddings remain excluded
 # from portable backups, but fact keys are part of the user-owned retrieval
 # state and must survive export/import.
 _MEMORY_EXPORT_COLUMNS = (*MEMORY_COLUMNS, "fact_keys")
 
-# The full export/import record surface, in FK-safe insert order: sources
-# before their chunks, memories before revisions and open loops, events
-# last. record_type values are singular, matching the original export
-# format ("memory", "source", "open_loop", "event"); imports of old files
-# lacking the newer types work unchanged.
-_RECORD_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
+# The pre-occurrence record surface is retained verbatim so versioned
+# exports from the immediately preceding release remain importable.
+_PRE_OCCURRENCE_RECORD_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
     "source": ("sources", SOURCE_COLUMNS),
     "source_chunk": ("source_chunks", SOURCE_CHUNK_COLUMNS),
     "memory": ("memories", _MEMORY_EXPORT_COLUMNS),
@@ -188,6 +189,59 @@ _RECORD_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
     "open_loop": ("open_loops", OPEN_LOOP_COLUMNS),
     "event": ("event_log", EVENT_LOG_COLUMNS),
 }
+
+
+def _record_specs_with_occurrences() -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Insert occurrence records after their durable source/memory carriers."""
+
+    specs: dict[str, tuple[str, tuple[str, ...]]] = {}
+    for record_type, spec in _PRE_OCCURRENCE_RECORD_SPECS.items():
+        specs[record_type] = spec
+        if record_type == "memory":
+            specs.update(
+                {
+                    "occurrence_coverage": (
+                        "occurrence_coverage",
+                        OCCURRENCE_COVERAGE_COLUMNS,
+                    ),
+                    "occurrence_claim": (
+                        "occurrence_claims",
+                        OCCURRENCE_CLAIM_COLUMNS,
+                    ),
+                    "occurrence_unit": (
+                        "occurrence_units",
+                        OCCURRENCE_UNIT_COLUMNS,
+                    ),
+                    "occurrence_evidence": (
+                        "occurrence_evidence",
+                        OCCURRENCE_EVIDENCE_COLUMNS,
+                    ),
+                    "occurrence_extraction_disposition": (
+                        "occurrence_extraction_dispositions",
+                        OCCURRENCE_EXTRACTION_DISPOSITION_COLUMNS,
+                    ),
+                }
+            )
+    return specs
+
+
+# The full export/import record surface, in FK-safe insert order. Claims and
+# units contain a deliberate circular reference, so import defers FK checks
+# until the complete transaction is present.
+_RECORD_SPECS = _record_specs_with_occurrences()
+
+_OCCURRENCE_GRAPH_IMPORT_TYPES = frozenset(
+    {
+        "source",
+        "source_chunk",
+        "memory",
+        "occurrence_coverage",
+        "occurrence_claim",
+        "occurrence_unit",
+        "occurrence_evidence",
+        "occurrence_extraction_disposition",
+    }
+)
 
 # Portable records intentionally omit only the provider-specific embedding
 # blob. Unknown physical columns on one of these tables may contain state
@@ -243,6 +297,7 @@ def _database_family_paths(path: Path) -> tuple[Path, ...]:
 
 def _path_aliases_database_family(candidate: Path, database: Path) -> bool:
     """Reject lexical and inode aliases to the DB and every SQLite sidecar."""
+
     def alias_key(path: Path) -> str:
         return unicodedata.normalize("NFC", os.fspath(path)).casefold()
 
@@ -443,11 +498,7 @@ def _copy_file_with_fingerprint(source: Path, destination: Path) -> _FileFingerp
 
 def _snapshot_source_members(source_path: Path) -> tuple[Path, ...]:
     """Return the main DB plus WAL/rollback journal files that exist now."""
-    return tuple(
-        member
-        for suffix in _SQLITE_SNAPSHOT_SUFFIXES
-        if (member := Path(f"{source_path}{suffix}")).exists()
-    )
+    return tuple(member for suffix in _SQLITE_SNAPSHOT_SUFFIXES if (member := Path(f"{source_path}{suffix}")).exists())
 
 
 def _copy_stable_sqlite_family(source_path: Path, replica_path: Path) -> None:
@@ -466,9 +517,7 @@ def _copy_stable_sqlite_family(source_path: Path, replica_path: Path) -> None:
         raise _BackupError(f"SQLite database file is not readable: {source_path}")
     last_error: Exception | None = None
     for _attempt in range(_SQLITE_SNAPSHOT_ATTEMPTS):
-        attempt_dir = Path(
-            tempfile.mkdtemp(prefix="family-", dir=replica_path.parent)
-        )
+        attempt_dir = Path(tempfile.mkdtemp(prefix="family-", dir=replica_path.parent))
         os.chmod(attempt_dir, 0o700)
         attempt_replica = attempt_dir / replica_path.name
         try:
@@ -482,9 +531,7 @@ def _copy_stable_sqlite_family(source_path: Path, replica_path: Path) -> None:
                 destination = Path(f"{attempt_replica}{suffix}")
                 copied[member.name] = _copy_file_with_fingerprint(member, destination)
             after_members = _snapshot_source_members(source_path)
-            if tuple(member.name for member in after_members) != tuple(
-                member.name for member in before_members
-            ):
+            if tuple(member.name for member in after_members) != tuple(member.name for member in before_members):
                 raise _BackupError("SQLite source family changed while taking the snapshot")
             after = {member.name: _fingerprint_file(member) for member in after_members}
             if before != copied or copied != after:
@@ -511,8 +558,7 @@ def _copy_stable_sqlite_family(source_path: Path, replica_path: Path) -> None:
             except OSError:
                 pass
     raise _BackupError(
-        "SQLite database did not remain stable long enough to snapshot; "
-        "quiesce writers and retry"
+        "SQLite database did not remain stable long enough to snapshot; quiesce writers and retry"
     ) from last_error
 
 
@@ -520,9 +566,7 @@ def _copy_sqlite_database(source_path: Path, destination_path: Path) -> None:
     """Copy one consistent SQLite snapshot without opening the source in SQLite."""
     source: sqlite3.Connection | None = None
     destination: sqlite3.Connection | None = None
-    with tempfile.TemporaryDirectory(
-        prefix="alice-memory-source-replica-", dir=destination_path.parent
-    ) as raw_dir:
+    with tempfile.TemporaryDirectory(prefix="alice-memory-source-replica-", dir=destination_path.parent) as raw_dir:
         replica_dir = Path(raw_dir)
         os.chmod(replica_dir, 0o700)
         replica_path = replica_dir / "source.db"
@@ -546,10 +590,7 @@ def _copy_sqlite_database(source_path: Path, destination_path: Path) -> None:
 
 
 def _sqlite_table_names(conn: sqlite3.Connection) -> set[str]:
-    return {
-        str(row[0])
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
-    }
+    return {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
 
 
 def _validate_alice_snapshot(
@@ -564,18 +605,13 @@ def _validate_alice_snapshot(
     tables = _sqlite_table_names(conn)
     missing_base = sorted(_BASE_ALICE_TABLES - tables)
     if missing_base:
-        raise _BackupError(
-            "unsupported Alice SQLite schema; missing base tables: " + ", ".join(missing_base)
-        )
+        raise _BackupError("unsupported Alice SQLite schema; missing base tables: " + ", ".join(missing_base))
     unknown_tables = sorted(
-        table
-        for table in tables - _current_alice_table_names()
-        if not table.startswith("sqlite_stat")
+        table for table in tables - _current_alice_table_names() if not table.startswith("sqlite_stat")
     )
     if unknown_tables:
         raise _BackupError(
-            "unsupported newer Alice SQLite schema; unknown application tables: "
-            + ", ".join(unknown_tables)
+            "unsupported newer Alice SQLite schema; unknown application tables: " + ", ".join(unknown_tables)
         )
     if user_id is not None:
         user = conn.execute("SELECT 1 FROM users WHERE id = ?", (str(user_id),)).fetchone()
@@ -585,46 +621,31 @@ def _validate_alice_snapshot(
     for table, portable_columns in table_specs.items():
         if table not in tables:
             continue
-        actual_columns = {
-            str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-        }
-        allowed_columns = set(portable_columns) | set(
-            _PORTABLE_TABLE_EXTRA_COLUMNS.get(table, frozenset())
-        )
+        actual_columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        allowed_columns = set(portable_columns) | set(_PORTABLE_TABLE_EXTRA_COLUMNS.get(table, frozenset()))
         unknown_columns = sorted(actual_columns - allowed_columns)
         if unknown_columns:
             raise _BackupError(
-                f"unsupported newer Alice SQLite schema; {table} has unknown columns: "
-                + ", ".join(unknown_columns)
+                f"unsupported newer Alice SQLite schema; {table} has unknown columns: " + ", ".join(unknown_columns)
             )
     if not require_current_schema:
         return
     for record_type, (table, required_columns) in _RECORD_SPECS.items():
         if table not in tables:
-            raise _BackupError(
-                f"snapshot upgrade did not produce required table {table} ({record_type})"
-            )
-        actual_columns = set(
-            str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-        )
+            raise _BackupError(f"snapshot upgrade did not produce required table {table} ({record_type})")
+        actual_columns = set(str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
         missing_columns = sorted(set(required_columns) - actual_columns)
         if missing_columns:
-            raise _BackupError(
-                f"snapshot upgrade left {table} without columns: {', '.join(missing_columns)}"
-            )
+            raise _BackupError(f"snapshot upgrade left {table} without columns: {', '.join(missing_columns)}")
 
 
 @contextmanager
-def _prepared_export_connection(
-    source_path: Path, user_id: UUID
-) -> Iterator[sqlite3.Connection]:
+def _prepared_export_connection(source_path: Path, user_id: UUID) -> Iterator[sqlite3.Connection]:
     """Yield a current-schema private copy while leaving the source untouched."""
     with tempfile.TemporaryDirectory(prefix="alice-memory-export-snapshot-") as raw_dir:
         snapshot_dir = Path(raw_dir)
         os.chmod(snapshot_dir, 0o700)
-        fd, raw_snapshot = tempfile.mkstemp(
-            prefix="snapshot-", suffix=".db", dir=snapshot_dir
-        )
+        fd, raw_snapshot = tempfile.mkstemp(prefix="snapshot-", suffix=".db", dir=snapshot_dir)
         os.close(fd)
         snapshot_path = Path(raw_snapshot)
         _copy_sqlite_database(source_path, snapshot_path)
@@ -789,8 +810,7 @@ def build_parser() -> argparse.ArgumentParser:
     reindex_parser = subparsers.add_parser(
         "reindex-embeddings",
         help=(
-            "Rebuild missing, unsigned, or provider/model-incompatible memory "
-            "embeddings in the local SQLite database."
+            "Rebuild missing, unsigned, or provider/model-incompatible memory embeddings in the local SQLite database."
         ),
     )
     _add_database_arguments(reindex_parser)
@@ -798,10 +818,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--batch-size",
         type=int,
         default=MAX_EMBEDDINGS_BATCH_SIZE,
-        help=(
-            "Embedding request batch size. Must be between 1 and "
-            f"{MAX_EMBEDDINGS_BATCH_SIZE}."
-        ),
+        help=(f"Embedding request batch size. Must be between 1 and {MAX_EMBEDDINGS_BATCH_SIZE}."),
     )
     return parser
 
@@ -847,9 +864,7 @@ def _export_line(record_type: str, row: object) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
-def _decoded_rows(
-    conn: sqlite3.Connection, query: str, params: tuple[object, ...]
-) -> Iterator[dict[str, object]]:
+def _decoded_rows(conn: sqlite3.Connection, query: str, params: tuple[object, ...]) -> Iterator[dict[str, object]]:
     """Stream dict rows with JSON TEXT decoded, bounded by a fetch batch."""
     cursor = conn.execute(query, params)
     columns = [description[0] for description in cursor.description]
@@ -865,9 +880,7 @@ def _decoded_rows(
             yield row
 
 
-def _export_rows(
-    conn: sqlite3.Connection, user_id: UUID
-) -> Iterator[tuple[str, object]]:
+def _export_rows(conn: sqlite3.Connection, user_id: UUID) -> Iterator[tuple[str, object]]:
     """Yield ``(record_type, row)`` for the whole memory graph.
 
     Soft-deleted rows stay out. Dependent rows with mandatory parents are
@@ -973,6 +986,71 @@ def _export_rows(
             FROM memories m
             WHERE m.user_id = ? AND m.deleted_at IS NULL
             ORDER BY m.created_at ASC, m.id ASC
+            """,
+            (uid,),
+        )
+    )
+    yield from (
+        ("occurrence_coverage", row)
+        for row in _decoded_rows(
+            conn,
+            f"""
+            SELECT {", ".join(OCCURRENCE_COVERAGE_COLUMNS)}
+            FROM occurrence_coverage
+            WHERE user_id = ?
+            ORDER BY id ASC
+            """,
+            (uid,),
+        )
+    )
+    yield from (
+        ("occurrence_claim", row)
+        for row in _decoded_rows(
+            conn,
+            f"""
+            SELECT {", ".join(OCCURRENCE_CLAIM_COLUMNS)}
+            FROM occurrence_claims
+            WHERE user_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (uid,),
+        )
+    )
+    yield from (
+        ("occurrence_unit", row)
+        for row in _decoded_rows(
+            conn,
+            f"""
+            SELECT {", ".join(OCCURRENCE_UNIT_COLUMNS)}
+            FROM occurrence_units
+            WHERE user_id = ?
+            ORDER BY claim_id ASC, claim_ordinal ASC, id ASC
+            """,
+            (uid,),
+        )
+    )
+    yield from (
+        ("occurrence_evidence", row)
+        for row in _decoded_rows(
+            conn,
+            f"""
+            SELECT {", ".join(OCCURRENCE_EVIDENCE_COLUMNS)}
+            FROM occurrence_evidence
+            WHERE user_id = ?
+            ORDER BY occurrence_id ASC, created_at ASC, id ASC
+            """,
+            (uid,),
+        )
+    )
+    yield from (
+        ("occurrence_extraction_disposition", row)
+        for row in _decoded_rows(
+            conn,
+            f"""
+            SELECT {", ".join(OCCURRENCE_EXTRACTION_DISPOSITION_COLUMNS)}
+            FROM occurrence_extraction_dispositions
+            WHERE user_id = ?
+            ORDER BY source_chunk_id ASC, created_at ASC, id ASC
             """,
             (uid,),
         )
@@ -1159,11 +1237,10 @@ def _export_rows(
     )
 
 
-def _export_schema() -> dict[str, object]:
-    record_types = {
-        record_type: list(columns)
-        for record_type, (_table, columns) in _RECORD_SPECS.items()
-    }
+def _export_schema_for_specs(
+    specs: dict[str, tuple[str, tuple[str, ...]]],
+) -> dict[str, object]:
+    record_types = {record_type: list(columns) for record_type, (_table, columns) in specs.items()}
     canonical = json.dumps(
         record_types,
         sort_keys=True,
@@ -1175,6 +1252,13 @@ def _export_schema() -> dict[str, object]:
         "record_types": record_types,
         "fingerprint": hashlib.sha256(canonical).hexdigest(),
     }
+
+
+def _export_schema() -> dict[str, object]:
+    return _export_schema_for_specs(_RECORD_SPECS)
+
+
+_PRE_OCCURRENCE_EXPORT_SCHEMA = _export_schema_for_specs(_PRE_OCCURRENCE_RECORD_SPECS)
 
 
 def _write_export(stream: IO[str], *, db_path: Path, user_id: UUID) -> int:
@@ -1366,35 +1450,25 @@ def _iter_spooled_records(
                 try:
                     record = marshal.loads(bytes(payload))
                 except (EOFError, TypeError, ValueError) as exc:
-                    raise _ImportError(
-                        f"line {line_no}: validated import spool record is unreadable"
-                    ) from exc
+                    raise _ImportError(f"line {line_no}: validated import spool record is unreadable") from exc
                 if not isinstance(record, dict):
-                    raise _ImportError(
-                        f"line {line_no}: validated import spool record is malformed"
-                    )
+                    raise _ImportError(f"line {line_no}: validated import spool record is malformed")
                 yield int(line_no), record
     finally:
         spool.close()
 
 
-def _decode_import_envelope(
-    text: str, *, line_no: int
-) -> tuple[str, dict[str, object]]:
+def _decode_import_envelope(text: str, *, line_no: int) -> tuple[str, dict[str, object]]:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise _ImportError(f"line {line_no}: invalid JSON: {exc}") from exc
     if not isinstance(payload, dict):
-        raise _ImportError(
-            f"line {line_no}: expected a JSON object, got {type(payload).__name__}"
-        )
+        raise _ImportError(f"line {line_no}: expected a JSON object, got {type(payload).__name__}")
     record_type = payload.get("record_type")
     record = payload.get("record")
     if not isinstance(record_type, str) or not isinstance(record, dict):
-        raise _ImportError(
-            f"line {line_no}: expected {{\"record_type\": str, \"record\": object}}"
-        )
+        raise _ImportError(f'line {line_no}: expected {{"record_type": str, "record": object}}')
     return record_type, record
 
 
@@ -1409,6 +1483,7 @@ def _validate_import_file(path: Path) -> _ValidatedImport:
     footer: dict[str, object] | None = None
     digest = hashlib.sha256()
     manifest_sha256 = ""
+    declared_specs = _RECORD_SPECS
     counts = {record_type: 0 for record_type in _RECORD_SPECS}
     try:
         spool_path, spool = _create_import_spool(path)
@@ -1424,9 +1499,7 @@ def _validate_import_file(path: Path) -> _ValidatedImport:
                 text = line.strip()
                 if not text:
                     if versioned:
-                        raise _ImportError(
-                            f"line {line_no}: blank lines are not allowed in a versioned export"
-                        )
+                        raise _ImportError(f"line {line_no}: blank lines are not allowed in a versioned export")
                     continue
                 record_type, record = _decode_import_envelope(text, line_no=line_no)
                 if not saw_nonblank:
@@ -1437,41 +1510,37 @@ def _validate_import_file(path: Path) -> _ValidatedImport:
                             raise _ImportError(f"line {line_no}: unsupported export format")
                         if record.get("format_version") != _EXPORT_FORMAT_VERSION:
                             raise _ImportError(
-                                f"line {line_no}: unsupported export format version "
-                                f"{record.get('format_version')!r}"
+                                f"line {line_no}: unsupported export format version {record.get('format_version')!r}"
                             )
                         try:
                             export_user_id = str(UUID(str(record.get("user_id") or "")))
                         except ValueError as exc:
-                            raise _ImportError(
-                                f"line {line_no}: export header has an invalid user_id"
-                            ) from exc
+                            raise _ImportError(f"line {line_no}: export header has an invalid user_id") from exc
                         if not isinstance(record.get("exported_at"), str) or not isinstance(
                             record.get("application_version"), str
                         ):
-                            raise _ImportError(
-                                f"line {line_no}: export header is missing version/timestamp metadata"
-                            )
-                        if record.get("schema") != _export_schema():
-                            raise _ImportError(
-                                f"line {line_no}: export schema is not supported by this Alice version"
-                            )
+                            raise _ImportError(f"line {line_no}: export header is missing version/timestamp metadata")
+                        declared_schema = record.get("schema")
+                        if declared_schema == _export_schema():
+                            declared_specs = _RECORD_SPECS
+                        elif declared_schema == _PRE_OCCURRENCE_EXPORT_SCHEMA:
+                            declared_specs = _PRE_OCCURRENCE_RECORD_SPECS
+                        else:
+                            raise _ImportError(f"line {line_no}: export schema is not supported by this Alice version")
+                        counts = {record_type: 0 for record_type in declared_specs}
                         integrity = record.get("integrity")
-                        if not isinstance(integrity, dict) or integrity.get(
-                            "algorithm"
-                        ) != "sha256" or integrity.get("scope") not in {
-                            _EXPORT_INTEGRITY_SCOPE,
-                            _LEGACY_V2_INTEGRITY_SCOPE,
-                        }:
-                            raise _ImportError(
-                                f"line {line_no}: unsupported export integrity declaration"
-                            )
+                        if (
+                            not isinstance(integrity, dict)
+                            or integrity.get("algorithm") != "sha256"
+                            or integrity.get("scope")
+                            not in {
+                                _EXPORT_INTEGRITY_SCOPE,
+                                _LEGACY_V2_INTEGRITY_SCOPE,
+                            }
+                        ):
+                            raise _ImportError(f"line {line_no}: unsupported export integrity declaration")
                         if integrity["scope"] == _LEGACY_V2_INTEGRITY_SCOPE:
-                            digest.update(
-                                (_export_line(_EXPORT_HEADER_TYPE, record) + "\n").encode(
-                                    "utf-8"
-                                )
-                            )
+                            digest.update((_export_line(_EXPORT_HEADER_TYPE, record) + "\n").encode("utf-8"))
                         manifest_sha256 = hashlib.sha256(
                             _export_line(_EXPORT_HEADER_TYPE, record).encode("utf-8")
                         ).hexdigest()
@@ -1480,25 +1549,19 @@ def _validate_import_file(path: Path) -> _ValidatedImport:
                     raise _ImportError(f"line {line_no}: export header must be the first record")
                 if record_type == _EXPORT_FOOTER_TYPE:
                     if not versioned:
-                        raise _ImportError(
-                            f"line {line_no}: export footer appeared without a versioned header"
-                        )
+                        raise _ImportError(f"line {line_no}: export footer appeared without a versioned header")
                     if footer is not None:
                         raise _ImportError(f"line {line_no}: duplicate export footer")
                     footer = record
                     continue
                 if footer is not None:
                     raise _ImportError(f"line {line_no}: data found after export footer")
-                if record_type not in _RECORD_SPECS:
-                    known = ", ".join(_RECORD_SPECS)
-                    raise _ImportError(
-                        f"line {line_no}: unknown record_type '{record_type}' (known: {known})"
-                    )
+                if record_type not in declared_specs:
+                    known = ", ".join(declared_specs)
+                    raise _ImportError(f"line {line_no}: unknown record_type '{record_type}' (known: {known})")
                 if not str(record.get("id") or "").strip():
-                    raise _ImportError(
-                        f"line {line_no}: {record_type} record is missing an 'id'"
-                    )
-                expected_columns = set(_RECORD_SPECS[record_type][1])
+                    raise _ImportError(f"line {line_no}: {record_type} record is missing an 'id'")
+                expected_columns = set(declared_specs[record_type][1])
                 actual_columns = set(record)
                 if versioned:
                     if actual_columns != expected_columns:
@@ -1509,9 +1572,7 @@ def _validate_import_file(path: Path) -> _ValidatedImport:
                             f"declared schema (missing={missing}, unknown={unknown})"
                         )
                     if str(record.get("user_id")) != export_user_id:
-                        raise _ImportError(
-                            f"line {line_no}: {record_type} belongs to a different export user"
-                        )
+                        raise _ImportError(f"line {line_no}: {record_type} belongs to a different export user")
                 else:
                     unknown_columns = sorted(actual_columns - expected_columns)
                     if unknown_columns:
@@ -1539,9 +1600,7 @@ def _validate_import_file(path: Path) -> _ValidatedImport:
         if versioned:
             if footer is None:
                 raise _ImportError("versioned export is truncated: integrity footer is missing")
-            if footer.get("format") != _EXPORT_FORMAT or footer.get(
-                "format_version"
-            ) != _EXPORT_FORMAT_VERSION:
+            if footer.get("format") != _EXPORT_FORMAT or footer.get("format_version") != _EXPORT_FORMAT_VERSION:
                 raise _ImportError("export integrity footer has an unsupported format or version")
             if footer.get("record_count") != record_count:
                 raise _ImportError("export integrity record count does not match its contents")
@@ -1572,6 +1631,8 @@ def _validate_import_file(path: Path) -> _ValidatedImport:
         manifest_sha256=manifest_sha256,
         spool_path=spool_path,
     )
+
+
 def _encode_column_value(column: str, value: object) -> object:
     """TEXT-encode JSON columns the way the store writes them; pass the rest."""
     if column in _JSON_COLUMNS and value is not None and not isinstance(value, str):
@@ -1585,11 +1646,93 @@ def _normalized_import_values(
     record: dict[str, object],
 ) -> tuple[object, ...]:
     return tuple(
-        store.user_id
-        if column == "user_id"
-        else _encode_column_value(column, record.get(column))
-        for column in columns
+        store.user_id if column == "user_id" else _encode_column_value(column, record.get(column)) for column in columns
     )
+
+
+def _invalidate_rebound_occurrence_receipt(
+    record_type: str,
+    record: dict[str, object],
+    *,
+    importing_user_id: str,
+    merge_existing: bool,
+) -> dict[str, object]:
+    """Do not carry source-database receipts across a changed truth boundary."""
+
+    user_rebound = str(record.get("user_id") or "") != importing_user_id
+    if not user_rebound and not merge_existing:
+        return record
+    rebound = dict(record)
+    if record_type == "occurrence_coverage" and user_rebound:
+        now = datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        rebound.update(
+            {
+                "coverage_mode": "forward_only",
+                "coverage_started_at": now,
+                "historical_review_status": "not_reviewed",
+                "complete_through": None,
+                "reviewed_at": None,
+                "reviewer_id": None,
+                "review_reason": None,
+                "review_version": 0,
+                "review_receipt_digest": None,
+            }
+        )
+    elif record_type == "occurrence_claim" and user_rebound:
+        rebound.update(
+            {
+                "resolution_status": "pending",
+                "review_status": "candidate",
+                "resolved_occurrence_id": None,
+                "reviewed_at": None,
+                "reviewer_id": None,
+                "review_reason": None,
+                "review_version": 0,
+                "review_receipt_digest": None,
+            }
+        )
+    elif record_type == "occurrence_unit" and user_rebound:
+        rebound.update(
+            {
+                "review_status": "candidate",
+                "reviewed_at": None,
+                "reviewer_id": None,
+                "review_reason": None,
+                "review_version": 0,
+                "reviewed_evidence_count": 0,
+                "reviewed_evidence_digest": None,
+                "review_receipt_digest": None,
+                "review_receipt_action": None,
+                "superseded_by": None,
+                "retired_at": None,
+                "retired_by": None,
+                "retirement_reason": None,
+            }
+        )
+    elif record_type == "occurrence_evidence" and user_rebound:
+        rebound.update(
+            {
+                "review_status": "candidate",
+                "reviewed_at": None,
+                "reviewer_id": None,
+                "review_reason": None,
+                "review_receipt_digest": None,
+                "review_receipt_action": None,
+                "unit_review_receipt_digest": None,
+            }
+        )
+    elif record_type == "occurrence_extraction_disposition":
+        rebound.update(
+            {
+                "review_status": "candidate",
+                "reviewed_at": None,
+                "reviewer_id": None,
+                "review_reason": None,
+                "review_version": 0,
+                "review_receipt_digest": None,
+            }
+        )
+    return rebound
 
 
 def _collision_is_identical(
@@ -1601,16 +1744,8 @@ def _collision_is_identical(
         existing_value = existing.get(column)
         if column in _JSON_COLUMNS:
             try:
-                existing_json = (
-                    json.loads(existing_value)
-                    if isinstance(existing_value, str)
-                    else existing_value
-                )
-                expected_json = (
-                    json.loads(expected_value)
-                    if isinstance(expected_value, str)
-                    else expected_value
-                )
+                existing_json = json.loads(existing_value) if isinstance(existing_value, str) else existing_value
+                expected_json = json.loads(expected_value) if isinstance(expected_value, str) else expected_value
             except json.JSONDecodeError:
                 return False
             if json_safe(existing_json) != json_safe(expected_json):
@@ -1626,6 +1761,7 @@ def _import_records(
     validated_import: _ValidatedImport,
     *,
     mode: str,
+    merge_existing: bool = False,
 ) -> dict[str, dict[str, int]]:
     """Insert parsed records in FK-safe order; returns per-type counts.
 
@@ -1639,13 +1775,28 @@ def _import_records(
     constraint violation; the staged transaction rolls back on failure.
     """
     counts: dict[str, dict[str, int]] = {}
+    deferred_claim_links: list[tuple[str, str, str, str]] = []
+    deferred_unit_supersessions: list[
+        tuple[int, str, str, str]
+    ] = []
     for record_type, (table, columns) in _RECORD_SPECS.items():
         for line_no, record in _iter_spooled_records(validated_import, record_type):
             tally = counts.setdefault(record_type, {"imported": 0, "skipped": 0})
+            if merge_existing and record_type == "occurrence_coverage":
+                # A portable coverage receipt certifies the complete history of
+                # its source database. It can be restored into a fresh file,
+                # but it can never certify a pre-existing target's history.
+                tally["skipped"] += 1
+                continue
+            source_record = record
+            record = _invalidate_rebound_occurrence_receipt(
+                record_type,
+                record,
+                importing_user_id=store.user_id,
+                merge_existing=merge_existing,
+            )
             row_id = str(record["id"])
-            existing = conn.execute(
-                f"SELECT {', '.join(columns)} FROM {table} WHERE id = ?", (row_id,)
-            ).fetchone()
+            existing = conn.execute(f"SELECT {', '.join(columns)} FROM {table} WHERE id = ?", (row_id,)).fetchone()
             values = _normalized_import_values(store, columns, record)
             if existing is not None:
                 if mode == "fail":
@@ -1654,20 +1805,92 @@ def _import_records(
                         "aborting (--mode fail). Rerun with --mode skip to keep "
                         "existing rows and import only new records."
                     )
-                if not _collision_is_identical(dict(existing), columns, values):
+                collision_is_identical = _collision_is_identical(
+                    dict(existing),
+                    columns,
+                    values,
+                )
+                if (
+                    not collision_is_identical
+                    and merge_existing
+                    and record_type == "occurrence_extraction_disposition"
+                    and str(source_record.get("user_id") or "") == store.user_id
+                ):
+                    collision_is_identical = _collision_is_identical(
+                        dict(existing),
+                        columns,
+                        _normalized_import_values(
+                            store,
+                            columns,
+                            source_record,
+                        ),
+                    )
+                if not collision_is_identical:
                     raise _ImportError(
                         f"line {line_no}: {record_type} id {row_id} has the same id "
                         "but different content; refusing to combine incompatible backups"
                     )
                 tally["skipped"] += 1
                 continue
+            insert_values = values
+            if record_type == "occurrence_claim" and record.get("resolved_occurrence_id") is not None:
+                # A resolved link-existing claim and its target unit form a
+                # deliberate FK cycle: the unit owns claim_id while the claim
+                # points back to the resolved unit. Stage that claim in its
+                # valid candidate state, then restore the reviewed link once
+                # all units are present. Collision comparison above still
+                # uses the exact exported values.
+                staged_record = dict(record)
+                staged_record["resolution_status"] = "pending"
+                staged_record["review_status"] = "candidate"
+                staged_record["resolved_occurrence_id"] = None
+                insert_values = _normalized_import_values(
+                    store,
+                    columns,
+                    staged_record,
+                )
+                deferred_claim_links.append(
+                    (
+                        row_id,
+                        str(record["resolution_status"]),
+                        str(record["review_status"]),
+                        str(record["resolved_occurrence_id"]),
+                    )
+                )
+            elif (
+                record_type == "occurrence_unit"
+                and record.get("superseded_by") is not None
+            ):
+                # SQLite's occurrence-unit supersession edge is an immediate
+                # self-FK. Portable export order is claim/ordinal based, so a
+                # valid predecessor can appear before its successor. Stage
+                # the predecessor in a constraint-valid candidate state and
+                # restore the exact terminal status/edge after every unit is
+                # present. Cross-user restore already clears both fields
+                # above and therefore never enters this same-user path.
+                staged_record = dict(record)
+                staged_record["review_status"] = "candidate"
+                staged_record["superseded_by"] = None
+                insert_values = _normalized_import_values(
+                    store,
+                    columns,
+                    staged_record,
+                )
+                deferred_unit_supersessions.append(
+                    (
+                        line_no,
+                        row_id,
+                        str(record["review_status"]),
+                        str(record["superseded_by"]),
+                    )
+                )
             try:
                 conn.execute(
                     f"""
                     INSERT INTO {table} ({", ".join(columns)})
                     VALUES ({", ".join("?" for _ in columns)})
                     """,
-                    values,
+                    insert_values,
                 )
             except (
                 sqlite3.Error,
@@ -1676,22 +1899,119 @@ def _import_records(
                 TypeError,
                 ValueError,
             ) as exc:
-                raise _ImportError(
-                    f"line {line_no}: {record_type} {row_id} could not be imported: {exc}"
-                ) from exc
+                raise _ImportError(f"line {line_no}: {record_type} {row_id} could not be imported: {exc}") from exc
             tally["imported"] += 1
+    for (
+        claim_id,
+        resolution_status,
+        review_status,
+        resolved_occurrence_id,
+    ) in deferred_claim_links:
+        conn.execute(
+            """
+            UPDATE occurrence_claims
+            SET resolution_status = ?,
+                review_status = ?,
+                resolved_occurrence_id = ?
+            WHERE id = ?
+              AND user_id = ?
+            """,
+            (
+                resolution_status,
+                review_status,
+                resolved_occurrence_id,
+                claim_id,
+                store.user_id,
+            ),
+        )
+    for (
+        line_no,
+        occurrence_id,
+        review_status,
+        superseded_by,
+    ) in deferred_unit_supersessions:
+        try:
+            cursor = conn.execute(
+                """
+                UPDATE occurrence_units
+                SET review_status = ?,
+                    superseded_by = ?
+                WHERE id = ?
+                  AND user_id = ?
+                """,
+                (
+                    review_status,
+                    superseded_by,
+                    occurrence_id,
+                    store.user_id,
+                ),
+            )
+        except sqlite3.Error as exc:
+            raise _ImportError(
+                f"line {line_no}: occurrence_unit {occurrence_id} "
+                f"supersession could not be restored: {exc}"
+            ) from exc
+        if cursor.rowcount != 1:
+            raise _ImportError(
+                f"line {line_no}: occurrence_unit {occurrence_id} "
+                "supersession target was not imported"
+            )
     return counts
 
 
-def _print_import_summary(
-    counts: dict[str, dict[str, int]], *, in_path: Path, db_path: Path
+def _invalidate_merged_occurrence_graph(
+    store: SQLiteVNextStore,
+    counts: dict[str, dict[str, int]],
+    *,
+    reviewed_source_chunk_ids: tuple[str, ...],
 ) -> None:
+    """Revoke target-local receipts after a non-empty direct graph merge."""
+
+    imported_relevant_total = sum(
+        int(counts.get(record_type, {}).get("imported", 0)) for record_type in _OCCURRENCE_GRAPH_IMPORT_TYPES
+    )
+    if imported_relevant_total == 0:
+        return
+    invalidate_dispositions = cast(
+        Callable[..., object],
+        store.invalidate_occurrence_extraction_dispositions,
+    )
+    for source_chunk_id in reviewed_source_chunk_ids:
+        invalidate_dispositions(
+            source_chunk_id=source_chunk_id,
+            reason="A portable import changed the existing occurrence graph.",
+            actor_type="system",
+        )
+    store.invalidate_occurrence_coverage(
+        reason="A portable import changed the existing occurrence graph.",
+        actor_type="system",
+    )
+
+
+def _reviewed_extraction_chunk_ids(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+) -> tuple[str, ...]:
+    """Snapshot target-local reviewed chunks before direct import begins."""
+
+    rows = conn.execute(
+        """
+        SELECT DISTINCT source_chunk_id
+        FROM occurrence_extraction_dispositions
+        WHERE user_id = ?
+          AND review_status <> 'candidate'
+        ORDER BY source_chunk_id ASC
+        """,
+        (user_id,),
+    ).fetchall()
+    return tuple(str(row["source_chunk_id"] if isinstance(row, Mapping) else row[0]) for row in rows)
+
+
+def _print_import_summary(counts: dict[str, dict[str, int]], *, in_path: Path, db_path: Path) -> None:
     imported_total = sum(tally["imported"] for tally in counts.values())
     skipped_total = sum(tally["skipped"] for tally in counts.values())
-    print(
-        f"alice-memory: imported {imported_total} records from {in_path} "
-        f"into {db_path} ({skipped_total} skipped)"
-    )
+    print(f"alice-memory: imported {imported_total} records from {in_path} into {db_path} ({skipped_total} skipped)")
     for record_type in _RECORD_SPECS:
         tally = counts.get(record_type)
         if tally is None:
@@ -1813,7 +2133,28 @@ def _run_import_snapshot(
         )
         with sqlite_user_connection(working_path, args.user_id) as conn:
             store = SQLiteVNextStore(conn, args.user_id)
-            counts = _import_records(conn, store, validated_import, mode=args.mode)
+            store.lock_graph_mutation()
+            reviewed_source_chunk_ids = (
+                _reviewed_extraction_chunk_ids(
+                    conn,
+                    user_id=store.user_id,
+                )
+                if target_existed
+                else ()
+            )
+            counts = _import_records(
+                conn,
+                store,
+                validated_import,
+                mode=args.mode,
+                merge_existing=target_existed,
+            )
+            if target_existed:
+                _invalidate_merged_occurrence_graph(
+                    store,
+                    counts,
+                    reviewed_source_chunk_ids=reviewed_source_chunk_ids,
+                )
         # Move all committed WAL pages into the staged main file before
         # atomic publication, then durably persist it.
         checkpoint = sqlite3.connect(str(working_path))
@@ -1925,9 +2266,7 @@ def _run_reindex_embeddings(args: argparse.Namespace) -> int:
                 after_id=after_id,
                 embedding_provider=provider.provider,
                 embedding_model=provider.model,
-                embedding_endpoint=endpoint_fingerprint(
-                    getattr(provider, "base_url", "")
-                ),
+                embedding_endpoint=endpoint_fingerprint(getattr(provider, "base_url", "")),
                 embedding_signature_version=EMBEDDING_SIGNATURE_VERSION,
             )
         if not rows:
@@ -1952,9 +2291,7 @@ def _run_reindex_embeddings(args: argparse.Namespace) -> int:
         with sqlite_user_connection(db_path, args.user_id) as conn:
             store = SQLiteVNextStore(conn, args.user_id)
             for (row, _text), vector in zip(embeddable, vectors, strict=True):
-                store.update_memory_embedding(
-                    **signed_memory_embedding_update(row, vector, provider=provider)
-                )
+                store.update_memory_embedding(**signed_memory_embedding_update(row, vector, provider=provider))
                 if row.get("embedding_present") in (True, 1):
                     reindexed_incompatible += 1
                 embedded += 1

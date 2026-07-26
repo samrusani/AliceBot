@@ -47,6 +47,30 @@ if str(_SCRIPTS_DIR) not in sys.path:
 import check_longmemeval_evidence  # noqa: E402
 
 
+_PHASE6_OCCURRENCE_INGEST_DEPENDENCIES = frozenset(
+    {
+        Path("apps/api/alembic/versions/20260724_0095_occurrence_substrate.py"),
+        Path("apps/api/src/alicebot_api/sqlite_schema.py"),
+        Path("apps/api/src/alicebot_api/sqlite_store.py"),
+        Path("apps/api/src/alicebot_api/vnext_capture.py"),
+        Path("apps/api/src/alicebot_api/vnext_memory_commit.py"),
+        Path("apps/api/src/alicebot_api/vnext_occurrence_predicates.py"),
+        Path("apps/api/src/alicebot_api/vnext_occurrence_taxonomy.py"),
+        Path("apps/api/src/alicebot_api/vnext_occurrence_write.py"),
+        Path("apps/api/src/alicebot_api/vnext_occurrences.py"),
+        Path("apps/api/src/alicebot_api/vnext_project_scope.py"),
+        Path("apps/api/src/alicebot_api/vnext_store.py"),
+        Path("apps/api/src/alicebot_api/vnext_temporal_query.py"),
+        Path("apps/api/src/alicebot_api/vnext_stores/postgres/memory_lifecycle.py"),
+        Path("apps/api/src/alicebot_api/vnext_stores/postgres/occurrence_accounting.py"),
+        Path("apps/api/src/alicebot_api/vnext_stores/postgres/occurrences.py"),
+        Path("apps/api/src/alicebot_api/vnext_stores/sqlite/memory_lifecycle.py"),
+        Path("apps/api/src/alicebot_api/vnext_stores/sqlite/occurrence_accounting.py"),
+        Path("apps/api/src/alicebot_api/vnext_stores/sqlite/occurrences.py"),
+    }
+)
+
+
 @pytest.fixture(autouse=True)
 def _no_ambient_model_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep tests hermetic: no embedding or chat endpoints from the user env."""
@@ -158,6 +182,38 @@ def test_render_session_text_collapses_blank_lines_inside_turns() -> None:
     text = adapter.render_session_text("s1", "2023/05/01 (Mon) 10:00", turns)
     assert "\n\n" not in text.split("\n\n", 1)[1]  # single paragraph after the header
     assert "first line\nsecond line" in text
+
+
+def test_render_session_text_preserves_non_user_long_turn_as_one_paragraph() -> None:
+    from longmemeval.dataset import SessionTurn
+
+    content = " ".join(f"assistant-token-{index}" for index in range(400))
+    turns = (SessionTurn(role="assistant", content=content),)
+
+    text = adapter.render_session_text("s1", "2023/05/01 (Mon) 10:00", turns)
+    paragraphs = text.split("\n\n")
+
+    assert paragraphs == [
+        "Chat session s1 on 2023/05/01 (Mon) 10:00.",
+        f"[ASSISTANT]: {content}",
+    ]
+
+
+def test_render_session_text_flattens_and_retags_long_user_turn_parts() -> None:
+    from longmemeval.dataset import SessionTurn
+
+    content = "\n".join(f"I paid ${index + 1} for ticket {index}. " + ("detail " * 30) for index in range(20))
+    turns = (SessionTurn(role="user", content=content),)
+
+    text = adapter.render_session_text("s1", "2023/05/01 (Mon) 10:00", turns)
+    paragraphs = text.split("\n\n")
+    rendered_parts = [part.removeprefix("[USER]: ") for part in paragraphs[1:]]
+
+    assert len(rendered_parts) > 1
+    assert all(part.startswith("[USER]: ") for part in paragraphs[1:])
+    assert all(len(part) <= adapter.TRANSCRIPT_TURN_PART_MAX_CHARS for part in rendered_parts)
+    assert all("\n" not in part for part in rendered_parts)
+    assert " ".join(rendered_parts) == " ".join(content.split())
 
 
 def test_build_answer_prompt_uses_official_template() -> None:
@@ -442,8 +498,7 @@ class _StubChunkStore:
 
     def list_source_chunks(self, source_id: str) -> list[dict[str, object]]:
         return [
-            {"text": text, "chunk_index": index}
-            for index, text in enumerate(self._chunks_by_source.get(source_id, []))
+            {"text": text, "chunk_index": index} for index, text in enumerate(self._chunks_by_source.get(source_id, []))
         ]
 
     def get_source(self, source_id: str) -> dict[str, object] | None:
@@ -579,51 +634,62 @@ def test_validity_suffix_is_empty_without_annotation() -> None:
 
 
 def test_validity_suffix_formats_each_annotation_shape_compactly() -> None:
-    assert adapter._validity_suffix(
-        {"validity": {"valid_to": "2023-08-01T00:00:00+00:00"}}
-    ) == " [valid until 2023-08-01]"
-    assert adapter._validity_suffix(
-        {"validity": {"valid_from": "2023-05-30T00:00:00+00:00"}}
-    ) == " [valid from 2023-05-30]"
+    assert (
+        adapter._validity_suffix({"validity": {"valid_to": "2023-08-01T00:00:00+00:00"}}) == " [valid until 2023-08-01]"
+    )
+    assert (
+        adapter._validity_suffix({"validity": {"valid_from": "2023-05-30T00:00:00+00:00"}})
+        == " [valid from 2023-05-30]"
+    )
     # In-place correction: the shown text is current; the date says since when.
-    assert adapter._validity_suffix(
-        {"validity": {"corrected_at": "2023-08-01T00:00:00+00:00"}}
-    ) == " [corrected 2023-08-01]"
+    assert (
+        adapter._validity_suffix({"validity": {"corrected_at": "2023-08-01T00:00:00+00:00"}})
+        == " [corrected 2023-08-01]"
+    )
     # A superseded row never renders as merely "corrected".
-    assert adapter._validity_suffix(
-        {
-            "validity": {
-                "superseded": True,
-                "superseded_by_memory_id": "mem-new",
-                "corrected_at": "2023-08-01T00:00:00+00:00",
+    assert (
+        adapter._validity_suffix(
+            {
+                "validity": {
+                    "superseded": True,
+                    "superseded_by_memory_id": "mem-new",
+                    "corrected_at": "2023-08-01T00:00:00+00:00",
+                }
             }
-        }
-    ) == " [superseded by a newer entry]"
+        )
+        == " [superseded by a newer entry]"
+    )
     # Replacement rows fall back to their created_at for the update date.
-    assert adapter._validity_suffix(
-        {
-            "created_at": "2023-08-02T09:00:00Z",
-            "validity": {"supersedes_memory_id": "mem-old"},
-        }
-    ) == " [updated 2023-08-02; supersedes an earlier value]"
-    assert adapter._validity_suffix(
-        {"validity": {"supersedes_memory_id": "mem-old"}}
-    ) == " [supersedes an earlier value]"
-    # Window plus supersession state compose in one bracket.
-    assert adapter._validity_suffix(
-        {
-            "validity": {
-                "valid_from": "2023-05-30T00:00:00+00:00",
-                "valid_to": "2023-08-01T00:00:00+00:00",
-                "superseded": True,
+    assert (
+        adapter._validity_suffix(
+            {
+                "created_at": "2023-08-02T09:00:00Z",
+                "validity": {"supersedes_memory_id": "mem-old"},
             }
-        }
-    ) == " [valid 2023-05-30 → 2023-08-01; superseded by a newer entry]"
+        )
+        == " [updated 2023-08-02; supersedes an earlier value]"
+    )
+    assert (
+        adapter._validity_suffix({"validity": {"supersedes_memory_id": "mem-old"}}) == " [supersedes an earlier value]"
+    )
+    # Window plus supersession state compose in one bracket.
+    assert (
+        adapter._validity_suffix(
+            {
+                "validity": {
+                    "valid_from": "2023-05-30T00:00:00+00:00",
+                    "valid_to": "2023-08-01T00:00:00+00:00",
+                    "superseded": True,
+                }
+            }
+        )
+        == " [valid 2023-05-30 → 2023-08-01; superseded by a newer entry]"
+    )
+
+
 def test_render_context_block_appends_grounding_note_within_budget() -> None:
     run = _packing_run()
-    pack = _packing_pack() | {
-        "grounding": {"unsupported_entities": ["Marcus Chen", "Sapiens"], "checked": 3}
-    }
+    pack = _packing_pack() | {"grounding": {"unsupported_entities": ["Marcus Chen", "Sapiens"], "checked": 3}}
     budget = 700
     block, _excerpt_count = run._render_context_block(pack, budget=budget)
     # A factual retrieval statistic, one line per unsupported entity,
@@ -639,10 +705,10 @@ def test_render_context_block_ignores_absent_or_malformed_grounding() -> None:
     run = _packing_run()
     baseline, _count = run._render_context_block(_packing_pack(), budget=700)
     assert "no stored memories" not in baseline
-    malformed, _count = run._render_context_block(
-        _packing_pack() | {"grounding": "not-a-dict"}, budget=700
-    )
+    malformed, _count = run._render_context_block(_packing_pack() | {"grounding": "not-a-dict"}, budget=700)
     assert malformed == baseline
+
+
 # -- query-anchored excerpt windows ---------------------------------------------
 
 
@@ -842,38 +908,56 @@ def test_anchoring_preserves_round_robin_guarantee() -> None:
 def test_query_anchored_excerpt_gates() -> None:
     terms = frozenset(["chess", "game", "move", "27", "kg2", "bd5", "the", "you"])
     # Single-chunk sources always take the old path.
-    assert adapter._query_anchored_excerpt(
-        [(0, _CHESS_CHUNK_0)], terms, baseline_chunk_index=0, baseline_text=_CHESS_CHUNK_0
-    ) is None
+    assert (
+        adapter._query_anchored_excerpt(
+            [(0, _CHESS_CHUNK_0)], terms, baseline_chunk_index=0, baseline_text=_CHESS_CHUNK_0
+        )
+        is None
+    )
     # No query terms: nothing to anchor on.
-    assert adapter._query_anchored_excerpt(
-        [(0, _CHESS_CHUNK_0), (1, _CHESS_CHUNK_1)], frozenset(), baseline_chunk_index=0, baseline_text=_CHESS_CHUNK_0
-    ) is None
+    assert (
+        adapter._query_anchored_excerpt(
+            [(0, _CHESS_CHUNK_0), (1, _CHESS_CHUNK_1)],
+            frozenset(),
+            baseline_chunk_index=0,
+            baseline_text=_CHESS_CHUNK_0,
+        )
+        is None
+    )
     # Weak stopwordy matches stay below the anchor threshold.
     weak_terms = frozenset(["the", "you"])
-    assert adapter._query_anchored_excerpt(
-        [(0, _CHESS_CHUNK_0), (1, _CHESS_CHUNK_1)],
-        weak_terms,
-        baseline_chunk_index=0,
-        baseline_text=_CHESS_CHUNK_0,
-    ) is None
+    assert (
+        adapter._query_anchored_excerpt(
+            [(0, _CHESS_CHUNK_0), (1, _CHESS_CHUNK_1)],
+            weak_terms,
+            baseline_chunk_index=0,
+            baseline_text=_CHESS_CHUNK_0,
+        )
+        is None
+    )
     # Prose match inside the baseline chunk with no enumeration nearby: old path.
     prose_0 = "[USER]: my dentist appointment in Portland went smoothly yesterday afternoon\n\n[ASSISTANT]: Glad to hear the appointment went well."
     prose_1 = "[USER]: and the follow-up is booked for next month\n\n[ASSISTANT]: Noted."
     prose_terms = frozenset(["dentist", "appointment", "portland"])
-    assert adapter._query_anchored_excerpt(
-        [(0, prose_0), (1, prose_1)], prose_terms, baseline_chunk_index=0, baseline_text=prose_0
-    ) is None
+    assert (
+        adapter._query_anchored_excerpt(
+            [(0, prose_0), (1, prose_1)], prose_terms, baseline_chunk_index=0, baseline_text=prose_0
+        )
+        is None
+    )
     # Prose match OUTSIDE the baseline chunk: also the old path now. Moving
     # the excerpt onto a prose line displaces the head chunk that carries
     # the surrounding answer context (the proven down-flip shape), so every
     # anchor move requires enumeration shape near the matched line.
-    assert adapter._query_anchored_excerpt(
-        [(0, prose_0), (1, prose_1)],
-        frozenset(["follow-up", "booked", "month"]),
-        baseline_chunk_index=0,
-        baseline_text=prose_0,
-    ) is None
+    assert (
+        adapter._query_anchored_excerpt(
+            [(0, prose_0), (1, prose_1)],
+            frozenset(["follow-up", "booked", "month"]),
+            baseline_chunk_index=0,
+            baseline_text=prose_0,
+        )
+        is None
+    )
     # A cross-chunk anchor WITH enumeration shape nearby still fires.
     anchored = adapter._query_anchored_excerpt(
         [(0, _CHESS_CHUNK_0), (1, _CHESS_CHUNK_1)],
@@ -889,12 +973,8 @@ def test_prose_anchor_move_keeps_head_chunk_byte_identical(monkeypatch: pytest.M
     """Gate-hole regression: a cross-chunk PROSE match must not displace the
     head-biased best chunk (the proven down-flip shape: the head chunk held
     the answer and a chatty prose line elsewhere pulled the window away)."""
-    chunk_0 = _padded(
-        "[USER]: how do I pay for the metro downtown, do they take a transit card at the station"
-    )
-    chunk_1 = _padded(
-        "[USER]: by the way the weather was lovely when I rode the metro downtown yesterday afternoon"
-    )
+    chunk_0 = _padded("[USER]: how do I pay for the metro downtown, do they take a transit card at the station")
+    chunk_1 = _padded("[USER]: by the way the weather was lovely when I rode the metro downtown yesterday afternoon")
     run = _anchoring_run(
         "How do I pay for the metro downtown with a transit card?",
         {"src-metro": [chunk_0, chunk_1]},
@@ -912,8 +992,7 @@ def test_prose_anchor_move_keeps_head_chunk_byte_identical(monkeypatch: pytest.M
 _REMEDY_DATE = "2023/05/28 (Sun) 09:15"
 _REMEDY_QUESTION = "Which natural remedy for my dark skin spots do I wash off after 10 minutes?"
 _REMEDY_CHUNK_0 = (
-    "[USER]: I have dark spots on my skin.\n"
-    "[ASSISTANT]: Sure, here is the natural remedy list for dark spots again."
+    "[USER]: I have dark spots on my skin.\n[ASSISTANT]: Sure, here is the natural remedy list for dark spots again."
 )
 _REMEDY_ITEMS = (
     "1. Lemon juice: dab a little onto each mark with cotton.",
@@ -1045,19 +1124,31 @@ def _rollup_question():
             "haystack_session_ids": ["s_sv1", "s_sv2", "s_sv3", "s_filler"],
             "haystack_sessions": [
                 [
-                    {"role": "user", "content": "My Stardew Valley playthrough was about 30 hours over the spring break."},
+                    {
+                        "role": "user",
+                        "content": "My Stardew Valley playthrough was about 30 hours over the spring break.",
+                    },
                     {"role": "assistant", "content": "That sounds like a relaxing break."},
                 ],
                 [
-                    {"role": "user", "content": "The Stardew Valley harvest festival grind was another 12 hours of my weekend."},
+                    {
+                        "role": "user",
+                        "content": "The Stardew Valley harvest festival grind was another 12 hours of my weekend.",
+                    },
                     {"role": "assistant", "content": "Festival grinding pays off eventually."},
                 ],
                 [
-                    {"role": "user", "content": "Stardew Valley multiplayer with my cousin was 5 hours of pure chaos on Friday."},
+                    {
+                        "role": "user",
+                        "content": "Stardew Valley multiplayer with my cousin was 5 hours of pure chaos on Friday.",
+                    },
                     {"role": "assistant", "content": "Multiplayer farms get chaotic fast."},
                 ],
                 [
-                    {"role": "user", "content": "My sourdough starter needs feeding twice a day, which is a commitment."},
+                    {
+                        "role": "user",
+                        "content": "My sourdough starter needs feeding twice a day, which is a commitment.",
+                    },
                     {"role": "assistant", "content": "Daily feeding keeps it healthy."},
                 ],
             ],
@@ -1070,8 +1161,7 @@ def _rollup_cards(store) -> list[dict[str, object]]:
     return [
         row
         for row in store.list_memories(status="active")
-        if isinstance(row.get("metadata_json"), dict)
-        and row["metadata_json"].get("candidate_kind") == "memory_rollup"
+        if isinstance(row.get("metadata_json"), dict) and row["metadata_json"].get("candidate_kind") == "memory_rollup"
     ]
 
 
@@ -1250,9 +1340,7 @@ def test_fingerprint_records_reuse_stores_flag(tmp_path: Path) -> None:
     assert args.reuse_stores is False
 
 
-def test_fingerprint_records_reranker_and_source_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_fingerprint_records_reranker_and_source_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fixed_source = {
         "git_commit": "test-commit",
         "tracked_tree_dirty": False,
@@ -1322,6 +1410,7 @@ def test_ingest_code_digest_covers_and_invalidates_for_every_manifest_input(tmp_
         Path("apps/api/src/alicebot_api/vnext_rollups.py"),
     }
     assert direct_ingest_modules <= set(runner._INGEST_CODE_MANIFEST)
+    assert _PHASE6_OCCURRENCE_INGEST_DEPENDENCIES <= set(runner._INGEST_CODE_MANIFEST)
     assert len(runner._INGEST_CODE_MANIFEST) == len(set(runner._INGEST_CODE_MANIFEST))
 
     for index, relative_path in enumerate(runner._INGEST_CODE_MANIFEST):
@@ -1336,6 +1425,69 @@ def test_ingest_code_digest_covers_and_invalidates_for_every_manifest_input(tmp_
         path.write_bytes(original + b"changed\n")
         assert runner._ingest_code_digest(repo_root=tmp_path) != baseline, relative_path
         path.write_bytes(original)
+
+
+def test_store_reuse_marker_rejects_each_changed_phase6_occurrence_dependency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_root = tmp_path / "manifest"
+    for index, relative_path in enumerate(runner._INGEST_CODE_MANIFEST):
+        path = manifest_root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"manifest input {index}\n".encode())
+
+    real_ingest_code_digest = runner._ingest_code_digest
+    monkeypatch.setattr(
+        runner,
+        "_ingest_code_digest",
+        lambda: real_ingest_code_digest(repo_root=manifest_root),
+    )
+    question = load_dataset(SYNTHETIC_FIXTURE_PATH, limit=1)[0]
+    config = runner.RunnerConfig(
+        variant="s",
+        dataset_path=SYNTHETIC_FIXTURE_PATH,
+        limit=1,
+        question_ids=None,
+        question_ids_file=None,
+        resume=False,
+        dry_run=True,
+        cot=False,
+        workers=1,
+        max_items=8,
+        context_char_budget=12_000,
+        work_dir=tmp_path / "work",
+        checkpoint_path=tmp_path / "c.jsonl",
+        report_path=tmp_path / "r.json",
+        keep_stores=True,
+        reuse_stores=True,
+    )
+    marker_path = tmp_path / "store.ingested.json"
+    marker_path.write_text(
+        json.dumps(runner._ingest_marker_payload(question, config)),
+        encoding="utf-8",
+    )
+    assert runner._reuse_marker_matches(
+        marker_path,
+        question,
+        config=config,
+    )
+
+    for relative_path in sorted(_PHASE6_OCCURRENCE_INGEST_DEPENDENCIES):
+        path = manifest_root / relative_path
+        original = path.read_bytes()
+        path.write_bytes(original + b"changed\n")
+        assert not runner._reuse_marker_matches(
+            marker_path,
+            question,
+            config=config,
+        ), relative_path
+        path.write_bytes(original)
+        assert runner._reuse_marker_matches(
+            marker_path,
+            question,
+            config=config,
+        ), relative_path
 
 
 def test_store_reuse_requires_exact_question_code_and_config_marker(tmp_path: Path) -> None:
@@ -1564,9 +1716,7 @@ def test_context_block_respects_char_budget(tmp_path: Path) -> None:
     # at most the capped section (header + separators + capped lines).
     body = small.context_block.partition(adapter.DERIVED_SECTION_HEADER)[0].rstrip("\n")
     assert len(body) <= 600
-    assert small.context_chars <= (
-        600 + len(adapter.DERIVED_SECTION_HEADER) + adapter.DERIVED_SECTION_MAX_CHARS + 4
-    )
+    assert small.context_chars <= (600 + len(adapter.DERIVED_SECTION_HEADER) + adapter.DERIVED_SECTION_MAX_CHARS + 4)
     assert small.context_chars < large.context_chars
 
 
@@ -1763,7 +1913,7 @@ def test_coverage_probe_end_to_end_and_store_reuse(tmp_path: Path) -> None:
             "1",
         ]
     )
-    assert exit_code == coverage_probe.EXIT_OK
+    assert exit_code == coverage_probe.EXIT_STRATUM_FAILURES
     rows = [json.loads(line) for line in out_path.read_text(encoding="utf-8").splitlines()]
     assert [row["question_id"] for row in rows] == ["synthetic_1", "synthetic_2_abs"]
     first, second = rows
@@ -1777,6 +1927,22 @@ def test_coverage_probe_end_to_end_and_store_reuse(tmp_path: Path) -> None:
     summary = json.loads(out_path.with_suffix(".summary.json").read_text(encoding="utf-8"))
     assert summary["overall"] == {"questions": 2, "scored": 1, "any_coverage": 1.0, "all_coverage": 1.0}
     assert summary["vectors"] == "disabled"
+    assert summary["reranker"] == "disabled"
+    assert summary["limit"] is None
+    assert len(summary["dataset_sha256"]) == 64
+    assert summary["embeddings_model"] is None
+    assert summary["embeddings_base_url"] is None
+    assert summary["reranker_model"] is None
+    assert summary["reranker_base_url"] is None
+    assert summary["question_id_manifest_count"] == 2
+    assert len(summary["question_id_manifest_sha256"]) == 64
+    assert summary["release_gate"]["mode"] == "diagnostic"
+    assert summary["release_gate"]["passed"] is False
+    assert summary["release_gate"]["vectors"] == "disabled"
+    assert summary["release_gate"]["reranker"] == "disabled"
+    assert summary["release_gate"]["input_checks"]["dataset_path_matches"] is False
+    assert summary["release_gate"]["input_checks"]["max_items_matches"] is False
+    assert summary["release_gate"]["all_stores_fresh"] is True
 
     # Rerun over the same work dir: ingest skipped, identical coverage.
     rerun_path = tmp_path / "rows2.jsonl"
@@ -1792,9 +1958,12 @@ def test_coverage_probe_end_to_end_and_store_reuse(tmp_path: Path) -> None:
             "1",
         ]
     )
-    assert exit_code == coverage_probe.EXIT_OK
+    assert exit_code == coverage_probe.EXIT_STRATUM_FAILURES
     rerun_rows = [json.loads(line) for line in rerun_path.read_text(encoding="utf-8").splitlines()]
     assert all(row["reused_store"] is True and row["ingest_seconds"] is None for row in rerun_rows)
+    rerun_summary = json.loads(rerun_path.with_suffix(".summary.json").read_text(encoding="utf-8"))
+    assert rerun_summary["release_gate"]["all_stores_fresh"] is False
+    assert rerun_summary["release_gate"]["reused_store_count"] == 2
     volatile = ("reused_store", "ingest_seconds", "retrieval_seconds")
     stable = [{key: value for key, value in row.items() if key not in volatile} for row in rows]
     rerun_stable = [{key: value for key, value in row.items() if key not in volatile} for row in rerun_rows]
@@ -1819,7 +1988,7 @@ def test_coverage_probe_question_ids_and_limit(tmp_path: Path) -> None:
             "1",
         ]
     )
-    assert exit_code == coverage_probe.EXIT_OK
+    assert exit_code == coverage_probe.EXIT_STRATUM_FAILURES
     rows = [json.loads(line) for line in out_path.read_text(encoding="utf-8").splitlines()]
     assert [row["question_id"] for row in rows] == ["synthetic_2_abs"]
 
@@ -1837,9 +2006,66 @@ def test_coverage_probe_question_ids_and_limit(tmp_path: Path) -> None:
             "1",
         ]
     )
-    assert exit_code == coverage_probe.EXIT_OK
+    assert exit_code == coverage_probe.EXIT_STRATUM_FAILURES
     rows = [json.loads(line) for line in (tmp_path / "rows_limit.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [row["question_id"] for row in rows] == ["synthetic_1"]
+
+
+def test_coverage_probe_missing_requested_id_is_config_error(tmp_path: Path) -> None:
+    ids_file = tmp_path / "ids.txt"
+    ids_file.write_text("synthetic_1\nmissing-question\n", encoding="utf-8")
+
+    exit_code = coverage_probe.main(
+        [
+            "--dataset-file",
+            str(SYNTHETIC_FIXTURE_PATH),
+            "--question-ids",
+            str(ids_file),
+            "--work-dir",
+            str(tmp_path / "stores"),
+            "--out",
+            str(tmp_path / "rows.jsonl"),
+        ]
+    )
+
+    assert exit_code == coverage_probe.EXIT_CONFIG_ERROR
+    assert not (tmp_path / "rows.jsonl").exists()
+
+
+def test_coverage_probe_uses_question_date_as_reference_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[coverage_probe.VNextRetrievalRequest] = []
+    original = coverage_probe.VNextRetrievalService.compile_context_pack
+
+    def capture_request(
+        service: coverage_probe.VNextRetrievalService,
+        request: coverage_probe.VNextRetrievalRequest,
+    ) -> dict[str, object]:
+        captured.append(request)
+        return original(service, request)
+
+    monkeypatch.setattr(
+        coverage_probe.VNextRetrievalService,
+        "compile_context_pack",
+        capture_request,
+    )
+    question = load_dataset(SYNTHETIC_FIXTURE_PATH, limit=1)[0]
+    work_dir = tmp_path / "stores"
+    work_dir.mkdir()
+
+    coverage_probe.probe_question(
+        question,
+        work_dir=work_dir,
+        dataset_path=SYNTHETIC_FIXTURE_PATH,
+        max_items=8,
+    )
+
+    assert len(captured) == 1
+    request = captured[0]
+    assert request.reference_time is not None
+    assert request.reference_time.isoformat() == "2023-06-01T10:00:00+00:00"
 
 
 def test_coverage_probe_missing_dataset(tmp_path: Path) -> None:
@@ -2153,21 +2379,14 @@ def test_checked_in_stage1_slice_matches_dataset() -> None:
     manifest_pairs = [tuple(item) for item in manifest["questions"]]
     assert len(manifest_pairs) == len(set(manifest_pairs)) == 500
     records = [
-        {"question_id": question_id, "question_type": question_type}
-        for question_id, question_type in manifest_pairs
+        {"question_id": question_id, "question_type": question_type} for question_id, question_type in manifest_pairs
     ]
-    expected = stage1.render_slice_file(
-        records, dataset_name=str(manifest["dataset_file"])
-    )
+    expected = stage1.render_slice_file(records, dataset_name=str(manifest["dataset_file"]))
     checked_in = stage1.SLICE_PATH.read_text(encoding="utf-8")
     assert checked_in == expected
     ids = runner.load_question_ids(stage1.SLICE_PATH)
     assert len(ids) == len(set(ids))
-    abstention_ids = {
-        question_id
-        for question_id, _question_type in manifest_pairs
-        if question_id.endswith("_abs")
-    }
+    abstention_ids = {question_id for question_id, _question_type in manifest_pairs if question_id.endswith("_abs")}
     assert abstention_ids <= set(ids)
 
     # A developer with the ignored full dataset gets an additional proof that
@@ -2177,10 +2396,7 @@ def test_checked_in_stage1_slice_matches_dataset() -> None:
         return
     assert hashlib.sha256(dataset_path.read_bytes()).hexdigest() == manifest["dataset_sha256"]
     full_records = json.loads(dataset_path.read_text(encoding="utf-8"))
-    full_pairs = sorted(
-        (str(record["question_id"]), str(record["question_type"]))
-        for record in full_records
-    )
+    full_pairs = sorted((str(record["question_id"]), str(record["question_type"])) for record in full_records)
     assert full_pairs == manifest_pairs
 
 
@@ -2205,9 +2421,7 @@ class _MockVerifierClient:
         self.calls.append({"messages": list(messages), "temperature": temperature, "max_tokens": max_tokens})
         if self.error is not None:
             raise self.error
-        return chat.ChatCompletionResult(
-            text=self.reply, prompt_tokens=42, completion_tokens=7, latency_seconds=0.01
-        )
+        return chat.ChatCompletionResult(text=self.reply, prompt_tokens=42, completion_tokens=7, latency_seconds=0.01)
 
 
 def test_verify_grounding_grounded_answer_passes_through_byte_identical() -> None:
@@ -2282,9 +2496,7 @@ def test_verify_grounding_error_fails_open() -> None:
 
 def test_verify_grounding_unparseable_reply_fails_open() -> None:
     client = _MockVerifierClient(reply="Hmm, I am not sure how to check this.")
-    verdict = verification.verify_grounding(
-        question="q", answer_text="a", context_block="c", chat_client=client
-    )
+    verdict = verification.verify_grounding(question="q", answer_text="a", context_block="c", chat_client=client)
     assert verdict.grounded is True
     assert verdict.error is None
     assert verdict.parse_note is not None and "failing open" in verdict.parse_note
@@ -2361,21 +2573,13 @@ def test_official_templates_byte_frozen() -> None:
     assert digest(adapter.ANSWER_PROMPT_TEMPLATE_COT) == (
         "9e2b3110622929ab896696dd8937231c7436740ec3b9586f653f97346e19ab2c"
     )
-    assert digest(judge._DEFAULT_TEMPLATE) == (
-        "fba020ba3d57982efdc9a937c1c01f897b789a608c7f88e60244121f6505e5bc"
-    )
-    assert digest(judge._TEMPORAL_TEMPLATE) == (
-        "8d33a5fdd83afeeb4592454a965eab43d1fcb2dedc042d1d3892f4254be6c273"
-    )
+    assert digest(judge._DEFAULT_TEMPLATE) == ("fba020ba3d57982efdc9a937c1c01f897b789a608c7f88e60244121f6505e5bc")
+    assert digest(judge._TEMPORAL_TEMPLATE) == ("8d33a5fdd83afeeb4592454a965eab43d1fcb2dedc042d1d3892f4254be6c273")
     assert digest(judge._KNOWLEDGE_UPDATE_TEMPLATE) == (
         "183a9b3a6197ec620940f610cdc1207201ec98c1113dd633ea685cfc322fafac"
     )
-    assert digest(judge._PREFERENCE_TEMPLATE) == (
-        "061474d8ddbc19a220d06367a77ca1dbb049f4197a89e2cf8505dcf911bf4e25"
-    )
-    assert digest(judge._ABSTENTION_TEMPLATE) == (
-        "5c0b365a1e1d06db36377c735432b56e122ca3c428f89faf61d43a0d5a7e050b"
-    )
+    assert digest(judge._PREFERENCE_TEMPLATE) == ("061474d8ddbc19a220d06367a77ca1dbb049f4197a89e2cf8505dcf911bf4e25")
+    assert digest(judge._ABSTENTION_TEMPLATE) == ("5c0b365a1e1d06db36377c735432b56e122ca3c428f89faf61d43a0d5a7e050b")
     # The verifier prompt is a separate disclosed component, not a copy of any
     # official template.
     official = {
@@ -2414,9 +2618,7 @@ def _scored_config(tmp_path: Path, *, verify: bool) -> runner.RunnerConfig:
 def test_fingerprint_discloses_verify_grounding(tmp_path: Path) -> None:
     base = runner.config_fingerprint(_scored_config(tmp_path, verify=False), model=None, judge=None)
     verifier = chat.ChatModelConfig(base_url="https://v.example.test/v1", model="verifier-model")
-    gated = runner.config_fingerprint(
-        _scored_config(tmp_path, verify=True), model=None, judge=None, verifier=verifier
-    )
+    gated = runner.config_fingerprint(_scored_config(tmp_path, verify=True), model=None, judge=None, verifier=verifier)
     assert base["verify_grounding"] is False
     assert base["verifier_model"] is None
     assert gated["verify_grounding"] is True
@@ -2438,9 +2640,7 @@ def test_verify_grounding_cli_flag_defaults_off() -> None:
 
 def _stub_generation(text: str):
     def fake_chat_completion(config, messages, *, temperature=0.0, max_tokens=None):
-        return chat.ChatCompletionResult(
-            text=text, prompt_tokens=100, completion_tokens=20, latency_seconds=0.01
-        )
+        return chat.ChatCompletionResult(text=text, prompt_tokens=100, completion_tokens=20, latency_seconds=0.01)
 
     return fake_chat_completion
 
@@ -2515,9 +2715,7 @@ def test_run_question_grounded_answer_unchanged_and_judged_as_is(
     grounded_answer = "Biscuit is a golden retriever."
 
     def fake_verifier_call(cfg, messages, *, temperature=0.0, max_tokens=None):
-        return chat.ChatCompletionResult(
-            text="GROUNDED", prompt_tokens=50, completion_tokens=1, latency_seconds=0.01
-        )
+        return chat.ChatCompletionResult(text="GROUNDED", prompt_tokens=50, completion_tokens=1, latency_seconds=0.01)
 
     judged: list[str] = []
     monkeypatch.setattr(runner, "chat_completion", _stub_generation(grounded_answer))
@@ -2540,9 +2738,7 @@ def test_run_question_grounded_answer_unchanged_and_judged_as_is(
     assert judged == [grounded_answer]
 
 
-def test_run_question_verifier_error_fails_open(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_question_verifier_error_fails_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     question = load_dataset(SYNTHETIC_FIXTURE_PATH)[0]
     config = _scored_config(tmp_path, verify=True)
     config.work_dir.mkdir(parents=True)
@@ -2573,9 +2769,7 @@ def test_run_question_verifier_error_fails_open(
     assert judged == [answer]
 
 
-def test_run_question_without_flag_has_no_grounding_record(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_question_without_flag_has_no_grounding_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     question = load_dataset(SYNTHETIC_FIXTURE_PATH)[0]
     config = _scored_config(tmp_path, verify=False)
     config.work_dir.mkdir(parents=True)
@@ -2589,9 +2783,7 @@ def test_run_question_without_flag_has_no_grounding_record(
     monkeypatch.setattr(verification, "chat_completion", unexpected_verifier_call)
     monkeypatch.setattr(runner, "judge_hypothesis", _stub_judge(judged))
 
-    record = runner.run_question(
-        question, config, model=_UNUSED_MODEL, judge=_UNUSED_MODEL, fingerprint_digest="test"
-    )
+    record = runner.run_question(question, config, model=_UNUSED_MODEL, judge=_UNUSED_MODEL, fingerprint_digest="test")
     assert record["status"] == "ok", record["error"]
     assert record["hypothesis"] == answer
     assert "grounding" not in record
@@ -2767,10 +2959,14 @@ def test_stale_pick_cli_replay_deterministic(tmp_path: Path, capsys: pytest.Capt
         json_path = tmp_path / f"report-{attempt}.json"
         exit_code = stale_pick.main(
             [
-                "--dataset", str(dataset_path),
-                "--checkpoint", str(checkpoint_path),
-                "--label", "demo-run",
-                "--json", str(json_path),
+                "--dataset",
+                str(dataset_path),
+                "--checkpoint",
+                str(checkpoint_path),
+                "--label",
+                "demo-run",
+                "--json",
+                str(json_path),
                 "--per-question",
             ]
         )
@@ -2796,15 +2992,14 @@ def test_stale_pick_module_is_posthoc_only() -> None:
     """The metric must never leak into the product or generation path."""
     api_src = Path(__file__).resolve().parent.parent.parent / "apps" / "api" / "src"
     offenders = [
-        path
-        for path in api_src.rglob("*.py")
-        if "stale_pick" in path.read_text(encoding="utf-8", errors="ignore")
+        path for path in api_src.rglob("*.py") if "stale_pick" in path.read_text(encoding="utf-8", errors="ignore")
     ]
     assert offenders == [], f"product code must not reference stale_pick: {offenders}"
     harness_dir = Path(__file__).resolve().parent
     for name in ("runner.py", "adapter.py", "verification.py", "chat.py", "judge.py"):
         text = (harness_dir / name).read_text(encoding="utf-8")
         assert "stale_pick" not in text, f"{name} must not import the post-hoc metric"
+
 
 # ===========================================================================
 # END INTEGRATION BLOCK (lme6/honesty-kit)

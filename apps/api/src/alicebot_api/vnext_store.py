@@ -56,6 +56,53 @@ from alicebot_api.vnext_stores.postgres.browser_clip_capabilities import (
     consume_browser_clip_capability as _browser_clip_consume_capability,
     create_browser_clip_capability as _browser_clip_create_capability,
 )
+from alicebot_api.vnext_stores.postgres.occurrences import (
+    OCCURRENCE_CLAIM_COLUMNS as OCCURRENCE_CLAIM_COLUMNS,
+    OCCURRENCE_COVERAGE_COLUMNS as OCCURRENCE_COVERAGE_COLUMNS,
+    OCCURRENCE_EVIDENCE_COLUMNS as OCCURRENCE_EVIDENCE_COLUMNS,
+    OCCURRENCE_EXTRACTION_DISPOSITION_COLUMNS as OCCURRENCE_EXTRACTION_DISPOSITION_COLUMNS,
+    OCCURRENCE_UNIT_COLUMNS as OCCURRENCE_UNIT_COLUMNS,
+    begin_occurrence_read_snapshot as _occurrence_begin_read_snapshot,
+    end_occurrence_read_snapshot as _occurrence_end_read_snapshot,
+    create_occurrence_evidence as _occurrence_create_evidence,
+    ensure_occurrence_coverage as _occurrence_ensure_coverage,
+    get_occurrence_claim as _occurrence_get_claim,
+    get_occurrence_coverage as _occurrence_get_coverage,
+    get_occurrence_unit_by_key as _occurrence_get_unit_by_key,
+    get_source_chunk_for_occurrence_accounting as _occurrence_get_source_chunk_for_accounting,
+    get_source_chunks_by_ids as _occurrence_get_source_chunks_by_ids,
+    get_or_create_occurrence_claim as _occurrence_get_or_create_claim,
+    get_or_create_occurrence_unit as _occurrence_get_or_create_unit,
+    list_accepted_occurrence_extraction_dispositions_for_claims as _occurrence_list_accepted_dispositions_for_claims,
+    list_accepted_occurrence_units as _occurrence_list_accepted_units,
+    list_memories_for_source_chunk as _occurrence_list_memories_for_source_chunk,
+    list_occurrence_claims_for_source_chunk as _occurrence_list_claims_for_source_chunk,
+    list_occurrence_evidence_for_units as _occurrence_list_evidence_for_units,
+    list_occurrence_units_for_claim as _occurrence_list_units_for_claim,
+    list_occurrence_units_for_memory as _occurrence_list_units_for_memory,
+    list_occurrence_units_for_source as _occurrence_list_units_for_source,
+    list_unresolved_occurrence_claims as _occurrence_list_unresolved_claims,
+    invalidate_occurrence_coverage as _occurrence_invalidate_coverage,
+    invalidate_occurrence_extraction_dispositions as _occurrence_invalidate_extraction_dispositions,
+    occurrence_memory_redaction_is_exact as _occurrence_memory_redaction_is_exact,
+    record_occurrence_extraction_disposition as _occurrence_record_extraction_disposition,
+    reconcile_occurrence_claim_evidence as _occurrence_reconcile_claim_evidence,
+    reconcile_occurrence_evidence_carrier as _occurrence_reconcile_evidence_carrier,
+    reestablish_source_occurrence_unit as _occurrence_reestablish_source_unit,
+    redact_occurrence_memory_content as _occurrence_redact_memory_content,
+    review_occurrence_claim as _occurrence_review_claim,
+    review_occurrence_coverage as _occurrence_review_coverage,
+    review_occurrence_unit as _occurrence_review_unit,
+    review_occurrence_extraction_disposition as _occurrence_review_extraction_disposition,
+    refresh_occurrence_unit_evidence as _occurrence_refresh_unit_evidence,
+    search_accepted_occurrence_units as _occurrence_search_accepted_units,
+    search_accepted_occurrence_units_by_selector as _occurrence_search_accepted_units_by_selector,
+    summarize_occurrence_extraction_accounting as _occurrence_summarize_extraction_accounting,
+    write_occurrence_memory_metadata as _occurrence_write_memory_metadata,
+)
+from alicebot_api.vnext_stores.postgres.occurrence_accounting import (
+    lock_source_occurrence_envelope as _occurrence_lock_source_envelope,
+)
 from alicebot_api.vnext_stores.postgres.embedding_cas import (
     _MEMORY_EMBEDDING_CONTENT_SHA256_SQL as _MEMORY_EMBEDDING_CONTENT_SHA256_SQL,
     _PYTHON_312_STRIP_CHARS_SQL as _PYTHON_312_STRIP_CHARS_SQL,
@@ -204,7 +251,6 @@ VNextRow = dict[str, object]
 MAX_SOURCE_CHUNKS_PER_READ = 501
 
 
-
 CONNECTOR_SETTINGS_COLUMNS = """
                   id,
                   user_id,
@@ -281,8 +327,6 @@ SOURCE_CHUNK_COLUMNS = """
 _SOURCE_CHUNK_SEARCH_COLUMNS = ", ".join(f"c.{column.strip()}" for column in SOURCE_CHUNK_COLUMNS.split(","))
 
 
-
-
 PROJECT_COLUMNS = """
                   id,
                   user_id,
@@ -311,10 +355,6 @@ PERSON_COLUMNS = """
                   updated_at,
                   metadata_json
                 """
-
-
-
-
 
 
 QUALITY_RATING_COLUMNS = """
@@ -444,14 +484,6 @@ SCHEDULER_RUN_COLUMNS = """
                   agent_identity_json,
                   metadata_json
                 """
-
-
-
-
-
-
-
-
 
 
 class PostgresVNextStore:
@@ -927,6 +959,45 @@ class PostgresVNextStore:
     create_browser_clip_capability = _browser_clip_create_capability
     consume_browser_clip_capability = _browser_clip_consume_capability
 
+    begin_occurrence_read_snapshot = _occurrence_begin_read_snapshot
+    end_occurrence_read_snapshot = _occurrence_end_read_snapshot
+    ensure_occurrence_coverage = _occurrence_ensure_coverage
+    get_occurrence_coverage = _occurrence_get_coverage
+    invalidate_occurrence_coverage = _occurrence_invalidate_coverage
+    review_occurrence_coverage = _occurrence_review_coverage
+    get_or_create_occurrence_claim = _occurrence_get_or_create_claim
+    get_occurrence_claim = _occurrence_get_claim
+    review_occurrence_claim = _occurrence_review_claim
+    list_unresolved_occurrence_claims = _occurrence_list_unresolved_claims
+    get_or_create_occurrence_unit = _occurrence_get_or_create_unit
+    get_occurrence_unit_by_key = _occurrence_get_unit_by_key
+    get_source_chunk_for_occurrence_accounting = _occurrence_get_source_chunk_for_accounting
+    get_source_chunks_by_ids = _occurrence_get_source_chunks_by_ids
+    list_memories_for_source_chunk = _occurrence_list_memories_for_source_chunk
+    list_accepted_occurrence_extraction_dispositions_for_claims = _occurrence_list_accepted_dispositions_for_claims
+    list_occurrence_claims_for_source_chunk = _occurrence_list_claims_for_source_chunk
+    lock_source_occurrence_envelope = _occurrence_lock_source_envelope
+    create_occurrence_evidence = _occurrence_create_evidence
+    review_occurrence_unit = _occurrence_review_unit
+    refresh_occurrence_unit_evidence = _occurrence_refresh_unit_evidence
+    reestablish_source_occurrence_unit = _occurrence_reestablish_source_unit
+    list_occurrence_units_for_claim = _occurrence_list_units_for_claim
+    list_occurrence_units_for_memory = _occurrence_list_units_for_memory
+    list_occurrence_units_for_source = _occurrence_list_units_for_source
+    search_accepted_occurrence_units = _occurrence_search_accepted_units
+    search_accepted_occurrence_units_by_selector = _occurrence_search_accepted_units_by_selector
+    list_accepted_occurrence_units = _occurrence_list_accepted_units
+    list_occurrence_evidence_for_units = _occurrence_list_evidence_for_units
+    reconcile_occurrence_evidence_carrier = _occurrence_reconcile_evidence_carrier
+    reconcile_occurrence_claim_evidence = _occurrence_reconcile_claim_evidence
+    redact_occurrence_memory_content = _occurrence_redact_memory_content
+    occurrence_memory_redaction_is_exact = _occurrence_memory_redaction_is_exact
+    record_occurrence_extraction_disposition = _occurrence_record_extraction_disposition
+    invalidate_occurrence_extraction_dispositions = _occurrence_invalidate_extraction_dispositions
+    review_occurrence_extraction_disposition = _occurrence_review_extraction_disposition
+    summarize_occurrence_extraction_accounting = _occurrence_summarize_extraction_accounting
+    write_occurrence_memory_metadata = _occurrence_write_memory_metadata
+
     def list_sources(
         self,
         *,
@@ -948,6 +1019,7 @@ class PostgresVNextStore:
         )
 
     def create_source(self, source: JsonObject, *, actor_type: str = "system") -> VNextRow:
+        self.lock_graph_mutation()
         row = self._fetch_one(
             "create_source",
             f"""
@@ -1017,6 +1089,10 @@ class PostgresVNextStore:
             target_id=row["id"],
             payload={"operation": "create", "fields": _sorted_field_names(source)},
         )
+        self.invalidate_occurrence_coverage(
+            reason="A source was added to the occurrence corpus.",
+            actor_type=actor_type,
+        )
         return row
 
     def get_or_create_source(
@@ -1026,6 +1102,7 @@ class PostgresVNextStore:
         actor_type: str = "system",
     ) -> tuple[VNextRow, bool]:
         """Atomically claim one live capture identity and return its source."""
+        self.lock_graph_mutation()
         dedupe_key = str(source.get("dedupe_key") or source["content_hash"])
         with self.conn.cursor() as cur:
             cur.execute(
@@ -1100,6 +1177,10 @@ class PostgresVNextStore:
                 target_id=row["id"],
                 payload={"operation": "create", "fields": _sorted_field_names(source)},
             )
+            self.invalidate_occurrence_coverage(
+                reason="A source was added to the occurrence corpus.",
+                actor_type=actor_type,
+            )
         return row, created
 
     def get_source(self, source_id: str) -> VNextRow | None:
@@ -1166,6 +1247,7 @@ class PostgresVNextStore:
         )
 
     def update_source(self, *, source_id: str, patch: JsonObject, actor_type: str = "system") -> VNextRow:
+        self.lock_graph_mutation()
         with self.conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -1270,6 +1352,20 @@ class PostgresVNextStore:
         if raw_row is None:
             raise ContinuityStoreInvariantError("update_source did not return a row from the database")
         row = cast(VNextRow, raw_row)
+        actual_change = any(
+            current.get(field) != row.get(field)
+            for field in (
+                "title",
+                "author",
+                "uri",
+                "raw_path",
+                "domain",
+                "sensitivity",
+                "metadata_json",
+                "content_hash",
+                "dedupe_key",
+            )
+        )
         self._append_mutation_event(
             event_type="source.updated",
             actor_type=actor_type,
@@ -1277,9 +1373,15 @@ class PostgresVNextStore:
             target_id=row["id"],
             payload={"operation": "update", "changes": patch},
         )
+        if actual_change:
+            self.invalidate_occurrence_coverage(
+                reason="A source in the occurrence corpus changed.",
+                actor_type=actor_type,
+            )
         return row
 
     def delete_source(self, *, source_id: str, actor_type: str = "system") -> VNextRow:
+        self.lock_graph_mutation()
         row = self._fetch_one(
             "delete_source",
             f"""
@@ -1298,9 +1400,14 @@ class PostgresVNextStore:
             target_id=row["id"],
             payload={"operation": "delete"},
         )
+        self.invalidate_occurrence_coverage(
+            reason="A source was removed from the occurrence corpus.",
+            actor_type=actor_type,
+        )
         return row
 
     def create_source_chunk(self, chunk: JsonObject, *, actor_type: str = "system") -> VNextRow:
+        self.lock_graph_mutation()
         row = self._fetch_one(
             "create_source_chunk",
             f"""
@@ -1339,6 +1446,10 @@ class PostgresVNextStore:
             target_type="source_chunk",
             target_id=row["id"],
             payload={"operation": "create", "source_id": str(row["source_id"])},
+        )
+        self.invalidate_occurrence_coverage(
+            reason="A source chunk was added to the occurrence corpus.",
+            actor_type=actor_type,
         )
         return row
 
@@ -2136,6 +2247,7 @@ class PostgresVNextStore:
     def get_artifact_for_update(self, artifact_id: str) -> VNextRow | None:
         """Lock one persisted artifact before an authorized side effect."""
 
+        self.lock_graph_mutation()
         return self._fetch_optional_one(
             f"""
                 SELECT {ARTIFACT_COLUMNS}

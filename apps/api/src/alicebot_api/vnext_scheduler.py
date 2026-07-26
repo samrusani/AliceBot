@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time, timedelta, tzinfo
@@ -26,6 +27,7 @@ from alicebot_api.vnext_consolidation import (
 )
 from alicebot_api.vnext_contradictions import ContradictionFinderRequest, VNextContradictionService
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_memory_commit import VNextMemoryCommitService
 from alicebot_api.vnext_model_intelligence import (
     MODEL_ROUTE_MODES,
     ModelBackedRequest,
@@ -41,6 +43,7 @@ from alicebot_api.vnext_projects import (
 )
 from alicebot_api.vnext_project_scope import normalize_project_scope, project_scope_identity
 from alicebot_api.vnext_repositories import JsonObject
+from alicebot_api.vnext_store import PostgresVNextStore
 
 
 WORKFLOW_TYPES = (
@@ -85,6 +88,8 @@ class VNextSchedulerValidationError(ValueError):
 
 
 class VNextSchedulerStore(VNextProjectStore, Protocol):
+    def lock_graph_mutation(self) -> None: ...
+
     def append_event(self, event: JsonObject) -> JsonObject: ...
 
     def upsert_scheduler_workflow(self, workflow: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
@@ -239,6 +244,186 @@ def _json_object_copy(value: object) -> JsonObject:
     return cast(JsonObject, deepcopy(value))
 
 
+@contextmanager
+def _scheduler_publish_savepoint(store: VNextSchedulerStore) -> Iterator[None]:
+    """Rollback a failed staged publication before failure bookkeeping."""
+
+    connection = getattr(store, "conn", None)
+    transaction = getattr(connection, "transaction", None)
+    if callable(transaction):
+        with transaction():
+            yield
+        return
+
+    execute = getattr(connection, "execute", None)
+    if callable(execute) and bool(getattr(connection, "in_transaction", False)):
+        savepoint = f"alice_scheduler_publish_{uuid4().hex}"
+        execute(f"SAVEPOINT {savepoint}")
+        try:
+            yield
+        except BaseException:
+            execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
+        else:
+            execute(f"RELEASE SAVEPOINT {savepoint}")
+        return
+
+    # Test and third-party stores without a transaction seam retain their
+    # existing behavior. Bundled PostgreSQL/SQLite entrypoints always publish
+    # inside an outer transaction.
+    yield
+
+
+def _stale_memory_note(
+    memory: JsonObject,
+    *,
+    reason: str,
+    reference_time: datetime,
+    confirmation_before: datetime,
+    window_days: int,
+) -> str:
+    if reason == "valid_to_expired":
+        valid_to = _memory_timestamp(memory.get("valid_to"))
+        if valid_to is None or valid_to >= reference_time:
+            raise VNextSchedulerValidationError("staleness sweep target no longer has an expired valid_to")
+        return f"valid_to {valid_to.isoformat()} passed before {reference_time.isoformat()}"
+    if reason == "confirmation_window_elapsed":
+        if str(memory.get("memory_type")) not in STALENESS_REVIEW_MEMORY_TYPES:
+            raise VNextSchedulerValidationError("staleness sweep target is no longer a working-state memory")
+        confirmed_at = (
+            _memory_timestamp(memory.get("last_confirmed_at"))
+            or _memory_timestamp(memory.get("last_seen_at"))
+            or _memory_timestamp(memory.get("created_at"))
+        )
+        if confirmed_at is None or confirmed_at >= confirmation_before:
+            raise VNextSchedulerValidationError("staleness sweep target was refreshed after preparation")
+        return (
+            f"last confirmation {confirmed_at.isoformat()} is older than "
+            f"{window_days} days for working-state type {memory.get('memory_type')}"
+        )
+    raise VNextSchedulerValidationError("staged staleness mutation has an unsupported reason")
+
+
+def _stale_memory_metadata(
+    memory: JsonObject,
+    *,
+    reason: str,
+    note: str,
+    scheduler_run_id: object,
+    trace_id: object,
+) -> JsonObject:
+    metadata_value = memory.get("metadata_json")
+    memory_metadata: JsonObject = dict(metadata_value) if isinstance(metadata_value, dict) else {}
+    memory_metadata["staleness"] = {
+        "marked_by": "staleness_sweep",
+        "reason": reason,
+        "note": note,
+        "scheduler_run_id": scheduler_run_id,
+        "trace_id": trace_id,
+    }
+    return memory_metadata
+
+
+def _publish_stale_memory_lifecycle(
+    store: VNextSchedulerStore,
+    *,
+    payload: JsonObject,
+    actor_type: str,
+    options: JsonObject,
+) -> JsonObject:
+    """Publish one stale-memory transition at the truth-graph boundary."""
+
+    store.lock_graph_mutation()
+    memory_id = str(options.get("memory_id") or "").strip()
+    current = store.get_memory_for_update(memory_id)
+    if not isinstance(current, dict):
+        raise VNextSchedulerValidationError("staged staleness target no longer exists")
+    if str(current.get("status") or "") not in STALENESS_SWEEP_STATUSES:
+        raise VNextSchedulerValidationError("staged staleness target is no longer active")
+
+    project_scope_value = payload.get("project_scope")
+    project_scope = tuple(str(value) for value in project_scope_value) if isinstance(project_scope_value, list) else ()
+    if not _row_matches_projects(current, project_scope):
+        raise VNextSchedulerValidationError("staged staleness target moved outside the requested project scope")
+
+    reason = str(payload.get("reason") or "")
+    reference_time = _memory_timestamp(payload.get("reference_time"))
+    confirmation_before = _memory_timestamp(payload.get("confirmation_before"))
+    window_days_value = payload.get("window_days")
+    if (
+        reference_time is None
+        or confirmation_before is None
+        or not isinstance(window_days_value, int)
+        or isinstance(window_days_value, bool)
+    ):
+        raise VNextSchedulerValidationError("staged staleness mutation is malformed")
+    note = _stale_memory_note(
+        current,
+        reason=reason,
+        reference_time=reference_time,
+        confirmation_before=confirmation_before,
+        window_days=window_days_value,
+    )
+    memory_metadata = _stale_memory_metadata(
+        current,
+        reason=reason,
+        note=note,
+        scheduler_run_id=payload.get("scheduler_run_id"),
+        trace_id=payload.get("trace_id"),
+    )
+
+    VNextMemoryCommitService(cast(PostgresVNextStore, store)).retire_memory_occurrence_state(
+        current,
+        stage="scheduler_staleness_sweep",
+        reason=f"Memory marked stale: {note}",
+    )
+    updated = store.update_memory(
+        memory_id=memory_id,
+        patch={"status": "stale", "metadata_json": memory_metadata},
+        actor_type=actor_type,
+    )
+    store.append_revision(
+        {
+            "memory_id": str(updated["id"]),
+            "memory_key": str(updated.get("memory_key") or ""),
+            "previous_value": current.get("value"),
+            "new_value": updated.get("value"),
+            "source_event_ids": updated.get("source_event_ids"),
+            "revision_type": "edited",
+            "action": "staleness_sweep_mark",
+            "text_before": str(current.get("canonical_text") or ""),
+            "text_after": str(updated.get("canonical_text") or ""),
+            "reason": f"stale_marked: {note}",
+            "actor_type": actor_type,
+            "actor_id": None,
+            "metadata_json": {
+                "requested_revision_type": "stale_marked",
+                "staleness_reason": reason,
+                "workflow_type": "staleness_sweep",
+                "scheduler_run_id": payload.get("scheduler_run_id"),
+            },
+        },
+        actor_type=actor_type,
+    )
+    append_event(
+        store,
+        event_type="memory.stale_marked",
+        actor_type=actor_type,
+        target_type="memory",
+        target_id=str(updated["id"]),
+        trace_id=str(payload["trace_id"]) if payload.get("trace_id") is not None else None,
+        run_id=str(payload["scheduler_run_id"]) if payload.get("scheduler_run_id") is not None else None,
+        payload={
+            "reason": reason,
+            "note": note,
+            "memory_type": current.get("memory_type"),
+            "previous_status": current.get("status"),
+        },
+    )
+    return updated
+
+
 @dataclass(frozen=True, slots=True)
 class SchedulerWorkflowPlan:
     """Side-effect-free scheduler result awaiting one atomic publication."""
@@ -254,28 +439,29 @@ class SchedulerWorkflowPlan:
         to the surrounding transaction so every staged write rolls back.
         """
 
-        id_map: dict[str, str] = {}
-        published_rows: dict[str, JsonObject] = {}
-        for mutation in self.mutations:
-            payload = cast(JsonObject, _remap_staged_value(deepcopy(mutation.payload), id_map))
-            options = cast(JsonObject, _remap_staged_value(deepcopy(mutation.options), id_map))
-            provisional_id = str(mutation.payload.get("id") or "").strip() or None
-            row = self._publish_mutation(
-                store,
-                method=mutation.method,
-                payload=payload,
-                actor_type=mutation.actor_type,
-                options=options,
-            )
-            if provisional_id is not None and row.get("id") is not None:
-                durable_id = str(row["id"])
-                id_map[provisional_id] = durable_id
-                published_rows[provisional_id] = row
+        with _scheduler_publish_savepoint(store):
+            id_map: dict[str, str] = {}
+            published_rows: dict[str, JsonObject] = {}
+            for mutation in self.mutations:
+                payload = cast(JsonObject, _remap_staged_value(deepcopy(mutation.payload), id_map))
+                options = cast(JsonObject, _remap_staged_value(deepcopy(mutation.options), id_map))
+                provisional_id = str(mutation.payload.get("id") or "").strip() or None
+                row = self._publish_mutation(
+                    store,
+                    method=mutation.method,
+                    payload=payload,
+                    actor_type=mutation.actor_type,
+                    options=options,
+                )
+                if provisional_id is not None and row.get("id") is not None:
+                    durable_id = str(row["id"])
+                    id_map[provisional_id] = durable_id
+                    published_rows[provisional_id] = row
 
-        planned_artifact_id = str(self.artifact.get("id") or "").strip()
-        if planned_artifact_id in published_rows:
-            return published_rows[planned_artifact_id]
-        return cast(JsonObject, _remap_staged_value(deepcopy(self.artifact), id_map))
+            planned_artifact_id = str(self.artifact.get("id") or "").strip()
+            if planned_artifact_id in published_rows:
+                return published_rows[planned_artifact_id]
+            return cast(JsonObject, _remap_staged_value(deepcopy(self.artifact), id_map))
 
     @staticmethod
     def _publish_mutation(
@@ -334,6 +520,13 @@ class SchedulerWorkflowPlan:
                 memory_id=str(options["memory_id"]),
                 patch=payload,
                 actor_type=actor_type,
+            )
+        if method == "stale_memory_lifecycle":
+            return _publish_stale_memory_lifecycle(
+                store,
+                payload=payload,
+                actor_type=actor_type,
+                options=options,
             )
         if method == "append_revision":
             return store.append_revision(payload, actor_type=actor_type)
@@ -554,6 +747,53 @@ class _StagedSchedulerStore:
             )
         )
         return row
+
+    def stage_stale_memory_lifecycle(
+        self,
+        memory: JsonObject,
+        *,
+        reason: str,
+        reference_time: datetime,
+        confirmation_before: datetime,
+        window_days: int,
+        metadata: JsonObject,
+        actor_type: str = "scheduler",
+    ) -> JsonObject:
+        note = _stale_memory_note(
+            memory,
+            reason=reason,
+            reference_time=reference_time,
+            confirmation_before=confirmation_before,
+            window_days=window_days,
+        )
+        memory_metadata = _stale_memory_metadata(
+            memory,
+            reason=reason,
+            note=note,
+            scheduler_run_id=metadata.get("scheduler_run_id"),
+            trace_id=metadata.get("trace_id"),
+        )
+        project_scope_value = metadata.get("project_scope")
+        project_scope = (
+            [str(value) for value in project_scope_value] if isinstance(project_scope_value, (list, tuple)) else []
+        )
+        self._mutations.append(
+            _StagedSchedulerMutation(
+                method="stale_memory_lifecycle",
+                payload={
+                    "reason": reason,
+                    "reference_time": reference_time.isoformat(),
+                    "confirmation_before": confirmation_before.isoformat(),
+                    "window_days": window_days,
+                    "scheduler_run_id": metadata.get("scheduler_run_id"),
+                    "trace_id": metadata.get("trace_id"),
+                    "project_scope": project_scope,
+                },
+                actor_type=actor_type,
+                options={"memory_id": str(memory["id"])},
+            )
+        )
+        return {**deepcopy(memory), "status": "stale", "metadata_json": memory_metadata}
 
     def append_revision(self, revision: JsonObject, *, actor_type: str = "system") -> JsonObject:
         return self._stage_create("append_revision", revision, actor_type=actor_type)
@@ -1401,7 +1641,9 @@ class VNextSchedulerService:
                     self._mark_memory_stale(
                         memory,
                         reason="valid_to_expired",
-                        note=f"valid_to {valid_to.isoformat()} passed before {now.isoformat()}",
+                        reference_time=now,
+                        confirmation_before=window_start,
+                        window_days=window_days,
                         metadata=metadata,
                     )
                 )
@@ -1418,10 +1660,9 @@ class VNextSchedulerService:
                     self._mark_memory_stale(
                         memory,
                         reason="confirmation_window_elapsed",
-                        note=(
-                            f"last confirmation {confirmed_at.isoformat()} is older than "
-                            f"{window_days} days for working-state type {memory.get('memory_type')}"
-                        ),
+                        reference_time=now,
+                        confirmation_before=window_start,
+                        window_days=window_days,
                         metadata=metadata,
                     )
                 )
@@ -1481,66 +1722,25 @@ class VNextSchedulerService:
         memory: JsonObject,
         *,
         reason: str,
-        note: str,
+        reference_time: datetime,
+        confirmation_before: datetime,
+        window_days: int,
         metadata: JsonObject,
     ) -> JsonObject:
-        memory_metadata_value = memory.get("metadata_json")
-        memory_metadata: JsonObject = dict(memory_metadata_value) if isinstance(memory_metadata_value, dict) else {}
-        memory_metadata["staleness"] = {
-            "marked_by": "staleness_sweep",
-            "reason": reason,
-            "note": note,
-            "scheduler_run_id": metadata.get("scheduler_run_id"),
-            "trace_id": metadata.get("trace_id"),
-        }
-        updated = self.store.update_memory(
-            memory_id=str(memory["id"]),
-            patch={"status": "stale", "metadata_json": memory_metadata},
-            actor_type="scheduler",
+        stager = getattr(self.store, "stage_stale_memory_lifecycle", None)
+        if not callable(stager):
+            raise VNextSchedulerValidationError("staleness sweep requires atomic staged lifecycle support")
+        return _json_object_copy(
+            stager(
+                memory,
+                reason=reason,
+                reference_time=reference_time,
+                confirmation_before=confirmation_before,
+                window_days=window_days,
+                metadata=metadata,
+                actor_type="scheduler",
+            )
         )
-        # The revision-type vocabulary (REVISION_TYPES, enforced by the
-        # Postgres memory_revisions_revision_type_check constraint) has no
-        # "stale_marked" value, so the sweep records revision_type="edited"
-        # and carries the intended type in the reason/metadata note.
-        self.store.append_revision(
-            {
-                "memory_id": str(updated["id"]),
-                "memory_key": str(updated.get("memory_key") or ""),
-                "previous_value": memory.get("value"),
-                "new_value": updated.get("value"),
-                "source_event_ids": updated.get("source_event_ids"),
-                "revision_type": "edited",
-                "action": "staleness_sweep_mark",
-                "text_before": str(memory.get("canonical_text") or ""),
-                "text_after": str(updated.get("canonical_text") or ""),
-                "reason": f"stale_marked: {note}",
-                "actor_type": "scheduler",
-                "actor_id": None,
-                "metadata_json": {
-                    "requested_revision_type": "stale_marked",
-                    "staleness_reason": reason,
-                    "workflow_type": "staleness_sweep",
-                    "scheduler_run_id": metadata.get("scheduler_run_id"),
-                },
-            },
-            actor_type="scheduler",
-        )
-        append_event(
-            self.store,
-            event_type="memory.stale_marked",
-            actor_type="scheduler",
-            target_type="memory",
-            target_id=str(updated["id"]),
-            trace_id=str(metadata.get("trace_id")) if metadata.get("trace_id") is not None else None,
-            run_id=str(metadata.get("scheduler_run_id")) if metadata.get("scheduler_run_id") is not None else None,
-            payload={
-                "reason": reason,
-                "note": note,
-                "memory_type": memory.get("memory_type"),
-                "previous_status": memory.get("status"),
-            },
-        )
-        return updated
 
     def _generate_open_loop_review_artifact(self, request: SchedulerRunRequest, *, metadata: JsonObject) -> JsonObject:
         domains = list(request.domains) if request.domains else None

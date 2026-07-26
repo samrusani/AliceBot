@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import stat
 import subprocess
@@ -50,6 +51,7 @@ from alicebot_api.vnext_memory_version import memory_version_snapshot
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 USER_ID = UUID("11111111-1111-4111-8111-111111111111")
+OTHER_USER_ID = UUID("22222222-2222-4222-8222-222222222222")
 
 CORE_TOOL_NAMES = [
     "alice_capture",
@@ -2692,6 +2694,11 @@ ALL_RECORD_TYPES = {
     "source",
     "source_chunk",
     "memory",
+    "occurrence_coverage",
+    "occurrence_claim",
+    "occurrence_unit",
+    "occurrence_evidence",
+    "occurrence_extraction_disposition",
     "entity",
     "entity_relationship_event",
     "graph_edge",
@@ -2729,6 +2736,102 @@ def _assert_equivalent_exports(
         assert original == round_tripped, f"record_type {record_type} did not round-trip"
 
 
+def _round_trip_occurrence_predicate() -> dict[str, object]:
+    return {
+        "schema": "occurrence_predicate_v1",
+        "taxonomy": "alice-occurrence-exact-v1",
+        "op": "atom",
+        "subject": "self",
+        "polarity": "completed",
+        "action": {"leaf": "complete", "ancestors": []},
+        "object": {
+            "leaf": "trip",
+            "qualifiers": ["portable"],
+            "ancestors": [],
+        },
+        "selector_keys": [
+            "v1|a=exact:complete|o=exact:trip",
+            "v1|a=exact:complete|o=*",
+        ],
+        "closure_complete": True,
+    }
+
+
+def _round_trip_claim_aggregation() -> dict[str, object]:
+    return {
+        "schema": "occurrence_aggregation_v1",
+        "bases": [
+            {
+                "basis": "event_instance",
+                "identity_basis": "occurrence_key",
+            }
+        ],
+    }
+
+
+def _round_trip_unit_aggregation(
+    occurrence_key: str,
+) -> dict[str, object]:
+    return {
+        "schema": "occurrence_aggregation_v1",
+        "members": [
+            {
+                "basis": "event_instance",
+                "identity_basis": "occurrence_key",
+                "member_identity": occurrence_key,
+            }
+        ],
+    }
+
+
+def _reviewed_no_occurrence_accounting(
+    store: SQLiteVNextStore,
+    *,
+    fixture_key: str,
+) -> dict[str, object]:
+    """Create one exhaustively reviewed neutral chunk for coverage fixtures."""
+
+    extractor_version = f"{fixture_key}-extractor-v1"
+    source = store.create_source(
+        {
+            "source_type": "note",
+            "content_hash": f"{fixture_key}-content",
+            "captured_at": "2026-07-24T00:00:00Z",
+        }
+    )
+    chunk = store.create_source_chunk(
+        {
+            "source_id": source["id"],
+            "chunk_index": 0,
+            "text": "Neutral fixture text with no occurrence assertion.",
+        }
+    )
+    disposition, _created = store.record_occurrence_extraction_disposition(
+        source_chunk_id=str(chunk["id"]),
+        extractor_version=extractor_version,
+        disposition="no_occurrence",
+    )
+    store.review_occurrence_extraction_disposition(
+        disposition_id=str(disposition["id"]),
+        action="accepted",
+        reviewer_id="fixture-reviewer",
+        reason="The neutral fixture chunk was exhaustively reviewed.",
+        expected_review_version=int(disposition["review_version"]),
+    )
+    accounting = store.summarize_occurrence_extraction_accounting(
+        extractor_version=extractor_version,
+    )
+    assert accounting["complete"] is True
+    return {
+        "accounting_schema": "occurrence_accounting_v1",
+        "extractor_version": accounting["extractor_version"],
+        "source_ids": accounting["source_ids"],
+        "source_chunk_ids": accounting["source_chunk_ids"],
+        "snapshot_digest": accounting["snapshot_digest"],
+        "disposition_digest": accounting["disposition_digest"],
+    }
+
+
 def _seed_full_graph(db_path: Path) -> dict[str, dict[str, object]]:
     """One of every exportable record type, written through the store."""
     with sqlite_user_connection(db_path, USER_ID) as conn:
@@ -2763,7 +2866,160 @@ def _seed_full_graph(db_path: Path) -> dict[str, dict[str, object]]:
                 "sensitivity": "internal",
                 "confidence": 0.9,
                 "value": {"text": "Exported data must survive the import round trip."},
+                "metadata_json": {
+                    "source_chunk_id": str(chunk["id"]),
+                },
             }
+        )
+        store.ensure_occurrence_coverage(started_at="2026-01-01T00:00:00Z")
+        occurrence_claim, _ = store.get_or_create_occurrence_claim(
+            {
+                "claim_key": "occurrence.round-trip.new",
+                "count_key": "portable round trip",
+                "predicate_json": _round_trip_occurrence_predicate(),
+                "canonical_text": "Completed one portable round trip.",
+                "quantity_min": 1,
+                "quantity_max": 1,
+                "range_kind": "exact",
+                "resolution_decision": "new",
+                "identity_basis": "exact_time",
+                "aggregation_json": _round_trip_claim_aggregation(),
+                "occurred_at_start": "2026-06-01T08:00:00Z",
+                "occurred_at_end": "2026-06-01T08:00:00Z",
+                "domain": "project",
+                "sensitivity": "internal",
+                "project_scope": [],
+            }
+        )
+        occurrence_unit, _ = store.get_or_create_occurrence_unit(
+            {
+                "claim_id": occurrence_claim["id"],
+                "claim_ordinal": 1,
+                "occurrence_key": "occurrence.round-trip.unit",
+                "count_key": "portable round trip",
+                "predicate_json": _round_trip_occurrence_predicate(),
+                "canonical_text": "Completed portable round trip.",
+                "identity_status": "resolved",
+                "aggregation_json": _round_trip_unit_aggregation("occurrence.round-trip.unit"),
+                "occurred_at_start": "2026-06-01T08:00:00Z",
+                "occurred_at_end": "2026-06-01T08:00:00Z",
+                "domain": "project",
+                "sensitivity": "internal",
+                "project_scope": [],
+            }
+        )
+        occurrence_evidence = store.create_occurrence_evidence(
+            {
+                "claim_id": occurrence_claim["id"],
+                "occurrence_id": occurrence_unit["id"],
+                "evidence_key": "occurrence.round-trip.evidence",
+                "evidence_role": "supports",
+                "quote": "The round-trip chunk text.",
+                "source_id": source["id"],
+                "source_chunk_id": chunk["id"],
+                "memory_id": memory["id"],
+            }
+        )
+        store.review_occurrence_claim(
+            claim_id=str(occurrence_claim["id"]),
+            resolution_status="resolved",
+            resolution_decision="new",
+            identity_basis="exact_time",
+            reviewer_id="round-trip-reviewer",
+            reason="The occurrence identity is exact.",
+        )
+        occurrence_unit = store.review_occurrence_unit(
+            occurrence_id=str(occurrence_unit["id"]),
+            action="accepted",
+            reviewer_id="round-trip-reviewer",
+            reason="The occurrence evidence is live and exact.",
+        )
+        linked_occurrence_claim, _ = store.get_or_create_occurrence_claim(
+            {
+                "claim_key": "occurrence.round-trip.link",
+                "count_key": "portable round trip",
+                "predicate_json": _round_trip_occurrence_predicate(),
+                "canonical_text": "The same portable round trip was mentioned again.",
+                "quantity_min": 1,
+                "quantity_max": 1,
+                "range_kind": "exact",
+                "resolution_decision": "link_existing",
+                "identity_basis": "exact_time",
+                "aggregation_json": _round_trip_claim_aggregation(),
+                "occurred_at_start": "2026-06-01T08:00:00Z",
+                "occurred_at_end": "2026-06-01T08:00:00Z",
+                "domain": "project",
+                "sensitivity": "internal",
+                "project_scope": [],
+            }
+        )
+        store.create_occurrence_evidence(
+            {
+                "claim_id": linked_occurrence_claim["id"],
+                "occurrence_id": occurrence_unit["id"],
+                "evidence_key": "occurrence.round-trip.link-evidence",
+                "evidence_role": "supports",
+                "quote": "The round-trip chunk text.",
+                "source_id": source["id"],
+                "source_chunk_id": chunk["id"],
+            }
+        )
+        store.review_occurrence_claim(
+            claim_id=str(linked_occurrence_claim["id"]),
+            resolution_status="resolved",
+            resolution_decision="link_existing",
+            identity_basis="exact_time",
+            reviewer_id="round-trip-reviewer",
+            reason="The repeated mention resolves to the existing occurrence.",
+            resolved_occurrence_id=str(occurrence_unit["id"]),
+        )
+        occurrence_unit = store.refresh_occurrence_unit_evidence(
+            occurrence_id=str(occurrence_unit["id"]),
+            reviewer_id="round-trip-reviewer",
+            reason="The linked evidence is now part of the signed receipt.",
+            expected_review_version=int(occurrence_unit["review_version"]),
+        )
+        extraction_disposition, _ = store.record_occurrence_extraction_disposition(
+            source_chunk_id=str(chunk["id"]),
+            extractor_version="portable-round-trip-v1",
+            disposition="accepted_occurrences",
+            predicate_keys=["portable round trip"],
+            claim_ids=[
+                str(occurrence_claim["id"]),
+                str(linked_occurrence_claim["id"]),
+            ],
+            occurrence_ids=[str(occurrence_unit["id"])],
+        )
+        extraction_disposition = store.review_occurrence_extraction_disposition(
+            disposition_id=str(extraction_disposition["id"]),
+            action="accepted",
+            reviewer_id="round-trip-reviewer",
+            reason="The chunk occurrence accounting is complete.",
+            expected_review_version=int(extraction_disposition["review_version"]),
+        )
+        accounting = store.summarize_occurrence_extraction_accounting(
+            extractor_version="portable-round-trip-v1",
+        )
+        assert accounting["complete"] is True
+        accounting_metadata = {
+            "accounting_schema": "occurrence_accounting_v1",
+            "extractor_version": accounting["extractor_version"],
+            "source_ids": accounting["source_ids"],
+            "source_chunk_ids": accounting["source_chunk_ids"],
+            "snapshot_digest": accounting["snapshot_digest"],
+            "disposition_digest": accounting["disposition_digest"],
+        }
+        current_coverage = store.get_occurrence_coverage()
+        assert current_coverage is not None
+        coverage = store.review_occurrence_coverage(
+            coverage_mode="complete_history",
+            historical_review_status="reviewed",
+            coverage_started_at="2026-01-01T00:00:00Z",
+            complete_through="2026-06-01T23:59:59Z",
+            reviewer_id="round-trip-reviewer",
+            reason="Portable round-trip fixture has complete reviewed history.",
+            accounting_metadata=accounting_metadata,
+            expected_review_version=int(current_coverage["review_version"]),
         )
         store.update_memory_fact_keys(
             memory_id=str(memory["id"]),
@@ -2838,6 +3094,12 @@ def _seed_full_graph(db_path: Path) -> dict[str, dict[str, object]]:
         "source": source,
         "source_chunk": chunk,
         "memory": memory,
+        "occurrence_coverage": coverage,
+        "occurrence_claim": occurrence_claim,
+        "linked_occurrence_claim": linked_occurrence_claim,
+        "occurrence_unit": occurrence_unit,
+        "occurrence_evidence": occurrence_evidence,
+        "occurrence_extraction_disposition": extraction_disposition,
         "entity": entity,
         "entity_relationship_event": relationship_event,
         "graph_edge": open_edge,
@@ -2883,6 +3145,578 @@ def test_import_round_trip_reproduces_equivalent_export(tmp_path, capsys) -> Non
 
     second = _export_to(fresh_db, tmp_path / "second.jsonl")
     _assert_equivalent_exports(first, second)
+
+
+def test_same_user_restore_defers_forward_occurrence_supersession_edge(
+    tmp_path,
+) -> None:
+    origin_db = tmp_path / "supersession-origin.db"
+    bootstrap_database(origin_db, user_id=USER_ID, user_email="local@alice")
+    predecessor_claim_id = "10000000-0000-4000-8000-000000000001"
+    successor_claim_id = "20000000-0000-4000-8000-000000000002"
+    predecessor_unit_id = "30000000-0000-4000-8000-000000000003"
+    successor_unit_id = "40000000-0000-4000-8000-000000000004"
+    with sqlite_user_connection(origin_db, USER_ID) as conn:
+        store = SQLiteVNextStore(conn, USER_ID)
+        source = store.create_source(
+            {
+                "source_type": "note",
+                "content_hash": "portable-forward-supersession-source",
+                "captured_at": "2026-07-24T12:00:00Z",
+                "domain": "project",
+                "sensitivity": "internal",
+            }
+        )
+
+        def accepted_unit(
+            *,
+            label: str,
+            claim_id: str,
+            unit_id: str,
+            occurrence_key: str,
+        ) -> dict[str, object]:
+            claim, _created = store.get_or_create_occurrence_claim(
+                {
+                    "id": claim_id,
+                    "claim_key": f"portable.supersession.{label}.claim",
+                    "count_key": "portable round trip",
+                    "predicate_json": _round_trip_occurrence_predicate(),
+                    "canonical_text": f"Completed {label} portable round trip.",
+                    "quantity_min": 1,
+                    "quantity_max": 1,
+                    "range_kind": "exact",
+                    "resolution_decision": "new",
+                    "identity_basis": "exact_time",
+                    "aggregation_json": _round_trip_claim_aggregation(),
+                    "occurred_at_start": "2026-07-24T12:00:00Z",
+                    "occurred_at_end": "2026-07-24T12:00:00Z",
+                    "domain": "project",
+                    "sensitivity": "internal",
+                    "project_scope": [],
+                }
+            )
+            unit, _created = store.get_or_create_occurrence_unit(
+                {
+                    "id": unit_id,
+                    "claim_id": claim["id"],
+                    "claim_ordinal": 1,
+                    "occurrence_key": occurrence_key,
+                    "count_key": "portable round trip",
+                    "predicate_json": _round_trip_occurrence_predicate(),
+                    "canonical_text": f"Completed {label} portable round trip.",
+                    "identity_status": "resolved",
+                    "aggregation_json": _round_trip_unit_aggregation(
+                        occurrence_key
+                    ),
+                    "occurred_at_start": "2026-07-24T12:00:00Z",
+                    "occurred_at_end": "2026-07-24T12:00:00Z",
+                    "domain": "project",
+                    "sensitivity": "internal",
+                    "project_scope": [],
+                }
+            )
+            store.create_occurrence_evidence(
+                {
+                    "claim_id": claim["id"],
+                    "occurrence_id": unit["id"],
+                    "source_id": source["id"],
+                    "evidence_key": f"portable.supersession.{label}.evidence",
+                    "quote": f"Completed {label} portable round trip.",
+                }
+            )
+            store.review_occurrence_claim(
+                claim_id=str(claim["id"]),
+                resolution_status="resolved",
+                resolution_decision="new",
+                identity_basis="exact_time",
+                reviewer_id="portable-reviewer",
+                reason=f"The {label} occurrence identity was verified.",
+            )
+            return store.review_occurrence_unit(
+                occurrence_id=str(unit["id"]),
+                action="accepted",
+                reviewer_id="portable-reviewer",
+                reason=f"The {label} occurrence evidence was verified.",
+            )
+
+        predecessor = accepted_unit(
+            label="predecessor",
+            claim_id=predecessor_claim_id,
+            unit_id=predecessor_unit_id,
+            occurrence_key="portable.supersession.predecessor",
+        )
+        successor = accepted_unit(
+            label="successor",
+            claim_id=successor_claim_id,
+            unit_id=successor_unit_id,
+            occurrence_key="portable.supersession.successor",
+        )
+        superseded = store.review_occurrence_unit(
+            occurrence_id=str(predecessor["id"]),
+            action="superseded",
+            expected_status="accepted",
+            expected_review_version=int(predecessor["review_version"]),
+            superseded_by=str(successor["id"]),
+            reviewer_id="portable-reviewer",
+            reason="The successor replaces the predecessor.",
+        )
+
+    dump = tmp_path / "supersession.jsonl"
+    exported = _export_to(origin_db, dump)
+    assert [row["id"] for row in exported["occurrence_unit"]] == [
+        predecessor_unit_id,
+        successor_unit_id,
+    ]
+    assert exported["occurrence_unit"][0]["review_status"] == "superseded"
+    assert (
+        exported["occurrence_unit"][0]["superseded_by"]
+        == successor_unit_id
+    )
+    assert (
+        exported["occurrence_unit"][0]["review_receipt_digest"]
+        == superseded["review_receipt_digest"]
+    )
+
+    restored_db = tmp_path / "same-user-restored.db"
+    assert (
+        onramp_main(
+            [
+                "import",
+                "--in",
+                str(dump),
+                "--db",
+                str(restored_db),
+                "--user-id",
+                str(USER_ID),
+            ]
+        )
+        == 0
+    )
+    with sqlite_user_connection(restored_db, USER_ID) as conn:
+        restored = conn.execute(
+            """
+            SELECT review_status, superseded_by, review_receipt_digest
+            FROM occurrence_units
+            WHERE user_id = ? AND id = ?
+            """,
+            (str(USER_ID), predecessor_unit_id),
+        ).fetchone()
+        assert restored is not None
+        assert dict(restored) == {
+            "review_status": "superseded",
+            "superseded_by": successor_unit_id,
+            "review_receipt_digest": superseded["review_receipt_digest"],
+        }
+    _assert_equivalent_exports(
+        exported,
+        _export_to(restored_db, tmp_path / "same-user-restored.jsonl"),
+    )
+
+    rebound_db = tmp_path / "cross-user-restored.db"
+    assert (
+        onramp_main(
+            [
+                "import",
+                "--in",
+                str(dump),
+                "--db",
+                str(rebound_db),
+                "--user-id",
+                str(OTHER_USER_ID),
+                "--user-email",
+                "other@alice",
+            ]
+        )
+        == 0
+    )
+    with sqlite_user_connection(rebound_db, OTHER_USER_ID) as conn:
+        rebound = conn.execute(
+            """
+            SELECT review_status, superseded_by, review_receipt_digest
+            FROM occurrence_units
+            WHERE user_id = ?
+            ORDER BY claim_id, claim_ordinal, id
+            """,
+            (str(OTHER_USER_ID),),
+        ).fetchall()
+        assert [dict(row) for row in rebound] == [
+            {
+                "review_status": "candidate",
+                "superseded_by": None,
+                "review_receipt_digest": None,
+            },
+            {
+                "review_status": "candidate",
+                "superseded_by": None,
+                "review_receipt_digest": None,
+            },
+        ]
+
+
+def test_existing_target_rejects_imported_coverage_as_proof_of_local_history(
+    tmp_path,
+) -> None:
+    origin_db = tmp_path / "coverage-origin.db"
+    bootstrap_database(origin_db, user_id=USER_ID, user_email="local@alice")
+    with sqlite_user_connection(origin_db, USER_ID) as conn:
+        store = SQLiteVNextStore(conn, USER_ID)
+        accounting_metadata = _reviewed_no_occurrence_accounting(
+            store,
+            fixture_key="imported-coverage",
+        )
+        coverage = store.ensure_occurrence_coverage(started_at="2020-01-01T00:00:00Z")
+        signed = store.review_occurrence_coverage(
+            coverage_mode="complete_history",
+            historical_review_status="reviewed",
+            coverage_started_at="2020-01-01T00:00:00Z",
+            complete_through="2026-07-24T00:00:00Z",
+            reviewer_id="origin-reviewer",
+            reason="The origin database history was reviewed.",
+            accounting_metadata=accounting_metadata,
+            expected_review_version=int(coverage["review_version"]),
+        )
+        assert signed["review_receipt_digest"] is not None
+    dump = tmp_path / "coverage-only.jsonl"
+    exported = _export_to(origin_db, dump)
+    assert len(exported["occurrence_coverage"]) == 1
+
+    target_db = tmp_path / "existing-target.db"
+    bootstrap_database(target_db, user_id=USER_ID, user_email="local@alice")
+    with sqlite_user_connection(target_db, USER_ID) as conn:
+        target_store = SQLiteVNextStore(conn, USER_ID)
+        local_source = target_store.create_source(
+            {
+                "source_type": "note",
+                "content_hash": "target-local-history",
+                "captured_at": "2019-01-01T00:00:00Z",
+            }
+        )
+        assert target_store.get_occurrence_coverage() is None
+
+    assert (
+        onramp_main(
+            [
+                "import",
+                "--in",
+                str(dump),
+                "--db",
+                str(target_db),
+                "--user-id",
+                str(USER_ID),
+                "--mode",
+                "skip",
+            ]
+        )
+        == 0
+    )
+    with sqlite_user_connection(target_db, USER_ID) as conn:
+        store = SQLiteVNextStore(conn, USER_ID)
+        assert store.get_occurrence_coverage() is None
+        assert store.get_source(str(local_source["id"])) is not None
+
+
+def test_existing_target_graph_merge_invalidates_only_local_coverage_receipt(
+    tmp_path,
+) -> None:
+    origin_db = tmp_path / "origin.db"
+    bootstrap_database(origin_db, user_id=USER_ID, user_email="local@alice")
+    _seed_full_graph(origin_db)
+    dump = tmp_path / "origin.jsonl"
+    _export_to(origin_db, dump)
+
+    target_db = tmp_path / "target.db"
+    bootstrap_database(target_db, user_id=USER_ID, user_email="local@alice")
+    with sqlite_user_connection(target_db, USER_ID) as conn:
+        store = SQLiteVNextStore(conn, USER_ID)
+        accounting_metadata = _reviewed_no_occurrence_accounting(
+            store,
+            fixture_key="target-local-coverage",
+        )
+        local = store.ensure_occurrence_coverage(started_at="2025-01-01T00:00:00Z")
+        local = store.review_occurrence_coverage(
+            coverage_mode="complete_history",
+            historical_review_status="reviewed",
+            coverage_started_at="2025-01-01T00:00:00Z",
+            complete_through="2026-07-24T23:59:59Z",
+            reviewer_id="target-reviewer",
+            reason="The target-local history was reviewed before the merge.",
+            accounting_metadata=accounting_metadata,
+            expected_review_version=int(local["review_version"]),
+        )
+        local_id = str(local["id"])
+
+    assert (
+        onramp_main(
+            [
+                "import",
+                "--in",
+                str(dump),
+                "--db",
+                str(target_db),
+                "--user-id",
+                str(USER_ID),
+                "--mode",
+                "skip",
+            ]
+        )
+        == 0
+    )
+    with sqlite_user_connection(target_db, USER_ID) as conn:
+        store = SQLiteVNextStore(conn, USER_ID)
+        coverage = store.get_occurrence_coverage()
+        assert coverage is not None
+        assert str(coverage["id"]) == local_id
+        assert coverage["coverage_mode"] == "forward_only"
+        assert coverage["historical_review_status"] == "not_reviewed"
+        assert re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z",
+            str(coverage["coverage_started_at"]),
+        )
+        assert coverage["complete_through"] is None
+        assert coverage["review_receipt_digest"] is None
+        imported_disposition = conn.execute(
+            """
+            SELECT review_status, review_receipt_digest
+            FROM occurrence_extraction_dispositions
+            WHERE user_id = ?
+            """,
+            (str(USER_ID),),
+        ).fetchone()
+        assert imported_disposition is not None
+        assert imported_disposition["review_status"] == "candidate"
+        assert imported_disposition["review_receipt_digest"] is None
+
+    before_replay = _export_to(target_db, tmp_path / "before-replay.jsonl")
+    assert (
+        onramp_main(
+            [
+                "import",
+                "--in",
+                str(dump),
+                "--db",
+                str(target_db),
+                "--user-id",
+                str(USER_ID),
+                "--mode",
+                "skip",
+            ]
+        )
+        == 0
+    )
+    after_replay = _export_to(target_db, tmp_path / "after-replay.jsonl")
+    _assert_equivalent_exports(before_replay, after_replay)
+
+
+def test_cross_user_restore_clears_tenant_bound_occurrence_receipts(tmp_path) -> None:
+    origin_db = tmp_path / "origin.db"
+    bootstrap_database(origin_db, user_id=USER_ID, user_email="local@alice")
+    seeded = _seed_full_graph(origin_db)
+    dump = tmp_path / "origin.jsonl"
+    exported = _export_to(origin_db, dump)
+    assert exported["occurrence_coverage"][0]["review_receipt_digest"] is not None
+    assert all(row["review_receipt_digest"] is not None for row in exported["occurrence_claim"])
+    assert exported["occurrence_unit"][0]["review_receipt_digest"] is not None
+    assert all(row["review_receipt_digest"] is not None for row in exported["occurrence_evidence"])
+    assert exported["occurrence_extraction_disposition"][0]["review_receipt_digest"] is not None
+
+    restored_db = tmp_path / "rebound.db"
+    assert (
+        onramp_main(
+            [
+                "import",
+                "--in",
+                str(dump),
+                "--db",
+                str(restored_db),
+                "--user-id",
+                str(OTHER_USER_ID),
+                "--user-email",
+                "other@alice",
+            ]
+        )
+        == 0
+    )
+    with sqlite_user_connection(restored_db, OTHER_USER_ID) as conn:
+        store = SQLiteVNextStore(conn, OTHER_USER_ID)
+        coverage = store.get_occurrence_coverage()
+        assert coverage is not None
+        assert coverage["coverage_mode"] == "forward_only"
+        assert coverage["historical_review_status"] == "not_reviewed"
+        assert coverage["complete_through"] is None
+        assert coverage["review_version"] == 0
+        assert coverage["review_receipt_digest"] is None
+        claims = conn.execute(
+            """
+            SELECT id, resolution_status, review_status, resolved_occurrence_id,
+                   reviewed_at, reviewer_id, review_reason, review_version,
+                   review_receipt_digest
+            FROM occurrence_claims
+            WHERE user_id = ?
+            ORDER BY id
+            """,
+            (str(OTHER_USER_ID),),
+        ).fetchall()
+        assert len(claims) == 2
+        assert all(
+            {
+                "resolution_status": row["resolution_status"],
+                "review_status": row["review_status"],
+                "resolved_occurrence_id": row["resolved_occurrence_id"],
+                "reviewed_at": row["reviewed_at"],
+                "reviewer_id": row["reviewer_id"],
+                "review_reason": row["review_reason"],
+                "review_version": row["review_version"],
+                "review_receipt_digest": row["review_receipt_digest"],
+            }
+            == {
+                "resolution_status": "pending",
+                "review_status": "candidate",
+                "resolved_occurrence_id": None,
+                "reviewed_at": None,
+                "reviewer_id": None,
+                "review_reason": None,
+                "review_version": 0,
+                "review_receipt_digest": None,
+            }
+            for row in claims
+        )
+        unit = conn.execute(
+            """
+            SELECT review_status, reviewed_at, reviewer_id, review_reason,
+                   review_version, reviewed_evidence_count,
+                   reviewed_evidence_digest, review_receipt_digest,
+                   review_receipt_action, superseded_by, retired_at, retired_by,
+                   retirement_reason
+            FROM occurrence_units
+            WHERE user_id = ?
+            """,
+            (str(OTHER_USER_ID),),
+        ).fetchone()
+        assert unit is not None
+        assert dict(unit) == {
+            "review_status": "candidate",
+            "reviewed_at": None,
+            "reviewer_id": None,
+            "review_reason": None,
+            "review_version": 0,
+            "reviewed_evidence_count": 0,
+            "reviewed_evidence_digest": None,
+            "review_receipt_digest": None,
+            "review_receipt_action": None,
+            "superseded_by": None,
+            "retired_at": None,
+            "retired_by": None,
+            "retirement_reason": None,
+        }
+        evidence = conn.execute(
+            """
+            SELECT review_status, reviewed_at, reviewer_id, review_reason,
+                   review_receipt_digest, review_receipt_action,
+                   unit_review_receipt_digest
+            FROM occurrence_evidence
+            WHERE user_id = ?
+            ORDER BY id
+            """,
+            (str(OTHER_USER_ID),),
+        ).fetchall()
+        assert len(evidence) == 2
+        assert all(
+            dict(row)
+            == {
+                "review_status": "candidate",
+                "reviewed_at": None,
+                "reviewer_id": None,
+                "review_reason": None,
+                "review_receipt_digest": None,
+                "review_receipt_action": None,
+                "unit_review_receipt_digest": None,
+            }
+            for row in evidence
+        )
+        disposition = conn.execute(
+            """
+            SELECT review_status, reviewed_at, reviewer_id, review_reason,
+                   review_version, review_receipt_digest
+            FROM occurrence_extraction_dispositions
+            WHERE user_id = ?
+            """,
+            (str(OTHER_USER_ID),),
+        ).fetchone()
+        assert disposition is not None
+        assert dict(disposition) == {
+            "review_status": "candidate",
+            "reviewed_at": None,
+            "reviewer_id": None,
+            "review_reason": None,
+            "review_version": 0,
+            "review_receipt_digest": None,
+        }
+        assert (
+            store.search_accepted_occurrence_units(
+                query="portable round trip",
+                domains=["project"],
+                sensitivity_allowed=["internal"],
+            )
+            == []
+        )
+
+        owner_claim = store.review_occurrence_claim(
+            claim_id=str(seeded["occurrence_claim"]["id"]),
+            resolution_status="resolved",
+            resolution_decision="new",
+            identity_basis="exact_time",
+            reviewer_id="new-owner-reviewer",
+            reason="The rebound owner re-reviewed the original occurrence claim.",
+        )
+        assert owner_claim["review_status"] == "accepted"
+        accepted_unit = store.review_occurrence_unit(
+            occurrence_id=str(seeded["occurrence_unit"]["id"]),
+            action="accepted",
+            reviewer_id="new-owner-reviewer",
+            reason="The rebound owner re-reviewed the occurrence evidence.",
+        )
+        assert accepted_unit["review_status"] == "accepted"
+        found = store.search_accepted_occurrence_units(
+            query="portable round trip",
+            domains=["project"],
+            sensitivity_allowed=["internal"],
+        )
+        assert [str(row["id"]) for row in found] == [str(seeded["occurrence_unit"]["id"])]
+
+        linked_claim = store.review_occurrence_claim(
+            claim_id=str(seeded["linked_occurrence_claim"]["id"]),
+            resolution_status="resolved",
+            resolution_decision="link_existing",
+            identity_basis="exact_time",
+            reviewer_id="new-owner-reviewer",
+            reason="The rebound owner re-reviewed the repeated mention.",
+            resolved_occurrence_id=str(seeded["occurrence_unit"]["id"]),
+        )
+        assert linked_claim["review_status"] == "accepted"
+        refreshed_unit = store.refresh_occurrence_unit_evidence(
+            occurrence_id=str(seeded["occurrence_unit"]["id"]),
+            reviewer_id="new-owner-reviewer",
+            reason="The rebound owner signed the complete evidence set.",
+            expected_review_version=int(accepted_unit["review_version"]),
+        )
+        assert refreshed_unit["review_version"] == 2
+        signed_evidence = conn.execute(
+            """
+            SELECT review_status, reviewer_id, review_receipt_digest,
+                   unit_review_receipt_digest
+            FROM occurrence_evidence
+            WHERE user_id = ?
+            ORDER BY id
+            """,
+            (str(OTHER_USER_ID),),
+        ).fetchall()
+        assert len(signed_evidence) == 2
+        assert all(row["review_status"] == "accepted" for row in signed_evidence)
+        assert all(row["reviewer_id"] == "new-owner-reviewer" for row in signed_evidence)
+        assert all(row["review_receipt_digest"] is not None for row in signed_evidence)
+        assert all(
+            row["unit_review_receipt_digest"] == refreshed_unit["review_receipt_digest"] for row in signed_evidence
+        )
 
 
 def test_import_decodes_each_jsonl_envelope_exactly_once(tmp_path, monkeypatch) -> None:
@@ -3253,6 +4087,77 @@ def test_export_has_versioned_schema_and_verified_integrity_metadata(tmp_path) -
         record_type: len(exported.get(record_type, [])) for record_type in ALL_RECORD_TYPES
     }
     assert len(footer["record"]["sha256"]) == 64
+
+
+def test_import_accepts_pre_occurrence_versioned_export_schema(tmp_path) -> None:
+    origin_db = tmp_path / "origin.db"
+    bootstrap_database(origin_db, user_id=USER_ID, user_email="local@alice")
+    _seed_full_graph(origin_db)
+    current_dump = tmp_path / "current.jsonl"
+    _export_to(origin_db, current_dump)
+
+    envelopes = [json.loads(line) for line in current_dump.read_text(encoding="utf-8").splitlines()]
+    header = envelopes[0]
+    header["record"]["schema"] = onramp_module._PRE_OCCURRENCE_EXPORT_SCHEMA
+    old_record_types = set(onramp_module._PRE_OCCURRENCE_RECORD_SPECS)
+    data = [envelope for envelope in envelopes[1:-1] if envelope["record_type"] in old_record_types]
+    digest = hashlib.sha256()
+    for envelope in data:
+        digest.update(
+            (
+                onramp_module._export_line(
+                    str(envelope["record_type"]),
+                    envelope["record"],
+                )
+                + "\n"
+            ).encode("utf-8")
+        )
+    counts = {
+        record_type: sum(envelope["record_type"] == record_type for envelope in data)
+        for record_type in onramp_module._PRE_OCCURRENCE_RECORD_SPECS
+    }
+    footer = {
+        "record_type": "export_footer",
+        "record": {
+            "format": header["record"]["format"],
+            "format_version": header["record"]["format_version"],
+            "record_count": len(data),
+            "record_counts": counts,
+            "sha256": digest.hexdigest(),
+        },
+    }
+    old_dump = tmp_path / "pre-occurrence.jsonl"
+    old_dump.write_text(
+        "".join(
+            json.dumps(
+                envelope,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
+            + "\n"
+            for envelope in (header, *data, footer)
+        ),
+        encoding="utf-8",
+    )
+
+    restored = tmp_path / "restored.db"
+    assert (
+        onramp_main(
+            [
+                "import",
+                "--in",
+                str(old_dump),
+                "--db",
+                str(restored),
+                "--user-id",
+                str(USER_ID),
+            ]
+        )
+        == 0
+    )
+    restored_export = _export_to(restored, tmp_path / "restored.jsonl")
+    assert set(restored_export) == old_record_types
 
 
 def test_export_uses_one_consistent_snapshot_during_concurrent_writes(tmp_path, monkeypatch) -> None:

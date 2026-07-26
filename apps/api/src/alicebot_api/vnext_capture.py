@@ -26,6 +26,11 @@ from alicebot_api.vnext_entities import (
     store_supports_entity_linking,
 )
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_occurrence_write import (
+    establish_source_chunk_occurrences,
+    invalidate_occurrence_accounting,
+    reconcile_chunk_extraction_disposition,
+)
 from alicebot_api.vnext_project_scope import (
     normalize_project_scope,
     project_scope_identity,
@@ -337,6 +342,7 @@ def _strip_markdown_prefix(line: str) -> str:
 
 USER_ASSERTED_VALUE_CONFIDENCE = 0.72
 USER_ASSERTED_VALUE_RULE = "user_asserted_value"
+USER_COMPLETED_EVENT_RULE = "user_completed_event"
 
 
 def _annotate_candidate_provenance(candidate: CaptureCandidate) -> CaptureCandidate:
@@ -395,18 +401,19 @@ def _candidate_from_line(line: str, *, source_chunk_id: str, source_chunk_index:
     role = derive_speaker_role(normalized)
     if role != PROVENANCE_ROLE_USER:
         return None
-    if classify_assertion(normalized, role) != ASSERTION_CLASS_USER_ASSERTED:
-        return None
-    return CaptureCandidate(
-        text=normalized,
-        memory_type="semantic",
-        source_chunk_id=source_chunk_id,
-        source_chunk_index=source_chunk_index,
-        confidence=USER_ASSERTED_VALUE_CONFIDENCE,
-        extraction_rule=USER_ASSERTED_VALUE_RULE,
-        provenance_role=role,
-        assertion_class=ASSERTION_CLASS_USER_ASSERTED,
-    )
+    assertion_class = classify_assertion(normalized, role)
+    if assertion_class == ASSERTION_CLASS_USER_ASSERTED:
+        return CaptureCandidate(
+            text=normalized,
+            memory_type="semantic",
+            source_chunk_id=source_chunk_id,
+            source_chunk_index=source_chunk_index,
+            confidence=USER_ASSERTED_VALUE_CONFIDENCE,
+            extraction_rule=USER_ASSERTED_VALUE_RULE,
+            provenance_role=role,
+            assertion_class=ASSERTION_CLASS_USER_ASSERTED,
+        )
+    return None
 
 
 def _base_candidate_from_line(line: str, *, source_chunk_id: str, source_chunk_index: int) -> CaptureCandidate | None:
@@ -472,19 +479,34 @@ def extract_candidate_memories(chunks: list[JsonObject]) -> list[CaptureCandidat
             raise VNextCaptureValidationError("source chunk index must be an integer")
         chunk_index = chunk_index_value
         text = str(chunk["text"])
+        active_speaker_role: str | None = None
         for line in text.splitlines():
+            normalized_line = _strip_markdown_prefix(line)
+            if not normalized_line.strip():
+                active_speaker_role = None
+                continue
+            line_role = derive_speaker_role(normalized_line)
+            if line_role is not None:
+                active_speaker_role = line_role
             candidate = _candidate_from_line(
                 line,
                 source_chunk_id=chunk_id,
                 source_chunk_index=chunk_index,
             )
-            if candidate is None:
-                continue
-            dedupe_key = f"{candidate.memory_type}:{candidate.text.casefold()}"
-            if dedupe_key in seen:
-                continue
-            candidates.append(candidate)
-            seen.add(dedupe_key)
+            if candidate is not None:
+                if candidate.provenance_role is None and active_speaker_role is not None:
+                    candidate = replace(
+                        candidate,
+                        provenance_role=active_speaker_role,
+                        assertion_class=classify_assertion(
+                            candidate.text,
+                            active_speaker_role,
+                        ),
+                    )
+                dedupe_key = f"{candidate.memory_type}:{candidate.text.casefold()}"
+                if dedupe_key not in seen:
+                    candidates.append(candidate)
+                    seen.add(dedupe_key)
     return candidates
 
 
@@ -936,6 +958,21 @@ class VNextCaptureService:
                     duplicate=True,
                 )
 
+            invalidate_occurrence_accounting(
+                self.store,
+                reason="Source capture changed occurrence extraction accounting.",
+                actor_type=self.actor_type,
+                actor_id=self.actor_id,
+                effective_at=(
+                    source_input.source_created_at
+                    or source_input.captured_at
+                    or (
+                        str(source_input.metadata_json["session_date"])
+                        if source_input.metadata_json.get("session_date") is not None
+                        else None
+                    )
+                ),
+            )
             source_record: JsonObject = {
                 "source_type": source_input.source_type,
                 "title": source_input.title,
@@ -1039,6 +1076,13 @@ class VNextCaptureService:
                 target_id=source_id,
                 payload={"content_hash": content_hash, "chunk_count": len(chunk_rows)},
             )
+            for chunk_row in chunk_rows:
+                establish_source_chunk_occurrences(
+                    self.store,
+                    source=source,
+                    source_chunk=chunk_row,
+                    actor_type=self.actor_type,
+                )
 
             candidates = self._drop_cross_batch_user_asserted_duplicates(
                 extract_candidate_memories(chunk_rows),
@@ -1101,7 +1145,6 @@ class VNextCaptureService:
                     },
                     actor_type=self.actor_type,
                 )
-                memory_rows.append(memory)
                 self.store.create_provenance_link(
                     {
                         "target_type": "memory",
@@ -1114,6 +1157,7 @@ class VNextCaptureService:
                     },
                     actor_type=self.actor_type,
                 )
+                memory_rows.append(memory)
                 self._log_event(
                     event_type="memory.candidate_created",
                     target_type="memory",
@@ -1124,6 +1168,15 @@ class VNextCaptureService:
                         "memory_type": candidate.memory_type,
                         "confidence": candidate.confidence,
                     },
+                )
+
+            # Account for every current source chunk, including zero-candidate
+            # chunks. Review surfaces sign only fully resolved dispositions.
+            for chunk_row in chunk_rows:
+                reconcile_chunk_extraction_disposition(
+                    self.store,
+                    source_chunk_id=str(chunk_row["id"]),
+                    actor_type=self.actor_type,
                 )
 
             deferred_embedding_inputs = tuple(DeferredMemoryEmbedding.from_memory(memory) for memory in memory_rows)

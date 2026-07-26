@@ -27,6 +27,11 @@ from alicebot_api.vnext_capture import (
     raw_text_sha256,
 )
 from alicebot_api.vnext_entities import ENTITY_MENTION_EDGE_TYPE
+from alicebot_api.vnext_occurrence_write import (
+    OCCURRENCE_EXTRACTOR_VERSION,
+    OCCURRENCE_PROPOSAL_METADATA_KEY,
+    review_source_chunk_occurrences,
+)
 from alicebot_api.vnext_project_scope import memory_project_scope
 
 
@@ -927,6 +932,200 @@ def test_user_asserted_value_line_captures_with_provenance() -> None:
     assert candidate.provenance_role == "user"
     assert candidate.assertion_class == "user_asserted"
     assert candidate.confidence == USER_ASSERTED_VALUE_CONFIDENCE
+
+
+def test_plain_tagged_user_completed_event_uses_the_source_review_pipeline() -> None:
+    store = _sqlite_store()
+    result = VNextCaptureService(store).capture_source(
+        SourceCaptureInput(
+            source_type="conversation",
+            raw_text="[USER]: I baked cookies last Thursday.",
+            metadata_json={"session_date": "2026-07-24T12:00:00Z"},
+        )
+    )
+    chunk = store.list_source_chunks(str(result.source_id))[0]
+    claims = store.list_occurrence_claims_for_source_chunk(
+        str(chunk["id"]),
+        limit=201,
+    )
+
+    assert result.candidate_memory_count == 0
+    assert len(claims) == 1
+    assert claims[0]["count_key"] == "baked cookies"
+    assert len(store.list_occurrence_units_for_claim(str(claims[0]["id"]))) == 1
+
+
+def test_plain_tagged_assistant_completed_event_gets_no_new_candidate_rule() -> None:
+    candidates = extract_candidate_memories(
+        [
+            {
+                "id": "chunk-0",
+                "chunk_index": 0,
+                "text": "[ASSISTANT]: I baked cookies last Thursday.",
+            }
+        ]
+    )
+
+    assert candidates == []
+
+
+def test_user_declarative_plus_question_keeps_question_candidate_shape() -> None:
+    candidates = extract_candidate_memories(
+        [
+            {
+                "id": "chunk-0",
+                "chunk_index": 0,
+                "text": "[USER]: I baked cookies last Thursday. Should I make more?",
+            }
+        ]
+    )
+
+    assert [candidate.memory_type for candidate in candidates] == ["question"]
+    assert candidates[0].extraction_rule == "question_sentence"
+    assert candidates[0].provenance_role == "user"
+    assert not hasattr(candidates[0], "occurrence_candidate_texts")
+
+
+def test_multi_sentence_user_turn_keeps_retrieval_carrier_and_splits_event_carriers() -> None:
+    candidates = extract_candidate_memories(
+        [
+            {
+                "id": "chunk-0",
+                "chunk_index": 0,
+                "text": (
+                    "[USER]: I baked cookies last Thursday. "
+                    "I attended a dinner party on Friday. "
+                    "Do you have any recipe ideas?"
+                ),
+            }
+        ]
+    )
+
+    assert [candidate.text for candidate in candidates] == [
+        ("[USER]: I baked cookies last Thursday. I attended a dinner party on Friday. Do you have any recipe ideas?"),
+    ]
+    assert not hasattr(candidates[0], "occurrence_candidate_texts")
+
+
+def test_multi_sentence_occurrences_share_one_retrieval_memory_end_to_end() -> None:
+    store = _sqlite_store()
+    result = VNextCaptureService(store).capture_source(
+        SourceCaptureInput(
+            source_type="conversation",
+            raw_text=(
+                "[USER]: I baked cookies on March 3, 2026. "
+                "I attended a dinner party on March 4, 2026. "
+                "Do you have any recipe ideas?"
+            ),
+            metadata_json={"session_date": "2026-03-05T12:00:00Z"},
+        )
+    )
+
+    memories = store.list_memories(status="candidate")
+    assert result.candidate_memory_count == 1
+    assert len(memories) == 1
+    metadata = memories[0]["metadata_json"]
+    assert isinstance(metadata, dict)
+    assert "occurrence_proposals" not in metadata
+    assert OCCURRENCE_PROPOSAL_METADATA_KEY not in metadata
+    chunk = store.list_source_chunks(str(result.source_id))[0]
+    chunk_id = str(chunk["id"])
+    claims = store.list_occurrence_claims_for_source_chunk(
+        chunk_id,
+        limit=201,
+    )
+    assert {claim["count_key"] for claim in claims} == {
+        "attended party",
+        "baked cookies",
+    }
+    assert all(len(store.list_occurrence_units_for_claim(str(claim["id"]))) == 1 for claim in claims)
+    reviewed_ids = review_source_chunk_occurrences(
+        store,
+        source_chunk_id=chunk_id,
+        reviewer_id="reviewer-1",
+        reason="Reviewed both source-carried occurrences.",
+        actor_type="user",
+    )
+    assert set(reviewed_ids) == {str(claim["id"]) for claim in claims}
+    reviewed_claims = store.list_occurrence_claims_for_source_chunk(
+        chunk_id,
+        limit=201,
+    )
+    assert {claim["review_status"] for claim in reviewed_claims} == {"accepted"}
+    assert all(
+        {unit["review_status"] for unit in store.list_occurrence_units_for_claim(str(claim["id"]))} == {"accepted"}
+        for claim in reviewed_claims
+    )
+    summary = store.summarize_occurrence_extraction_accounting(
+        extractor_version=OCCURRENCE_EXTRACTOR_VERSION,
+        source_ids=[str(result.source_id)],
+    )
+    assert summary["complete"] is True
+    assert summary["items"][0]["disposition"] == "accepted_occurrences"
+    assert summary["items"][0]["review_status"] == "accepted"
+
+
+def test_present_stative_need_does_not_create_an_occurrence_sentence_carrier() -> None:
+    candidates = extract_candidate_memories(
+        [
+            {
+                "id": "chunk-0",
+                "chunk_index": 0,
+                "text": "[USER]: I need a recipe. I baked bread yesterday.",
+            }
+        ]
+    )
+
+    assert [candidate.text for candidate in candidates] == [
+        "[USER]: I need a recipe. I baked bread yesterday.",
+    ]
+    assert not hasattr(candidates[0], "occurrence_candidate_texts")
+
+
+@pytest.mark.parametrize(
+    ("speaker", "expected_role"),
+    [("ASSISTANT", "assistant"), ("USER", "user")],
+)
+def test_multiline_speaker_role_carries_to_prefixed_continuation_candidate(
+    speaker: str,
+    expected_role: str,
+) -> None:
+    candidates = extract_candidate_memories(
+        [
+            {
+                "id": "chunk-0",
+                "chunk_index": 0,
+                "text": (f"[{speaker}]: Here is a summary:\nHappened: I visited the museum on March 3, 2026."),
+            }
+        ]
+    )
+    candidate = next(row for row in candidates if row.text.startswith("I visited"))
+
+    assert candidate.provenance_role == expected_role
+    assert candidate.text == "I visited the museum on March 3, 2026."
+
+
+@pytest.mark.parametrize(
+    "speaker",
+    ["ASSISTANT", "USER"],
+)
+def test_multiline_speaker_role_does_not_promote_an_untagged_continuation(
+    speaker: str,
+) -> None:
+    store = _sqlite_store()
+    result = VNextCaptureService(store).capture_source(
+        SourceCaptureInput(
+            source_type="conversation",
+            raw_text=(f"[{speaker}]: Here is a summary:\nHappened: I visited the museum on March 3, 2026."),
+            metadata_json={"session_date": "2026-03-10T12:00:00Z"},
+        )
+    )
+    chunk = store.list_source_chunks(str(result.source_id))[0]
+    claims = store.list_occurrence_claims_for_source_chunk(
+        str(chunk["id"]),
+        limit=201,
+    )
+    assert claims == []
 
 
 def test_assistant_estimate_still_captures_with_unchanged_legacy_confidence() -> None:

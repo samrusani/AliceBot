@@ -48,6 +48,26 @@ from uuid import uuid4
 # so it calls the pure candidate finder directly instead of
 # generate_contradiction_report (which persists edges/artifacts/events).
 from alicebot_api import vnext_contradictions
+from alicebot_api import vnext_occurrences
+from alicebot_api.vnext_occurrence_retrieval import (
+    OccurrenceRetrievalMixin,
+    _OCCURRENCE_LEXICAL_TOKEN_PATTERN as _OCCURRENCE_LEXICAL_TOKEN_PATTERN,
+    _OCCURRENCE_QUERY_DETERMINERS as _OCCURRENCE_QUERY_DETERMINERS,
+    _OCCURRENCE_QUERY_GRAMMAR_PREFIX as _OCCURRENCE_QUERY_GRAMMAR_PREFIX,
+    _OCCURRENCE_QUERY_OBJECT_DETERMINERS as _OCCURRENCE_QUERY_OBJECT_DETERMINERS,
+    _OCCURRENCE_QUERY_OBJECT_PREPOSITIONS as _OCCURRENCE_QUERY_OBJECT_PREPOSITIONS,
+    _OCCURRENCE_QUERY_UNSUPPORTED_SHAPE as _OCCURRENCE_QUERY_UNSUPPORTED_SHAPE,
+    _OCCURRENCE_QUERY_WORD as _OCCURRENCE_QUERY_WORD,
+    _OccurrenceQueryPlan as _OccurrenceQueryPlan,
+    _OccurrenceReaderRows as _OccurrenceReaderRows,
+    _occurrence_query_has_unsupported_polarity as _occurrence_query_has_unsupported_polarity,
+    _occurrence_query_matches_count_key as _occurrence_query_matches_count_key,
+    _occurrence_query_object as _occurrence_query_object,
+    _occurrence_query_plan as _occurrence_query_plan,
+    _occurrence_query_supports_signed_count as _occurrence_query_supports_signed_count,
+    _occurrence_query_without_anchor as _occurrence_query_without_anchor,
+    _occurrence_token_root as _occurrence_token_root,
+)
 
 # Coverage mode (aggregation-shaped queries): pure detection, clause
 # decomposition, source near-duplicate demotion, and accepted roll-up card
@@ -82,6 +102,16 @@ from alicebot_api.vnext_embeddings import (
     get_embedding_provider,
 )
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_occurrence_predicates import (
+    OCCURRENCE_AGGREGATION_SCHEMA,
+    canonicalize_occurrence_predicate,
+    occurrence_claim_facts_digest,
+)
+from alicebot_api.vnext_occurrence_taxonomy import (
+    build_occurrence_predicate_atom,
+    canonical_action_leaf,
+    canonical_object_leaf,
+)
 from alicebot_api.vnext_grounding import compute_query_grounding
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_project_scope import (
@@ -106,6 +136,7 @@ from alicebot_api.vnext_temporal_query import (
 
 
 logger = logging.getLogger(__name__)
+
 
 class QueryInterpretation(TypedDict):
     query: str
@@ -141,6 +172,15 @@ SCOPED_ROW_OVERFETCH_LIMIT = 200
 # SQL, while an adapter that cannot prove exhaustion before the boundary fails
 # closed instead of doubling forever or silently returning an incomplete pack.
 LEGACY_SCOPED_SCAN_MAX_ROWS = 16_384
+# Phase 6 occurrence reads are keyset-paged to an independently disclosed
+# proof boundary. Reaching the boundary never earns an exact answer.
+OCCURRENCE_SEARCH_PAGE_LIMIT = 200
+OCCURRENCE_SEARCH_MAX_UNITS = 10_000
+OCCURRENCE_EVIDENCE_BATCH_LIMIT = 200
+OCCURRENCE_EVIDENCE_PAGE_LIMIT = 200
+OCCURRENCE_EVIDENCE_MAX_ROWS = 10_000
+OCCURRENCE_UNRESOLVED_PAGE_LIMIT = 200
+OCCURRENCE_UNRESOLVED_MAX_CLAIMS = 10_000
 DEFAULT_SENSITIVITY_ALLOWED = ("public", "internal", "private", "unknown")
 STRATEGIC_QUERY_TYPES = {"strategic_synthesis", "contradiction_check", "project_status", "agent_context"}
 RRF_K = 60
@@ -333,11 +373,45 @@ SOURCE_EVENT_METADATA_KEYS = CONTENT_EVENT_METADATA_KEYS
 # first or last token is one of these never name an entity on their own.
 ENTITY_NAME_STOPWORDS = frozenset(
     {
-        "a", "an", "and", "are", "about", "at", "be", "by", "did", "do",
-        "does", "for", "from", "how", "i", "in", "is", "it", "me", "my",
-        "of", "on", "or", "our", "should", "that", "the", "this", "to",
-        "was", "we", "were", "what", "when", "where", "which", "who",
-        "with", "your",
+        "a",
+        "an",
+        "and",
+        "are",
+        "about",
+        "at",
+        "be",
+        "by",
+        "did",
+        "do",
+        "does",
+        "for",
+        "from",
+        "how",
+        "i",
+        "in",
+        "is",
+        "it",
+        "me",
+        "my",
+        "of",
+        "on",
+        "or",
+        "our",
+        "should",
+        "that",
+        "the",
+        "this",
+        "to",
+        "was",
+        "we",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "with",
+        "your",
     }
 )
 # Bound on candidate names per query so the single find_entities_by_names
@@ -555,9 +629,7 @@ def _contains_domain_cue(query: str, cue: str) -> bool:
 
 def _validate_choice(value: str, *, field_name: str, choices: tuple[str, ...]) -> None:
     if value not in choices:
-        raise VNextRetrievalValidationError(
-            f"{field_name} must be one of: {', '.join(choices)} (got {value!r})"
-        )
+        raise VNextRetrievalValidationError(f"{field_name} must be one of: {', '.join(choices)} (got {value!r})")
 
 
 def _resolve_section_flags(request: VNextRetrievalRequest, *, query_type: str) -> tuple[bool, bool]:
@@ -635,15 +707,9 @@ def classify_query(request: VNextRetrievalRequest) -> QueryInterpretation:
 
 def _infer_domains(lowered_query: str) -> list[str]:
     domains: list[str] = []
-    if any(
-        _contains_domain_cue(lowered_query, cue)
-        for cue in ("alice", "project", "roadmap", "sprint", "build")
-    ):
+    if any(_contains_domain_cue(lowered_query, cue) for cue in ("alice", "project", "roadmap", "sprint", "build")):
         domains.extend(["project", "professional"])
-    if any(
-        _contains_domain_cue(lowered_query, cue)
-        for cue in ("family", "health", "spiritual", "legal")
-    ):
+    if any(_contains_domain_cue(lowered_query, cue) for cue in ("family", "health", "spiritual", "legal")):
         domains.append("personal")
     return list(dict.fromkeys(domains))
 
@@ -682,19 +748,12 @@ class _ResolvedRetrievalScope:
 
     @property
     def active(self) -> bool:
-        return bool(
-            self.projects
-            or self.people
-            or self.window_start is not None
-            or self.window_end is not None
-        )
+        return bool(self.projects or self.people or self.window_start is not None or self.window_end is not None)
 
 
 def _normalized_scope_values(values: Sequence[str], *, field_name: str) -> frozenset[str]:
     if len(values) > MAX_CONTEXT_SCOPE_VALUES:
-        raise VNextRetrievalValidationError(
-            f"{field_name} is limited to {MAX_CONTEXT_SCOPE_VALUES} values"
-        )
+        raise VNextRetrievalValidationError(f"{field_name} is limited to {MAX_CONTEXT_SCOPE_VALUES} values")
     normalized = frozenset(value.strip().casefold() for value in values if value.strip())
     if any(len(value) > 200 for value in normalized):
         raise VNextRetrievalValidationError(f"{field_name} values must be at most 200 characters")
@@ -703,9 +762,7 @@ def _normalized_scope_values(values: Sequence[str], *, field_name: str) -> froze
 
 def _resolve_retrieval_scope(request: VNextRetrievalRequest) -> _ResolvedRetrievalScope:
     if len(request.projects) > MAX_CONTEXT_SCOPE_VALUES:
-        raise VNextRetrievalValidationError(
-            f"projects is limited to {MAX_CONTEXT_SCOPE_VALUES} values"
-        )
+        raise VNextRetrievalValidationError(f"projects is limited to {MAX_CONTEXT_SCOPE_VALUES} values")
     projects = frozenset(project_scope_identity(request.projects))
     if any(len(value) > 200 for value in projects):
         raise VNextRetrievalValidationError("projects values must be at most 200 characters")
@@ -720,14 +777,10 @@ def _resolve_retrieval_scope(request: VNextRetrievalRequest) -> _ResolvedRetriev
         )
     match = _TIME_WINDOW_PATTERN.fullmatch(raw_window)
     if match is None:
-        raise VNextRetrievalValidationError(
-            "time_window must be 'all' or a positive day window such as '7d' or '30d'"
-        )
+        raise VNextRetrievalValidationError("time_window must be 'all' or a positive day window such as '7d' or '30d'")
     days = int(match.group("days"))
     if days > MAX_TIME_WINDOW_DAYS:
-        raise VNextRetrievalValidationError(
-            f"time_window must not exceed {MAX_TIME_WINDOW_DAYS}d"
-        )
+        raise VNextRetrievalValidationError(f"time_window must not exceed {MAX_TIME_WINDOW_DAYS}d")
     window_end = parse_event_datetime(
         request.reference_time if request.reference_time is not None else datetime.now(UTC)
     )
@@ -807,11 +860,7 @@ def _row_matches_scope(
     person_linked_memory_ids: frozenset[str] = frozenset(),
     source_scope_envelope: bool = False,
 ) -> bool:
-    project_scope = (
-        _source_project_scope_values(row)
-        if source_scope_envelope
-        else _row_project_scope_values(row)
-    )
+    project_scope = _source_project_scope_values(row) if source_scope_envelope else _row_project_scope_values(row)
     if scope.projects and not (project_scope & scope.projects):
         return False
     if scope.people:
@@ -909,8 +958,7 @@ def _fetch_filtered_prefix(
             )
         if limit >= LEGACY_SCOPED_SCAN_MAX_ROWS:
             raise VNextRetrievalCompletenessError(
-                "legacy scoped retrieval adapter did not prove exhaustion within "
-                f"{LEGACY_SCOPED_SCAN_MAX_ROWS} rows"
+                f"legacy scoped retrieval adapter did not prove exhaustion within {LEGACY_SCOPED_SCAN_MAX_ROWS} rows"
             )
         previous_unique_count = len(rows)
         limit = min(limit * 2, LEGACY_SCOPED_SCAN_MAX_ROWS)
@@ -1053,19 +1101,14 @@ def _graph_memory_admissible(
         return False
     if run_id is not None and row.get("run_id") != run_id:
         return False
-    if scope_thread_id is not None and scope_thread_id.casefold() not in _row_scope_values(
-        row, ("thread_id",)
-    ):
+    if scope_thread_id is not None and scope_thread_id.casefold() not in _row_scope_values(row, ("thread_id",)):
         return False
-    if scope_task_id is not None and scope_task_id.casefold() not in _row_scope_values(
-        row, ("task_id",)
-    ):
+    if scope_task_id is not None and scope_task_id.casefold() not in _row_scope_values(row, ("task_id",)):
         return False
     if scope_people:
         requested_people = {person.strip().casefold() for person in scope_people if person.strip()}
-        if (
-            str(row.get("id")) not in scope_person_memory_ids
-            and not (_row_scope_values(row, _PEOPLE_SCOPE_KEYS) & requested_people)
+        if str(row.get("id")) not in scope_person_memory_ids and not (
+            _row_scope_values(row, _PEOPLE_SCOPE_KEYS) & requested_people
         ):
             return False
     if scope_window_start is not None or scope_window_end is not None:
@@ -1176,7 +1219,19 @@ def _fused_candidates(
 
 
 def _compact_item(item: JsonObject) -> JsonObject:
-    return {key: value for key, value in item.items() if key != "deleted_at"}
+    compact = {key: value for key, value in item.items() if key != "deleted_at"}
+    metadata = compact.get("metadata_json")
+    if isinstance(metadata, Mapping):
+        public_metadata = dict(metadata)
+        for key in (
+            "occurrence_candidate_texts",
+            "occurrence_proposal",
+            "occurrence_proposals",
+            "occurrence_invalidation",
+        ):
+            public_metadata.pop(key, None)
+        compact["metadata_json"] = public_metadata
+    return compact
 
 
 def estimate_item_tokens(item: JsonObject) -> int:
@@ -1215,9 +1270,7 @@ class _TokenBudget:
     def admit(self, item: JsonObject, *, section: str) -> bool:
         self.open_section(section)
         cost = estimate_item_tokens(item)
-        if self.truncated or (
-            self.token_budget is not None and self.token_estimate + cost > self.token_budget
-        ):
+        if self.truncated or (self.token_budget is not None and self.token_estimate + cost > self.token_budget):
             self.truncated = True
             self.dropped_item_count += 1
             return False
@@ -1481,7 +1534,7 @@ def _apply_budget_exclusions(
     return updated
 
 
-class VNextRetrievalService:
+class VNextRetrievalService(OccurrenceRetrievalMixin):
     def __init__(
         self,
         store: VNextRetrievalStore,
@@ -1494,9 +1547,7 @@ class VNextRetrievalService:
         # ---- reranker (disclosed precision stage) begin -------------------
         # None (no env config, no injected provider) keeps the rerank stage
         # dormant: the marked block in compile_context_pack never runs.
-        self.reranker_provider = (
-            reranker_provider if reranker_provider is not None else get_reranker_provider()
-        )
+        self.reranker_provider = reranker_provider if reranker_provider is not None else get_reranker_provider()
         # ---- reranker (disclosed precision stage) end ---------------------
 
     def _memory_entity_edges(self, entity_ids: Sequence[str]) -> list[JsonObject]:
@@ -1565,9 +1616,7 @@ class VNextRetrievalService:
                 grouped.setdefault(str(row.get("target_id")), []).append(row)
             return grouped
         for target_id in normalized_ids:
-            grouped[target_id] = list(
-                self.store.list_provenance_links(target_type=target_type, target_id=target_id)
-            )
+            grouped[target_id] = list(self.store.list_provenance_links(target_type=target_type, target_id=target_id))
         return grouped
 
     def _person_linked_memory_ids(self, people: frozenset[str]) -> frozenset[str]:
@@ -1675,20 +1724,12 @@ class VNextRetrievalService:
                 return [ref for item in value for ref in _reference_strings(item)]
             return []
 
-        all_references = [
-            reference
-            for memory in memories
-            for reference in _reference_strings(memory)
-        ]
+        all_references = [reference for memory in memories for reference in _reference_strings(memory)]
         memory_reference_ids = [
-            reference.removeprefix("memory:")
-            for reference in all_references
-            if reference.startswith("memory:")
+            reference.removeprefix("memory:") for reference in all_references if reference.startswith("memory:")
         ]
         source_reference_ids = [
-            reference.removeprefix("source:")
-            for reference in all_references
-            if not reference.startswith("memory:")
+            reference.removeprefix("source:") for reference in all_references if not reference.startswith("memory:")
         ]
         memory_cache.update(self._memories_by_ids(memory_reference_ids))
         source_cache.update(self._sources_by_ids(source_reference_ids))
@@ -1715,9 +1756,7 @@ class VNextRetrievalService:
             return bool(references) and all(_reference_allowed(ref) for ref in references)
 
         singular_keys = frozenset({"source_id", "source_ref"})
-        collection_keys = frozenset(
-            {"source_ids", "source_refs", "source_references", "selected_source_ids"}
-        )
+        collection_keys = frozenset({"source_ids", "source_refs", "source_references", "selected_source_ids"})
         source_derived_keys = frozenset(
             {
                 "source_created_at",
@@ -1739,9 +1778,7 @@ class VNextRetrievalService:
                         invalid_primary_source = True
                     continue
                 if key in collection_keys:
-                    if isinstance(nested, Sequence) and not isinstance(
-                        nested, (str, bytes, bytearray)
-                    ):
+                    if isinstance(nested, Sequence) and not isinstance(nested, (str, bytes, bytearray)):
                         output[key] = [item for item in nested if _value_allowed(item)]
                     elif _value_allowed(nested):
                         output[key] = nested
@@ -1749,10 +1786,7 @@ class VNextRetrievalService:
                 if isinstance(nested, Mapping):
                     output[key] = _sanitize_mapping(nested)
                 elif isinstance(nested, list):
-                    output[key] = [
-                        _sanitize_mapping(item) if isinstance(item, Mapping) else item
-                        for item in nested
-                    ]
+                    output[key] = [_sanitize_mapping(item) if isinstance(item, Mapping) else item for item in nested]
                 else:
                     output[key] = nested
             if invalid_primary_source:
@@ -1810,9 +1844,7 @@ class VNextRetrievalService:
                 "scope_thread_id": scope_thread_id,
                 "scope_task_id": scope_task_id,
                 "scope_people": effective_people,
-                "scope_person_memory_ids": (
-                    scope_person_memory_ids or tuple(sorted(person_linked_memory_ids))
-                ),
+                "scope_person_memory_ids": (scope_person_memory_ids or tuple(sorted(person_linked_memory_ids))),
                 "scope_window_start": effective_window_start,
                 "scope_window_end": effective_window_end,
             }
@@ -1937,9 +1969,7 @@ class VNextRetrievalService:
                         "scope_thread_id": scope_thread_id,
                         "scope_task_id": scope_task_id,
                         "scope_people": effective_people,
-                        "scope_person_memory_ids": (
-                            scope_person_memory_ids or tuple(sorted(person_linked_memory_ids))
-                        ),
+                        "scope_person_memory_ids": (scope_person_memory_ids or tuple(sorted(person_linked_memory_ids))),
                         "scope_window_start": effective_window_start,
                         "scope_window_end": effective_window_end,
                     }
@@ -1949,9 +1979,7 @@ class VNextRetrievalService:
                     **search_kwargs,
                     embedding_provider=self.embedding_provider.provider,
                     embedding_model=self.embedding_provider.model,
-                    embedding_endpoint=endpoint_fingerprint(
-                        getattr(self.embedding_provider, "base_url", "")
-                    ),
+                    embedding_endpoint=endpoint_fingerprint(getattr(self.embedding_provider, "base_url", "")),
                     embedding_signature_version=EMBEDDING_SIGNATURE_VERSION,
                 )
             except TypeError as exc:
@@ -2067,11 +2095,7 @@ class VNextRetrievalService:
                 scope_window_end=scope_window_end,
             ):
                 continue
-            recency = (
-                _parse_timestamp(row.get("updated_at"))
-                or _parse_timestamp(row.get("created_at"))
-                or _GRAPH_EPOCH
-            )
+            recency = _parse_timestamp(row.get("updated_at")) or _parse_timestamp(row.get("created_at")) or _GRAPH_EPOCH
             ranked.append((observed_at, recency, str(row.get("id")), row))
         # Deterministic order: edge observed_at DESC, memory recency DESC,
         # then the content-stable cascade with id ASC as the final key (the
@@ -2204,7 +2228,8 @@ class VNextRetrievalService:
                 return _resolve_sources(ordered_source_ids)
 
             def _fetch_chunk_sources(
-                *, match_any: bool,
+                *,
+                match_any: bool,
             ) -> list[JsonObject]:
                 def _fetch(n: int) -> tuple[list[JsonObject], str]:
                     kwargs: dict[str, object] = {
@@ -2273,13 +2298,15 @@ class VNextRetrievalService:
         source_scope_filters = _resource_scope_filters(search_sources)
 
         def _fetch_sources(n: int) -> tuple[list[JsonObject], str]:
-            return list(search_sources(
-                query=query,
-                domains=domains or None,
-                sensitivity_allowed=sensitivity_allowed,
-                limit=n,
-                **source_scope_filters,
-            )), SOURCE_STAGE_TITLE_RECENCY
+            return list(
+                search_sources(
+                    query=query,
+                    domains=domains or None,
+                    sensitivity_allowed=sensitivity_allowed,
+                    limit=n,
+                    **source_scope_filters,
+                )
+            ), SOURCE_STAGE_TITLE_RECENCY
 
         lexical_rows, _lexical_source = _fetch_scope_filtered(
             _fetch_sources,
@@ -2319,9 +2346,7 @@ class VNextRetrievalService:
             temporal_sources = [row for _distance, _source_id, row in dated]
             ranked_lists[SOURCE_STAGE_TEMPORAL] = temporal_sources
 
-        unique_candidate_ids = {
-            str(row.get("id")) for rows in ranked_lists.values() for row in rows
-        }
+        unique_candidate_ids = {str(row.get("id")) for rows in ranked_lists.values() for row in rows}
         stage_record: JsonObject = {
             "source": "rrf(" + "+".join(ranked_lists) + ")",
             "candidate_count": len(unique_candidate_ids),
@@ -2338,9 +2363,7 @@ class VNextRetrievalService:
         if isinstance(request.max_items, bool) or not isinstance(request.max_items, int):
             raise VNextRetrievalValidationError("max_items must be an integer")
         if request.max_items < 1 or request.max_items > MAX_CONTEXT_PACK_ITEMS:
-            raise VNextRetrievalValidationError(
-                f"max_items must be between 1 and {MAX_CONTEXT_PACK_ITEMS}"
-            )
+            raise VNextRetrievalValidationError(f"max_items must be between 1 and {MAX_CONTEXT_PACK_ITEMS}")
         if request.max_tokens is not None:
             if isinstance(request.max_tokens, bool) or not isinstance(request.max_tokens, int):
                 raise VNextRetrievalValidationError("max_tokens must be an integer when set")
@@ -2370,15 +2393,6 @@ class VNextRetrievalService:
         if depth == CONTEXT_DEPTH_MINIMAL:
             max_items = min(CONTEXT_DEPTH_MINIMAL_MAX_ITEMS, max_items)
         memory_candidate_limit = max(max_items * 2, max_items)
-        # Temporal anchor from generic query text only. The reference time
-        # for relative phrases is the caller's now (request.reference_time)
-        # or the current UTC time; the parser itself never reads the clock.
-        anchor = parse_temporal_anchor(
-            request.query,
-            reference_time=(
-                request.reference_time if request.reference_time is not None else datetime.now(UTC)
-            ),
-        )
 
         # ---- coverage mode (aggregation intent) begin --------------------
         # Gated by the query surface ONLY (vnext_coverage_query.detect_
@@ -2398,13 +2412,36 @@ class VNextRetrievalService:
             if depth == CONTEXT_DEPTH_MINIMAL
             else vnext_coverage_query.detect_aggregation_intent(str(interpretation["query"]))
         )
+        occurrence_reader_enabled = _occurrence_query_supports_signed_count(
+            request.query,
+            coverage_intent,
+        )
+
+        # The pre-occurrence retrieval pipeline intentionally sampled its
+        # time-window and temporal-anchor clocks independently. Preserve
+        # those base semantics for every pack, including a count query whose
+        # store has no occurrence rows. The occurrence reader may reuse the
+        # anchor's captured instant as its own immutable read ``as_of``; that
+        # adds no wall-clock read capable of perturbing dormant pack bytes.
+        anchor_reference_time = request.reference_time if request.reference_time is not None else datetime.now(UTC)
+        retrieval_as_of = parse_event_datetime(anchor_reference_time) if occurrence_reader_enabled else None
+        if occurrence_reader_enabled and retrieval_as_of is None:
+            raise VNextRetrievalValidationError("reference_time must be a valid datetime")
+
+        # Temporal anchor from generic query text only. The reference time
+        # for relative phrases is the caller's now (request.reference_time)
+        # or the current UTC time; the parser itself never reads the clock.
+        anchor = parse_temporal_anchor(
+            request.query,
+            reference_time=anchor_reference_time,
+        )
+
         # "How often" asks for cadence/rate, not an occurrence total. Keep
         # recognition in the trace, but preserve the old ungated candidate
         # pool, store calls, and ranking: repeated similar events are rate
         # evidence and must not be diversity-demoted.
         coverage_selection_enabled = bool(
-            coverage_intent is not None
-            and coverage_intent.sub_intent != vnext_coverage_query.COUNT_SUB_INTENT_CADENCE
+            coverage_intent is not None and coverage_intent.sub_intent != vnext_coverage_query.COUNT_SUB_INTENT_CADENCE
         )
         if coverage_selection_enabled:
             memory_candidate_limit *= vnext_coverage_query.COVERAGE_POOL_MULTIPLIER
@@ -2437,8 +2474,7 @@ class VNextRetrievalService:
             person_linked_memory_ids=person_linked_memory_ids,
             target=scope_target,
             store_scope_complete=_supports_store_scope_predicate(
-                getattr(self.store, "search_memories_fts", None)
-                or getattr(self.store, "search_memories", None)
+                getattr(self.store, "search_memories_fts", None) or getattr(self.store, "search_memories", None)
             ),
         )
         # Count-intent candidate annotation. This reuses the already-fetched,
@@ -2454,6 +2490,54 @@ class VNextRetrievalService:
                 candidate_cap=scope_target,
                 scope_filtered=scope.active,
             )
+        occurrence_reader_rows = (
+            None
+            if not occurrence_reader_enabled
+            else self._occurrence_reader_rows(
+                request,
+                scope=scope,
+                anchor=anchor,
+                as_of=cast(datetime, retrieval_as_of),
+                intent=coverage_intent,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+            )
+        )
+        occurrence_aggregation_candidate = (
+            vnext_occurrences.build_occurrence_aggregation(
+                units=occurrence_reader_rows.units,
+                evidence=occurrence_reader_rows.evidence,
+                coverage=occurrence_reader_rows.coverage,
+                unresolved_claims=occurrence_reader_rows.unresolved,
+                unresolved_dispositions=(
+                    occurrence_reader_rows.unresolved_dispositions
+                ),
+                requested_start=occurrence_reader_rows.requested_start,
+                requested_end=occurrence_reader_rows.requested_end,
+                query_selector_keys=(
+                    occurrence_reader_rows.query_plan.selector_keys
+                ),
+                query_predicates=(
+                    occurrence_reader_rows.query_plan.predicate_atoms
+                ),
+                aggregation_basis=(
+                    occurrence_reader_rows.query_plan.aggregation_basis
+                ),
+                accounting_summary=occurrence_reader_rows.accounting_summary,
+                expected_user_id=(
+                    str(store_user_id) if (store_user_id := getattr(self.store, "user_id", None)) else None
+                ),
+                projects=projects,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                allow_timeless_units=occurrence_reader_rows.all_time,
+                units_saturated=occurrence_reader_rows.unit_search_saturated,
+                evidence_saturated=(occurrence_reader_rows.evidence_search_saturated),
+                unresolved_saturated=occurrence_reader_rows.unresolved_search_saturated,
+            )
+            if occurrence_reader_rows is not None
+            else None
+        )
         if depth == CONTEXT_DEPTH_MINIMAL:
             # The cheapest useful call: FTS only. No query embedding, no
             # entity resolution or graph hop; honest tier status instead.
@@ -2463,9 +2547,7 @@ class VNextRetrievalService:
             graph_stage = STAGE_DISABLED_MINIMAL
             matched_entities: list[JsonObject] = []
         else:
-            query_vector, query_embedding_status = self._query_embedding(
-                str(interpretation["query"])
-            )
+            query_vector, query_embedding_status = self._query_embedding(str(interpretation["query"]))
             vector_rows, vector_stage = _fetch_scope_filtered(
                 lambda n: self._memory_vector_rows(
                     query=str(interpretation["query"]),
@@ -2571,6 +2653,7 @@ class VNextRetrievalService:
                         max_items,
                         vnext_coverage_query.COVERAGE_CLAUSE_FETCH_LIMIT,
                     )
+
                     def _fetch_clause_rows(
                         fetch_limit: int,
                         clause_query: str = clause,
@@ -2599,9 +2682,7 @@ class VNextRetrievalService:
                         ),
                     )
                     if clause_rows:
-                        coverage_clause_lists[vnext_coverage_query.clause_stage_name(clause_index)] = list(
-                            clause_rows
-                        )
+                        coverage_clause_lists[vnext_coverage_query.clause_stage_name(clause_index)] = list(clause_rows)
                         coverage_clause_candidate_count += len(clause_rows)
         # ---- coverage mode (aggregation intent) end ----------------------
 
@@ -2646,9 +2727,7 @@ class VNextRetrievalService:
             if coverage_clause_lists:
                 seen_candidate_ids = {str(candidate.item.get("id")) for candidate in memory_candidates}
                 backfill_candidates: list[RetrievalCandidate] = []
-                for stage_name, stage_rank, row in vnext_coverage_query.interleave_clause_rows(
-                    coverage_clause_lists
-                ):
+                for stage_name, stage_rank, row in vnext_coverage_query.interleave_clause_rows(coverage_clause_lists):
                     row_id = str(row.get("id"))
                     if row_id in seen_candidate_ids:
                         continue
@@ -2671,9 +2750,7 @@ class VNextRetrievalService:
                     rest = [candidate for candidate in memory_candidates if not candidate.selected]
                     memory_candidates = [
                         replace(candidate, rank=position)
-                        for position, candidate in enumerate(
-                            [*winners, *backfill_candidates, *rest], start=1
-                        )
+                        for position, candidate in enumerate([*winners, *backfill_candidates, *rest], start=1)
                     ]
             # Window spans the whole deepened pool (baseline pool is
             # 2 x slots, coverage deepens it x POOL_MULTIPLIER), so the
@@ -2712,9 +2789,7 @@ class VNextRetrievalService:
             # measured count-specific aggressive arm was rejected: neither a
             # candidate row nor a roll-up member is proven to represent one
             # queried unit. Cadence remains recognition-only above.
-            memory_candidates, coverage_card_promotions = vnext_coverage_query.promote_rollup_cards(
-                memory_candidates
-            )
+            memory_candidates, coverage_card_promotions = vnext_coverage_query.promote_rollup_cards(memory_candidates)
         # ---- coverage mode (roll-up card ranking) end ---------------------
 
         if sources_enabled:
@@ -2781,9 +2856,7 @@ class VNextRetrievalService:
         coverage_record: JsonObject | None = None
         if coverage_intent is not None:
             coverage_text_for = (
-                vnext_coverage_query.source_chunk_text_provider(
-                    getattr(self.store, "list_source_chunks", None)
-                )
+                vnext_coverage_query.source_chunk_text_provider(getattr(self.store, "list_source_chunks", None))
                 if coverage_selection_enabled
                 else None
             )
@@ -2805,9 +2878,7 @@ class VNextRetrievalService:
                 card_promotions=coverage_card_promotions,
                 candidate_instance_count=coverage_candidate_instance_count,
                 diversity_status=(
-                    None
-                    if coverage_selection_enabled
-                    else vnext_coverage_query.DIVERSITY_DISABLED_CADENCE
+                    None if coverage_selection_enabled else vnext_coverage_query.DIVERSITY_DISABLED_CADENCE
                 ),
             )
         # ---- coverage mode (aggregation intent) end ----------------------
@@ -2995,13 +3066,9 @@ class VNextRetrievalService:
                     )
                 return currency_source_cache[source_id]
 
-            currency_result = vnext_currency.build_currency_chains(
-                selected_memories, source_lookup=_currency_source
-            )
+            currency_result = vnext_currency.build_currency_chains(selected_memories, source_lookup=_currency_source)
             if currency_result.considered:
-                selected_memories = vnext_currency.apply_currency_chains(
-                    selected_memories, currency_result
-                )
+                selected_memories = vnext_currency.apply_currency_chains(selected_memories, currency_result)
                 currency_record = vnext_currency.currency_stage_record(currency_result)
         # ---- currency chains (read-time update chains) end ----------------
 
@@ -3041,26 +3108,27 @@ class VNextRetrievalService:
                 ):
                     item.pop(annotation_key, None)
 
-        matched_entities = [
-            entity
-            for entity in matched_entities
-            if budget.admit(entity, section=SECTION_ENTITIES)
-        ]
+        matched_entities = [entity for entity in matched_entities if budget.admit(entity, section=SECTION_ENTITIES)]
         if recent_changes is not None:
             recent_changes_candidate_count = len(recent_changes)
             recent_changes = [
-                change
-                for change in recent_changes
-                if budget.admit(change, section=SECTION_RECENT_CHANGES)
+                change for change in recent_changes if budget.admit(change, section=SECTION_RECENT_CHANGES)
             ]
             if len(recent_changes) != recent_changes_candidate_count:
                 recent_changes_stage_record["selected_count"] = len(recent_changes)
         if supersession_context is not None:
             supersession_context = [
-                note
-                for note in supersession_context
-                if budget.admit(note, section=SECTION_SUPERSESSION_CONTEXT)
+                note for note in supersession_context if budget.admit(note, section=SECTION_SUPERSESSION_CONTEXT)
             ]
+        occurrence_aggregation = (
+            occurrence_aggregation_candidate
+            if occurrence_aggregation_candidate is not None
+            and budget.admit(
+                occurrence_aggregation_candidate,
+                section="aggregation",
+            )
+            else None
+        )
 
         warnings = self._warnings(
             memory_candidates=memory_candidates,
@@ -3145,46 +3213,56 @@ class VNextRetrievalService:
             # WHO the pack is about: compact resolved entities from the
             # graph stage. Only present when the query matched entities.
             pack["entities"] = matched_entities
-        pack.update({
-            # Compact references only; the full rows appear once, in
-            # relevant_memories.
-            "current_known_state": [_memory_reference(item) for item in selected_memories],
-            "relevant_memories": selected_memories,
-        })
+        pack.update(
+            {
+                # Compact references only; the full rows appear once, in
+                # relevant_memories.
+                "current_known_state": [_memory_reference(item) for item in selected_memories],
+                "relevant_memories": selected_memories,
+            }
+        )
         if depth != CONTEXT_DEPTH_MINIMAL:
             # Typed sections are views over relevant_memories; minimal
             # keeps only the memories themselves.
-            pack.update({
-                "relevant_beliefs": [
-                    item for item in selected_memories if item.get("memory_type") in {"belief", "thesis"}
-                ],
-                "decisions": [item for item in selected_memories if item.get("memory_type") == "decision"],
-                "procedures": [
-                    item for item in selected_memories if item.get("memory_type") in {"procedure", "routine"}
-                ],
-            })
-        pack.update({
-            "open_loops": selected_open_loops,
-            "supporting_evidence": supporting_evidence,
-            "contradicting_evidence": contradicting_evidence,
-        })
+            pack.update(
+                {
+                    "relevant_beliefs": [
+                        item for item in selected_memories if item.get("memory_type") in {"belief", "thesis"}
+                    ],
+                    "decisions": [item for item in selected_memories if item.get("memory_type") == "decision"],
+                    "procedures": [
+                        item for item in selected_memories if item.get("memory_type") in {"procedure", "routine"}
+                    ],
+                }
+            )
+        pack.update(
+            {
+                "open_loops": selected_open_loops,
+                "supporting_evidence": supporting_evidence,
+                "contradicting_evidence": contradicting_evidence,
+            }
+        )
+        if occurrence_aggregation is not None:
+            pack["aggregation"] = occurrence_aggregation
         if recent_changes is not None:
             pack["recent_changes"] = recent_changes
         if supersession_context is not None:
             pack["supersession_context"] = supersession_context
-        pack.update({
-            "missing_information": self._missing_information(
-                selected_memories, selected_sources, sources_enabled=sources_enabled
-            ),
-            "sources": selected_sources,
-            "warnings": warnings,
-            "budget": budget.to_record(),
-            "context_depth": depth,
-            "trace_id": trace_id,
-            "trace": trace,
-            "agent_identity": request.agent_identity,
-            "policy_decision": request.policy_decision,
-        })
+        pack.update(
+            {
+                "missing_information": self._missing_information(
+                    selected_memories, selected_sources, sources_enabled=sources_enabled
+                ),
+                "sources": selected_sources,
+                "warnings": warnings,
+                "budget": budget.to_record(),
+                "context_depth": depth,
+                "trace_id": trace_id,
+                "trace": trace,
+                "agent_identity": request.agent_identity,
+                "policy_decision": request.policy_decision,
+            }
+        )
         # -- entity grounding (vnext_grounding integration; single block) ------
         # Pack-level retrieval statistic: salient query entities with ZERO
         # corpus support (entity substrate miss AND one-row FTS probe miss).
@@ -3238,9 +3316,7 @@ class VNextRetrievalService:
         #     fires for ANY dated items, never on question shapes. Dormant
         #     (no pack key, no trace stage, byte-identical pack) when
         #     ``reference_time`` is absent.
-        temporal_get_source = (
-            getattr(self.store, "get_source", None) if depth != CONTEXT_DEPTH_MINIMAL else None
-        )
+        temporal_get_source = getattr(self.store, "get_source", None) if depth != CONTEXT_DEPTH_MINIMAL else None
         temporal_source_dates: dict[str, datetime | None] = {}
         temporal_anchored_items = 0
         temporal_dated_events: list[datetime] = []
@@ -3434,17 +3510,13 @@ class VNextRetrievalService:
                     )
                 )
             else:
+
                 def _select_scoped_beliefs(rows: Sequence[JsonObject]) -> list[JsonObject]:
-                    backing_by_id = self._memories_by_ids(
-                        [str(row.get("memory_id") or "") for row in rows]
-                    )
+                    backing_by_id = self._memories_by_ids([str(row.get("memory_id") or "") for row in rows])
                     return [
                         belief
                         for belief in rows
-                        if (
-                            backing := backing_by_id.get(str(belief.get("memory_id") or ""))
-                        )
-                        is not None
+                        if (backing := backing_by_id.get(str(belief.get("memory_id") or ""))) is not None
                         and _row_matches_scope(
                             backing,
                             scope,
@@ -3499,6 +3571,7 @@ class VNextRetrievalService:
             window_start=None,
             window_end=None,
         )
+
         def _select_events(rows: Sequence[JsonObject]) -> list[JsonObject]:
             eligible = [
                 event
@@ -3515,16 +3588,11 @@ class VNextRetrievalService:
             ]
             if not identity_scope.active:
                 return eligible
-            targets = self._memories_by_ids(
-                [str(event.get("target_id") or "") for event in eligible]
-            )
+            targets = self._memories_by_ids([str(event.get("target_id") or "") for event in eligible])
             return [
                 event
                 for event in eligible
-                if (
-                    target := targets.get(str(event.get("target_id") or ""))
-                )
-                is not None
+                if (target := targets.get(str(event.get("target_id") or ""))) is not None
                 and _row_matches_scope(
                     target,
                     identity_scope,
@@ -3586,9 +3654,7 @@ class VNextRetrievalService:
     ) -> list[JsonObject]:
         evidence: list[JsonObject] = []
         memory_ids = [str(memory.get("id")) for memory in memories]
-        links_by_target = self._provenance_by_target(
-            target_type="memory", target_ids=memory_ids
-        )
+        links_by_target = self._provenance_by_target(target_type="memory", target_ids=memory_ids)
         sources_by_id = (
             self._sources_by_ids(
                 [

@@ -29,6 +29,11 @@ from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_scheduler import SchedulerRunRequest, default_schedule
 from alicebot_api.vnext_embeddings import DeferredMemoryEmbedding
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_memory_commit import VNextMemoryCommitService
+from alicebot_api.store import ContinuityStoreInvariantError as _ContinuityStoreInvariantError
+from alicebot_api.vnext_occurrence_write import (
+    invalidate_occurrence_accounting as _invalidate_occurrence_accounting,
+)
 from alicebot_api.vnext_store import PostgresVNextStore
 from .constants import DEFAULT_VNEXT_DEMO_DATASET_PATH, DEMO_SECRET_MARKERS
 from .models import CLIContext
@@ -358,7 +363,120 @@ def _demo_tag(dataset_id: str) -> JsonObject:
     return {"demo": True, "demo_dataset_id": dataset_id}
 
 
+def _current_demo_occurrence_carriers(
+    store: PostgresVNextStore,
+    *,
+    dataset_id: str,
+) -> tuple[list[str], list[JsonObject], list[str]]:
+    """Enumerate current reset carriers while the caller holds the graph lock."""
+
+    with store.conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id::text AS id
+            FROM sources
+            WHERE deleted_at IS NULL
+              AND (
+                metadata_json ->> 'demo_dataset_id' = %s
+                OR metadata_json -> 'raw_payload' ->> 'demo_dataset_id' = %s
+              )
+            ORDER BY id ASC
+            """,
+            (dataset_id, dataset_id),
+        )
+        source_ids = [str(row["id"]) for row in cur.fetchall()]
+        cur.execute(
+            """
+            WITH demo_sources AS (
+              SELECT id::text AS id
+              FROM sources
+              WHERE metadata_json ->> 'demo_dataset_id' = %s
+                 OR metadata_json -> 'raw_payload' ->> 'demo_dataset_id' = %s
+            ),
+            demo_artifacts AS (
+              SELECT id::text AS id
+              FROM generated_artifacts
+              WHERE metadata_json ->> 'demo_dataset_id' = %s
+                 OR metadata_json ->> 'source_id' IN (SELECT id FROM demo_sources)
+            )
+            SELECT id::text AS id
+            FROM memories
+            WHERE deleted_at IS NULL
+              AND (
+                metadata_json ->> 'demo_dataset_id' = %s
+                OR metadata_json ->> 'source_id' IN (SELECT id FROM demo_sources)
+                OR metadata_json ->> 'artifact_id' IN (SELECT id FROM demo_artifacts)
+              )
+            ORDER BY id ASC
+            """,
+            (dataset_id, dataset_id, dataset_id, dataset_id),
+        )
+        memory_ids = [str(row["id"]) for row in cur.fetchall()]
+        cur.execute(
+            """
+            SELECT chunk.id::text AS id
+            FROM source_chunks AS chunk
+            WHERE chunk.source_id = ANY(%s::uuid[])
+            ORDER BY chunk.id ASC
+            """,
+            (source_ids,),
+        )
+        source_chunk_ids = [str(row["id"]) for row in cur.fetchall()]
+    memories = [memory for memory_id in memory_ids if (memory := store.get_memory(memory_id)) is not None]
+    referenced_chunk_ids: set[str] = set(source_chunk_ids)
+    for memory in memories:
+        metadata = _object_dict(memory.get("metadata_json"))
+        proposal = _object_dict(metadata.get("occurrence_proposal"))
+        for raw_chunk_id in (
+            metadata.get("source_chunk_id"),
+            proposal.get("source_chunk_id"),
+        ):
+            if isinstance(raw_chunk_id, str) and raw_chunk_id.strip():
+                referenced_chunk_ids.add(raw_chunk_id.strip())
+    current_chunk_ids = sorted(referenced_chunk_ids)
+    get_current_chunk = getattr(store, "get_source_chunk_for_occurrence_accounting", None)
+    if not callable(get_current_chunk):
+        raise _ContinuityStoreInvariantError("demo reset requires the occurrence accounting current-chunk seam")
+    for source_chunk_id in current_chunk_ids:
+        current_chunk = get_current_chunk(source_chunk_id)
+        if current_chunk is None or str(current_chunk.get("id") or "") != source_chunk_id:
+            raise _ContinuityStoreInvariantError(
+                "demo reset occurrence accounting requires every referenced source chunk to remain current"
+            )
+    return source_ids, memories, current_chunk_ids
+
+
 def _reset_vnext_demo_dataset(store: PostgresVNextStore, *, dataset_id: str) -> JsonObject:
+    reset_reason = f"Synthetic demo dataset {dataset_id} was reset."
+    store.lock_graph_mutation()
+    source_ids, memories, source_chunk_ids = _current_demo_occurrence_carriers(
+        store,
+        dataset_id=dataset_id,
+    )
+    occurrence_service = VNextMemoryCommitService(store)
+    for source_id in source_ids:
+        occurrence_service.retire_source_occurrence_state(
+            source_id,
+            stage="cli_demo_reset",
+            reason=reset_reason,
+            _defer_occurrence_accounting=True,
+        )
+    for memory in memories:
+        occurrence_service.retire_memory_occurrence_state(
+            memory,
+            stage="cli_demo_reset",
+            reason=reset_reason,
+            preserve_claim=True,
+            _defer_occurrence_accounting=True,
+        )
+    for source_chunk_id in source_chunk_ids:
+        _invalidate_occurrence_accounting(
+            store,
+            reason=reset_reason,
+            actor_type="user",
+            source_chunk_id=source_chunk_id,
+            _defer_occurrence_coverage=True,
+        )
     with store.conn.cursor() as cur:
         cur.execute(
             """
@@ -445,6 +563,11 @@ def _reset_vnext_demo_dataset(store: PostgresVNextStore, *, dataset_id: str) -> 
             ),
         )
         row = cur.fetchone() or {}
+    _invalidate_occurrence_accounting(
+        store,
+        reason=reset_reason,
+        actor_type="user",
+    )
     append_event(
         store,
         event_type="demo.dataset_reset",

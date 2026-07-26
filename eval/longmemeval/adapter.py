@@ -10,7 +10,15 @@ services), then:
    when ``ALICE_EMBEDDINGS_BASE_URL``/``ALICE_EMBEDDINGS_MODEL`` are set —
    embed-on-write via the real provider. Candidate memories are then
    promoted to ``active`` with ``update_memory`` (the store's review-accept
-   patch), because Alice's search stages only see active/accepted memories.
+   patch) and passed through the central deterministic occurrence-review
+   seam, because Alice's search stages only see active/accepted memories.
+   Once every session in a newly created isolated store has been imported
+   and every current source chunk has a complete reviewed occurrence-
+   extraction disposition, its occurrence coverage is review-signed as
+   ``complete_history`` using the earliest session-provenance timestamp
+   through the benchmark's public as-of ``question_date``. Reused, legacy,
+   partial, unaccounted, and provenance-invalid stores cannot receive that
+   qualification.
 2. **Retrieve** — ``VNextRetrievalService.compile_context_pack`` runs with
    the benchmark question as the query (hybrid FTS5 + vector KNN + RRF, or
    FTS-only when no embedding provider is configured), and the pack is
@@ -35,7 +43,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 import hashlib
 import os
 from pathlib import Path
@@ -46,12 +54,18 @@ from uuid import UUID
 
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user, sqlite_user_connection
 from alicebot_api.vnext_capture import SourceCaptureInput, VNextCaptureService
+
 # Currency chains: renders the pack's per-memory currency annotation
 # ("[SUPERSEDED as of <date>]"/"[CURRENT as of <date>]") on fact lines;
 # empty suffix for memories without the annotation (see the marked block
 # in _render_context_block).
 from alicebot_api.vnext_currency import currency_label_suffix
 from alicebot_api.vnext_memory_commit import VNextMemoryCommitService
+from alicebot_api.vnext_occurrence_write import (
+    OCCURRENCE_EXTRACTOR_VERSION,
+    reconcile_chunk_extraction_disposition,
+    review_source_chunk_occurrences,
+)
 from alicebot_api.vnext_retrieval import (
     VECTOR_STAGE_ENABLED,
     VNextRetrievalRequest,
@@ -81,11 +95,20 @@ LME_USER_EMAIL = "longmemeval@alice.local"
 SOURCE_TYPE = "chat_session"
 SOURCE_DOMAIN = "unknown"  # never domain-filtered by the retrieval policy
 SOURCE_SENSITIVITY = "internal"
+OCCURRENCE_COVERAGE_REVIEWER = "longmemeval-import"
+OCCURRENCE_COVERAGE_REASON = "Fresh isolated corpus fully imported and qualified."
 
 CONTEXT_CHAR_BUDGET_ENV = "ALICE_LME_CONTEXT_CHAR_BUDGET"
 MAX_ITEMS_ENV = "ALICE_LME_MAX_ITEMS"
 DEFAULT_CONTEXT_CHAR_BUDGET = 12_000
 DEFAULT_MAX_ITEMS = 8
+# Keep oversized user-authored transcript continuations self-describing after
+# the production capture chunker splits them. This is below the 2,400-character
+# capture ceiling, leaving room for the speaker tag. Assistant/other long turns
+# retain the published one-paragraph render: their continuations must not gain
+# user provenance, and pre-splitting them exposed internal newlines as hundreds
+# of extra ordinary retrieval memories on the frozen non-count corpus.
+TRANSCRIPT_TURN_PART_MAX_CHARS = 1_800
 
 EMPTY_CONTEXT_PLACEHOLDER = "(no relevant chat history was retrieved)"
 
@@ -130,6 +153,7 @@ ANSWER_MAX_TOKENS = 500
 ANSWER_MAX_TOKENS_COT = 800
 
 _WORD_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]+")
+_FRESH_STORE_CAPABILITY = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,15 +265,53 @@ def collapse_intra_turn_blank_lines(content: str) -> str:
     return re.sub(r"\n\s*\n+", "\n", content.replace("\r\n", "\n").replace("\r", "\n")).strip()
 
 
+def _transcript_turn_parts(content: str) -> tuple[str, ...]:
+    """Word-normalize and bound a long user turn for repeated role tags."""
+
+    normalized = " ".join(content.split())
+    if len(normalized) <= TRANSCRIPT_TURN_PART_MAX_CHARS:
+        return (normalized,)
+    parts: list[str] = []
+    remaining = normalized
+    while len(remaining) > TRANSCRIPT_TURN_PART_MAX_CHARS:
+        boundary = remaining.rfind(
+            " ",
+            0,
+            TRANSCRIPT_TURN_PART_MAX_CHARS + 1,
+        )
+        if boundary < 1:
+            boundary = TRANSCRIPT_TURN_PART_MAX_CHARS
+        part = remaining[:boundary].rstrip()
+        if part:
+            parts.append(part)
+        remaining = remaining[boundary:].lstrip()
+    if remaining:
+        parts.append(remaining)
+    return tuple(parts)
+
+
 def render_session_text(session_id: str, date: str, turns: tuple[SessionTurn, ...]) -> str:
-    """Speaker-tagged session text; one paragraph per turn for chunking."""
+    """Speaker-tagged session text with bounded user-continuation provenance."""
+
     paragraphs = [f"Chat session {session_id} on {date}."]
     for turn in turns:
         content = collapse_intra_turn_blank_lines(turn.content)
         if content == "":
             continue
-        paragraphs.append(f"[{turn.role.upper()}]: {content}")
+        parts = (
+            _transcript_turn_parts(content)
+            if turn.role.casefold() in {"user", "human"} and len(content) > TRANSCRIPT_TURN_PART_MAX_CHARS
+            else (content,)
+        )
+        paragraphs.extend(f"[{turn.role.upper()}]: {part}" for part in parts)
     return "\n\n".join(paragraphs)
+
+
+def _session_source_identity(*, ordinal: int, rendered_text: str) -> tuple[str, str]:
+    """Return a label-independent connector identity for one imported session."""
+
+    content_sha256 = hashlib.sha256(rendered_text.encode("utf-8")).hexdigest()
+    return f"session-{ordinal:06d}-{content_sha256}", content_sha256
 
 
 def build_answer_prompt(*, context_block: str, question: str, question_date: str, cot: bool = False) -> str:
@@ -332,9 +394,7 @@ def _validity_suffix(memory: dict[str, object]) -> str:
     elif validity.get("supersedes_memory_id"):
         updated_on = corrected_at or _iso_date(memory.get("created_at"))
         parts.append(
-            f"updated {updated_on}; supersedes an earlier value"
-            if updated_on
-            else "supersedes an earlier value"
+            f"updated {updated_on}; supersedes an earlier value" if updated_on else "supersedes an earlier value"
         )
     elif corrected_at:
         parts.append(f"corrected {corrected_at}")
@@ -575,26 +635,36 @@ def _query_anchored_excerpt(
 class QuestionRun:
     """One LongMemEval question against one isolated Alice store."""
 
-    def __init__(self, question: LongMemEvalQuestion, store: SQLiteVNextStore) -> None:
+    def __init__(
+        self,
+        question: LongMemEvalQuestion,
+        store: SQLiteVNextStore,
+        *,
+        _fresh_store_capability: object | None = None,
+    ) -> None:
         self.question = question
         self.store = store
         self._source_sessions: dict[str, tuple[str, str]] = {}  # source_id -> (session_id, date)
+        # Freshness is a one-shot capability.  It is granted only by
+        # question_run after proving that the SQLite file family was absent
+        # and the newly bootstrapped store had no user history.  Consuming it
+        # before ingest means a partial/failed import can never be retried and
+        # mislabeled as a complete history.
+        self._fresh_store_coverage_eligible = _fresh_store_capability is _FRESH_STORE_CAPABILITY
 
     # -- ingest ------------------------------------------------------------
 
     def ingest(self, *, accept_rollups: bool = False, reuse_store: bool = False) -> IngestStats:
         started = time.monotonic()
+        qualify_complete_history = self._fresh_store_coverage_eligible and not reuse_store
+        self._fresh_store_coverage_eligible = False
         if reuse_store:
             # Marker-verified reuse (runner --reuse-stores): the sessions are
             # already captured and promoted in this store, so session capture
             # is skipped entirely. Promotion is a no-op on a promoted store
             # and roll-up acceptance is idempotent, so both still run below —
             # keeping the --accept-rollups fingerprint truthful on reuse.
-            rollup_stats = (
-                self._consolidate_and_accept_rollups()
-                if accept_rollups
-                else None
-            )
+            rollup_stats = self._consolidate_and_accept_rollups() if accept_rollups else None
             return IngestStats(
                 session_count=len(self.question.haystack_session_ids),
                 source_count=0,
@@ -611,21 +681,29 @@ class QuestionRun:
         chunk_count = 0
         candidate_count = 0
         session_count = 0
-        for session_id, date, turns in self.question.sessions_with_metadata():
+        all_sessions_persisted = True
+        for session_ordinal, (session_id, date, turns) in enumerate(
+            self.question.sessions_with_metadata(),
+        ):
             session_count += 1
             text = render_session_text(session_id, date, turns)
+            external_id, source_content_sha256 = _session_source_identity(
+                ordinal=session_ordinal,
+                rendered_text=text,
+            )
             result = capture.capture_source(
                 SourceCaptureInput(
                     source_type=SOURCE_TYPE,
                     title=f"Chat session {session_id} on {date}",
                     raw_text=text,
                     connector_name="longmemeval",
-                    external_id=f"{self.question.question_id}/{session_id}",
+                    external_id=external_id,
                     domain=SOURCE_DOMAIN,
                     sensitivity=SOURCE_SENSITIVITY,
                     metadata_json={
                         "benchmark": "longmemeval",
-                        "question_id": self.question.question_id,
+                        "session_ordinal": session_ordinal,
+                        "source_content_sha256": source_content_sha256,
                         "session_id": session_id,
                         "session_date": date,
                     },
@@ -637,10 +715,14 @@ class QuestionRun:
                 source_count += 1
                 chunk_count += result.chunk_count
                 candidate_count += result.candidate_memory_count
+            if result.source_id is None:
+                all_sessions_persisted = False
             if result.source_id is not None and result.source_id not in self._source_sessions:
                 self._source_sessions[result.source_id] = (session_id, date)
         promoted = self._promote_candidate_memories(stamp_session_dates=accept_rollups)
         rollups = self._consolidate_and_accept_rollups() if accept_rollups else None
+        if qualify_complete_history and all_sessions_persisted:
+            self._qualify_complete_history_occurrence_coverage()
         return IngestStats(
             session_count=session_count,
             source_count=source_count,
@@ -693,12 +775,240 @@ class QuestionRun:
                 patch=patch,
                 actor_type="system",
             )
+            updated = VNextMemoryCommitService(self.store).reconcile_memory_occurrence_state(
+                updated,
+                stage="longmemeval_review_accept",
+            )
             # Promotion is also the derived-retrieval-key moment (mirrors
             # the product review-accept path); deterministic tier only so
             # keyless ingest never makes a model call.
             attach_memory_fact_keys(self.store, updated, use_env_provider=False)
             promoted += 1
         return promoted
+
+    def _occurrence_coverage_bounds(self) -> tuple[datetime, datetime] | None:
+        """Return the fresh corpus's provenance start and public as-of end."""
+
+        session_ids = self.question.haystack_session_ids
+        if (
+            not session_ids
+            or len(session_ids) != len(self.question.haystack_dates)
+            or len(session_ids) != len(self.question.haystack_sessions)
+            or len(set(session_ids)) != len(session_ids)
+        ):
+            return None
+        parsed = tuple(parse_event_datetime(value) for value in self.question.haystack_dates)
+        if any(value is None for value in parsed):
+            return None
+        dates = tuple(value for value in parsed if value is not None)
+        question_date = parse_event_datetime(self.question.question_date)
+        if question_date is None or question_date < max(dates):
+            return None
+        return min(dates), question_date
+
+    def _qualify_complete_history_occurrence_coverage(self) -> None:
+        """Review a freshly imported isolated corpus as complete history.
+
+        Missing/invalid provenance, incomplete extraction accounting, and
+        incomplete store seams fail closed: they leave the store's ordinary
+        forward-only coverage unchanged. Persistence or CAS failures still
+        propagate so the surrounding question transaction rolls back rather
+        than claiming false coverage.
+        """
+
+        bounds = self._occurrence_coverage_bounds()
+        if not self._review_current_occurrence_extraction_dispositions():
+            return
+        accounting_metadata = self._complete_occurrence_accounting_metadata()
+        if accounting_metadata is None:
+            return
+        ensure_coverage = getattr(self.store, "ensure_occurrence_coverage", None)
+        review_coverage = getattr(self.store, "review_occurrence_coverage", None)
+        if bounds is None or not callable(ensure_coverage) or not callable(review_coverage):
+            return
+        coverage_started_at, complete_through = bounds
+        coverage = ensure_coverage(
+            started_at=coverage_started_at,
+            actor_type="system",
+        )
+        review_version = coverage.get("review_version")
+        if isinstance(review_version, bool) or not isinstance(review_version, int):
+            return
+        reviewed = review_coverage(
+            coverage_mode="complete_history",
+            historical_review_status="reviewed",
+            reviewer_id=OCCURRENCE_COVERAGE_REVIEWER,
+            reason=OCCURRENCE_COVERAGE_REASON,
+            coverage_started_at=coverage_started_at,
+            complete_through=complete_through,
+            accounting_metadata=accounting_metadata,
+            expected_review_version=review_version,
+        )
+        if (
+            reviewed.get("coverage_mode") != "complete_history"
+            or reviewed.get("historical_review_status") != "reviewed"
+        ):
+            raise RuntimeError("fresh LongMemEval corpus was not persisted as complete occurrence history")
+
+    def _review_current_occurrence_extraction_dispositions(self) -> bool:
+        """Sign deterministic current-chunk dispositions before qualification."""
+
+        summarize = getattr(
+            self.store,
+            "summarize_occurrence_extraction_accounting",
+            None,
+        )
+        source_ids = tuple(sorted(self._source_sessions))
+        if not callable(summarize) or not source_ids or len(source_ids) != len(self.question.haystack_session_ids):
+            return False
+        # Coverage is a claim about the store's entire current live corpus,
+        # never merely the caller-selected benchmark source subset.
+        summary = summarize(
+            extractor_version=OCCURRENCE_EXTRACTOR_VERSION,
+            source_ids=None,
+        )
+        if not isinstance(summary, dict):
+            return False
+        summary_source_ids = summary.get("source_ids")
+        items = summary.get("items")
+        current_count = summary.get("current_chunk_count")
+        if (
+            not isinstance(summary_source_ids, list)
+            or tuple(sorted(str(value) for value in summary_source_ids)) != source_ids
+            or isinstance(current_count, bool)
+            or not isinstance(current_count, int)
+            or current_count < 1
+            or not isinstance(items, list)
+            or len(items) != current_count
+        ):
+            return False
+        chunk_ids: set[str] = set()
+        item_source_ids: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                return False
+            source_id = str(item.get("source_id") or "")
+            chunk_id = str(item.get("source_chunk_id") or "")
+            if not source_id or not chunk_id:
+                return False
+            item_source_ids.add(source_id)
+            chunk_ids.add(chunk_id)
+        if item_source_ids != set(source_ids) or len(chunk_ids) != current_count:
+            return False
+        for chunk_id in sorted(chunk_ids):
+            review_source_chunk_occurrences(
+                self.store,
+                source_chunk_id=chunk_id,
+                reviewer_id=OCCURRENCE_COVERAGE_REVIEWER,
+                reason=OCCURRENCE_COVERAGE_REASON,
+                actor_type="system",
+                stage="longmemeval_source_review",
+            )
+            disposition = reconcile_chunk_extraction_disposition(
+                self.store,
+                source_chunk_id=chunk_id,
+                actor_type="system",
+                reviewer_id=OCCURRENCE_COVERAGE_REVIEWER,
+                reason=OCCURRENCE_COVERAGE_REASON,
+            )
+            if disposition is None:
+                return False
+        return True
+
+    def _occurrence_extraction_accounting_is_complete(self) -> bool:
+        """Require a reviewed disposition for every current imported chunk."""
+
+        return self._complete_occurrence_accounting_metadata() is not None
+
+    def _complete_occurrence_accounting_metadata(self) -> dict[str, object] | None:
+        """Return the exact reviewed accounting anchor for coverage signing."""
+
+        summarize = getattr(
+            self.store,
+            "summarize_occurrence_extraction_accounting",
+            None,
+        )
+        source_ids = tuple(sorted(self._source_sessions))
+        if not callable(summarize) or not source_ids or len(source_ids) != len(self.question.haystack_session_ids):
+            return None
+        summary = summarize(
+            extractor_version=OCCURRENCE_EXTRACTOR_VERSION,
+            source_ids=None,
+        )
+        if not isinstance(summary, dict) or summary.get("complete") is not True:
+            return None
+        if summary.get("extractor_version") != OCCURRENCE_EXTRACTOR_VERSION:
+            return None
+        summary_source_ids = summary.get("source_ids")
+        if (
+            not isinstance(summary_source_ids, list)
+            or tuple(sorted(str(value) for value in summary_source_ids)) != source_ids
+        ):
+            return None
+
+        counter_names = (
+            "current_chunk_count",
+            "reviewed_current_count",
+            "missing_count",
+            "stale_count",
+            "unresolved_count",
+            "unreviewed_count",
+            "invalid_accepted_count",
+            "invalid_receipt_count",
+            "unanchored_memory_count",
+        )
+        counters = {name: summary.get(name) for name in counter_names}
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counters.values()):
+            return None
+        current_count = counters["current_chunk_count"]
+        if (
+            current_count < 1
+            or counters["reviewed_current_count"] != current_count
+            or any(
+                counters[name] != 0
+                for name in (
+                    "missing_count",
+                    "stale_count",
+                    "unreviewed_count",
+                    "invalid_accepted_count",
+                    "invalid_receipt_count",
+                    "unanchored_memory_count",
+                )
+            )
+        ):
+            return None
+        for digest_name in ("snapshot_digest", "disposition_digest"):
+            digest = summary.get(digest_name)
+            if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                return None
+        items = summary.get("items")
+        if not isinstance(items, list) or len(items) != current_count:
+            return None
+        item_source_ids: set[str] = set()
+        source_chunk_ids: set[str] = set()
+        for item in items:
+            if (
+                not isinstance(item, dict)
+                or item.get("status")
+                not in {
+                    "complete",
+                    "complete_with_unresolved_claims",
+                }
+                or not str(item.get("source_chunk_id") or "")
+            ):
+                return None
+            item_source_ids.add(str(item.get("source_id") or ""))
+            source_chunk_ids.add(str(item["source_chunk_id"]))
+        if item_source_ids != set(source_ids) or len(source_chunk_ids) != current_count:
+            return None
+        return {
+            "accounting_schema": "occurrence_accounting_v1",
+            "extractor_version": OCCURRENCE_EXTRACTOR_VERSION,
+            "source_ids": list(source_ids),
+            "source_chunk_ids": sorted(source_chunk_ids),
+            "snapshot_digest": str(summary["snapshot_digest"]),
+            "disposition_digest": str(summary["disposition_digest"]),
+        }
 
     def _consolidate_and_accept_rollups(self) -> RollupAcceptanceStats:
         """Run the consolidation roll-up pass, then review-accept every card.
@@ -816,9 +1126,7 @@ class QuestionRun:
             if isinstance(source, dict) and source.get("id")
         )
         memory_ids = tuple(
-            str(memory.get("id"))
-            for memory in memories
-            if isinstance(memory, dict) and memory.get("id")
+            str(memory.get("id")) for memory in memories if isinstance(memory, dict) and memory.get("id")
         )
         return RetrievalOutcome(
             context_block=context_block,
@@ -1045,7 +1353,13 @@ class QuestionRun:
         # Enumeration extensions spend the leftover pool first (source rank
         # order): a kept-intact list never evicts another source's
         # guaranteed excerpt, only competes with pass-2 chunks.
-        for selected_position, leftover_position, extension_text, extension_chunk_indexes, joins_above in pending_extensions:
+        for (
+            selected_position,
+            leftover_position,
+            extension_text,
+            extension_chunk_indexes,
+            joins_above,
+        ) in pending_extensions:
             current = selected[selected_position]
             neg_score, source_rank, chunk_index, session_id, date, window_text = current
             grown = (
@@ -1139,6 +1453,43 @@ class QuestionRun:
         return assemble_document(prefix, excerpt_jsons, suffix), len(selected)
 
 
+def _sqlite_store_file_family_was_absent(db_path: str | Path) -> bool:
+    """Whether a filesystem SQLite store is unequivocally new.
+
+    URI and in-memory connections are intentionally ineligible: their
+    pre-open history cannot be proven here.  ``lexists`` also treats a
+    dangling symlink as prior state instead of silently upgrading it.
+    """
+
+    raw_path = os.fspath(db_path)
+    if raw_path == ":memory:" or raw_path.startswith("file:"):
+        return False
+    if os.path.lexists(raw_path):
+        return False
+    path = Path(raw_path)
+    try:
+        siblings = path.parent.iterdir()
+    except OSError:
+        return False
+    # SQLite can leave rollback/WAL/shared-memory/super-journal companions.
+    # Treat every same-basename sidecar as prior state instead of maintaining
+    # an inevitably incomplete allowlist of journal suffixes.
+    sidecar_prefix = f"{path.name}-"
+    return not any(sibling.name.startswith(sidecar_prefix) for sibling in siblings)
+
+
+def _bootstrapped_store_has_no_user_history(conn: object) -> bool:
+    """Second half of the fresh-store proof, evaluated after bootstrap."""
+
+    execute = getattr(conn, "execute", None)
+    if not callable(execute):
+        return False
+    for table in ("users", "sources", "memories", "occurrence_coverage"):
+        if execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None:
+            return False
+    return True
+
+
 @contextmanager
 def question_run(question: LongMemEvalQuestion, db_path: str | Path) -> Iterator[QuestionRun]:
     """Open an isolated per-question store and yield a :class:`QuestionRun`.
@@ -1146,10 +1497,16 @@ def question_run(question: LongMemEvalQuestion, db_path: str | Path) -> Iterator
     Uses ``sqlite_user_connection`` (schema bootstrap + one transaction that
     commits on clean exit), exactly like the product's SQLite on-ramp.
     """
+    file_family_was_absent = _sqlite_store_file_family_was_absent(db_path)
     with sqlite_user_connection(db_path, LME_USER_ID) as conn:
+        fresh_store = file_family_was_absent and _bootstrapped_store_has_no_user_history(conn)
         ensure_sqlite_user(conn, LME_USER_ID, LME_USER_EMAIL, "LongMemEval Harness")
         store = SQLiteVNextStore(conn, LME_USER_ID)
-        yield QuestionRun(question, store)
+        yield QuestionRun(
+            question,
+            store,
+            _fresh_store_capability=(_FRESH_STORE_CAPABILITY if fresh_store else None),
+        )
 
 
 __all__ = [

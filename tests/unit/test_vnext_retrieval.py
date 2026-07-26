@@ -6,6 +6,7 @@ import itertools
 import json
 import re
 import sqlite3
+from typing import Mapping
 from uuid import UUID, uuid4
 
 import pytest
@@ -14,6 +15,16 @@ from alicebot_api import vnext_retrieval as vnext_retrieval_module
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_embeddings import VNextEmbeddingProviderError
+from alicebot_api.vnext_occurrence_predicates import (
+    OCCURRENCE_AGGREGATION_SCHEMA,
+    occurrence_coverage_review_receipt_digest,
+    occurrence_evidence_facts_digest,
+    occurrence_evidence_review_receipt_digest,
+    occurrence_unit_review_receipt_digest,
+)
+from alicebot_api.vnext_occurrence_taxonomy import (
+    build_occurrence_predicate_atom,
+)
 from alicebot_api.vnext_project_scope import memory_project_scope
 from alicebot_api.vnext_retrieval import (
     BUDGET_STRATEGIES,
@@ -55,6 +66,10 @@ from alicebot_api.vnext_retrieval import (
 
 
 _UNSET = object()
+_OCCURRENCE_TEST_SOURCE_ID = "11111111-1111-4111-8111-111111111111"
+_OCCURRENCE_TEST_CHUNK_ID = "22222222-2222-4222-8222-222222222222"
+_OCCURRENCE_TEST_DISPOSITION_ID = "33333333-3333-4333-8333-333333333333"
+_OCCURRENCE_TEST_EXTRACTOR_VERSION = "retrieval-reader-test-v1"
 
 
 @pytest.fixture(autouse=True)
@@ -80,6 +95,29 @@ class StubEmbeddingProvider:
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         return [self.embed_text(text) for text in texts]
+
+
+class StubRerankProvider:
+    provider = "stub"
+    model = "stub-reranker"
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    def complete(
+        self,
+        prompt: str,
+    ) -> vnext_retrieval_module.vnext_reranker.RerankCompletion:
+        self.prompts.append(prompt)
+        count_match = re.search(
+            r"JSON array of (\d+) integers",
+            prompt,
+        )
+        assert count_match is not None
+        count = int(count_match.group(1))
+        return vnext_retrieval_module.vnext_reranker.RerankCompletion(
+            content=json.dumps([50] * count),
+        )
 
 
 class InMemoryVNextRetrievalStore:
@@ -138,11 +176,7 @@ class InMemoryVNextRetrievalStore:
         if memory_types:
             rows = [row for row in rows if row.get("memory_type") in memory_types]
         if projects:
-            rows = [
-                row
-                for row in rows
-                if set(memory_project_scope(row)).intersection(projects)
-            ]
+            rows = [row for row in rows if set(memory_project_scope(row)).intersection(projects)]
         if created_by_agent_ids:
             rows = [row for row in rows if row.get("created_by_agent_id") in created_by_agent_ids]
         if run_id is not None:
@@ -324,11 +358,7 @@ class InMemoryVNextRetrievalStore:
     def get_memories_by_ids(self, memory_ids: tuple[str, ...]) -> list[dict[str, object]]:
         self.memory_bulk_reads += 1
         wanted = set(memory_ids)
-        return [
-            row
-            for row in [*self.memories, *(self.vector_memories or [])]
-            if str(row.get("id")) in wanted
-        ]
+        return [row for row in [*self.memories, *(self.vector_memories or [])] if str(row.get("id")) in wanted]
 
     def search_source_chunks(
         self,
@@ -347,9 +377,7 @@ class InMemoryVNextRetrievalStore:
         for chunk in self.source_chunks:
             text = str(chunk.get("text") or "").casefold()
             matched = (
-                any(term in text for term in terms)
-                if match_any
-                else terms and all(term in text for term in terms)
+                any(term in text for term in terms) if match_any else terms and all(term in text for term in terms)
             )
             if matched:
                 rows.append(chunk)
@@ -398,8 +426,7 @@ class InMemoryVNextRetrievalStore:
         matched = [
             entity
             for entity in self.entities
-            if entity.get("normalized_name") in names
-            or any(alias in names for alias in entity.get("aliases", []))
+            if entity.get("normalized_name") in names or any(alias in names for alias in entity.get("aliases", []))
         ]
         return sorted(matched, key=lambda entity: -int(entity.get("mention_count", 0) or 0))
 
@@ -468,12 +495,8 @@ def test_inferred_domains_are_disclosed_but_never_used_as_hard_filters() -> None
 
 
 def test_domain_inference_uses_word_boundaries() -> None:
-    assert classify_query(VNextRetrievalRequest(query="prevent malice in the queue"))[
-        "inferred_domains"
-    ] == []
-    assert classify_query(VNextRetrievalRequest(query="review the illegal campaign"))[
-        "inferred_domains"
-    ] == []
+    assert classify_query(VNextRetrievalRequest(query="prevent malice in the queue"))["inferred_domains"] == []
+    assert classify_query(VNextRetrievalRequest(query="review the illegal campaign"))["inferred_domains"] == []
 
 
 def test_reciprocal_rank_fusion_scores_and_orders_candidates() -> None:
@@ -775,8 +798,7 @@ def test_context_pack_enforces_max_tokens_with_greedy_packing_and_traces_drops()
 
     # Budget that fits exactly the first two memories and nothing more.
     first_two_cost = sum(
-        estimate_item_tokens({key: value for key, value in row.items() if key != "deleted_at"})
-        for row in memories[:2]
+        estimate_item_tokens({key: value for key, value in row.items() if key != "deleted_at"}) for row in memories[:2]
     )
     pack = service.compile_context_pack(
         VNextRetrievalRequest(query="Alice retrieval budget", max_items=8, max_tokens=first_two_cost)
@@ -849,9 +871,7 @@ def test_context_pack_budget_packs_sections_in_priority_order() -> None:
 def test_context_pack_rejects_non_positive_max_tokens() -> None:
     store = InMemoryVNextRetrievalStore(memories=[], sources=[])
     with pytest.raises(ValueError, match="max_tokens"):
-        VNextRetrievalService(store).compile_context_pack(
-            VNextRetrievalRequest(query="Alice", max_tokens=0)
-        )
+        VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="Alice", max_tokens=0))
 
 
 @pytest.mark.parametrize(
@@ -864,9 +884,7 @@ def test_context_pack_rejects_non_positive_max_tokens() -> None:
         ({"time_window": "0d"}, "time_window"),
     ],
 )
-def test_context_pack_enforces_authoritative_service_bounds(
-    overrides: dict[str, object], field_name: str
-) -> None:
+def test_context_pack_enforces_authoritative_service_bounds(overrides: dict[str, object], field_name: str) -> None:
     store = InMemoryVNextRetrievalStore(memories=[], sources=[])
 
     with pytest.raises(VNextRetrievalValidationError, match=field_name):
@@ -885,9 +903,7 @@ def test_context_pack_counts_recent_changes_inside_the_content_budget() -> None:
         "target_id": "memory-1",
         "occurred_at": "2026-07-01T00:00:00Z",
     }
-    store = InMemoryVNextRetrievalStore(
-        memories=[memory], sources=[], seeded_events=[seeded_event]
-    )
+    store = InMemoryVNextRetrievalStore(memories=[memory], sources=[], seeded_events=[seeded_event])
     memory_only_budget = estimate_item_tokens(memory)
 
     pack = VNextRetrievalService(store).compile_context_pack(
@@ -905,9 +921,7 @@ def test_context_pack_counts_recent_changes_inside_the_content_budget() -> None:
     assert "trace" in pack["budget"]["excluded_sections"]
     assert pack["budget"]["serialized_token_estimate"] > pack["budget"]["token_estimate"]
     assert pack["budget"]["serialized_token_estimate"] == estimate_item_tokens(pack)
-    assert pack["budget"]["excluded_token_estimate"] == (
-        estimate_item_tokens(pack) - pack["budget"]["token_estimate"]
-    )
+    assert pack["budget"]["excluded_token_estimate"] == (estimate_item_tokens(pack) - pack["budget"]["token_estimate"])
 
 
 # -- memory_types and projects filters ---------------------------------------------
@@ -953,9 +967,7 @@ def test_context_pack_omits_filter_kwargs_when_unset_for_minimal_stores() -> Non
 
     store = MinimalStore(memories=[_memory_row("memory-1", "Alice minimal store check.")], sources=[])
 
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="Alice minimal store")
-    )
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="Alice minimal store"))
 
     assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-1"]
 
@@ -1011,9 +1023,7 @@ def test_keyword_query_that_and_matches_does_not_use_the_fallback_on_sqlite() ->
     store = _sqlite_retrieval_store()
     memory = _commit_announcement_decision(store)
 
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="Alice announcement")
-    )
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="Alice announcement"))
 
     assert [item["id"] for item in pack["relevant_memories"]] == [memory["id"]]
     assert pack["trace"]["stages"]["fts"] == {"source": "sqlite_fts", "candidate_count": 1}
@@ -1097,13 +1107,9 @@ def test_strict_count_candidate_statistic_without_selected_rollup_stays_trace_on
 
 
 def test_single_token_miss_does_not_fire_the_or_fallback() -> None:
-    store = InMemoryVNextRetrievalStore(
-        memories=[_memory_row("memory-1", "Unrelated note")], sources=[]
-    )
+    store = InMemoryVNextRetrievalStore(memories=[_memory_row("memory-1", "Unrelated note")], sources=[])
 
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="kubernetes")
-    )
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="kubernetes"))
 
     assert pack["relevant_memories"] == []
     assert pack["trace"]["stages"]["fts"] == {"source": "postgres_fts", "candidate_count": 0}
@@ -1111,9 +1117,7 @@ def test_single_token_miss_does_not_fire_the_or_fallback() -> None:
 
 
 def test_multi_token_miss_retries_once_with_match_any_and_reports_fallback_source() -> None:
-    store = InMemoryVNextRetrievalStore(
-        memories=[_memory_row("memory-1", "Unrelated note")], sources=[]
-    )
+    store = InMemoryVNextRetrievalStore(memories=[_memory_row("memory-1", "Unrelated note")], sources=[])
 
     pack = VNextRetrievalService(store).compile_context_pack(
         VNextRetrievalRequest(query="kubernetes deployment pipeline")
@@ -1225,9 +1229,7 @@ def test_source_stage_fuses_chunk_content_provenance_and_title_recency() -> None
         "chunk_fts_source": "postgres_fts",
     }
     source_trace = {
-        record["target_id"]: record
-        for record in pack["trace"]["selected"]
-        if record["target_type"] == "source"
+        record["target_id"]: record for record in pack["trace"]["selected"] if record["target_type"] == "source"
     }
     assert source_trace["source-chunk"]["stage_ranks"] == {"chunk_fts": 1, "title_recency": 2}
     assert source_trace["source-prov"]["stage_ranks"] == {"provenance": 1, "title_recency": 3}
@@ -1276,9 +1278,7 @@ def test_chunk_fts_deepens_until_it_finds_distinct_parent_sources() -> None:
     )
     store = ChunkOnlyStore(memories=[], sources=sources, source_chunks=chunks)
 
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="release completeness needle")
-    )
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="release completeness needle"))
 
     assert [row["id"] for row in pack["sources"]] == ["source-long", "source-other"]
     assert pack["trace"]["stages"]["sources"]["chunk_fts"] == 2
@@ -1333,9 +1333,7 @@ def test_provenance_fusion_pulls_source_with_no_lexical_match() -> None:
     stage = pack["trace"]["stages"]["sources"]
     assert stage["provenance"] == 1
     assert stage["title_recency"] == 0
-    source_trace = [
-        record for record in pack["trace"]["selected"] if record["target_type"] == "source"
-    ]
+    source_trace = [record for record in pack["trace"]["selected"] if record["target_type"] == "source"]
     assert source_trace[0]["stage_ranks"] == {"provenance": 1}
 
 
@@ -1556,9 +1554,7 @@ def test_source_content_beats_recency_on_sqlite() -> None:
     assert lexical[0]["id"] != early["id"]
     assert lexical[-1]["id"] == early["id"]
 
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="golden retriever Biscuit")
-    )
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="golden retriever Biscuit"))
 
     assert pack["sources"][0]["id"] == early["id"]
     stage = pack["trace"]["stages"]["sources"]
@@ -1566,9 +1562,7 @@ def test_source_content_beats_recency_on_sqlite() -> None:
     assert stage["chunk_fts"] == 1
     assert stage["chunk_fts_source"] == "sqlite_fts"
     source_trace = {
-        record["target_id"]: record
-        for record in pack["trace"]["selected"]
-        if record["target_type"] == "source"
+        record["target_id"]: record for record in pack["trace"]["selected"] if record["target_type"] == "source"
     }
     assert source_trace[str(early["id"])]["stage_ranks"]["chunk_fts"] == 1
 
@@ -1631,9 +1625,7 @@ def test_provenance_fusion_pulls_source_with_no_lexical_match_on_sqlite() -> Non
             "captured_at": "2026-01-05T00:00:00Z",
         }
     )
-    store.create_source_chunk(
-        {"source_id": evidence["id"], "chunk_index": 0, "text": "lorem ipsum dolor sit amet"}
-    )
+    store.create_source_chunk({"source_id": evidence["id"], "chunk_index": 0, "text": "lorem ipsum dolor sit amet"})
     decoy = store.create_source(
         {
             "source_type": "document",
@@ -1642,9 +1634,7 @@ def test_provenance_fusion_pulls_source_with_no_lexical_match_on_sqlite() -> Non
             "captured_at": "2026-06-01T00:00:00Z",
         }
     )
-    store.create_source_chunk(
-        {"source_id": decoy["id"], "chunk_index": 0, "text": "newsletter formatting notes"}
-    )
+    store.create_source_chunk({"source_id": decoy["id"], "chunk_index": 0, "text": "newsletter formatting notes"})
     memory = store.create_memory(
         {
             "memory_key": "preference.board-deck",
@@ -1678,9 +1668,7 @@ def test_provenance_fusion_pulls_source_with_no_lexical_match_on_sqlite() -> Non
     stage = pack["trace"]["stages"]["sources"]
     assert stage["provenance"] == 1
     source_trace = {
-        record["target_id"]: record
-        for record in pack["trace"]["selected"]
-        if record["target_type"] == "source"
+        record["target_id"]: record for record in pack["trace"]["selected"] if record["target_type"] == "source"
     }
     assert source_trace[str(evidence["id"])]["stage_ranks"]["provenance"] == 1
 
@@ -2214,10 +2202,7 @@ def test_legacy_scope_deepening_fails_closed_at_finite_boundary() -> None:
 
     def _endless_decoys(limit: int) -> tuple[list[dict[str, object]], str]:
         limits.append(limit)
-        return [
-            {"id": f"decoy-{index}", "metadata_json": {"people": ["alex"]}}
-            for index in range(limit)
-        ], "legacy"
+        return [{"id": f"decoy-{index}", "metadata_json": {"people": ["alex"]}} for index in range(limit)], "legacy"
 
     with pytest.raises(
         VNextRetrievalCompletenessError,
@@ -2273,9 +2258,7 @@ def test_sqlite_people_and_time_scope_precedes_source_chunk_title_and_loop_limit
     target_source_id = "00000000-0000-0000-0000-000000000001"
     target_chunk_id = "00000000-0000-0000-0000-000000000002"
     target_loop_id = "00000000-0000-0000-0000-000000000003"
-    target_metadata = json.dumps(
-        {"people": ["Sam"], "session_date": "2026-07-08T00:00:00+00:00"}
-    )
+    target_metadata = json.dumps({"people": ["Sam"], "session_date": "2026-07-08T00:00:00+00:00"})
     store.conn.execute(
         """
         INSERT INTO sources (
@@ -2323,11 +2306,7 @@ def test_sqlite_people_and_time_scope_precedes_source_chunk_title_and_loop_limit
         ordinal = index + 10
         source_id = f"10000000-0000-0000-0000-{ordinal:012d}"
         metadata = json.dumps({"people": ["Alex" if is_people_decoy else "Sam"]})
-        event_time = (
-            "2026-07-09T00:00:00+00:00"
-            if is_people_decoy
-            else "2027-01-01T00:00:00+00:00"
-        )
+        event_time = "2026-07-09T00:00:00+00:00" if is_people_decoy else "2027-01-01T00:00:00+00:00"
         created_at = f"2026-12-31T23:{index // 60:02d}:{index % 60:02d}+00:00"
         source_rows.append(
             (
@@ -2543,9 +2522,7 @@ def test_filter_run_id_is_independent_of_the_event_attribution_run_id() -> None:
 
     assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-other-run"]
     assert store.memory_search_kwargs[-1]["run_id"] is None
-    compiled_events = [
-        event for event in store.events if event["event_type"] == "retrieval.context_pack_compiled"
-    ]
+    compiled_events = [event for event in store.events if event["event_type"] == "retrieval.context_pack_compiled"]
     assert compiled_events[-1]["run_id"] == "run-caller"
 
 
@@ -2570,9 +2547,7 @@ def test_context_pack_adds_staleness_note_for_long_unconfirmed_memories() -> Non
         sources=[],
     )
 
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="Alice staleness check")
-    )
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="Alice staleness check"))
 
     by_id = {memory["id"]: memory for memory in pack["relevant_memories"]}
     staleness = by_id["memory-stale"]["staleness"]
@@ -2678,9 +2653,7 @@ def test_scoped_contradictions_deepen_beyond_200_and_bulk_load_backing_memories(
         )
     )
 
-    assert [row["belief_id"] for row in pack["contradicting_evidence"]] == [
-        "belief-target"
-    ]
+    assert [row["belief_id"] for row in pack["contradicting_evidence"]] == ["belief-target"]
     # Prefix deepening performs bounded bulk reads, never one read per belief.
     assert 1 <= store.memory_bulk_reads < 10
 
@@ -2694,9 +2667,7 @@ def test_context_pack_degrades_contradictions_when_store_lacks_beliefs() -> None
     # stores (like the SQLite on-ramp) that have no belief surface at all.
     store.list_beliefs = None  # type: ignore[method-assign]
 
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="Alice degrade check")
-    )
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="Alice degrade check"))
 
     assert pack["contradicting_evidence"] == []
     assert pack["trace"]["stages"]["contradictions"]["status"] == CONTRADICTIONS_STAGE_NO_STORE_SUPPORT
@@ -2732,9 +2703,7 @@ def test_context_pack_populates_recent_changes_from_memory_events() -> None:
         seeded_events=seeded_events,
     )
 
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="Alice recent changes")
-    )
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="Alice recent changes"))
 
     recent = pack["recent_changes"]
     assert len(recent) == 5  # DEFAULT_RECENT_CHANGES_LIMIT
@@ -2918,9 +2887,7 @@ def test_graph_stage_improves_rrf_rank_for_memory_seen_by_both_stages() -> None:
     assert [memory["id"] for memory in pack["relevant_memories"]][0] == "memory-shared"
     by_id = {record["target_id"]: record for record in pack["trace"]["selected"]}
     assert by_id["memory-shared"]["stage_ranks"] == {"fts": 3, "graph": 1}
-    assert by_id["memory-shared"]["rrf_score"] == pytest.approx(
-        1.0 / (RRF_K + 3) + 1.0 / (RRF_K + 1), abs=1e-6
-    )
+    assert by_id["memory-shared"]["rrf_score"] == pytest.approx(1.0 / (RRF_K + 3) + 1.0 / (RRF_K + 1), abs=1e-6)
 
 
 def test_graph_candidates_are_ordered_by_edge_observed_at_then_memory_recency() -> None:
@@ -3053,9 +3020,7 @@ def test_graph_stage_disables_honestly_for_stores_without_entity_support() -> No
 
 
 def test_graph_stage_caps_matched_entities_at_five_by_mention_count() -> None:
-    entities = [
-        _entity_row(f"entity-{index}", f"Meridian{index}", mention_count=index) for index in range(1, 8)
-    ]
+    entities = [_entity_row(f"entity-{index}", f"Meridian{index}", mention_count=index) for index in range(1, 8)]
     store = InMemoryVNextRetrievalStore(
         memories=[],
         sources=[],
@@ -3086,11 +3051,7 @@ def test_graph_stage_bulk_reads_all_edges_beyond_200_in_constant_queries() -> No
             return [
                 edge
                 for edge in self.edges
-                if edge.get("edge_type") in edge_types
-                and (
-                    edge.get("to_id") in ids
-                    or edge.get("from_id") in ids
-                )
+                if edge.get("edge_type") in edge_types and (edge.get("to_id") in ids or edge.get("from_id") in ids)
             ]
 
         def get_memories_by_ids(self, memory_ids):
@@ -3131,9 +3092,7 @@ def test_context_pack_groups_procedures_and_routines_into_procedures_section() -
         sources=[],
     )
 
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="Alice grouping")
-    )
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="Alice grouping"))
 
     assert {item["id"] for item in pack["procedures"]} == {"memory-procedure", "memory-routine"}
     assert [item["id"] for item in pack["relevant_beliefs"]] == ["memory-belief"]
@@ -3301,9 +3260,7 @@ def test_recent_first_orders_memories_by_recency_before_fused_rank() -> None:
         "memory-old",
     ]
     # Under a one-memory budget the strategy flips which memory survives.
-    assert [item["id"] for item in compile_with("balanced", one_memory_budget)["relevant_memories"]] == [
-        "memory-old"
-    ]
+    assert [item["id"] for item in compile_with("balanced", one_memory_budget)["relevant_memories"]] == ["memory-old"]
     assert [item["id"] for item in compile_with("recent_first", one_memory_budget)["relevant_memories"]] == [
         "memory-new"
     ]
@@ -3332,9 +3289,7 @@ def test_facts_first_boosts_fact_memory_types_to_the_front_of_packing() -> None:
     ]
     # Under a one-memory budget: balanced keeps the fused-rank leader, while
     # facts_first keeps the boosted decision memory instead.
-    assert [item["id"] for item in compile_with("balanced", one_memory_budget)["relevant_memories"]] == [
-        "memory-epi-1"
-    ]
+    assert [item["id"] for item in compile_with("balanced", one_memory_budget)["relevant_memories"]] == ["memory-epi-1"]
     assert [item["id"] for item in compile_with("facts_first", one_memory_budget)["relevant_memories"]] == [
         "memory-dec-1"
     ]
@@ -3381,8 +3336,7 @@ def test_contradictions_first_lets_contradictions_survive_a_budget_that_drops_th
     assert contradictions_first["relevant_memories"] == []
     assert contradictions_first["budget"]["allocation"]["contradicting_evidence"] == record_cost
     assert (
-        sum(contradictions_first["budget"]["allocation"].values())
-        == contradictions_first["budget"]["token_estimate"]
+        sum(contradictions_first["budget"]["allocation"].values()) == contradictions_first["budget"]["token_estimate"]
     )
 
 
@@ -3393,9 +3347,7 @@ def test_unknown_context_depth_is_rejected_with_choices_listed() -> None:
     store = InMemoryVNextRetrievalStore(memories=[], sources=[])
 
     with pytest.raises(VNextRetrievalValidationError) as excinfo:
-        VNextRetrievalService(store).compile_context_pack(
-            VNextRetrievalRequest(query="Alice", context_depth="extreme")
-        )
+        VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="Alice", context_depth="extreme"))
 
     message = str(excinfo.value)
     assert "context_depth" in message
@@ -3772,9 +3724,7 @@ def test_pack_items_carry_validity_only_when_temporal_signal_exists() -> None:
         sources=[],
     )
 
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="Alice validity")
-    )
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="Alice validity"))
 
     by_id = {memory["id"]: memory for memory in pack["relevant_memories"]}
     # Schema stability: rows without temporal/supersession signal gain NO key.
@@ -3807,9 +3757,7 @@ def test_pack_ranks_replacement_above_superseded_ancestor_and_traces_the_reorder
     )
     store = InMemoryVNextRetrievalStore(memories=[ancestor, bystander, replacement], sources=[])
 
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="Alice preference check")
-    )
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="Alice preference check"))
 
     # Fused (FTS) order was ancestor, bystander, replacement; only the
     # supersession pair is reordered -- the replacement moves directly
@@ -3831,9 +3779,7 @@ def test_pack_ranks_replacement_above_superseded_ancestor_and_traces_the_reorder
     # The trace keeps the honest fused ranking; the reorder is reported
     # only through the counter.
     trace_ranks = {
-        record["target_id"]: record["rank"]
-        for record in pack["trace"]["selected"]
-        if record["target_type"] == "memory"
+        record["target_id"]: record["rank"] for record in pack["trace"]["selected"] if record["target_type"] == "memory"
     }
     assert trace_ranks == {"memory-old-color": 1, "memory-bystander": 2, "memory-new-color": 3}
 
@@ -3850,9 +3796,7 @@ def test_pack_annotates_one_sided_supersedes_pointer_via_packmate() -> None:
     )
     store = InMemoryVNextRetrievalStore(memories=[ancestor, replacement], sources=[])
 
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="Alice relocation office")
-    )
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="Alice relocation office"))
 
     assert [memory["id"] for memory in pack["relevant_memories"]] == [
         "memory-new-office",
@@ -3879,9 +3823,7 @@ def test_pack_keeps_order_when_replacement_already_ranks_above_ancestor() -> Non
     )
     store = InMemoryVNextRetrievalStore(memories=[replacement, ancestor], sources=[])
 
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="Alice rollout plan")
-    )
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="Alice rollout plan"))
 
     assert [memory["id"] for memory in pack["relevant_memories"]] == [
         "memory-new-plan",
@@ -3900,9 +3842,7 @@ def test_supersession_reorder_terminates_on_corrupt_pointer_cycles() -> None:
     cyclic_b = _memory_row("memory-b", "Alice cycle pair row beta.", superseded_by="memory-a")
     store = InMemoryVNextRetrievalStore(memories=[cyclic_a, cyclic_b], sources=[])
 
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="Alice cycle pair")
-    )
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="Alice cycle pair"))
 
     assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-a", "memory-b"]
     assert pack["trace"]["supersession_reorders"] == 2
@@ -3949,9 +3889,7 @@ def test_properly_superseded_row_is_already_excluded_from_packs_on_sqlite() -> N
         actor_type="user",
     )
 
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="gym membership")
-    )
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query="gym membership"))
 
     assert [memory["id"] for memory in pack["relevant_memories"]] == [str(replacement["id"])]
     assert pack["relevant_memories"][0]["validity"] == {"supersedes_memory_id": str(old["id"])}
@@ -3970,8 +3908,7 @@ def test_knowledge_update_pack_prefers_correction_on_sqlite() -> None:
             "memory_type": "preference",
             "title": "Favorite color",
             "canonical_text": (
-                "Favorite color: the user's favorite color is blue. "
-                "Favorite color blue came up again while shopping."
+                "Favorite color: the user's favorite color is blue. Favorite color blue came up again while shopping."
             ),
             "status": "active",
             "domain": "personal",
@@ -4169,9 +4106,7 @@ def test_ungated_query_takes_the_byte_identical_coverage_free_path(monkeypatch) 
         )
 
     dormant_pack = compile_pack()
-    monkeypatch.setattr(
-        vnext_retrieval_module.vnext_coverage_query, "detect_aggregation_intent", lambda query: None
-    )
+    monkeypatch.setattr(vnext_retrieval_module.vnext_coverage_query, "detect_aggregation_intent", lambda query: None)
     hard_disabled_pack = compile_pack()
 
     assert json.dumps(dormant_pack, sort_keys=True, default=str) == json.dumps(
@@ -4183,9 +4118,7 @@ def test_ungated_query_takes_the_byte_identical_coverage_free_path(monkeypatch) 
         separators=(",", ":"),
         default=str,
     ).encode()
-    assert sha256(canonical_pack).hexdigest() == (
-        "4b046a9dccd4b58d0970f8957e65c769619338f29ba547fe3f39eecd5d6b7b32"
-    )
+    assert sha256(canonical_pack).hexdigest() == ("4b046a9dccd4b58d0970f8957e65c769619338f29ba547fe3f39eecd5d6b7b32")
     assert "coverage" not in json.dumps(dormant_pack, default=str)
     assert "aggregation" not in dormant_pack
     assert set(dormant_pack["budget"]["allocation"]) == {
@@ -4285,9 +4218,7 @@ def test_aggregation_intent_promotes_distinct_instances_over_near_duplicates(mon
 
     control_store = _instance_diversity_store()
     with monkeypatch.context() as patch:
-        patch.setattr(
-            vnext_retrieval_module.vnext_coverage_query, "detect_aggregation_intent", lambda q: None
-        )
+        patch.setattr(vnext_retrieval_module.vnext_coverage_query, "detect_aggregation_intent", lambda q: None)
         control_pack = VNextRetrievalService(control_store).compile_context_pack(request)
     control_ids = [str(source["id"]) for source in control_pack["sources"]]
     assert control_ids == [f"dupe-{index:02d}" for index in range(1, 9)]
@@ -4373,9 +4304,7 @@ def test_multi_clause_aggregation_backfills_clause_only_memory_into_freed_slots(
 
     control_store = build_store()
     with monkeypatch.context() as patch:
-        patch.setattr(
-            vnext_retrieval_module.vnext_coverage_query, "detect_aggregation_intent", lambda q: None
-        )
+        patch.setattr(vnext_retrieval_module.vnext_coverage_query, "detect_aggregation_intent", lambda q: None)
         control_pack = VNextRetrievalService(control_store).compile_context_pack(
             VNextRetrievalRequest(query=query, max_items=4)
         )
@@ -4384,9 +4313,7 @@ def test_multi_clause_aggregation_backfills_clause_only_memory_into_freed_slots(
     assert len(control_store.memory_search_kwargs) == 1
 
     coverage_store = build_store()
-    pack = VNextRetrievalService(coverage_store).compile_context_pack(
-        VNextRetrievalRequest(query=query, max_items=4)
-    )
+    pack = VNextRetrievalService(coverage_store).compile_context_pack(VNextRetrievalRequest(query=query, max_items=4))
 
     selected_ids = [str(memory["id"]) for memory in pack["relevant_memories"]]
     # filler-02 (same source as filler-01) is demoted; the freed slot goes
@@ -4561,10 +4488,7 @@ def test_aggregation_intent_promotes_accepted_rollup_card_above_its_members(monk
 
 def test_frequency_members_with_multiple_occurrences_remain_trace_only() -> None:
     member_ids = [f"match-{index}" for index in range(1, 4)]
-    members = [
-        _memory_row(memory_id, f"I score goals twice in {memory_id}.")
-        for memory_id in member_ids
-    ]
+    members = [_memory_row(memory_id, f"I score goals twice in {memory_id}.") for memory_id in member_ids]
     card = _accepted_rollup_card_row(
         "goals-rollup",
         "Score goals — 3 instances: match one; match two; match three.",
@@ -4573,9 +4497,7 @@ def test_frequency_members_with_multiple_occurrences_remain_trace_only() -> None
     )
     pack = VNextRetrievalService(
         InMemoryVNextRetrievalStore(memories=[*members, card], sources=[])
-    ).compile_context_pack(
-        VNextRetrievalRequest(query="How many times did I score goals?", max_items=3)
-    )
+    ).compile_context_pack(VNextRetrievalRequest(query="How many times did I score goals?", max_items=3))
 
     candidate = pack["trace"]["stages"]["coverage_mode"]["candidate_instance_count"]
     assert candidate["count"] == 3
@@ -4611,9 +4533,7 @@ def test_naturally_selected_unrelated_rollup_does_not_turn_trace_count_into_answ
     coverage = pack["trace"]["stages"]["coverage_mode"]
     assert coverage["candidate_instance_count"]["count"] == 3
     assert coverage["card_promotions"] == 0
-    assert "memory-rollup-card" in {
-        str(memory["id"]) for memory in pack["relevant_memories"]
-    }
+    assert "memory-rollup-card" in {str(memory["id"]) for memory in pack["relevant_memories"]}
     assert "aggregation" not in pack
     assert "aggregation" not in pack["budget"]["allocation"]
 
@@ -4679,9 +4599,7 @@ def test_non_aggregation_query_keeps_rollup_card_ranking_dormant(monkeypatch) ->
     def _promotion_bomb(candidates: object, **kwargs: object) -> object:
         raise AssertionError("promote_rollup_cards must stay dormant without aggregation intent")
 
-    monkeypatch.setattr(
-        vnext_retrieval_module.vnext_coverage_query, "promote_rollup_cards", _promotion_bomb
-    )
+    monkeypatch.setattr(vnext_retrieval_module.vnext_coverage_query, "promote_rollup_cards", _promotion_bomb)
     hard_disabled_pack = compile_pack()
 
     assert json.dumps(dormant_pack, sort_keys=True, default=str) == json.dumps(
@@ -4726,9 +4644,7 @@ def test_aggregation_intent_without_cards_leaves_ordering_unchanged(monkeypatch)
         )
         disabled_pack = compile_pack(build_store())
 
-    assert json.dumps(live_pack, sort_keys=True, default=str) == json.dumps(
-        disabled_pack, sort_keys=True, default=str
-    )
+    assert json.dumps(live_pack, sort_keys=True, default=str) == json.dumps(disabled_pack, sort_keys=True, default=str)
     assert live_pack["trace"]["stages"]["coverage_mode"]["card_promotions"] == 0
     assert [str(memory["id"]) for memory in live_pack["relevant_memories"]] == [
         f"memory-game-{index}" for index in range(1, 5)
@@ -5000,7 +4916,3416 @@ def test_before_today_window_excludes_rows_first_seen_today() -> None:
     assert stage["candidate_count"] == 1
     older_record = [record for record in pack["trace"]["selected"] if record["target_id"] == "memory-older"]
     assert older_record[0]["stage_ranks"]["temporal_anchor"] == 1
-    today_record = [
-        record for record in pack["trace"]["selected"] if record["target_id"] == "memory-ingested-today"
-    ]
+    today_record = [record for record in pack["trace"]["selected"] if record["target_id"] == "memory-ingested-today"]
     assert "temporal_anchor" not in today_record[0]["stage_ranks"]
+
+
+class OccurrenceReaderStore(InMemoryVNextRetrievalStore):
+    def __init__(
+        self,
+        *,
+        memories: list[dict[str, object]],
+        units: list[dict[str, object]],
+        evidence: list[dict[str, object]],
+        coverage: dict[str, object] | None,
+        unresolved: list[dict[str, object]] | None = None,
+        sources: list[dict[str, object]] | None = None,
+        source_chunks: list[dict[str, object]] | None = None,
+        internal_unit_cap: int | None = None,
+        internal_evidence_cap: int | None = None,
+        internal_unresolved_cap: int | None = None,
+        snapshot_proof: Mapping[str, object] | None = None,
+        fail_snapshot_end: bool = False,
+        skip_probed_unit_on_followup: bool = False,
+        skip_probed_evidence_on_followup: bool = False,
+        skip_probed_unresolved_on_followup: bool = False,
+    ) -> None:
+        super().__init__(
+            memories=memories,
+            sources=sources or [],
+            source_chunks=source_chunks or [],
+        )
+        self.occurrence_units = sorted(units, key=lambda row: str(row["id"]))
+        self.occurrence_evidence = evidence
+        self.occurrence_coverage = coverage
+        self.unresolved_occurrence_claims = sorted(unresolved or [], key=lambda row: str(row["id"]))
+        self.internal_unit_cap = internal_unit_cap
+        self.internal_evidence_cap = internal_evidence_cap
+        self.internal_unresolved_cap = internal_unresolved_cap
+        self.snapshot_proof = dict(
+            snapshot_proof
+            or {
+                "proof": "occurrence_read_snapshot_v1",
+                "acquired": True,
+                "backend": "sqlite",
+                "mode": "transaction_snapshot",
+                "lifecycle_as_of": datetime(
+                    2026,
+                    7,
+                    25,
+                    12,
+                    tzinfo=UTC,
+                ),
+            }
+        )
+        self.fail_snapshot_end = fail_snapshot_end
+        self.skip_probed_unit_on_followup = skip_probed_unit_on_followup
+        self.skip_probed_evidence_on_followup = skip_probed_evidence_on_followup
+        self.skip_probed_unresolved_on_followup = skip_probed_unresolved_on_followup
+        self.snapshot_calls = 0
+        self.snapshot_end_calls = 0
+        self.occurrence_search_calls: list[dict[str, object]] = []
+        self.evidence_search_calls: list[dict[str, object]] = []
+        self.unresolved_search_calls: list[dict[str, object]] = []
+
+    def begin_occurrence_read_snapshot(self) -> dict[str, object]:
+        self.snapshot_calls += 1
+        return dict(self.snapshot_proof)
+
+    def end_occurrence_read_snapshot(self) -> None:
+        self.snapshot_end_calls += 1
+        if self.fail_snapshot_end:
+            raise RuntimeError("snapshot cleanup failed")
+
+    def search_accepted_occurrence_units_by_selector(
+        self,
+        *,
+        selector_key: str,
+        projects: tuple[str, ...] | None = None,
+        domains: tuple[str, ...] | None = None,
+        sensitivity_allowed: tuple[str, ...] | None = None,
+        occurred_at_start: datetime | None = None,
+        occurred_at_end: datetime | None = None,
+        include_timeless: bool = False,
+        as_of: datetime | None = None,
+        after_id: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        probe_was_seen = any(
+            call["after_id"] == after_id and call["limit"] == 1 for call in self.occurrence_search_calls
+        )
+        self.occurrence_search_calls.append(
+            {
+                "selector_key": selector_key,
+                "projects": projects,
+                "domains": domains,
+                "sensitivity_allowed": sensitivity_allowed,
+                "occurred_at_start": occurred_at_start,
+                "occurred_at_end": occurred_at_end,
+                "include_timeless": include_timeless,
+                "as_of": as_of,
+                "after_id": after_id,
+                "limit": limit,
+            }
+        )
+        wanted_projects = set(projects or ())
+        wanted_domains = set(domains or ())
+        wanted_sensitivity = set(sensitivity_allowed or ())
+        rows = [
+            row
+            for row in self.occurrence_units
+            if (after_id is None or str(row["id"]) > after_id)
+            and selector_key
+            in set(
+                row.get("predicate_json", {}).get("selector_keys", [])
+                if isinstance(row.get("predicate_json"), Mapping)
+                else ()
+            )
+            and (not wanted_projects or wanted_projects.intersection(row.get("project_scope", [])))
+            and (not wanted_domains or row.get("domain") in wanted_domains)
+            and (not wanted_sensitivity or row.get("sensitivity") in wanted_sensitivity)
+            and _occurrence_test_row_overlaps(
+                row,
+                occurred_at_start=occurred_at_start,
+                occurred_at_end=occurred_at_end,
+                include_timeless=include_timeless,
+            )
+            and _occurrence_test_lifecycle_visible(row, as_of=as_of)
+        ]
+        effective_limit = min(limit, self.internal_unit_cap) if self.internal_unit_cap is not None else limit
+        page = rows[:effective_limit]
+        if self.skip_probed_unit_on_followup and probe_was_seen and limit > 1 and page:
+            return page[1:]
+        return page
+
+    def list_accepted_occurrence_units(
+        self,
+        *,
+        projects: tuple[str, ...] | None = None,
+        domains: tuple[str, ...] | None = None,
+        sensitivity_allowed: tuple[str, ...] | None = None,
+        occurred_at_start: datetime | None = None,
+        occurred_at_end: datetime | None = None,
+        include_timeless: bool = False,
+        as_of: datetime | None = None,
+        after_id: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        probe_was_seen = any(
+            call["after_id"] == after_id and call["limit"] == 1 for call in self.occurrence_search_calls
+        )
+        self.occurrence_search_calls.append(
+            {
+                "selector_key": None,
+                "projects": projects,
+                "domains": domains,
+                "sensitivity_allowed": sensitivity_allowed,
+                "occurred_at_start": occurred_at_start,
+                "occurred_at_end": occurred_at_end,
+                "include_timeless": include_timeless,
+                "as_of": as_of,
+                "after_id": after_id,
+                "limit": limit,
+            }
+        )
+        wanted_projects = set(projects or ())
+        wanted_domains = set(domains or ())
+        wanted_sensitivity = set(sensitivity_allowed or ())
+        rows = [
+            row
+            for row in self.occurrence_units
+            if (after_id is None or str(row["id"]) > after_id)
+            and (not wanted_projects or wanted_projects.intersection(row.get("project_scope", [])))
+            and (not wanted_domains or row.get("domain") in wanted_domains)
+            and (not wanted_sensitivity or row.get("sensitivity") in wanted_sensitivity)
+            and _occurrence_test_row_overlaps(
+                row,
+                occurred_at_start=occurred_at_start,
+                occurred_at_end=occurred_at_end,
+                include_timeless=include_timeless,
+            )
+            and _occurrence_test_lifecycle_visible(row, as_of=as_of)
+        ]
+        effective_limit = min(limit, self.internal_unit_cap) if self.internal_unit_cap is not None else limit
+        page = rows[:effective_limit]
+        if self.skip_probed_unit_on_followup and probe_was_seen and limit > 1 and page:
+            return page[1:]
+        return page
+
+    def search_accepted_occurrence_units(
+        self,
+        *,
+        query: str,
+        exact_count_key: str | None = None,
+        projects: tuple[str, ...] | None = None,
+        domains: tuple[str, ...] | None = None,
+        sensitivity_allowed: tuple[str, ...] | None = None,
+        occurred_at_start: datetime | None = None,
+        occurred_at_end: datetime | None = None,
+        include_timeless: bool = False,
+        as_of: datetime | None = None,
+        after_id: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        probe_was_seen = any(
+            call["after_id"] == after_id and call["limit"] == 1 for call in self.occurrence_search_calls
+        )
+        self.occurrence_search_calls.append(
+            {
+                "query": query,
+                "exact_count_key": exact_count_key,
+                "projects": projects,
+                "domains": domains,
+                "sensitivity_allowed": sensitivity_allowed,
+                "occurred_at_start": occurred_at_start,
+                "occurred_at_end": occurred_at_end,
+                "include_timeless": include_timeless,
+                "as_of": as_of,
+                "after_id": after_id,
+                "limit": limit,
+            }
+        )
+        rows = [
+            row
+            for row in self.occurrence_units
+            if (after_id is None or str(row["id"]) > after_id)
+            and (exact_count_key is None or str(row.get("count_key") or "") == exact_count_key)
+            and _occurrence_test_row_overlaps(
+                row,
+                occurred_at_start=occurred_at_start,
+                occurred_at_end=occurred_at_end,
+                include_timeless=include_timeless,
+            )
+        ]
+        effective_limit = min(limit, self.internal_unit_cap) if self.internal_unit_cap is not None else limit
+        page = rows[:effective_limit]
+        if self.skip_probed_unit_on_followup and probe_was_seen and limit > 1 and page:
+            return page[1:]
+        return page
+
+    def list_occurrence_evidence_for_units(
+        self,
+        occurrence_ids: tuple[str, ...] | list[str],
+        *,
+        as_of: datetime | None = None,
+        after_id: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        probe_was_seen = any(call["after_id"] == after_id and call["limit"] == 1 for call in self.evidence_search_calls)
+        self.evidence_search_calls.append(
+            {
+                "occurrence_ids": tuple(occurrence_ids),
+                "as_of": as_of,
+                "after_id": after_id,
+                "limit": limit,
+            }
+        )
+        wanted = set(occurrence_ids)
+        rows = [
+            row
+            for row in sorted(
+                self.occurrence_evidence,
+                key=lambda item: str(item.get("id") or ""),
+            )
+            if str(row.get("occurrence_id")) in wanted and (after_id is None or str(row.get("id") or "") > after_id)
+        ]
+        effective_limit = min(limit, self.internal_evidence_cap) if self.internal_evidence_cap is not None else limit
+        page = rows[:effective_limit]
+        if self.skip_probed_evidence_on_followup and probe_was_seen and limit > 1 and page:
+            return page[1:]
+        return page
+
+    def get_source_chunks_by_ids(
+        self,
+        source_chunk_ids: tuple[str, ...] | list[str],
+    ) -> list[dict[str, object]]:
+        wanted = set(source_chunk_ids)
+        return [row for row in self.source_chunks if str(row.get("id")) in wanted]
+
+    def get_occurrence_coverage(self) -> dict[str, object] | None:
+        return self.occurrence_coverage
+
+    def list_accepted_occurrence_extraction_dispositions_for_claims(
+        self,
+        claim_ids: tuple[str, ...] | list[str],
+        *,
+        limit: int = 201,
+    ) -> list[dict[str, object]]:
+        del claim_ids, limit
+        return []
+
+    def summarize_occurrence_extraction_accounting(
+        self,
+        *,
+        extractor_version: str,
+        source_ids: tuple[str, ...] | list[str] | None = None,
+    ) -> dict[str, object]:
+        del source_ids
+        metadata = (
+            self.occurrence_coverage.get("metadata_json") if isinstance(self.occurrence_coverage, Mapping) else None
+        )
+        if not isinstance(metadata, Mapping):
+            return {"complete": False, "items": []}
+        unresolved_ids = [str(row["id"]) for row in self.unresolved_occurrence_claims]
+        unit_ids = [str(row["id"]) for row in self.occurrence_units]
+        claim_ids = sorted(
+            {
+                str(row["claim_id"])
+                for row in [
+                    *self.occurrence_units,
+                    *self.unresolved_occurrence_claims,
+                ]
+                if row.get("claim_id") is not None
+            }
+            | {str(row["id"]) for row in self.unresolved_occurrence_claims if row.get("id") is not None}
+        )
+        unresolved = bool(unresolved_ids)
+        return {
+            "extractor_version": extractor_version,
+            "source_ids": list(metadata["source_ids"]),
+            "source_chunk_ids": list(metadata["source_chunk_ids"]),
+            "current_chunk_count": 1,
+            "reviewed_current_count": 1,
+            "missing_count": 0,
+            "stale_count": 0,
+            "unresolved_count": len(unresolved_ids),
+            "unreviewed_count": 0,
+            "invalid_accepted_count": 0,
+            "invalid_receipt_count": 0,
+            "unanchored_memory_count": 0,
+            "unanchored_memory_ids": [],
+            "accounted_memory_count": len(self.memories),
+            "accounted_memory_ids": sorted(str(row["id"]) for row in self.memories),
+            "snapshot_digest": metadata["snapshot_digest"],
+            "disposition_digest": metadata["disposition_digest"],
+            "complete": True,
+            "items": [
+                {
+                    "source_id": _OCCURRENCE_TEST_SOURCE_ID,
+                    "source_chunk_id": _OCCURRENCE_TEST_CHUNK_ID,
+                    "snapshot_sha256": "c" * 64,
+                    "disposition_id": _OCCURRENCE_TEST_DISPOSITION_ID,
+                    "disposition": ("unresolved_claims" if unresolved else "accepted_occurrences"),
+                    "review_status": "accepted",
+                    "review_version": 1,
+                    "predicate_keys": sorted(
+                        {
+                            str(selector)
+                            for row in [
+                                *self.occurrence_units,
+                                *self.unresolved_occurrence_claims,
+                            ]
+                            if isinstance(row.get("predicate_json"), Mapping)
+                            for selector in row["predicate_json"].get(
+                                "selector_keys",
+                                [],
+                            )
+                        }
+                    ),
+                    "claim_ids": claim_ids,
+                    "occurrence_ids": unit_ids,
+                    "status": ("complete_with_unresolved_claims" if unresolved else "complete"),
+                }
+            ],
+        }
+
+    def list_unresolved_occurrence_claims(
+        self,
+        *,
+        count_key: str | None,
+        projects: tuple[str, ...] | None = None,
+        domains: tuple[str, ...] | None = None,
+        sensitivity_allowed: tuple[str, ...] | None = None,
+        occurred_at_start: datetime | None = None,
+        occurred_at_end: datetime | None = None,
+        include_timeless: bool = False,
+        as_of: datetime | None = None,
+        after_id: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        probe_was_seen = any(
+            call["after_id"] == after_id and call["limit"] == 1 for call in self.unresolved_search_calls
+        )
+        self.unresolved_search_calls.append(
+            {
+                "count_key": count_key,
+                "projects": projects,
+                "domains": domains,
+                "sensitivity_allowed": sensitivity_allowed,
+                "occurred_at_start": occurred_at_start,
+                "occurred_at_end": occurred_at_end,
+                "include_timeless": include_timeless,
+                "as_of": as_of,
+                "after_id": after_id,
+                "limit": limit,
+            }
+        )
+        rows = [
+            row
+            for row in self.unresolved_occurrence_claims
+            if (count_key is None or row.get("count_key") == count_key)
+            and (after_id is None or str(row["id"]) > after_id)
+            and _occurrence_test_row_overlaps(
+                row,
+                occurred_at_start=occurred_at_start,
+                occurred_at_end=occurred_at_end,
+                include_timeless=include_timeless,
+            )
+        ]
+        effective_limit = (
+            min(limit, self.internal_unresolved_cap) if self.internal_unresolved_cap is not None else limit
+        )
+        page = rows[:effective_limit]
+        if self.skip_probed_unresolved_on_followup and probe_was_seen and limit > 1 and page:
+            return page[1:]
+        return page
+
+
+def _occurrence_test_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    else:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _occurrence_test_lifecycle_visible(
+    row: Mapping[str, object],
+    *,
+    as_of: datetime | None,
+) -> bool:
+    updated_at = _occurrence_test_datetime(row.get("updated_at"))
+    return as_of is None or updated_at is None or updated_at <= as_of
+
+
+def _occurrence_test_row_overlaps(
+    row: Mapping[str, object],
+    *,
+    occurred_at_start: datetime | None,
+    occurred_at_end: datetime | None,
+    include_timeless: bool,
+) -> bool:
+    row_start = _occurrence_test_datetime(row.get("occurred_at_start"))
+    row_end = _occurrence_test_datetime(row.get("occurred_at_end"))
+    if row_start is None and row_end is None:
+        return include_timeless
+    effective_start = row_start or row_end
+    effective_end = row_end or row_start
+    assert effective_start is not None
+    assert effective_end is not None
+    return not (
+        (occurred_at_start is not None and effective_end < occurred_at_start)
+        or (occurred_at_end is not None and effective_start > occurred_at_end)
+    )
+
+
+def _occurrence_test_predicate() -> dict[str, object]:
+    return build_occurrence_predicate_atom(
+        action="service",
+        object_leaf="bike",
+    )
+
+
+def _occurrence_test_unit_aggregation(
+    occurrence_key: str,
+) -> dict[str, object]:
+    return {
+        "schema": OCCURRENCE_AGGREGATION_SCHEMA,
+        "members": [
+            {
+                "basis": "event_instance",
+                "identity_basis": "occurrence_key",
+                "member_identity": occurrence_key,
+            }
+        ],
+    }
+
+
+def _occurrence_test_claim_aggregation() -> dict[str, object]:
+    return {
+        "schema": OCCURRENCE_AGGREGATION_SCHEMA,
+        "bases": [
+            {
+                "basis": "event_instance",
+                "identity_basis": "occurrence_key",
+            }
+        ],
+    }
+
+
+def _resign_occurrence_test_unit(
+    unit: dict[str, object],
+    evidence_rows: list[dict[str, object]],
+) -> None:
+    evidence_digest = sha256(
+        "|".join(
+            occurrence_evidence_facts_digest(row)
+            for row in sorted(
+                evidence_rows,
+                key=lambda row: (
+                    str(row["evidence_key"]),
+                    str(row["id"]),
+                ),
+            )
+        ).encode()
+    ).hexdigest()
+    unit["reviewed_evidence_count"] = len(evidence_rows)
+    unit["reviewed_evidence_digest"] = evidence_digest
+    unit_receipt = occurrence_unit_review_receipt_digest(
+        unit,
+        action=str(unit["review_receipt_action"]),
+        reviewer_id=str(unit["reviewer_id"]),
+        reason=str(unit["review_reason"]),
+        review_version=int(unit["review_version"]),
+        evidence_digest=evidence_digest,
+    )
+    unit["review_receipt_digest"] = unit_receipt
+    for row in evidence_rows:
+        row["unit_review_receipt_digest"] = unit_receipt
+        row["review_receipt_digest"] = occurrence_evidence_review_receipt_digest(
+            row,
+            action=str(row["review_receipt_action"]),
+            reviewer_id=str(row["reviewer_id"]),
+            reason=str(row["review_reason"]),
+            unit_review_receipt_digest=unit_receipt,
+        )
+
+
+def _retarget_occurrence_test_unit(
+    unit: dict[str, object],
+    evidence_rows: list[dict[str, object]],
+    *,
+    action: str,
+    object_leaf: str,
+    count_key: str,
+    canonical_text: str,
+) -> None:
+    unit["count_key"] = count_key
+    unit["canonical_text"] = canonical_text
+    unit["predicate_json"] = build_occurrence_predicate_atom(
+        action=action,
+        object_leaf=object_leaf,
+    )
+    _resign_occurrence_test_unit(unit, evidence_rows)
+
+
+def _occurrence_test_unresolved_claim(
+    claim_id: str,
+    *,
+    quantity_min: int = 1,
+    quantity_max: int | None = 1,
+    range_kind: str = "exact",
+    action: str = "service",
+    object_leaf: str = "bike",
+    count_key: str = "bike service",
+    occurred_at_start: str | None = "2026-05-01T00:00:00Z",
+    occurred_at_end: str | None = "2026-05-01T00:00:00Z",
+) -> dict[str, object]:
+    return {
+        "id": claim_id,
+        "user_id": "user-1",
+        "claim_key": f"fixture:{claim_id}",
+        "count_key": count_key,
+        "canonical_text": f"Unresolved {count_key} occurrence.",
+        "quantity_min": quantity_min,
+        "quantity_max": quantity_max,
+        "range_kind": range_kind,
+        "resolution_status": "pending",
+        "resolution_decision": "ambiguous",
+        "identity_basis": "ambiguous",
+        "resolved_occurrence_id": None,
+        "review_status": "candidate",
+        "predicate_json": build_occurrence_predicate_atom(
+            action=action,
+            object_leaf=object_leaf,
+        ),
+        "aggregation_json": _occurrence_test_claim_aggregation(),
+        "domain": "personal",
+        "sensitivity": "private",
+        "project_scope": [],
+        "occurred_at_start": occurred_at_start,
+        "occurred_at_end": occurred_at_end,
+    }
+
+
+def _reviewed_occurrence_rows(
+    count: int = 2,
+) -> tuple[
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+]:
+    memories: list[dict[str, object]] = []
+    units: list[dict[str, object]] = []
+    evidence: list[dict[str, object]] = []
+    for index in range(1, count + 1):
+        occurrence_id = f"occurrence-{index:03d}"
+        memory_id = f"memory-occurrence-{index:03d}"
+        evidence_id = f"evidence-{index:03d}"
+        evidence_key = f"bike-service-evidence-{index:03d}"
+        quote = f"bike service {index}"
+        quote_sha256 = sha256(quote.encode()).hexdigest()
+        review_reason = "reviewed occurrence evidence"
+        memories.append(
+            _memory_row(
+                memory_id,
+                f"Bike service occurrence {index}",
+                domain="personal",
+                sensitivity="private",
+                project_id="bike",
+            )
+        )
+        occurrence_key = f"{index:064x}"
+        unit: dict[str, object] = {
+            "id": occurrence_id,
+            "user_id": "user-1",
+            "claim_id": f"claim-{index:03d}",
+            "claim_ordinal": 1,
+            "occurrence_key": occurrence_key,
+            "count_key": "bike service",
+            "canonical_text": f"Bike service occurrence {index}",
+            "unit_value": 1,
+            "review_status": "accepted",
+            "identity_status": "resolved",
+            "ambiguity_group_key": None,
+            "predicate_json": _occurrence_test_predicate(),
+            "aggregation_json": _occurrence_test_unit_aggregation(occurrence_key),
+            "domain": "personal",
+            "sensitivity": "private",
+            "project_scope": ["bike"],
+            "occurred_at_start": "2026-01-10T12:00:00Z",
+            "occurred_at_end": "2026-01-10T12:00:00Z",
+            "reviewed_at": "2026-07-01T00:00:00Z",
+            "reviewer_id": "reviewer-1",
+            "review_reason": review_reason,
+            "review_receipt_action": "accepted",
+            "review_version": 1,
+            "superseded_by": None,
+            "retired_at": None,
+        }
+        evidence_row: dict[str, object] = {
+            "id": evidence_id,
+            "user_id": "user-1",
+            "claim_id": f"claim-{index:03d}",
+            "occurrence_id": occurrence_id,
+            "memory_id": memory_id,
+            "source_id": None,
+            "source_chunk_id": None,
+            "evidence_key": evidence_key,
+            "evidence_role": "supports",
+            "quote": quote,
+            "quote_sha256": quote_sha256,
+            "review_status": "accepted",
+            "review_receipt_action": "accepted",
+            "reviewer_id": "reviewer-1",
+            "review_reason": review_reason,
+        }
+        _resign_occurrence_test_unit(unit, [evidence_row])
+        units.append(unit)
+        evidence.append(evidence_row)
+    return memories, units, evidence
+
+
+def _reviewed_occurrence_with_shared_evidence(
+    evidence_count: int,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+    memories, units, _evidence = _reviewed_occurrence_rows(1)
+    unit = units[0]
+    evidence: list[dict[str, object]] = []
+    memories = []
+    for index in range(1, evidence_count + 1):
+        memory_id = f"memory-shared-{index:04d}"
+        evidence_id = f"evidence-shared-{index:04d}"
+        evidence_key = f"bike-service-shared-{index:04d}"
+        quote_sha256 = sha256(f"shared bike service evidence {index}".encode()).hexdigest()
+        memories.append(
+            _memory_row(
+                memory_id,
+                f"Bike service evidence carrier {index}",
+                domain="personal",
+                sensitivity="private",
+                project_id="bike",
+            )
+        )
+        evidence.append(
+            {
+                "id": evidence_id,
+                "user_id": "user-1",
+                "claim_id": unit["claim_id"],
+                "occurrence_id": unit["id"],
+                "memory_id": memory_id,
+                "source_id": None,
+                "source_chunk_id": None,
+                "evidence_key": evidence_key,
+                "evidence_role": "supports",
+                "quote": f"shared bike service evidence {index}",
+                "quote_sha256": quote_sha256,
+                "review_status": "accepted",
+                "review_receipt_action": "accepted",
+                "reviewer_id": "reviewer-1",
+                "review_reason": "reviewed occurrence evidence",
+            }
+        )
+    _resign_occurrence_test_unit(unit, evidence)
+    return memories, units, evidence
+
+
+def _complete_occurrence_coverage() -> dict[str, object]:
+    accounting = {
+        "accounting_schema": "occurrence_accounting_v1",
+        "extractor_version": _OCCURRENCE_TEST_EXTRACTOR_VERSION,
+        "source_ids": [_OCCURRENCE_TEST_SOURCE_ID],
+        "source_chunk_ids": [_OCCURRENCE_TEST_CHUNK_ID],
+        "snapshot_digest": "a" * 64,
+        "disposition_digest": "b" * 64,
+    }
+    coverage: dict[str, object] = {
+        "id": "coverage-1",
+        "user_id": "user-1",
+        "coverage_mode": "complete_history",
+        "coverage_started_at": "2020-01-01T00:00:00Z",
+        "historical_review_status": "reviewed",
+        "complete_through": "2026-12-31T23:59:59Z",
+        "review_version": 1,
+        "reviewer_id": "reviewer-1",
+        "review_reason": "Reviewed the complete occurrence history.",
+        "metadata_json": accounting,
+    }
+    coverage["review_receipt_digest"] = occurrence_coverage_review_receipt_digest(
+        coverage_id=str(coverage["id"]),
+        user_id=str(coverage["user_id"]),
+        review_version=int(coverage["review_version"]),
+        coverage_mode=str(coverage["coverage_mode"]),
+        coverage_started_at=str(coverage["coverage_started_at"]),
+        historical_review_status=str(coverage["historical_review_status"]),
+        complete_through=str(coverage["complete_through"]),
+        reviewer_id=str(coverage["reviewer_id"]),
+        reason=str(coverage["review_reason"]),
+        accounting_metadata=accounting,
+    )
+    return coverage
+
+
+def _forward_occurrence_coverage() -> dict[str, object]:
+    coverage: dict[str, object] = {
+        "id": "coverage-forward",
+        "user_id": "user-1",
+        "coverage_mode": "forward_only",
+        "coverage_started_at": "2026-01-01T00:00:00Z",
+        "historical_review_status": "not_reviewed",
+        "complete_through": None,
+        "review_version": 1,
+        "reviewer_id": "reviewer-1",
+        "review_reason": "Reviewed forward-only occurrence coverage.",
+        "metadata_json": {},
+    }
+    coverage["review_receipt_digest"] = occurrence_coverage_review_receipt_digest(
+        coverage_id=str(coverage["id"]),
+        user_id=str(coverage["user_id"]),
+        review_version=int(coverage["review_version"]),
+        coverage_mode=str(coverage["coverage_mode"]),
+        coverage_started_at=str(coverage["coverage_started_at"]),
+        historical_review_status=str(coverage["historical_review_status"]),
+        complete_through=None,
+        reviewer_id=str(coverage["reviewer_id"]),
+        reason=str(coverage["review_reason"]),
+        accounting_metadata=None,
+    )
+    return coverage
+
+
+def _configure_sqlite_occurrence_coverage(
+    store: SQLiteVNextStore,
+    *,
+    complete_through: datetime,
+) -> None:
+    extractor_version = _OCCURRENCE_TEST_EXTRACTOR_VERSION
+    chunks = store.conn.execute(
+        """
+        SELECT chunk.id
+        FROM source_chunks AS chunk
+        JOIN sources AS source
+          ON source.id = chunk.source_id
+         AND source.user_id = chunk.user_id
+        WHERE chunk.user_id = ?
+          AND source.deleted_at IS NULL
+        ORDER BY chunk.id ASC
+        """,
+        (store.user_id,),
+    ).fetchall()
+    for (source_chunk_id,) in chunks:
+        evidence_rows = store.conn.execute(
+            """
+            SELECT
+              claim.id,
+              claim.resolution_status,
+              claim.review_status,
+              evidence.occurrence_id
+            FROM occurrence_evidence AS evidence
+            JOIN occurrence_claims AS claim
+              ON claim.id = evidence.claim_id
+             AND claim.user_id = evidence.user_id
+            WHERE evidence.user_id = ?
+              AND evidence.source_chunk_id = ?
+              AND evidence.evidence_role = 'supports'
+              AND evidence.review_status IN ('candidate', 'accepted')
+            ORDER BY claim.id ASC, evidence.occurrence_id ASC
+            """,
+            (store.user_id, str(source_chunk_id)),
+        ).fetchall()
+        claim_ids = sorted({str(row[0]) for row in evidence_rows})
+        occurrence_ids = sorted(
+            {
+                str(row[3])
+                for row in evidence_rows
+                if row[3] is not None and row[1] == "resolved" and row[2] == "accepted"
+            }
+        )
+        has_unresolved = any(row[1] == "pending" and row[2] == "candidate" for row in evidence_rows)
+        disposition = (
+            "no_occurrence" if not evidence_rows else "unresolved_claims" if has_unresolved else "accepted_occurrences"
+        )
+        recorded, _created = store.record_occurrence_extraction_disposition(
+            source_chunk_id=str(source_chunk_id),
+            extractor_version=extractor_version,
+            disposition=disposition,
+            claim_ids=claim_ids,
+            occurrence_ids=occurrence_ids,
+        )
+        if recorded["review_status"] == "candidate":
+            store.review_occurrence_extraction_disposition(
+                disposition_id=str(recorded["id"]),
+                action="accepted",
+                reviewer_id="reviewer-1",
+                reason="Reviewed complete retrieval accounting fixture.",
+                expected_review_version=int(recorded["review_version"]),
+            )
+    accounting = store.summarize_occurrence_extraction_accounting(
+        extractor_version=extractor_version,
+    )
+    accounting_metadata = {
+        "accounting_schema": "occurrence_accounting_v1",
+        "extractor_version": extractor_version,
+        "source_ids": accounting["source_ids"],
+        "source_chunk_ids": accounting["source_chunk_ids"],
+        "snapshot_digest": accounting["snapshot_digest"],
+        "disposition_digest": accounting["disposition_digest"],
+    }
+    store.ensure_occurrence_coverage(started_at="2020-01-01T00:00:00Z")
+    store.review_occurrence_coverage(
+        coverage_mode="complete_history",
+        historical_review_status="reviewed",
+        reviewer_id="reviewer-1",
+        reason="Reviewed complete bike-service history.",
+        coverage_started_at="2020-01-01T00:00:00Z",
+        complete_through=complete_through,
+        accounting_metadata=accounting_metadata,
+        expected_review_version=0,
+    )
+
+
+def _create_sqlite_reviewed_occurrence(
+    store: SQLiteVNextStore,
+    *,
+    index: int,
+    occurred_at: str,
+    count_key: str = "bike service",
+    canonical_text: str | None = None,
+) -> tuple[dict[str, object], dict[str, object]]:
+    text = canonical_text or f"Bike service occurrence {index}."
+    if count_key == "bike service":
+        predicate = build_occurrence_predicate_atom(
+            action="service",
+            object_leaf="bike",
+        )
+    elif count_key == "attend parties":
+        predicate = build_occurrence_predicate_atom(
+            action="attend",
+            object_leaf="parties",
+        )
+    else:
+        raise AssertionError(f"unsupported retrieval fixture count key: {count_key}")
+    source = store.create_source(
+        {
+            "source_type": "document",
+            "content_hash": f"sha256:bike-service-{index}",
+            "domain": "personal",
+            "sensitivity": "private",
+            "metadata_json": {"project_scope": ["bike"]},
+        }
+    )
+    source_chunk = store.create_source_chunk(
+        {
+            "source_id": str(source["id"]),
+            "chunk_index": 0,
+            "text": text,
+        }
+    )
+    memory = store.create_memory(
+        {
+            "memory_key": f"bike-service-{index}",
+            "value": {"text": text},
+            "status": "active",
+            "canonical_text": text,
+            "domain": "personal",
+            "sensitivity": "private",
+            "project_id": "bike",
+            "metadata_json": {
+                "project_scope": ["bike"],
+                "source_chunk_id": str(source_chunk["id"]),
+            },
+        }
+    )
+    claim, _created = store.get_or_create_occurrence_claim(
+        {
+            "claim_key": f"bike-service-claim-{index}",
+            "count_key": count_key,
+            "canonical_text": text,
+            "quantity_min": 1,
+            "quantity_max": 1,
+            "range_kind": "exact",
+            "predicate_json": predicate,
+            "aggregation_json": _occurrence_test_claim_aggregation(),
+            "resolution_decision": "new",
+            "identity_basis": "exact_time",
+            "occurred_at_start": occurred_at,
+            "occurred_at_end": occurred_at,
+            "domain": "personal",
+            "sensitivity": "private",
+            "project_scope": ["bike"],
+        }
+    )
+    occurrence_key = f"{index:064x}"
+    unit, _created = store.get_or_create_occurrence_unit(
+        {
+            "claim_id": str(claim["id"]),
+            "claim_ordinal": 1,
+            "occurrence_key": occurrence_key,
+            "count_key": count_key,
+            "canonical_text": text,
+            "identity_status": "resolved",
+            "predicate_json": predicate,
+            "aggregation_json": _occurrence_test_unit_aggregation(occurrence_key),
+            "occurred_at_start": occurred_at,
+            "occurred_at_end": occurred_at,
+            "domain": "personal",
+            "sensitivity": "private",
+            "project_scope": ["bike"],
+        }
+    )
+    store.create_occurrence_evidence(
+        {
+            "claim_id": str(claim["id"]),
+            "occurrence_id": str(unit["id"]),
+            "memory_id": str(memory["id"]),
+            "source_id": str(source["id"]),
+            "source_chunk_id": str(source_chunk["id"]),
+            "evidence_key": f"bike-service-evidence-{index}",
+            "evidence_role": "supports",
+            "quote": text,
+        }
+    )
+    store.review_occurrence_claim(
+        claim_id=str(claim["id"]),
+        resolution_status="resolved",
+        resolution_decision="new",
+        identity_basis="exact_time",
+        reviewer_id="reviewer-1",
+        reason="Verified occurrence identity.",
+    )
+    accepted = store.review_occurrence_unit(
+        occurrence_id=str(unit["id"]),
+        action="accepted",
+        reviewer_id="reviewer-1",
+        reason="Verified occurrence evidence.",
+    )
+    return memory, accepted
+
+
+def _create_sqlite_pending_occurrence_claim(
+    store: SQLiteVNextStore,
+    *,
+    index: int,
+    occurred_at: str,
+) -> tuple[dict[str, object], dict[str, object]]:
+    predicate = _occurrence_test_predicate()
+    source = store.create_source(
+        {
+            "source_type": "document",
+            "content_hash": f"sha256:bike-service-pending-{index}",
+            "domain": "personal",
+            "sensitivity": "private",
+            "metadata_json": {"project_scope": ["bike"]},
+        }
+    )
+    source_chunk = store.create_source_chunk(
+        {
+            "source_id": str(source["id"]),
+            "chunk_index": 0,
+            "text": f"Pending bike service occurrence {index}.",
+        }
+    )
+    memory = store.create_memory(
+        {
+            "memory_key": f"bike-service-pending-{index}",
+            "value": {"text": f"Pending bike service occurrence {index}."},
+            "status": "active",
+            "canonical_text": f"Pending bike service occurrence {index}.",
+            "domain": "personal",
+            "sensitivity": "private",
+            "project_id": "bike",
+            "metadata_json": {
+                "project_scope": ["bike"],
+                "source_chunk_id": str(source_chunk["id"]),
+            },
+        }
+    )
+    claim, _created = store.get_or_create_occurrence_claim(
+        {
+            "claim_key": f"bike-service-pending-claim-{index}",
+            "count_key": "bike service",
+            "canonical_text": f"Pending bike service occurrence {index}.",
+            "quantity_min": 1,
+            "quantity_max": 1,
+            "range_kind": "exact",
+            "predicate_json": predicate,
+            "aggregation_json": _occurrence_test_claim_aggregation(),
+            "resolution_decision": "ambiguous",
+            "identity_basis": "ambiguous",
+            "occurred_at_start": occurred_at,
+            "occurred_at_end": occurred_at,
+            "domain": "personal",
+            "sensitivity": "private",
+            "project_scope": ["bike"],
+        }
+    )
+    store.create_occurrence_evidence(
+        {
+            "claim_id": str(claim["id"]),
+            "occurrence_id": None,
+            "memory_id": str(memory["id"]),
+            "source_id": str(source["id"]),
+            "source_chunk_id": str(source_chunk["id"]),
+            "evidence_key": f"bike-service-pending-evidence-{index}",
+            "evidence_role": "supports",
+            "quote": f"Pending bike service occurrence {index}.",
+        }
+    )
+    return memory, claim
+
+
+def test_sqlite_occurrence_reader_does_not_turn_two_units_into_exact_one_when_evidence_expires() -> None:
+    store = _sqlite_retrieval_store()
+    reference_time = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+    _live_memory, _live_unit = _create_sqlite_reviewed_occurrence(
+        store,
+        index=1,
+        occurred_at="2026-07-01T12:00:00Z",
+    )
+    stale_memory, _stale_unit = _create_sqlite_reviewed_occurrence(
+        store,
+        index=2,
+        occurred_at="2026-07-02T12:00:00Z",
+    )
+    _configure_sqlite_occurrence_coverage(
+        store,
+        complete_through=reference_time,
+    )
+    store.conn.execute(
+        "UPDATE memories SET valid_to = ? WHERE id = ?",
+        ("2026-07-10T00:00:00Z", str(stale_memory["id"])),
+    )
+    store.conn.commit()
+
+    candidates = store.search_accepted_occurrence_units(
+        query="How many times did I service my bike?",
+        projects=("bike",),
+        domains=("personal",),
+        sensitivity_allowed=("private",),
+        occurred_at_end=reference_time,
+        include_timeless=True,
+        as_of=reference_time,
+    )
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            projects=("bike",),
+            domains=("personal",),
+            sensitivity_allowed=("private",),
+            reference_time=reference_time,
+        )
+    )
+
+    assert len(candidates) == 2
+    assert "aggregation" not in pack
+
+
+def test_sqlite_occurrence_reader_keeps_stale_pending_claim_as_exactness_blocker() -> None:
+    store = _sqlite_retrieval_store()
+    reference_time = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+    _live_memory, _live_unit = _create_sqlite_reviewed_occurrence(
+        store,
+        index=1,
+        occurred_at="2026-07-01T12:00:00Z",
+    )
+    stale_memory, pending_claim = _create_sqlite_pending_occurrence_claim(
+        store,
+        index=2,
+        occurred_at="2026-07-02T12:00:00Z",
+    )
+    store.conn.execute(
+        "UPDATE memories SET valid_to = ? WHERE id = ?",
+        ("2026-07-10T00:00:00Z", str(stale_memory["id"])),
+    )
+    store.conn.commit()
+    _configure_sqlite_occurrence_coverage(
+        store,
+        complete_through=reference_time,
+    )
+
+    unresolved = store.list_unresolved_occurrence_claims(
+        count_key="bike service",
+        projects=("bike",),
+        domains=("personal",),
+        sensitivity_allowed=("private",),
+        occurred_at_end=reference_time,
+        include_timeless=True,
+        as_of=reference_time,
+    )
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            projects=("bike",),
+            domains=("personal",),
+            sensitivity_allowed=("private",),
+            reference_time=reference_time,
+        )
+    )
+
+    assert [row["id"] for row in unresolved] == [pending_claim["id"]]
+    assert pack["aggregation"]["answer_kind"] == "range"
+    assert pack["aggregation"]["lower_bound"] == 1
+    assert pack["aggregation"]["upper_bound"] == 2
+    assert "count" not in pack["aggregation"]
+
+
+def test_sqlite_occurrence_reader_batches_more_than_999_evidence_carriers(
+    monkeypatch,
+) -> None:
+    store = _sqlite_retrieval_store()
+    reference_time = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+    owner_memory, accepted_unit = _create_sqlite_reviewed_occurrence(
+        store,
+        index=1,
+        occurred_at="2026-07-01T12:00:00Z",
+    )
+    claim_id = str(accepted_unit["claim_id"])
+    occurrence_id = str(accepted_unit["id"])
+    owner_metadata = owner_memory["metadata_json"]
+    assert isinstance(owner_metadata, Mapping)
+    source_chunk_id = str(owner_metadata["source_chunk_id"])
+    source_id = str(
+        store.conn.execute(
+            "SELECT source_id FROM source_chunks WHERE id = ?",
+            (source_chunk_id,),
+        ).fetchone()[0]
+    )
+    for index in range(2, 1_002):
+        memory = store.create_memory(
+            {
+                "memory_key": f"bike-service-carrier-{index}",
+                "value": {"text": f"Additional bike service evidence {index}."},
+                "status": "active",
+                "canonical_text": (f"Additional bike service evidence {index}."),
+                "domain": "personal",
+                "sensitivity": "private",
+                "project_id": "bike",
+                "metadata_json": {
+                    "project_scope": ["bike"],
+                    "source_chunk_id": source_chunk_id,
+                },
+            }
+        )
+        store.create_occurrence_evidence(
+            {
+                "claim_id": claim_id,
+                "occurrence_id": occurrence_id,
+                "memory_id": str(memory["id"]),
+                "source_id": source_id,
+                "source_chunk_id": source_chunk_id,
+                "evidence_key": f"bike-service-carrier-{index}",
+                "evidence_role": "supports",
+                "quote": f"Additional bike service evidence {index}.",
+            }
+        )
+    store.refresh_occurrence_unit_evidence(
+        occurrence_id=occurrence_id,
+        reason="Reviewed the complete carrier set.",
+        reviewer_id="reviewer-1",
+        expected_review_version=int(accepted_unit["review_version"]),
+    )
+    store.conn.commit()
+    _configure_sqlite_occurrence_coverage(
+        store,
+        complete_through=reference_time,
+    )
+
+    memory_batch_sizes: list[int] = []
+    original_get_memories = store.get_memories_by_ids
+
+    def recording_get_memories(
+        memory_ids: tuple[str, ...],
+    ) -> list[dict[str, object]]:
+        memory_batch_sizes.append(len(memory_ids))
+        return original_get_memories(memory_ids)
+
+    monkeypatch.setattr(
+        store,
+        "get_memories_by_ids",
+        recording_get_memories,
+    )
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            projects=("bike",),
+            domains=("personal",),
+            sensitivity_allowed=("private",),
+            reference_time=reference_time,
+        )
+    )
+
+    assert pack["aggregation"]["answer_kind"] == "exact"
+    assert pack["aggregation"]["count"] == 1
+    assert pack["aggregation"]["provenance"][0]["reviewed_evidence_count"] == 1_001
+    assert len(pack["aggregation"]["provenance"][0]["evidence"]) == 1_001
+    assert memory_batch_sizes
+    assert max(memory_batch_sizes) <= 200
+    assert memory_batch_sizes[:6] == [200, 200, 200, 200, 200, 1]
+
+
+def test_sqlite_occurrence_reader_refetches_the_complete_discovered_count_key() -> None:
+    store = _sqlite_retrieval_store()
+    reference_time = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+    _create_sqlite_reviewed_occurrence(
+        store,
+        index=1,
+        occurred_at="2026-07-01T12:00:00Z",
+        count_key="attend parties",
+        canonical_text="I went to a party.",
+    )
+    _create_sqlite_reviewed_occurrence(
+        store,
+        index=2,
+        occurred_at="2026-07-02T12:00:00Z",
+        count_key="attend parties",
+        canonical_text="I celebrated with friends.",
+    )
+    store.conn.commit()
+    _configure_sqlite_occurrence_coverage(
+        store,
+        complete_through=reference_time,
+    )
+
+    discovery = store.search_accepted_occurrence_units(
+        query="How many times did I attend parties?",
+        domains=("personal",),
+        sensitivity_allowed=("private",),
+        occurred_at_end=reference_time,
+        include_timeless=True,
+        as_of=reference_time,
+    )
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I attend parties?",
+            domains=("personal",),
+            sensitivity_allowed=("private",),
+            reference_time=reference_time,
+        )
+    )
+
+    assert len(discovery) == 2
+    assert pack["aggregation"]["answer_kind"] == "exact"
+    assert pack["aggregation"]["count"] == 2
+    assert len(pack["aggregation"]["occurrence_unit_ids"]) == 2
+
+
+def test_occurrence_reader_emits_exact_signed_count_without_proposal_inference(
+    monkeypatch,
+) -> None:
+    memories, units, evidence = _reviewed_occurrence_rows()
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    def proposal_bomb(**_kwargs: object) -> object:
+        raise AssertionError("query-time occurrence proposal inference is forbidden")
+
+    monkeypatch.setattr(
+        vnext_retrieval_module.vnext_occurrences,
+        "build_occurrence_proposal",
+        proposal_bomb,
+    )
+    reference_time = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            domains=("personal",),
+            projects=("bike",),
+            reference_time=reference_time,
+        )
+    )
+
+    aggregation = pack["aggregation"]
+    assert aggregation["answer_kind"] == "exact"
+    assert aggregation["exact"] is True
+    assert aggregation["count"] == 2
+    assert aggregation["lower_bound"] == aggregation["upper_bound"] == 2
+    assert aggregation["occurrence_unit_ids"] == [
+        "occurrence-001",
+        "occurrence-002",
+    ]
+    assert aggregation["answer_sufficient"] is True
+    assert "user_id" not in aggregation
+    assert all(item["reviewed_evidence_count"] == len(item["evidence"]) == 1 for item in aggregation["provenance"])
+    assert all(
+        item["evidence"][0]["unit_review_receipt_digest"] == item["review_receipt_digest"]
+        for item in aggregation["provenance"]
+    )
+    assert store.occurrence_search_calls[0]["projects"] == ("bike",)
+    assert store.occurrence_search_calls[0]["domains"] == ("personal",)
+    assert store.occurrence_search_calls[0]["occurred_at_end"] == reference_time
+    assert store.occurrence_search_calls[0]["include_timeless"] is True
+    assert store.unresolved_search_calls[0]["count_key"] is None
+    assert store.unresolved_search_calls[0]["occurred_at_end"] == reference_time
+    assert store.unresolved_search_calls[0]["include_timeless"] is True
+    lifecycle_values = [
+        *(call["as_of"] for call in store.occurrence_search_calls),
+        *(call["as_of"] for call in store.unresolved_search_calls),
+        *(call["as_of"] for call in store.evidence_search_calls),
+    ]
+    lifecycle_clock = lifecycle_values[0]
+    assert isinstance(lifecycle_clock, datetime)
+    assert lifecycle_clock.tzinfo is not None
+    assert lifecycle_clock != reference_time
+    assert all(value is lifecycle_clock for value in lifecycle_values)
+    assert aggregation["coverage"]["requested_end"] == reference_time.isoformat()
+    assert "aggregation" in pack["budget"]["allocation"]
+    assert store.snapshot_calls == 1
+    assert store.snapshot_end_calls == 1
+
+
+def test_occurrence_reader_never_emits_selector_only_exact_zero_for_unknown_surface() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    units[0]["count_key"] = "visited museum"
+    units[0]["canonical_text"] = "I visited the museum."
+    units[0]["predicate_json"] = build_occurrence_predicate_atom(
+        action="visited",
+        object_leaf="museum",
+    )
+    _resign_occurrence_test_unit(units[0], evidence)
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I visit museums?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+    assert any(call["selector_key"] is None for call in store.occurrence_search_calls)
+    assert all(call["as_of"] is store.occurrence_search_calls[0]["as_of"] for call in store.occurrence_search_calls)
+
+
+def test_occurrence_reader_exact_aggregation_obeys_the_content_token_budget() -> None:
+    reference_time = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+
+    def compile_pack(*, max_tokens: int | None = None) -> dict[str, object]:
+        memories, units, evidence = _reviewed_occurrence_rows(1)
+        return VNextRetrievalService(
+            OccurrenceReaderStore(
+                memories=memories,
+                units=units,
+                evidence=evidence,
+                coverage=_complete_occurrence_coverage(),
+            )
+        ).compile_context_pack(
+            VNextRetrievalRequest(
+                query="How many times did I service my bike?",
+                reference_time=reference_time,
+                max_tokens=max_tokens,
+            )
+        )
+
+    unconstrained = compile_pack()
+    exact_budget = int(unconstrained["budget"]["token_estimate"])
+
+    exact_fit = compile_pack(max_tokens=exact_budget)
+    assert exact_fit["aggregation"] == unconstrained["aggregation"]
+    assert exact_fit["budget"]["token_budget"] == exact_budget
+    assert exact_fit["budget"]["token_estimate"] == exact_budget
+    assert exact_fit["budget"]["allocation"]["aggregation"] > 0
+    assert sum(exact_fit["budget"]["allocation"].values()) == exact_budget
+    assert exact_fit["budget"]["truncated"] is False
+    assert exact_fit["budget"]["dropped_item_count"] == 0
+
+    one_token_short = compile_pack(max_tokens=exact_budget - 1)
+    assert "aggregation" not in one_token_short
+    assert one_token_short["budget"]["token_budget"] == exact_budget - 1
+    assert one_token_short["budget"]["token_estimate"] <= exact_budget - 1
+    assert one_token_short["budget"]["allocation"]["aggregation"] == 0
+    assert sum(one_token_short["budget"]["allocation"].values()) == (one_token_short["budget"]["token_estimate"])
+    assert one_token_short["budget"]["truncated"] is True
+    assert one_token_short["budget"]["dropped_item_count"] == 1
+
+
+def test_occurrence_reader_accepts_signed_evidence_from_a_linked_claim() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    assert evidence[0]["claim_id"] == units[0]["claim_id"]
+    evidence[0]["claim_id"] = "claim-linked-to-existing-unit"
+    evidence[0]["evidence_claim_review_status"] = "accepted"
+    evidence[0]["evidence_claim_resolution_status"] = "resolved"
+    evidence[0]["evidence_claim_resolution_decision"] = "link_existing"
+    evidence[0]["evidence_claim_resolved_occurrence_id"] = units[0]["id"]
+    _resign_occurrence_test_unit(units[0], [evidence[0]])
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert pack["aggregation"]["answer_kind"] == "exact"
+    assert pack["aggregation"]["count"] == 1
+    assert pack["aggregation"]["occurrence_unit_ids"] == ["occurrence-001"]
+
+
+@pytest.mark.parametrize(
+    "claim_metadata",
+    [
+        {},
+        {
+            "evidence_claim_review_status": "candidate",
+            "evidence_claim_resolution_status": "resolved",
+            "evidence_claim_resolution_decision": "link_existing",
+            "evidence_claim_resolved_occurrence_id": "occurrence-001",
+        },
+        {
+            "evidence_claim_review_status": "accepted",
+            "evidence_claim_resolution_status": "pending",
+            "evidence_claim_resolution_decision": "link_existing",
+            "evidence_claim_resolved_occurrence_id": "occurrence-001",
+        },
+        {
+            "evidence_claim_review_status": "accepted",
+            "evidence_claim_resolution_status": "resolved",
+            "evidence_claim_resolution_decision": "new",
+            "evidence_claim_resolved_occurrence_id": "occurrence-001",
+        },
+        {
+            "evidence_claim_review_status": "accepted",
+            "evidence_claim_resolution_status": "resolved",
+            "evidence_claim_resolution_decision": "link_existing",
+            "evidence_claim_resolved_occurrence_id": "occurrence-other",
+        },
+    ],
+)
+def test_occurrence_reader_rejects_unauthorized_cross_claim_evidence(
+    claim_metadata: dict[str, object],
+) -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    evidence[0]["claim_id"] = "claim-unrelated-same-envelope"
+    evidence[0].update(claim_metadata)
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+
+
+def test_occurrence_reader_all_time_counts_timeless_and_excludes_future_units() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(3)
+    units[1]["occurred_at_start"] = None
+    units[1]["occurred_at_end"] = None
+    units[2]["occurred_at_start"] = "2026-08-01T12:00:00Z"
+    units[2]["occurred_at_end"] = "2026-08-01T12:00:00Z"
+    for unit in units:
+        _resign_occurrence_test_unit(
+            unit,
+            [row for row in evidence if row["occurrence_id"] == unit["id"]],
+        )
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert pack["aggregation"]["answer_kind"] == "exact"
+    assert pack["aggregation"]["count"] == 2
+    assert pack["aggregation"]["occurrence_unit_ids"] == [
+        "occurrence-001",
+        "occurrence-002",
+    ]
+    assert store.occurrence_search_calls[0]["include_timeless"] is True
+
+
+def test_occurrence_reader_explicit_window_fails_closed_on_timeless_unit() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(2)
+    units[0]["occurred_at_start"] = "2026-07-22T12:00:00Z"
+    units[0]["occurred_at_end"] = "2026-07-22T12:00:00Z"
+    units[1]["occurred_at_start"] = None
+    units[1]["occurred_at_end"] = None
+    for unit in units:
+        _resign_occurrence_test_unit(
+            unit,
+            [row for row in evidence if row["occurrence_id"] == unit["id"]],
+        )
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike this week?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+    # Timeless rows are deliberately fetched so their unknown interval
+    # membership cannot be silently converted into an exact dated answer.
+    assert store.occurrence_search_calls[0]["include_timeless"] is True
+
+
+def test_occurrence_reader_normalizes_naive_relative_reference_once(
+    monkeypatch,
+) -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    units[0]["occurred_at_start"] = "2026-07-22T12:00:00Z"
+    units[0]["occurred_at_end"] = "2026-07-22T12:00:00Z"
+    _resign_occurrence_test_unit(units[0], [evidence[0]])
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+    observed_reference_times: list[datetime] = []
+    real_parse_temporal_anchor = vnext_retrieval_module.parse_temporal_anchor
+
+    def recording_parse_temporal_anchor(
+        query: str,
+        *,
+        reference_time: datetime,
+    ) -> vnext_retrieval_module.TemporalAnchor | None:
+        observed_reference_times.append(reference_time)
+        return real_parse_temporal_anchor(
+            query,
+            reference_time=reference_time,
+        )
+
+    monkeypatch.setattr(
+        vnext_retrieval_module,
+        "parse_temporal_anchor",
+        recording_parse_temporal_anchor,
+    )
+    provider = StubEmbeddingProvider()
+    query = "How many times did I service my bike this week?"
+    pack = VNextRetrievalService(
+        store,
+        embedding_provider=provider,
+    ).compile_context_pack(
+        VNextRetrievalRequest(
+            query=query,
+            reference_time=datetime(2026, 7, 24, 12, 0),
+        )
+    )
+
+    normalized = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+    assert pack["aggregation"]["count"] == 1
+    assert observed_reference_times == [datetime(2026, 7, 24, 12, 0)]
+    assert store.occurrence_search_calls[0]["occurred_at_end"] == normalized
+    assert store.unresolved_search_calls[0]["occurred_at_end"] == normalized
+    assert pack["aggregation"]["coverage"]["requested_end"] == normalized.isoformat()
+    assert provider.embedded_texts == [query]
+
+
+def test_occurrence_reader_preserves_event_clocks_and_uses_current_snapshot_lifecycle(
+    monkeypatch,
+) -> None:
+    scope_clock = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+    anchor_clock = datetime(2026, 7, 24, 12, 1, tzinfo=UTC)
+
+    class AdvancingDateTime(datetime):
+        calls = 0
+
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[no-untyped-def]
+            cls.calls += 1
+            value = scope_clock if cls.calls == 1 else anchor_clock
+            return value if tz is not None else value.replace(tzinfo=None)
+
+    monkeypatch.setattr(
+        vnext_retrieval_module,
+        "datetime",
+        AdvancingDateTime,
+    )
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    units[0]["occurred_at_start"] = "2026-07-24T10:00:00Z"
+    units[0]["occurred_at_end"] = "2026-07-24T10:00:00Z"
+    _resign_occurrence_test_unit(units[0], [evidence[0]])
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        snapshot_proof={
+            "proof": "occurrence_read_snapshot_v1",
+            "acquired": True,
+            "backend": "sqlite",
+            "mode": "transaction_snapshot",
+            "lifecycle_as_of": anchor_clock,
+        },
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike today?",
+            time_window="7d",
+        )
+    )
+
+    assert pack["aggregation"]["count"] == 1
+    assert store.occurrence_search_calls[0]["occurred_at_start"] == datetime(
+        2026,
+        7,
+        24,
+        tzinfo=UTC,
+    )
+    assert store.occurrence_search_calls[0]["occurred_at_end"] == scope_clock
+    lifecycle_values = [
+        *(call["as_of"] for call in store.occurrence_search_calls),
+        *(call["as_of"] for call in store.evidence_search_calls),
+        *(call["as_of"] for call in store.unresolved_search_calls),
+    ]
+    assert lifecycle_values
+    assert all(value is anchor_clock for value in lifecycle_values)
+
+
+def test_occurrence_reader_uses_snapshot_clock_instead_of_lagging_host_for_exact_zero(
+    monkeypatch,
+) -> None:
+    app_clock = datetime(2026, 7, 24, 11, 59, tzinfo=UTC)
+    lifecycle_clock = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+    reference_clock = datetime(2026, 7, 24, 13, 0, tzinfo=UTC)
+
+    class LaggingDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[no-untyped-def]
+            return app_clock if tz is not None else app_clock.replace(tzinfo=None)
+
+    monkeypatch.setattr(
+        vnext_retrieval_module,
+        "datetime",
+        LaggingDateTime,
+    )
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    units[0]["updated_at"] = lifecycle_clock
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        snapshot_proof={
+            "proof": "occurrence_read_snapshot_v1",
+            "acquired": True,
+            "backend": "postgres",
+            "mode": "repeatable_read_read_only",
+            "snapshot_id": "10:20:",
+            "lifecycle_as_of": lifecycle_clock,
+        },
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=reference_clock,
+        )
+    )
+
+    assert pack["aggregation"]["answer_kind"] == "exact"
+    assert pack["aggregation"]["count"] == 1
+    assert {call["as_of"] for call in store.occurrence_search_calls} == {lifecycle_clock}
+    assert {call["occurred_at_end"] for call in store.occurrence_search_calls} == {reference_clock}
+
+
+def test_occurrence_reader_uses_snapshot_clock_for_finite_range_lower_bound(
+    monkeypatch,
+) -> None:
+    app_clock = datetime(2026, 7, 24, 11, 59, tzinfo=UTC)
+    lifecycle_clock = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+
+    class LaggingDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[no-untyped-def]
+            return app_clock if tz is not None else app_clock.replace(tzinfo=None)
+
+    monkeypatch.setattr(
+        vnext_retrieval_module,
+        "datetime",
+        LaggingDateTime,
+    )
+    memories, units, evidence = _reviewed_occurrence_rows(2)
+    units[0]["updated_at"] = datetime(
+        2026,
+        7,
+        24,
+        11,
+        58,
+        tzinfo=UTC,
+    )
+    units[1]["updated_at"] = lifecycle_clock
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        unresolved=[
+            _occurrence_test_unresolved_claim(
+                "claim-finite-upper",
+                quantity_min=1,
+                quantity_max=1,
+            )
+        ],
+        snapshot_proof={
+            "proof": "occurrence_read_snapshot_v1",
+            "acquired": True,
+            "backend": "postgres",
+            "mode": "repeatable_read_read_only",
+            "snapshot_id": "10:20:",
+            "lifecycle_as_of": lifecycle_clock,
+        },
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(
+                2026,
+                7,
+                24,
+                13,
+                tzinfo=UTC,
+            ),
+        )
+    )
+
+    assert pack["aggregation"]["answer_kind"] == "range"
+    assert pack["aggregation"]["lower_bound"] == 2
+    assert pack["aggregation"]["upper_bound"] == 3
+    assert "count" not in pack["aggregation"]
+
+
+def test_occurrence_reader_timeless_unresolved_claim_prevents_all_time_exact() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        unresolved=[
+            _occurrence_test_unresolved_claim(
+                "claim-timeless",
+                occurred_at_start=None,
+                occurred_at_end=None,
+            )
+        ],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert pack["aggregation"]["answer_kind"] == "range"
+    assert pack["aggregation"]["lower_bound"] == 1
+    assert pack["aggregation"]["upper_bound"] == 2
+
+
+def test_occurrence_reader_rejects_expired_memory_evidence(
+    monkeypatch,
+) -> None:
+    app_clock = datetime(2026, 7, 23, 12, 0, tzinfo=UTC)
+    lifecycle_clock = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[no-untyped-def]
+            return app_clock if tz is not None else app_clock.replace(tzinfo=None)
+
+    monkeypatch.setattr(
+        vnext_retrieval_module,
+        "datetime",
+        FixedDateTime,
+    )
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    # The memory was still live at the historical question clock, but it is
+    # not live at the current review snapshot. A historical reference_time
+    # must never resurrect it.
+    memories[0]["valid_to"] = "2026-07-24T00:00:00Z"
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        snapshot_proof={
+            "proof": "occurrence_read_snapshot_v1",
+            "acquired": True,
+            "backend": "sqlite",
+            "mode": "transaction_snapshot",
+            "lifecycle_as_of": lifecycle_clock,
+        },
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=app_clock,
+        )
+    )
+
+    assert "aggregation" not in pack
+    assert {call["as_of"] for call in store.occurrence_search_calls} == {lifecycle_clock}
+    assert {call["as_of"] for call in store.evidence_search_calls} == {lifecycle_clock}
+
+
+@pytest.mark.parametrize(
+    ("field_name", "mismatched_value"),
+    [
+        ("domain", "work"),
+        ("sensitivity", "public"),
+        ("project_id", "different-project"),
+    ],
+)
+def test_occurrence_reader_requires_evidence_to_match_its_unit_envelope(
+    field_name: str,
+    mismatched_value: str,
+) -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    memories[0][field_name] = mismatched_value
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+
+
+@pytest.mark.parametrize("carrier_kind", ["memory", "source", "source_chunk"])
+def test_occurrence_reader_rejects_cross_user_evidence_carriers(
+    carrier_kind: str,
+) -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    sources: list[dict[str, object]] = []
+    source_chunks: list[dict[str, object]] = []
+    if carrier_kind == "memory":
+        memories[0]["user_id"] = "different-user"
+    else:
+        evidence[0]["memory_id"] = None
+        evidence[0]["source_id"] = "source-occurrence"
+        sources.append(
+            {
+                "id": "source-occurrence",
+                "user_id": ("different-user" if carrier_kind == "source" else "user-1"),
+                "domain": "personal",
+                "sensitivity": "private",
+                "deleted_at": None,
+                "metadata_json": {"project_id": "bike"},
+            }
+        )
+        if carrier_kind == "source_chunk":
+            evidence[0]["source_chunk_id"] = "chunk-occurrence"
+            source_chunks.append(
+                {
+                    "id": "chunk-occurrence",
+                    "user_id": "different-user",
+                    "source_id": "source-occurrence",
+                    "text": "Bike service evidence",
+                }
+            )
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        sources=sources,
+        source_chunks=source_chunks,
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+
+
+def test_occurrence_reader_rejects_mismatched_source_chunk_evidence() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    evidence[0]["memory_id"] = None
+    evidence[0]["source_id"] = "source-occurrence"
+    evidence[0]["source_chunk_id"] = "chunk-occurrence"
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        sources=[
+            {
+                "id": "source-occurrence",
+                "domain": "personal",
+                "sensitivity": "private",
+                "deleted_at": None,
+                "metadata_json": {"project_id": "bike"},
+            }
+        ],
+        source_chunks=[
+            {
+                "id": "chunk-occurrence",
+                "source_id": "different-source",
+                "text": "Bike service evidence",
+            }
+        ],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+
+
+def test_occurrence_reader_pages_the_full_unit_substrate_before_counting() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(201)
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert pack["aggregation"]["count"] == 201
+    assert len(pack["aggregation"]["occurrence_unit_ids"]) == 201
+    assert [call["after_id"] for call in store.occurrence_search_calls] == [
+        None,
+        "occurrence-200",
+        "occurrence-201",
+        None,
+        "occurrence-200",
+        "occurrence-201",
+    ]
+    assert [call["limit"] for call in store.occurrence_search_calls] == [
+        200,
+        200,
+        1,
+        200,
+        200,
+        1,
+    ]
+    assert {call["selector_key"] for call in store.occurrence_search_calls[:3]} == {None}
+    assert {call["selector_key"] for call in store.occurrence_search_calls[3:]} == {"v1|a=exact:service|o=exact:bike"}
+
+
+def test_occurrence_reader_unit_cap_boundary_and_overflow_are_honest(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        vnext_retrieval_module,
+        "OCCURRENCE_SEARCH_MAX_UNITS",
+        2,
+    )
+    memories, units, evidence = _reviewed_occurrence_rows(2)
+    boundary_store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+    boundary = VNextRetrievalService(boundary_store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    overflow_memories, overflow_units, overflow_evidence = _reviewed_occurrence_rows(3)
+    _retarget_occurrence_test_unit(
+        overflow_units[2],
+        [overflow_evidence[2]],
+        action="service",
+        object_leaf="car",
+        count_key="car service",
+        canonical_text="Car service occurrence.",
+    )
+    overflow_store = OccurrenceReaderStore(
+        memories=overflow_memories,
+        units=overflow_units,
+        evidence=overflow_evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+    overflow = VNextRetrievalService(overflow_store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert boundary["aggregation"]["answer_kind"] == "exact"
+    assert boundary["aggregation"]["count"] == 2
+    assert boundary["aggregation"]["saturated"] is False
+    assert overflow["aggregation"]["answer_kind"] == "at_least"
+    assert overflow["aggregation"]["lower_bound"] == 2
+    assert overflow["aggregation"]["upper_bound"] is None
+    assert overflow["aggregation"]["saturated"] is True
+    assert overflow_store.occurrence_search_calls[-1]["limit"] == 1
+
+
+def test_occurrence_reader_evidence_cap_boundary_and_overflow_are_honest(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        vnext_retrieval_module,
+        "OCCURRENCE_EVIDENCE_MAX_ROWS",
+        2,
+    )
+    evidence_saturation: list[bool] = []
+    real_builder = vnext_retrieval_module.vnext_occurrences.build_occurrence_aggregation
+
+    def recording_builder(**kwargs: object) -> dict[str, object] | None:
+        evidence_saturation.append(bool(kwargs["evidence_saturated"]))
+        return real_builder(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        vnext_retrieval_module.vnext_occurrences,
+        "build_occurrence_aggregation",
+        recording_builder,
+    )
+    memories, units, evidence = _reviewed_occurrence_with_shared_evidence(2)
+    boundary_store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+    boundary = VNextRetrievalService(boundary_store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    overflow_memories, overflow_units, overflow_evidence = _reviewed_occurrence_with_shared_evidence(3)
+    overflow_store = OccurrenceReaderStore(
+        memories=overflow_memories,
+        units=overflow_units,
+        evidence=overflow_evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+    overflow = VNextRetrievalService(overflow_store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert boundary["aggregation"]["answer_kind"] == "exact"
+    assert boundary["aggregation"]["count"] == 1
+    assert evidence_saturation == [False, True]
+    assert "aggregation" not in overflow
+    assert [call["limit"] for call in boundary_store.evidence_search_calls] == [
+        2,
+        1,
+    ]
+    assert [call["limit"] for call in overflow_store.evidence_search_calls] == [
+        2,
+        1,
+    ]
+
+
+def test_occurrence_reader_pages_past_an_internal_evidence_cap() -> None:
+    memories, units, evidence = _reviewed_occurrence_with_shared_evidence(2)
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        internal_evidence_cap=1,
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert pack["aggregation"]["answer_kind"] == "exact"
+    assert pack["aggregation"]["count"] == 1
+    assert [(call["after_id"], call["limit"]) for call in store.evidence_search_calls] == [
+        (None, 200),
+        ("evidence-shared-0001", 1),
+        ("evidence-shared-0001", 200),
+        ("evidence-shared-0002", 1),
+    ]
+
+
+def test_occurrence_reader_rejects_evidence_page_that_skips_the_probe() -> None:
+    memories, units, evidence = _reviewed_occurrence_with_shared_evidence(4)
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        internal_evidence_cap=2,
+        skip_probed_evidence_on_followup=True,
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+    assert [call["after_id"] for call in store.evidence_search_calls] == [
+        None,
+        "evidence-shared-0002",
+        "evidence-shared-0002",
+    ]
+
+
+def test_occurrence_reader_probes_past_an_internal_one_row_unit_cap() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(2)
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        internal_unit_cap=1,
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert pack["aggregation"]["count"] == 2
+    assert [call["after_id"] for call in store.occurrence_search_calls] == [
+        None,
+        "occurrence-001",
+        "occurrence-001",
+        "occurrence-002",
+        None,
+        "occurrence-001",
+        "occurrence-001",
+        "occurrence-002",
+    ]
+    assert [call["limit"] for call in store.occurrence_search_calls] == [
+        200,
+        1,
+        200,
+        1,
+        200,
+        1,
+        200,
+        1,
+    ]
+
+
+def test_occurrence_reader_rejects_a_unit_page_that_skips_the_probed_row() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(4)
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        internal_unit_cap=2,
+        skip_probed_unit_on_followup=True,
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+    assert [call["after_id"] for call in store.occurrence_search_calls] == [
+        None,
+        "occurrence-002",
+        "occurrence-002",
+    ]
+
+
+def test_occurrence_reader_reports_finite_ambiguity_as_a_range() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows()
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        unresolved=[
+            _occurrence_test_unresolved_claim(
+                "claim-unresolved",
+                quantity_max=2,
+                range_kind="bounded",
+            )
+        ],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert pack["aggregation"]["answer_kind"] == "range"
+    assert pack["aggregation"]["lower_bound"] == 2
+    assert pack["aggregation"]["upper_bound"] == 4
+    assert "count" not in pack["aggregation"]
+    assert pack["aggregation"]["answer_sufficient"] is False
+
+
+def test_occurrence_reader_pages_all_scoped_unresolved_claims() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows()
+    unresolved = [_occurrence_test_unresolved_claim(f"claim-unresolved-{index:03d}") for index in range(1, 202)]
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        unresolved=unresolved,
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert pack["aggregation"]["answer_kind"] == "range"
+    assert pack["aggregation"]["lower_bound"] == 2
+    assert pack["aggregation"]["upper_bound"] == 203
+    assert [call["after_id"] for call in store.unresolved_search_calls] == [
+        None,
+        "claim-unresolved-200",
+        "claim-unresolved-201",
+    ]
+
+
+def test_occurrence_reader_unresolved_cap_boundary_and_overflow_are_honest(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        vnext_retrieval_module,
+        "OCCURRENCE_UNRESOLVED_MAX_CLAIMS",
+        2,
+    )
+    memories, units, evidence = _reviewed_occurrence_rows()
+
+    def unresolved_rows(count: int) -> list[dict[str, object]]:
+        return [_occurrence_test_unresolved_claim(f"claim-cap-{index}") for index in range(1, count + 1)]
+
+    boundary_store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        unresolved=unresolved_rows(2),
+    )
+    boundary = VNextRetrievalService(boundary_store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+    overflow_store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        unresolved=unresolved_rows(3),
+    )
+    overflow = VNextRetrievalService(overflow_store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert boundary["aggregation"]["answer_kind"] == "range"
+    assert boundary["aggregation"]["lower_bound"] == 2
+    assert boundary["aggregation"]["upper_bound"] == 4
+    assert overflow["aggregation"]["answer_kind"] == "at_least"
+    assert overflow["aggregation"]["lower_bound"] == 2
+    assert overflow["aggregation"]["upper_bound"] is None
+    assert overflow["aggregation"]["unresolved_claims"]["saturated"] is True
+
+
+def test_occurrence_reader_probes_past_an_internal_one_row_unresolved_cap() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows()
+    unresolved = [_occurrence_test_unresolved_claim(f"claim-capped-{index}") for index in range(1, 3)]
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        unresolved=unresolved,
+        internal_unresolved_cap=1,
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert pack["aggregation"]["answer_kind"] == "range"
+    assert pack["aggregation"]["lower_bound"] == 2
+    assert pack["aggregation"]["upper_bound"] == 4
+    assert [call["after_id"] for call in store.unresolved_search_calls] == [
+        None,
+        "claim-capped-1",
+        "claim-capped-1",
+        "claim-capped-2",
+    ]
+
+
+def test_occurrence_reader_rejects_unresolved_page_skipping_probed_row() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows()
+    unresolved = [_occurrence_test_unresolved_claim(f"claim-skipped-{index}") for index in range(1, 5)]
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        unresolved=unresolved,
+        internal_unresolved_cap=2,
+        skip_probed_unresolved_on_followup=True,
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+    assert [call["after_id"] for call in store.unresolved_search_calls] == [
+        None,
+        "claim-skipped-2",
+        "claim-skipped-2",
+    ]
+
+
+def test_occurrence_reader_dormancy_preserves_pack_bytes(monkeypatch) -> None:
+    reference_time = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+
+    def compile_pack(store: InMemoryVNextRetrievalStore) -> dict[str, object]:
+        counter = itertools.count(1)
+        monkeypatch.setattr(
+            vnext_retrieval_module,
+            "uuid4",
+            lambda: UUID(int=next(counter)),
+        )
+        return VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(
+                query="How many times did I service my bike?",
+                reference_time=reference_time,
+                trace_id="trace-occurrence-dormant",
+            )
+        )
+
+    legacy = compile_pack(
+        InMemoryVNextRetrievalStore(
+            memories=[_memory_row("memory-1", "I serviced my bike once.")],
+            sources=[],
+        )
+    )
+    migrated_empty_store = OccurrenceReaderStore(
+        memories=[_memory_row("memory-1", "I serviced my bike once.")],
+        units=[],
+        evidence=[],
+        coverage=_forward_occurrence_coverage(),
+    )
+    migrated_empty = compile_pack(migrated_empty_store)
+
+    assert json.dumps(legacy, sort_keys=True, default=str) == json.dumps(migrated_empty, sort_keys=True, default=str)
+    assert "aggregation" not in migrated_empty
+    assert "aggregation" not in migrated_empty["budget"]["allocation"]
+    # One complete-set read plus one selector read, both empty.
+    assert len(migrated_empty_store.occurrence_search_calls) == 2
+
+
+def test_complete_occurrence_reader_emits_signed_exact_zero() -> None:
+    store = OccurrenceReaderStore(
+        memories=[],
+        units=[],
+        evidence=[],
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    aggregation = pack["aggregation"]
+    assert aggregation["answer_kind"] == "exact"
+    assert aggregation["count"] == 0
+    assert aggregation["lower_bound"] == aggregation["upper_bound"] == 0
+    assert aggregation["occurrence_unit_ids"] == []
+    assert aggregation["counted_member_keys"] == []
+    assert aggregation["provenance"] == []
+
+
+def test_empty_occurrence_store_preserves_base_advancing_clock_bytes(
+    monkeypatch,
+) -> None:
+    scope_clock = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+    anchor_clock = datetime(2026, 7, 24, 12, 1, tzinfo=UTC)
+
+    class AdvancingDateTime(datetime):
+        calls = 0
+
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[no-untyped-def]
+            cls.calls += 1
+            value = scope_clock if cls.calls == 1 else anchor_clock
+            return value if tz is not None else value.replace(tzinfo=None)
+
+    monkeypatch.setattr(
+        vnext_retrieval_module,
+        "datetime",
+        AdvancingDateTime,
+    )
+    real_resolve_scope = vnext_retrieval_module._resolve_retrieval_scope
+    real_parse_anchor = vnext_retrieval_module.parse_temporal_anchor
+    observed_scope_ends: list[datetime | None] = []
+    observed_anchor_references: list[datetime] = []
+
+    def recording_resolve_scope(
+        request: VNextRetrievalRequest,
+    ) -> object:
+        resolved = real_resolve_scope(request)
+        observed_scope_ends.append(resolved.window_end)
+        return resolved
+
+    def recording_parse_anchor(
+        query: str,
+        *,
+        reference_time: datetime,
+    ) -> vnext_retrieval_module.TemporalAnchor | None:
+        observed_anchor_references.append(reference_time)
+        return real_parse_anchor(query, reference_time=reference_time)
+
+    monkeypatch.setattr(
+        vnext_retrieval_module,
+        "_resolve_retrieval_scope",
+        recording_resolve_scope,
+    )
+    monkeypatch.setattr(
+        vnext_retrieval_module,
+        "parse_temporal_anchor",
+        recording_parse_anchor,
+    )
+
+    def compile_pack(
+        store: InMemoryVNextRetrievalStore,
+    ) -> tuple[dict[str, object], datetime | None, datetime]:
+        AdvancingDateTime.calls = 0
+        observed_scope_ends.clear()
+        observed_anchor_references.clear()
+        counter = itertools.count(1)
+        monkeypatch.setattr(
+            vnext_retrieval_module,
+            "uuid4",
+            lambda: UUID(int=next(counter)),
+        )
+        pack = VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(
+                query="How many times did I service my bike today?",
+                time_window="7d",
+                trace_id="trace-occurrence-clock-dormant",
+            )
+        )
+        assert len(observed_scope_ends) == 1
+        assert len(observed_anchor_references) == 1
+        return (
+            pack,
+            observed_scope_ends[0],
+            observed_anchor_references[0],
+        )
+
+    memory = _memory_row(
+        "memory-1",
+        "I serviced my bike once today.",
+        valid_from="2026-07-24T10:00:00Z",
+    )
+    legacy, legacy_scope_end, legacy_anchor_reference = compile_pack(
+        InMemoryVNextRetrievalStore(memories=[memory], sources=[])
+    )
+    migrated_empty_store = OccurrenceReaderStore(
+        memories=[memory],
+        units=[],
+        evidence=[],
+        coverage=_forward_occurrence_coverage(),
+        snapshot_proof={
+            "proof": "occurrence_read_snapshot_v1",
+            "acquired": True,
+            "backend": "sqlite",
+            "mode": "transaction_snapshot",
+            "lifecycle_as_of": anchor_clock,
+        },
+    )
+    migrated, migrated_scope_end, migrated_anchor_reference = compile_pack(migrated_empty_store)
+
+    assert legacy_scope_end == migrated_scope_end == scope_clock
+    assert legacy_anchor_reference == migrated_anchor_reference == anchor_clock
+    assert json.dumps(legacy, sort_keys=True, default=str) == json.dumps(
+        migrated,
+        sort_keys=True,
+        default=str,
+    )
+    assert "aggregation" not in migrated
+    assert {call["as_of"] for call in migrated_empty_store.occurrence_search_calls} == {anchor_clock}
+
+
+@pytest.mark.parametrize(
+    ("query", "context_depth", "expected_provider_calls"),
+    [
+        (
+            "Tell me about my bike service history.",
+            "high",
+            ["Tell me about my bike service history."],
+        ),
+        (
+            "How many times did I service my bike?",
+            "minimal",
+            [],
+        ),
+    ],
+)
+def test_live_occurrence_seam_is_byte_dormant_outside_the_reader_gate(
+    monkeypatch,
+    query: str,
+    context_depth: str,
+    expected_provider_calls: list[str],
+) -> None:
+    reference_time = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+    memories, units, evidence = _reviewed_occurrence_rows(2)
+    legacy_store = InMemoryVNextRetrievalStore(
+        memories=[dict(row) for row in memories],
+        sources=[],
+    )
+    occurrence_store = OccurrenceReaderStore(
+        memories=[dict(row) for row in memories],
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    def compile_pack(
+        store: InMemoryVNextRetrievalStore,
+    ) -> tuple[dict[str, object], StubEmbeddingProvider]:
+        counter = itertools.count(1)
+        monkeypatch.setattr(
+            vnext_retrieval_module,
+            "uuid4",
+            lambda: UUID(int=next(counter)),
+        )
+        provider = StubEmbeddingProvider()
+        pack = VNextRetrievalService(
+            store,
+            embedding_provider=provider,
+        ).compile_context_pack(
+            VNextRetrievalRequest(
+                query=query,
+                context_depth=context_depth,
+                reference_time=reference_time,
+                trace_id="trace-live-occurrence-dormancy",
+            )
+        )
+        return pack, provider
+
+    legacy_pack, legacy_provider = compile_pack(legacy_store)
+    occurrence_pack, occurrence_provider = compile_pack(occurrence_store)
+
+    assert json.dumps(occurrence_pack, sort_keys=True, default=str) == json.dumps(
+        legacy_pack,
+        sort_keys=True,
+        default=str,
+    )
+    assert legacy_provider.embedded_texts == expected_provider_calls
+    assert occurrence_provider.embedded_texts == expected_provider_calls
+    assert occurrence_store.snapshot_calls == 0
+    assert occurrence_store.snapshot_end_calls == 0
+    assert occurrence_store.occurrence_search_calls == []
+    assert occurrence_store.evidence_search_calls == []
+    assert occurrence_store.unresolved_search_calls == []
+    assert "aggregation" not in occurrence_pack
+    assert "aggregation" not in occurrence_pack["budget"]["allocation"]
+
+
+def test_internal_occurrence_memory_metadata_is_byte_dormant_for_non_count_pack(
+    monkeypatch,
+) -> None:
+    reference_time = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+    plain = _memory_row(
+        "memory-multi-event",
+        "I baked cookies and attended a dinner party.",
+        metadata_json={},
+    )
+    annotated = dict(plain)
+    annotated["metadata_json"] = {
+        "occurrence_candidate_texts": [
+            "[USER]: I baked cookies on March 3, 2026.",
+            "[USER]: I attended a dinner party on March 4, 2026.",
+        ],
+        "occurrence_proposals": [
+            {"claim_id": "claim-bake", "count_key": "bake cookie"},
+            {"claim_id": "claim-party", "count_key": "attend party"},
+        ],
+    }
+
+    def compile_pack(
+        memory: dict[str, object],
+    ) -> tuple[dict[str, object], list[str]]:
+        counter = itertools.count(1)
+        monkeypatch.setattr(
+            vnext_retrieval_module,
+            "uuid4",
+            lambda: UUID(int=next(counter)),
+        )
+        provider = StubEmbeddingProvider()
+        pack = VNextRetrievalService(
+            InMemoryVNextRetrievalStore(memories=[memory], sources=[]),
+            embedding_provider=provider,
+        ).compile_context_pack(
+            VNextRetrievalRequest(
+                query="Tell me about baking and dinner parties.",
+                reference_time=reference_time,
+                trace_id="trace-internal-occurrence-metadata-dormant",
+            )
+        )
+        return pack, provider.embedded_texts
+
+    control, control_calls = compile_pack(plain)
+    candidate, candidate_calls = compile_pack(annotated)
+
+    assert json.dumps(candidate, sort_keys=True, default=str) == json.dumps(
+        control,
+        sort_keys=True,
+        default=str,
+    )
+    assert candidate_calls == control_calls
+
+
+def test_active_occurrence_reader_adds_no_embedding_or_reranker_calls(
+    monkeypatch,
+) -> None:
+    reference_time = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+    memories, units, evidence = _reviewed_occurrence_rows(2)
+    legacy_store = InMemoryVNextRetrievalStore(
+        memories=[dict(row) for row in memories],
+        sources=[],
+    )
+    occurrence_store = OccurrenceReaderStore(
+        memories=[dict(row) for row in memories],
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    def compile_pack(
+        store: InMemoryVNextRetrievalStore,
+    ) -> tuple[
+        dict[str, object],
+        StubEmbeddingProvider,
+        StubRerankProvider,
+    ]:
+        counter = itertools.count(1)
+        monkeypatch.setattr(
+            vnext_retrieval_module,
+            "uuid4",
+            lambda: UUID(int=next(counter)),
+        )
+        embedding = StubEmbeddingProvider()
+        reranker = StubRerankProvider()
+        pack = VNextRetrievalService(
+            store,
+            embedding_provider=embedding,
+            reranker_provider=reranker,
+        ).compile_context_pack(
+            VNextRetrievalRequest(
+                query="How many times did I service my bike?",
+                context_depth="high",
+                reference_time=reference_time,
+                trace_id="trace-active-occurrence-call-parity",
+            )
+        )
+        return pack, embedding, reranker
+
+    legacy_pack, legacy_embedding, legacy_reranker = compile_pack(legacy_store)
+    occurrence_pack, occurrence_embedding, occurrence_reranker = compile_pack(occurrence_store)
+
+    assert legacy_embedding.embedded_texts == occurrence_embedding.embedded_texts
+    assert legacy_embedding.embedded_texts == ["How many times did I service my bike?"]
+    assert legacy_reranker.prompts == occurrence_reranker.prompts
+    assert len(legacy_reranker.prompts) == 1
+    assert "aggregation" not in legacy_pack
+    assert occurrence_pack["aggregation"]["answer_kind"] == "exact"
+    assert set(occurrence_pack) == {*legacy_pack, "aggregation"}
+    for key in legacy_pack:
+        if key not in {"budget", "trace"}:
+            assert occurrence_pack[key] == legacy_pack[key]
+
+
+def test_occurrence_reader_requires_a_coherent_read_snapshot() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        snapshot_proof={
+            "proof": "occurrence_read_snapshot_v1",
+            "acquired": False,
+        },
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+    assert store.snapshot_calls == 1
+    assert store.snapshot_end_calls == 1
+    assert store.occurrence_search_calls == []
+
+
+@pytest.mark.parametrize(
+    "snapshot_proof",
+    [
+        {
+            "proof": "occurrence_read_snapshot_v1",
+            "acquired": True,
+            "backend": "sqlite",
+            "mode": "transaction_snapshot",
+        },
+        {
+            "proof": "occurrence_read_snapshot_v1",
+            "acquired": True,
+            "backend": "sqlite",
+            "mode": "transaction_snapshot",
+            "lifecycle_as_of": "not-a-timestamp",
+        },
+        {
+            "proof": "occurrence_read_snapshot_v1",
+            "acquired": True,
+            "backend": "sqlite",
+            "mode": "transaction_snapshot",
+            "lifecycle_as_of": datetime(2026, 7, 24, 12),
+        },
+        {
+            "proof": "occurrence_read_snapshot_v1",
+            "acquired": True,
+            "backend": "sqlite",
+            "mode": "repeatable_read_read_only",
+            "lifecycle_as_of": datetime(
+                2026,
+                7,
+                24,
+                12,
+                tzinfo=UTC,
+            ),
+        },
+        {
+            "proof": "occurrence_read_snapshot_v1",
+            "acquired": True,
+            "backend": "postgres",
+            "mode": "repeatable_read_read_only",
+            "lifecycle_as_of": datetime(
+                2026,
+                7,
+                24,
+                12,
+                tzinfo=UTC,
+            ),
+        },
+        {
+            "proof": "occurrence_read_snapshot_v1",
+            "acquired": True,
+            "backend": "custom",
+            "mode": "transaction_snapshot",
+            "lifecycle_as_of": datetime(
+                2026,
+                7,
+                24,
+                12,
+                tzinfo=UTC,
+            ),
+        },
+    ],
+    ids=[
+        "missing-clock",
+        "invalid-clock",
+        "naive-clock",
+        "sqlite-mode-mismatch",
+        "postgres-missing-snapshot-id",
+        "unknown-backend",
+    ],
+)
+def test_occurrence_reader_rejects_invalid_snapshot_lifecycle_proof(
+    snapshot_proof: Mapping[str, object],
+) -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        snapshot_proof=snapshot_proof,
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 13, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+    assert store.snapshot_calls == 1
+    assert store.snapshot_end_calls == 1
+    assert store.occurrence_search_calls == []
+
+
+def test_occurrence_reader_normalizes_aware_iso_snapshot_clock_to_utc() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        snapshot_proof={
+            "proof": "occurrence_read_snapshot_v1",
+            "acquired": True,
+            "backend": "sqlite",
+            "mode": "transaction_snapshot",
+            "lifecycle_as_of": "2026-07-24T14:00:00+02:00",
+        },
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 13, tzinfo=UTC),
+        )
+    )
+
+    assert pack["aggregation"]["count"] == 1
+    assert {call["as_of"] for call in store.occurrence_search_calls} == {datetime(2026, 7, 24, 12, tzinfo=UTC)}
+
+
+def test_occurrence_reader_fails_closed_when_snapshot_cleanup_fails() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        fail_snapshot_end=True,
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+    assert store.snapshot_calls == 1
+    assert store.snapshot_end_calls == 1
+
+
+def test_occurrence_reader_stays_dormant_for_non_count_and_minimal_queries() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+    non_count = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Tell me about my bike service history.")
+    )
+    minimal = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            context_depth="minimal",
+        )
+    )
+
+    assert "aggregation" not in non_count
+    assert "aggregation" not in minimal
+    assert store.occurrence_search_calls == []
+
+
+def test_occurrence_reader_rejects_a_generic_fuzzy_count_key_overlap() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    _retarget_occurrence_test_unit(
+        units[0],
+        [evidence[0]],
+        action="service",
+        object_leaf="car",
+        count_key="car service",
+        canonical_text="Car service occurrence",
+    )
+    memories[0]["canonical_text"] = "Car service occurrence"
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+    assert any(call["selector_key"] is None for call in store.occurrence_search_calls)
+    assert any(call["selector_key"] == "v1|a=exact:service|o=exact:bike" for call in store.occurrence_search_calls)
+
+
+@pytest.mark.parametrize(
+    ("query", "count_key"),
+    [
+        ("How many times did I visit the year?", "visit month"),
+        ("How many times did I spend time?", "spend year"),
+        ("How many times did I work this month?", "work year"),
+    ],
+)
+def test_occurrence_matcher_never_discards_persisted_temporal_object_tokens(
+    query: str,
+    count_key: str,
+) -> None:
+    intent = vnext_retrieval_module.vnext_coverage_query.detect_aggregation_intent(query)
+    assert intent is not None
+    anchor = vnext_retrieval_module.parse_temporal_anchor(
+        query,
+        reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+    )
+
+    assert (
+        vnext_retrieval_module._occurrence_query_matches_count_key(
+            query,
+            intent=intent,
+            count_key=count_key,
+            anchor=anchor,
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    ("query", "count_key"),
+    [
+        ("How many times did I visit the year?", "visit year"),
+        ("How many times did I spend time?", "spend time"),
+        ("How many times did I service my bike this week?", "bike service"),
+    ],
+)
+def test_occurrence_matcher_removes_only_proven_query_grammar(
+    query: str,
+    count_key: str,
+) -> None:
+    intent = vnext_retrieval_module.vnext_coverage_query.detect_aggregation_intent(query)
+    assert intent is not None
+    anchor = vnext_retrieval_module.parse_temporal_anchor(
+        query,
+        reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+    )
+
+    assert vnext_retrieval_module._occurrence_query_matches_count_key(
+        query,
+        intent=intent,
+        count_key=count_key,
+        anchor=anchor,
+    )
+
+
+@pytest.mark.parametrize(
+    ("past_tense", "canonical"),
+    [
+        ("passed", "pass"),
+        ("missed", "miss"),
+        ("crossed", "cross"),
+        ("buzzed", "buzz"),
+        ("serviced", "service"),
+    ],
+)
+def test_occurrence_token_root_handles_regular_ed_endings(
+    past_tense: str,
+    canonical: str,
+) -> None:
+    assert vnext_retrieval_module._occurrence_token_root(past_tense) == canonical
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many times did I not service my bike?",
+        "How many times did I never service my bike?",
+        "How many times did I avoid servicing my bike?",
+        "How many times did I fail to service my bike?",
+        "How many times was I without servicing my bike?",
+        "How many times didn't I service my bike?",
+        "How many times did I skip servicing my bike?",
+        "How many times did I miss a bike service?",
+        "How many times did I cancel my bike service?",
+        "How many times did I refuse to service my bike?",
+        "How many times was I unable to service my bike?",
+        "How many times did I intend to service my bike?",
+        "How many times did I plan to service my bike?",
+        "How many times did I almost service my bike?",
+        "How many times did I try to service my bike?",
+        "How many times did I want to service my bike?",
+    ],
+)
+def test_occurrence_reader_stays_dormant_for_unsupported_query_polarity(
+    query: str,
+) -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query=query,
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+    assert store.snapshot_calls == 0
+    assert store.snapshot_end_calls == 0
+    assert store.occurrence_search_calls == []
+    assert store.evidence_search_calls == []
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many times did Bob visit the museum?",
+        "How many times did my partner visit the museum?",
+        "How many times did Alice visit the museum?",
+        "How many times was the museum visited?",
+    ],
+)
+def test_occurrence_reader_never_attributes_user_units_to_another_actor(
+    query: str,
+) -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(2)
+    for unit in units:
+        unit["count_key"] = "visit museum"
+        unit["canonical_text"] = "I visited the museum."
+    for memory in memories:
+        memory["canonical_text"] = "I visited the museum."
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query=query,
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+    assert store.snapshot_calls == 0
+    assert store.occurrence_search_calls == []
+
+
+def test_occurrence_reader_does_not_answer_distinct_object_cardinality() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(2)
+    for index, unit in enumerate(units):
+        _retarget_occurrence_test_unit(
+            unit,
+            [evidence[index]],
+            action="visit",
+            object_leaf="museum",
+            count_key="visit museum",
+            canonical_text="I visited the same museum.",
+        )
+    for memory in memories:
+        memory["canonical_text"] = "I visited the same museum."
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many museums did I visit?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+    assert store.snapshot_calls == 1
+    assert store.snapshot_end_calls == 1
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "How many times did I visit the museum with Bob?",
+        "How many times did I visit the art museum?",
+        "How many times did I visit the museum in Paris?",
+        "How many times did I visit the museum for work?",
+    ],
+)
+def test_occurrence_reader_rejects_unsigned_query_qualifiers(
+    query: str,
+) -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(2)
+    for index, unit in enumerate(units):
+        _retarget_occurrence_test_unit(
+            unit,
+            [evidence[index]],
+            action="visit",
+            object_leaf="museum",
+            count_key="visit museum",
+            canonical_text="I visited the museum.",
+        )
+    for memory in memories:
+        memory["canonical_text"] = "I visited the museum."
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query=query,
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+    assert store.snapshot_calls == 1
+    assert store.snapshot_end_calls == 1
+    assert store.evidence_search_calls
+
+
+def test_occurrence_reader_rejects_overbounded_natural_query_qualifiers() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(2)
+    for index, unit in enumerate(units):
+        _retarget_occurrence_test_unit(
+            unit,
+            [evidence[index]],
+            action="paint",
+            object_leaf="fence",
+            count_key="paint fence",
+            canonical_text="I painted the fence.",
+        )
+    for memory in memories:
+        memory["canonical_text"] = "I painted the fence."
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query=(
+                "How many times did I paint the ancient blue cracked "
+                "detailed enormous heavy ornate polished weathered fence?"
+            ),
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack
+    assert store.snapshot_calls == 0
+    assert store.occurrence_search_calls == []
+
+
+def test_occurrence_reader_reports_mixed_predicates_as_a_lower_bound() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(2)
+    _retarget_occurrence_test_unit(
+        units[1],
+        [evidence[1]],
+        action="service",
+        object_leaf="car",
+        count_key="car service",
+        canonical_text="Car service occurrence.",
+    )
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert pack["aggregation"]["answer_kind"] == "at_least"
+    assert pack["aggregation"]["lower_bound"] == 1
+    assert pack["aggregation"]["upper_bound"] is None
+    assert pack["aggregation"]["accepted_units"] == {
+        "matching": 1,
+        "disjoint_proven": 0,
+        "relation_unknown": 1,
+    }
+
+
+def test_occurrence_reader_does_not_hide_a_shared_token_sibling() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(2)
+    _retarget_occurrence_test_unit(
+        units[1],
+        [evidence[1]],
+        action="service",
+        object_leaf="car",
+        count_key="car service",
+        canonical_text="Car service occurrence.",
+    )
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert pack["aggregation"]["answer_kind"] == "at_least"
+    assert pack["aggregation"]["lower_bound"] == 1
+    assert pack["aggregation"]["accepted_units"]["relation_unknown"] == 1
+    assert any(call["selector_key"] is None for call in store.occurrence_search_calls)
+
+
+def test_occurrence_reader_different_key_pending_claim_preserves_louvre_lower_bound() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    _retarget_occurrence_test_unit(
+        units[0],
+        [evidence[0]],
+        action="visit",
+        object_leaf="louvre",
+        count_key="visit louvre",
+        canonical_text="Visited the Louvre.",
+    )
+    memories[0]["canonical_text"] = "Visited the Louvre."
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+        unresolved=[
+            _occurrence_test_unresolved_claim(
+                "claim-compound-tour",
+                action="tour",
+                object_leaf="montmartre",
+                count_key="tour montmartre",
+            )
+        ],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I visit the Louvre?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert pack["aggregation"]["answer_kind"] == "range"
+    assert pack["aggregation"]["lower_bound"] == 1
+    assert pack["aggregation"]["upper_bound"] == 2
+    assert "count" not in pack["aggregation"]
+    assert store.unresolved_search_calls[0]["count_key"] is None
+
+
+def test_occurrence_reader_rejects_stale_or_scope_leaking_evidence() -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    evidence[0]["unit_review_receipt_digest"] = "f" * 64
+    memories[0]["project_id"] = "secret-project"
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I service my bike?",
+            projects=("bike",),
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert "aggregation" not in pack

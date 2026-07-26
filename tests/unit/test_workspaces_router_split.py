@@ -708,7 +708,7 @@ def test_workspace_test_patches_and_release_controls_follow_moved_ownership() ->
     }
     assert call_counts["apps/api/src/alicebot_api/main.py"] == 2
     assert call_counts[workspace_path] == 4
-    assert sum(call_counts.values()) == 298
+    assert sum(call_counts.values()) == 299
 
 
 def test_workspace_split_receipts_fail_on_old_or_mutated_carriers() -> None:

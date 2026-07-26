@@ -5329,9 +5329,10 @@ def test_vnext_memory_review_defers_embedding_until_primary_transaction_closes(m
         def lock_supersession_graph(self) -> None:
             pass
 
-        def refresh_memory_derived_state(self, _memory, **_kwargs) -> None:
+        def refresh_memory_derived_state(self, memory, **_kwargs):
             assert transaction_depth == 1
             calls.append("refresh")
+            return memory
 
     def fake_persist(**kwargs) -> None:
         assert transaction_depth == 0

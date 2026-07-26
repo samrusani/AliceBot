@@ -67,6 +67,13 @@ from alicebot_api.vnext_memory_commit import (
     is_pending_consolidation_candidate,
     memory_commit_request_from_payload,
 )
+from alicebot_api.vnext_occurrence_write import (
+    establish_source_chunk_occurrences,
+    invalidate_occurrence_accounting,
+    occurrence_source_title_snapshot_value,
+    reconcile_chunk_extraction_disposition,
+    review_source_chunk_occurrences,
+)
 from alicebot_api.vnext_project_update_guard import (
     PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE,
     is_pending_project_update_memory,
@@ -591,9 +598,7 @@ def capture_vnext_browser_clip(
             capability_authorized = request.capture_capability is not None
             if capability_authorized:
                 if request.capture_token is not None:
-                    raise BrowserClipCapabilityValidationError(
-                        "browser clip credentials are mutually exclusive"
-                    )
+                    raise BrowserClipCapabilityValidationError("browser clip credentials are mutually exclusive")
                 consume_browser_clip_capability(
                     store,
                     capability=request.capture_capability or "",
@@ -746,7 +751,13 @@ def review_vnext_source(source_id: UUID, request: VNextSourceReviewRequest) -> J
             existing = store.get_source(str(source_id))
             if existing is None:
                 return _vnext_public_error_response(status_code=404, detail="vNext source was not found")
+            existing = store.lock_source_occurrence_envelope(str(source_id))
             if action == "archive":
+                VNextMemoryCommitService(store).retire_source_occurrence_state(
+                    str(source_id),
+                    stage="http_source_review_archive",
+                    reason="Source was archived through vNext source review.",
+                )
                 archived = store.delete_source(source_id=str(source_id), actor_type="user")
                 append_event(
                     store,
@@ -790,7 +801,84 @@ def review_vnext_source(source_id: UUID, request: VNextSourceReviewRequest) -> J
                 patch["domain"] = request.domain
             if request.sensitivity is not None:
                 patch["sensitivity"] = request.sensitivity
+            proposed_source = {**existing, **patch}
+            occurrence_input_changed = (
+                occurrence_source_title_snapshot_value(proposed_source.get("title"))
+                != occurrence_source_title_snapshot_value(existing.get("title"))
+                or str(proposed_source.get("domain") or "unknown") != str(existing.get("domain") or "unknown")
+                or str(proposed_source.get("sensitivity") or "unknown") != str(existing.get("sensitivity") or "unknown")
+                or resource_project_scope(proposed_source) != resource_project_scope(existing)
+            )
+            occurrence_envelope_retirement_reason = (
+                "Source occurrence evidence was detached before its "
+                "title/project/domain/sensitivity occurrence inputs changed."
+            )
+            if occurrence_input_changed:
+                # Source title and envelope columns participate in occurrence
+                # extraction, identity, and authorization. Detach the old
+                # carrier before the update so current chunks are rebuilt
+                # against the new source inputs instead of leaving stale
+                # accepted receipts or disappearing source-only units.
+                VNextMemoryCommitService(store).retire_source_occurrence_state(
+                    str(source_id),
+                    stage="http_source_review_envelope_change",
+                    reason=occurrence_envelope_retirement_reason,
+                    _defer_occurrence_accounting=True,
+                )
             updated = store.update_source(source_id=str(source_id), patch=patch, actor_type="user")
+            source_chunks = (
+                store.list_source_chunks(str(source_id)) if occurrence_input_changed or action == "review" else []
+            )
+            if occurrence_input_changed:
+                for chunk in source_chunks:
+                    establish_source_chunk_occurrences(
+                        store,
+                        source=updated,
+                        source_chunk=chunk,
+                        actor_type="user",
+                        stage="http_source_review_envelope_change",
+                    )
+            if action == "review":
+                for chunk in source_chunks:
+                    review_source_chunk_occurrences(
+                        store,
+                        source_chunk_id=str(chunk["id"]),
+                        reviewer_id=str(request.user_id),
+                        reason=(request.review_note or "Source extraction disposition reviewed."),
+                        actor_type="user",
+                        stage="http_source_review",
+                        _defer_occurrence_accounting=occurrence_input_changed,
+                    )
+            if occurrence_input_changed:
+                if not source_chunks:
+                    invalidate_occurrence_accounting(
+                        store,
+                        reason=f"{occurrence_envelope_retirement_reason} "
+                        "(http_source_review_envelope_change)",
+                        actor_type="user",
+                        actor_id=str(request.user_id),
+                    )
+                for chunk in source_chunks:
+                    if action == "review":
+                        reconcile_chunk_extraction_disposition(
+                            store,
+                            source_chunk_id=str(chunk["id"]),
+                            actor_type="user",
+                            reviewer_id=str(request.user_id),
+                            reason=(
+                                f"{request.review_note or 'Source extraction disposition reviewed.'} "
+                                "Extraction disposition reviewed during http_source_review."
+                            ),
+                        )
+                    else:
+                        invalidate_occurrence_accounting(
+                            store,
+                            reason=f"{occurrence_envelope_retirement_reason} "
+                            "(http_source_review_envelope_change)",
+                            actor_type="user",
+                            actor_id=str(request.user_id),
+                            source_chunk_id=str(chunk["id"]),
+                        )
             if action == "assign_project":
                 store.create_edge(
                     {
@@ -834,12 +922,24 @@ def review_vnext_source(source_id: UUID, request: VNextSourceReviewRequest) -> J
 def delete_vnext_source(source_id: UUID, user_id: UUID) -> JSONResponse:
     settings = get_settings()
 
-    with user_connection(settings.database_url, user_id) as conn:
-        store = PostgresVNextStore(conn)
-        existing = store.get_source(str(source_id))
-        if existing is None:
-            return JSONResponse(status_code=404, content={"detail": f"vNext source {source_id} was not found"})
-        payload = store.delete_source(source_id=str(source_id))
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            store = PostgresVNextStore(conn)
+            existing = store.get_source(str(source_id))
+            if existing is None:
+                return JSONResponse(
+                    status_code=404,
+                    content={"detail": f"vNext source {source_id} was not found"},
+                )
+            existing = store.lock_source_occurrence_envelope(str(source_id))
+            VNextMemoryCommitService(store).retire_source_occurrence_state(
+                str(source_id),
+                stage="http_source_delete",
+                reason="Source was deleted through the vNext source endpoint.",
+            )
+            payload = store.delete_source(source_id=str(source_id))
+    except ContinuityStoreInvariantError as exc:
+        return public_exception_response(exc, status_code=409)
 
     return JSONResponse(
         status_code=200,
@@ -1139,12 +1239,28 @@ def review_vnext_memory(
         if request.sensitivity is not None:
             patch["sensitivity"] = request.sensitivity
 
+        if action in {"reject", "private"}:
+            memory_service.retire_memory_occurrence_state(
+                existing,
+                identity=identity,
+                stage=f"http_review_{action}",
+                reason=(request.reason or f"vNext workspace memory review action: {action}"),
+            )
         updated = store.update_memory(memory_id=str(memory_id), patch=patch, actor_type=actor_type)
         if action in ("accept", "edit", "promote"):
-            memory_service.refresh_memory_derived_state(
+            updated = memory_service.refresh_memory_derived_state(
                 updated,
                 identity=identity,
                 stage=f"http_review_{action}",
+            )
+        elif action == "assign_project":
+            # Project scope is part of occurrence identity. Reconcile after
+            # the atomic scope update so the old scoped unit is retired and a
+            # replacement proposal is reviewed under the new scope.
+            updated = memory_service.reconcile_memory_occurrence_state(
+                updated,
+                identity=identity,
+                stage="http_review_assign_project",
             )
         if action == "assign_project" and request.project_id is not None:
             store.create_edge(

@@ -33,7 +33,9 @@ from alicebot_api.vnext_stores.sqlite.vector_scan import bump_embedding_stamp
 
 VNextRow = dict[str, object]
 
+
 def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> VNextRow:
+    self.lock_graph_mutation()
     memory_id = _new_id(memory.get("id"))
     now = _utc_now_iso()
     self._execute(
@@ -135,7 +137,12 @@ def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> VN
         target_id=row["id"],
         payload={"operation": "create", "fields": _sorted_field_names(memory)},
     )
+    self.invalidate_occurrence_coverage(
+        reason="A live memory was added to the occurrence accounting corpus.",
+        actor_type=actor_type,
+    )
     return row
+
 
 def upsert_memory_by_key(self, memory: JsonObject, *, actor_type: str = "system") -> VNextRow:
     """Create a deterministic-key memory or replay its existing row."""
@@ -155,17 +162,17 @@ def upsert_memory_by_key(self, memory: JsonObject, *, actor_type: str = "system"
             raise
         return existing
 
+
 def get_memory_for_update(self, memory_id: str) -> VNextRow | None:
     """Acquire SQLite's writer lock before a review/lifecycle decision."""
-    if not self.conn.in_transaction:
-        self.conn.execute("BEGIN IMMEDIATE")
+    self.lock_graph_mutation()
     return self.get_memory(memory_id)
+
 
 def get_memory_for_redaction(self, memory_id: str) -> VNextRow | None:
     """Acquire the writer lock and load a redaction target tombstone."""
 
-    if not self.conn.in_transaction:
-        self.conn.execute("BEGIN IMMEDIATE")
+    self.lock_graph_mutation()
     return self._fetch_optional_one(
         f"""
                 SELECT {", ".join(MEMORY_COLUMNS)}
@@ -176,11 +183,14 @@ def get_memory_for_redaction(self, memory_id: str) -> VNextRow | None:
         (str(memory_id), self.user_id),
     )
 
+
 def lock_project_update_artifacts_for_redaction(self, memory_id: str) -> list[VNextRow]:
     """SQLite intentionally has no generated-artifact repository."""
 
+    self.lock_graph_mutation()
     del memory_id
     return []
+
 
 def memory_redaction_bundle_is_exact(self, memory_id: str, artifact_ids: Sequence[str]) -> bool:
     if artifact_ids:
@@ -256,9 +266,11 @@ def memory_redaction_bundle_is_exact(self, memory_id: str, artifact_ids: Sequenc
             mid,
         ),
     )
-    return bool(row.get("exact"))
+    return bool(row.get("exact")) and self.occurrence_memory_redaction_is_exact(mid)
+
 
 def update_memory(self, *, memory_id: str, patch: JsonObject, actor_type: str = "system") -> VNextRow:
+    self.lock_graph_mutation()
     cursor = self._execute(
         """
                 UPDATE memories
@@ -345,22 +357,38 @@ def update_memory(self, *, memory_id: str, patch: JsonObject, actor_type: str = 
         target_id=row["id"],
         payload={"operation": "update", "changes": patch},
     )
+    self.invalidate_occurrence_coverage(
+        reason="A live memory changed in the occurrence accounting corpus.",
+        actor_type=actor_type,
+    )
     return row
 
+
 def lock_graph_mutation(self) -> None:
-    """No-op: SQLite serializes writes with a single writer, so there is no
-        concurrent supersession to guard against. Present for store parity with
-        the Postgres advisory lock."""
-    return None
+    """Acquire SQLite's writer boundary before any truth-graph read or row."""
+
+    if not self.conn.in_transaction:
+        self.conn.execute("BEGIN IMMEDIATE")
+    lock = self._execute(
+        """
+        UPDATE users
+        SET id = id
+        WHERE id = ?
+        """,
+        (self.user_id,),
+    )
+    if lock.rowcount != 1:
+        raise ContinuityStoreInvariantError("graph mutation lock requires a current owned user")
+
 
 def list_memory_ids_with_embeddings(self, ids: "Sequence[str]") -> set[str]:
     """Exact-ID embedding-presence read for a specific set of memory IDs.
 
-        Consolidation and rollups must know which *selected* rows have stored
-        vectors; a global ANN probe returns nearest neighbors, not a presence
-        test. This reads presence directly by ID, chunked to stay within
-        SQLite's bound-parameter limit.
-        """
+    Consolidation and rollups must know which *selected* rows have stored
+    vectors; a global ANN probe returns nearest neighbors, not a presence
+    test. This reads presence directly by ID, chunked to stay within
+    SQLite's bound-parameter limit.
+    """
     id_list = [str(value) for value in ids if str(value)]
     present: set[str] = set()
     chunk_size = 400
@@ -381,13 +409,14 @@ def list_memory_ids_with_embeddings(self, ids: "Sequence[str]") -> set[str]:
         present.update(str(row["id"]) for row in rows)
     return present
 
+
 def update_memory_fact_keys(self, *, memory_id: str, fact_keys: str | None) -> VNextRow | None:
     """Store derived retrieval keys; the FTS sync triggers re-index them.
 
-        ``None`` resets the row to the "never derived" state the backfill
-        pass scans for; ``""`` marks "derived, nothing to add". Mirrors
-        ``update_memory_embedding``: a plain indexing write, no revision.
-        """
+    ``None`` resets the row to the "never derived" state the backfill
+    pass scans for; ``""`` marks "derived, nothing to add". Mirrors
+    ``update_memory_embedding``: a plain indexing write, no revision.
+    """
     if fact_keys is not None and not isinstance(fact_keys, str):
         raise ContinuityStoreInvariantError("fact_keys must be a string or None")
     normalized = re.sub(r"\s+", " ", fact_keys).strip() if isinstance(fact_keys, str) else None
@@ -413,6 +442,7 @@ def update_memory_fact_keys(self, *, memory_id: str, fact_keys: str | None) -> V
         (str(memory_id), self.user_id),
     )
 
+
 def list_memories_missing_fact_keys(self, *, limit: int = 100, after_id: str | None = None) -> list[VNextRow]:
     """Backfill pagination over rows whose fact_keys was never derived."""
     return self._fetch_all(
@@ -429,6 +459,7 @@ def list_memories_missing_fact_keys(self, *, limit: int = 100, after_id: str | N
         (self.user_id, after_id, after_id, limit),
     )
 
+
 @contextmanager
 def _redaction_mode(self) -> Iterator[None]:
     """Set/reset the privileged redaction flag around a block."""
@@ -437,6 +468,7 @@ def _redaction_mode(self) -> Iterator[None]:
         yield
     finally:
         self._execute("UPDATE redaction_mode SET enabled = 0 WHERE id = 1")
+
 
 def redact_memory_bundle(
     self,
@@ -447,11 +479,12 @@ def redact_memory_bundle(
 ) -> VNextRow:
     """Scrub the SQLite memory/revision/event/provenance parity surface.
 
-        SQLite deliberately has no generated-artifact or quality-rating
-        subsystem, so those response counts are always zero rather than being
-        silently inferred from an unavailable table.
-        """
+    SQLite deliberately has no generated-artifact or quality-rating
+    subsystem, so those response counts are always zero rather than being
+    silently inferred from an unavailable table.
+    """
 
+    self.lock_graph_mutation()
     if project_update_artifacts:
         raise ContinuityStoreInvariantError("SQLite cannot redact generated artifacts")
     mid = str(memory_id)
@@ -652,9 +685,18 @@ def redact_memory_bundle(
             # Redaction NULLed a live vector: evict every resident vector
             # cache in the same transaction (owner-decided prompt eviction).
             bump_embedding_stamp(self._execute)
+        occurrence_redaction = self.redact_occurrence_memory_content(memory_id=mid)
 
     redacted_memory = self._get_row("redact_memory_bundle", "memories", MEMORY_COLUMNS, mid)
-    changed = bool(memory_changed or redacted_provenance_links or redacted_revisions or redacted_events)
+    changed = bool(
+        memory_changed
+        or redacted_provenance_links
+        or redacted_revisions
+        or redacted_events
+        or occurrence_redaction["redacted_occurrence_evidence"]
+        or occurrence_redaction["redacted_occurrence_claims"]
+        or occurrence_redaction["redacted_occurrence_units"]
+    )
     if changed:
         receipt = build_event_log_record(
             event_type="memory.redacted",
@@ -674,19 +716,22 @@ def redact_memory_bundle(
         "redacted_artifact_ids": [],
         "redacted_quality_ratings": 0,
         "redacted_provenance_links": redacted_provenance_links,
+        **occurrence_redaction,
         "idempotent_replay": not changed,
     }
+
 
 def redact_memory_content(self, *, memory_id: str, actor_type: str = "user") -> VNextRow:
     """Expunge a memory's content in place, keeping the skeleton.
 
-        Content columns (title, canonical_text, summary, trust_reason,
-        value) become the redaction marker, metadata_json is scrubbed to
-        structural keys plus redacted_at, the content-derived columns
-        (embedding, fact_keys) are cleared, and the row is archived.
-        Applies to already-archived (soft-deleted) rows too -- that is
-        the primary redaction target.
-        """
+    Content columns (title, canonical_text, summary, trust_reason,
+    value) become the redaction marker, metadata_json is scrubbed to
+    structural keys plus redacted_at, the content-derived columns
+    (embedding, fact_keys) are cleared, and the row is archived.
+    Applies to already-archived (soft-deleted) rows too -- that is
+    the primary redaction target.
+    """
+    self.lock_graph_mutation()
     mid = str(memory_id)
     current = self._fetch_optional_one(
         """
@@ -753,16 +798,17 @@ def redact_memory_content(self, *, memory_id: str, actor_type: str = "user") -> 
     )
     return row
 
+
 def redact_memory_revisions(self, *, memory_id: str, actor_type: str = "user") -> VNextRow:
     """Expunge revision content for a memory, keeping the skeleton.
 
-        text_before/text_after/reason become the marker (reasons can
-        carry content, so they are redacted too); previous_value/
-        new_value/candidate/metadata_json become {"redacted": true}.
-        NULL content stays NULL so the created-vs-edited shape survives.
-        ids, sequence/revision numbers, revision_type, actor columns,
-        and created_at are untouched.
-        """
+    text_before/text_after/reason become the marker (reasons can
+    carry content, so they are redacted too); previous_value/
+    new_value/candidate/metadata_json become {"redacted": true}.
+    NULL content stays NULL so the created-vs-edited shape survives.
+    ids, sequence/revision numbers, revision_type, actor columns,
+    and created_at are untouched.
+    """
     mid = str(memory_id)
     redacted_json = _json_object_text(REDACTED_JSON_VALUE)
     with self._redaction_mode():
@@ -803,15 +849,16 @@ def redact_memory_revisions(self, *, memory_id: str, actor_type: str = "user") -
     )
     return {"memory_id": mid, "redacted_revisions": redacted_count}
 
+
 def redact_memory_events(self, *, memory_id: str, actor_type: str = "user") -> VNextRow:
     """Expunge event payloads that reference a memory.
 
-        Matching rows keep event_type, actor columns, target columns,
-        occurred_at, and trace/run references; payload_json becomes
-        {"redacted": true, "memory_id": ..., "event_type": <own column>}
-        and integrity_hash is cleared (it derives from the payload, so
-        keeping it would allow confirming guesses of redacted content).
-        """
+    Matching rows keep event_type, actor columns, target columns,
+    occurred_at, and trace/run references; payload_json becomes
+    {"redacted": true, "memory_id": ..., "event_type": <own column>}
+    and integrity_hash is cleared (it derives from the payload, so
+    keeping it would allow confirming guesses of redacted content).
+    """
     mid = str(memory_id)
     with self._redaction_mode():
         cursor = self._execute(
@@ -847,6 +894,7 @@ def redact_memory_events(self, *, memory_id: str, actor_type: str = "user") -> V
         payload={"operation": "redact_memory_events", "redacted_events": redacted_count},
     )
     return {"memory_id": mid, "redacted_events": redacted_count}
+
 
 def create_provenance_link(self, link: JsonObject, *, actor_type: str = "system") -> VNextRow:
     if (
@@ -896,6 +944,7 @@ def create_provenance_link(self, link: JsonObject, *, actor_type: str = "system"
     )
     return row
 
+
 def list_provenance_links(self, *, target_type: str, target_id: str) -> list[VNextRow]:
     return self._fetch_all(
         f"""
@@ -908,6 +957,7 @@ def list_provenance_links(self, *, target_type: str, target_id: str) -> list[VNe
                 """,
         (target_type, target_id, self.user_id),
     )
+
 
 def list_provenance_links_for_targets(
     self,

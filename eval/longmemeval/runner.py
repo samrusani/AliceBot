@@ -93,13 +93,28 @@ _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 # optional roll-up path must invalidate an existing ``*.ingested.json`` marker.
 _INGEST_CODE_MANIFEST = (
     Path("eval/longmemeval/adapter.py"),
+    Path("apps/api/alembic/versions/20260724_0095_occurrence_substrate.py"),
+    Path("apps/api/src/alicebot_api/sqlite_schema.py"),
     Path("apps/api/src/alicebot_api/sqlite_store.py"),
     Path("apps/api/src/alicebot_api/vnext_capture.py"),
     Path("apps/api/src/alicebot_api/vnext_embeddings.py"),
     Path("apps/api/src/alicebot_api/vnext_entities.py"),
     Path("apps/api/src/alicebot_api/vnext_fact_keys.py"),
     Path("apps/api/src/alicebot_api/vnext_memory_commit.py"),
+    Path("apps/api/src/alicebot_api/vnext_occurrence_predicates.py"),
+    Path("apps/api/src/alicebot_api/vnext_occurrence_taxonomy.py"),
+    Path("apps/api/src/alicebot_api/vnext_occurrence_write.py"),
+    Path("apps/api/src/alicebot_api/vnext_occurrences.py"),
+    Path("apps/api/src/alicebot_api/vnext_project_scope.py"),
     Path("apps/api/src/alicebot_api/vnext_rollups.py"),
+    Path("apps/api/src/alicebot_api/vnext_store.py"),
+    Path("apps/api/src/alicebot_api/vnext_temporal_query.py"),
+    Path("apps/api/src/alicebot_api/vnext_stores/postgres/memory_lifecycle.py"),
+    Path("apps/api/src/alicebot_api/vnext_stores/postgres/occurrence_accounting.py"),
+    Path("apps/api/src/alicebot_api/vnext_stores/postgres/occurrences.py"),
+    Path("apps/api/src/alicebot_api/vnext_stores/sqlite/memory_lifecycle.py"),
+    Path("apps/api/src/alicebot_api/vnext_stores/sqlite/occurrence_accounting.py"),
+    Path("apps/api/src/alicebot_api/vnext_stores/sqlite/occurrences.py"),
 )
 
 
@@ -184,9 +199,7 @@ def _untracked_source_identity(repo_root: Path, untracked_output: bytes) -> dict
     return {
         "untracked_tree_dirty": bool(untracked_paths),
         "untracked_file_count": len(untracked_paths),
-        "untracked_manifest_sha256_prefix": (
-            untracked_digest.hexdigest()[:16] if untracked_paths else None
-        ),
+        "untracked_manifest_sha256_prefix": (untracked_digest.hexdigest()[:16] if untracked_paths else None),
     }
 
 
@@ -242,8 +255,7 @@ def _question_ingest_digest(question: LongMemEvalQuestion) -> str:
                 "session_id": session_id,
                 "date": date,
                 "turns": [
-                    {"role": turn.role, "content": turn.content, "has_answer": turn.has_answer}
-                    for turn in turns
+                    {"role": turn.role, "content": turn.content, "has_answer": turn.has_answer} for turn in turns
                 ],
             }
             for session_id, date, turns in question.sessions_with_metadata()
@@ -351,9 +363,9 @@ def config_fingerprint(
         else {
             "file": config.question_ids_file,
             "count": len(config.question_ids),
-            "ids_sha256_prefix": hashlib.sha256(
-                "\n".join(sorted(config.question_ids)).encode("utf-8")
-            ).hexdigest()[:16],
+            "ids_sha256_prefix": hashlib.sha256("\n".join(sorted(config.question_ids)).encode("utf-8")).hexdigest()[
+                :16
+            ],
         },
     }
     digest_source = json.dumps(fingerprint, sort_keys=True, ensure_ascii=True)
@@ -482,9 +494,7 @@ def run_question(
     try:
         marker_path = Path(str(db_path) + ".ingested.json")
         reuse = (
-            config.reuse_stores
-            and db_path.is_file()
-            and _reuse_marker_matches(marker_path, question, config=config)
+            config.reuse_stores and db_path.is_file() and _reuse_marker_matches(marker_path, question, config=config)
         )
         if not reuse:
             _cleanup_store(db_path)
@@ -639,7 +649,9 @@ def aggregate_records(records: list[dict[str, object]]) -> dict[str, object]:
             "accuracy": overall["accuracy"],
         },
         "abstention": _accuracy_bucket([record for record in ok_records if record.get("is_abstention") is True]),
-        "non_abstention": _accuracy_bucket([record for record in ok_records if record.get("is_abstention") is not True]),
+        "non_abstention": _accuracy_bucket(
+            [record for record in ok_records if record.get("is_abstention") is not True]
+        ),
         "per_type": per_type_summary,
         "retrieval": {
             "context_chars_mean": round(sum(context_chars) / len(context_chars), 1) if context_chars else None,
@@ -680,8 +692,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="Score Alice's capture + retrieval pipeline on LongMemEval.",
     )
     parser.add_argument("--variant", choices=VARIANTS, default="s", help="dataset variant (default: s)")
-    parser.add_argument("--dataset-file", type=Path, default=None, help="explicit dataset JSON path (overrides --variant lookup)")
-    parser.add_argument("--data-dir", type=Path, default=None, help="dataset directory (default: eval/longmemeval/data)")
+    parser.add_argument(
+        "--dataset-file", type=Path, default=None, help="explicit dataset JSON path (overrides --variant lookup)"
+    )
+    parser.add_argument(
+        "--data-dir", type=Path, default=None, help="dataset directory (default: eval/longmemeval/data)"
+    )
     subset = parser.add_mutually_exclusive_group()
     subset.add_argument("--limit", type=int, default=None, help="only run the first N questions")
     subset.add_argument(
@@ -692,9 +708,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "run only those questions — mutually exclusive with --limit",
     )
     parser.add_argument("--resume", action="store_true", help="skip questions already completed in the checkpoint")
-    parser.add_argument("--report", type=Path, default=None, help="report JSON path (default: eval/longmemeval/results/)")
-    parser.add_argument("--checkpoint", type=Path, default=None, help="checkpoint JSONL path (default: eval/longmemeval/results/)")
-    parser.add_argument("--workers", type=int, default=2, help="parallel questions in flight (default: 2; keep small for rate limits)")
+    parser.add_argument(
+        "--report", type=Path, default=None, help="report JSON path (default: eval/longmemeval/results/)"
+    )
+    parser.add_argument(
+        "--checkpoint", type=Path, default=None, help="checkpoint JSONL path (default: eval/longmemeval/results/)"
+    )
+    parser.add_argument(
+        "--workers", type=int, default=2, help="parallel questions in flight (default: 2; keep small for rate limits)"
+    )
     parser.add_argument("--dry-run", action="store_true", help="ingest + retrieval only; no chat model, no judge")
     parser.add_argument("--cot", action="store_true", help="use the official chain-of-thought reading template")
     parser.add_argument(
@@ -721,7 +743,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "(default; byte-identical to published runs) or 'json' (same retrieved "
         "content as a compact structured document); recorded in the fingerprint",
     )
-    parser.add_argument("--max-items", type=int, default=None, help=f"context-pack max_items (default: ${'{'}ALICE_LME_MAX_ITEMS{'}'} or {DEFAULT_MAX_ITEMS})")
+    parser.add_argument(
+        "--max-items",
+        type=int,
+        default=None,
+        help=f"context-pack max_items (default: ${'{'}ALICE_LME_MAX_ITEMS{'}'} or {DEFAULT_MAX_ITEMS})",
+    )
     parser.add_argument(
         "--context-char-budget",
         type=int,
@@ -909,7 +936,9 @@ def main(argv: list[str] | None = None) -> int:
                     flush=True,
                 )
 
-    resumed_records = [existing_records[question_id] for question_id in sorted(done_ids) if question_id in existing_records]
+    resumed_records = [
+        existing_records[question_id] for question_id in sorted(done_ids) if question_id in existing_records
+    ]
     all_records = resumed_records + fresh_records
     report = build_report(config, fingerprint, all_records, resumed_count=len(resumed_records))
     config.report_path.parent.mkdir(parents=True, exist_ok=True)

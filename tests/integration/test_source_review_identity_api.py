@@ -90,7 +90,7 @@ def test_source_review_http_rotates_identity_and_recapture_uses_new_envelope(
         "get_settings",
         lambda: Settings(database_url=database_url),
     )
-    text = "Fact: HTTP source review rotates the complete capture identity."
+    text = "[USER]: I visited the museum on March 3, 2026."
     with user_connection(database_url, user_id) as conn:
         store = PostgresVNextStore(conn)
         captured = VNextCaptureService(store).capture_text(
@@ -103,6 +103,9 @@ def test_source_review_http_rotates_identity_and_recapture_uses_new_envelope(
         original = store.get_source(source_id)
         assert original is not None
         original_key = original["dedupe_key"]
+        original_units = store.list_occurrence_units_for_source(source_id)
+        assert original_units
+        assert any(unit["domain"] == "project" and unit["sensitivity"] == "private" for unit in original_units)
 
     status, payload = _invoke_request(
         "POST",
@@ -141,6 +144,8 @@ def test_source_review_http_rotates_identity_and_recapture_uses_new_envelope(
         )
         assert repeated.status == "duplicate"
         assert repeated.source_id == source_id
+        rebuilt_units = store.list_occurrence_units_for_source(source_id)
+        assert any(unit["domain"] == "professional" and unit["sensitivity"] == "internal" for unit in rebuilt_units)
         edges = store.list_edges(from_id=source_id)
         assert [(edge["edge_type"], edge["to_id"]) for edge in edges] == [("belongs_to_project", "Beta")]
         event_types = {

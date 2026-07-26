@@ -492,7 +492,17 @@ def test_http_review_acquires_graph_lock_before_candidate_row(
         with user_connection(app_url, user_id) as conn:
             with conn.cursor() as cur:
                 cur.execute("SET LOCAL lock_timeout = '750ms'")
-            assert PostgresVNextStore(conn).get_memory_for_update(candidate_id) is not None
+                cur.execute(
+                    """
+                    SELECT id
+                    FROM memories
+                    WHERE user_id = app.current_user_id()
+                      AND id = %s::uuid
+                    FOR UPDATE
+                    """,
+                    (candidate_id,),
+                )
+                assert cur.fetchone() is not None
     finally:
         release_graph_holder.set()
         worker.join(timeout=20)

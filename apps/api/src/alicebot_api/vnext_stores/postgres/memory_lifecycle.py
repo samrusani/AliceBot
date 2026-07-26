@@ -32,7 +32,9 @@ from alicebot_api.vnext_stores.postgres.primitives import (
 
 VNextRow = dict[str, object]
 
+
 def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> VNextRow:
+    self.lock_graph_mutation()
     row = self._fetch_one(
         "create_memory",
         f"""
@@ -168,7 +170,12 @@ def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> VN
         target_id=row["id"],
         payload={"operation": "create", "fields": _sorted_field_names(memory)},
     )
+    self.invalidate_occurrence_coverage(
+        reason="A live memory was added to the occurrence accounting corpus.",
+        actor_type=actor_type,
+    )
     return row
+
 
 def upsert_memory_by_key(self, memory: JsonObject, *, actor_type: str = "system") -> VNextRow:
     """Create a deterministic-key memory or replay its existing row."""
@@ -192,8 +199,10 @@ def upsert_memory_by_key(self, memory: JsonObject, *, actor_type: str = "system"
             raise
         return existing
 
+
 def get_memory_for_update(self, memory_id: str) -> VNextRow | None:
     """Load and lock one memory for a review/lifecycle decision."""
+    self.lock_graph_mutation()
     return self._fetch_optional_one(
         f"""
                 SELECT {MEMORY_COLUMNS}
@@ -205,9 +214,11 @@ def get_memory_for_update(self, memory_id: str) -> VNextRow | None:
         (memory_id,),
     )
 
+
 def get_memory_for_redaction(self, memory_id: str) -> VNextRow | None:
     """Lock a redaction target even after forget archived/tombstoned it."""
 
+    self.lock_graph_mutation()
     return self._fetch_optional_one(
         f"""
                 SELECT {MEMORY_COLUMNS}
@@ -218,9 +229,11 @@ def get_memory_for_redaction(self, memory_id: str) -> VNextRow | None:
         (memory_id,),
     )
 
+
 def lock_project_update_artifacts_for_redaction(self, memory_id: str) -> list[VNextRow]:
     """Lock every artifact coupled to a candidate memory in UUID order."""
 
+    self.lock_graph_mutation()
     return self._fetch_all(
         f"""
                 SELECT {ARTIFACT_COLUMNS}
@@ -232,6 +245,7 @@ def lock_project_update_artifacts_for_redaction(self, memory_id: str) -> list[VN
                 """,
         (memory_id,),
     )
+
 
 def memory_redaction_bundle_is_exact(self, memory_id: str, artifact_ids: Sequence[str]) -> bool:
     """Return whether every coupled mutable copy is already marker-shaped."""
@@ -335,31 +349,33 @@ def memory_redaction_bundle_is_exact(self, memory_id: str, artifact_ids: Sequenc
                 """,
         (memory_id, list(artifact_ids)),
     )
-    return bool(row.get("exact"))
+    return bool(row.get("exact")) and self.occurrence_memory_redaction_is_exact(memory_id)
+
 
 def lock_graph_mutation(self) -> None:
-    """Serialize lifecycle graph/candidate mutation per user.
+    """Serialize lifecycle and occurrence truth-graph mutation per user.
 
-        A transaction-scoped advisory lock keyed on the current user so two
-        concurrent supersessions cannot each pass an unlocked cycle check and
-        together close a cycle. The same pre-row boundary also serializes
-        consolidation candidate acceptance/invalidation against member
-        correction, forgetting, and transitions. Released automatically at
-        commit/rollback.
-        """
+    A transaction-scoped advisory lock keyed on the current user so two
+    concurrent supersessions cannot each pass an unlocked cycle check and
+    together close a cycle. The same pre-row boundary also serializes
+    carrier, claim, unit, evidence, disposition, and coverage writes so no
+    nested workflow can invert graph and accounting row locks. Released
+    automatically at commit/rollback.
+    """
     with self.conn.cursor() as cur:
         cur.execute(
             "SELECT pg_advisory_xact_lock(hashtext('vnext_supersession'), hashtext(app.current_user_id()::text))"
         )
 
+
 def list_memory_ids_with_embeddings(self, ids: "Sequence[str]") -> set[str]:
     """Exact-ID embedding-presence read for a specific set of memory IDs.
 
-        Consolidation and rollups must know which *selected* rows have stored
-        vectors. A global ANN probe returns nearest neighbors, not a presence
-        test, so selected rows can be missed when unrelated neighbors dominate.
-        This reads presence directly by ID.
-        """
+    Consolidation and rollups must know which *selected* rows have stored
+    vectors. A global ANN probe returns nearest neighbors, not a presence
+    test, so selected rows can be missed when unrelated neighbors dominate.
+    This reads presence directly by ID.
+    """
     id_list = [str(value) for value in ids if str(value)]
     if not id_list:
         return set()
@@ -375,14 +391,15 @@ def list_memory_ids_with_embeddings(self, ids: "Sequence[str]") -> set[str]:
     )
     return {str(row["id"]) for row in rows}
 
+
 def update_memory_fact_keys(self, *, memory_id: str, fact_keys: str | None) -> VNextRow | None:
     """Store derived retrieval keys; the generated ``search_tsv`` column
-        (migration ``20260707_0082``) re-indexes them at 'D' weight.
+    (migration ``20260707_0082``) re-indexes them at 'D' weight.
 
-        ``None`` resets the row to the "never derived" state the backfill
-        pass scans for; ``""`` marks "derived, nothing to add". Mirrors
-        ``update_memory_embedding``: a plain indexing write, no revision.
-        """
+    ``None`` resets the row to the "never derived" state the backfill
+    pass scans for; ``""`` marks "derived, nothing to add". Mirrors
+    ``update_memory_embedding``: a plain indexing write, no revision.
+    """
     if fact_keys is not None and not isinstance(fact_keys, str):
         raise ContinuityStoreInvariantError("fact_keys must be a string or None")
     normalized = re.sub(r"\s+", " ", fact_keys).strip() if isinstance(fact_keys, str) else None
@@ -396,6 +413,7 @@ def update_memory_fact_keys(self, *, memory_id: str, fact_keys: str | None) -> V
                 """,
         (normalized, memory_id),
     )
+
 
 def list_memories_missing_fact_keys(self, *, limit: int = 100, after_id: str | None = None) -> list[VNextRow]:
     """Backfill pagination over rows whose fact_keys was never derived."""
@@ -412,7 +430,9 @@ def list_memories_missing_fact_keys(self, *, limit: int = 100, after_id: str | N
         (after_id, after_id, limit),
     )
 
+
 def update_memory(self, *, memory_id: str, patch: JsonObject, actor_type: str = "system") -> VNextRow:
+    self.lock_graph_mutation()
     row = self._fetch_one(
         "update_memory",
         f"""
@@ -492,7 +512,12 @@ def update_memory(self, *, memory_id: str, patch: JsonObject, actor_type: str = 
         target_id=row["id"],
         payload={"operation": "update", "changes": patch},
     )
+    self.invalidate_occurrence_coverage(
+        reason="A live memory changed in the occurrence accounting corpus.",
+        actor_type=actor_type,
+    )
     return row
+
 
 @contextmanager
 def _redaction_mode(self) -> Iterator[None]:
@@ -512,6 +537,7 @@ def _redaction_mode(self) -> Iterator[None]:
             # (set_config assignments are transactional).
             pass
 
+
 def redact_memory_bundle(
     self,
     *,
@@ -521,14 +547,15 @@ def redact_memory_bundle(
 ) -> VNextRow:
     """Atomically scrub a memory and every persisted coupled copy.
 
-        The caller must acquire the user graph lock, the memory lock (including
-        deleted rows), and the project-update artifact locks in deterministic
-        id order before entering this method.  Every UPDATE is marker-shaped
-        and runs under the narrowly-scoped database redaction flag.  A single
-        content-free receipt is appended only when at least one stored value
-        changed, making a replay a byte-preserving no-op.
-        """
+    The caller must acquire the user graph lock, the memory lock (including
+    deleted rows), and the project-update artifact locks in deterministic
+    id order before entering this method.  Every UPDATE is marker-shaped
+    and runs under the narrowly-scoped database redaction flag.  A single
+    content-free receipt is appended only when at least one stored value
+    changed, making a replay a byte-preserving no-op.
+    """
 
+    self.lock_graph_mutation()
     current = self._fetch_optional_one(
         f"""
                 SELECT {MEMORY_COLUMNS},
@@ -839,6 +866,7 @@ def redact_memory_bundle(
             ),
         )
         memory_changed = redacted_memory is not None
+        occurrence_redaction = self.redact_occurrence_memory_content(memory_id=memory_id)
 
     if redacted_memory is None:
         redacted_memory = self._fetch_optional_one(
@@ -855,6 +883,9 @@ def redact_memory_bundle(
         or redacted_provenance_links
         or redacted_revisions
         or redacted_events
+        or occurrence_redaction["redacted_occurrence_evidence"]
+        or occurrence_redaction["redacted_occurrence_claims"]
+        or occurrence_redaction["redacted_occurrence_units"]
     )
     if bundle_changed:
         receipt = build_event_log_record(
@@ -882,19 +913,22 @@ def redact_memory_bundle(
         "redacted_artifact_ids": changed_artifact_ids,
         "redacted_quality_ratings": redacted_quality_ratings,
         "redacted_provenance_links": redacted_provenance_links,
+        **occurrence_redaction,
         "idempotent_replay": not bundle_changed,
     }
+
 
 def redact_memory_content(self, *, memory_id: str, actor_type: str = "user") -> VNextRow:
     """Expunge a memory's content in place, keeping the skeleton.
 
-        Content columns (title, canonical_text, summary, trust_reason,
-        value) become the redaction marker, metadata_json is scrubbed to
-        structural keys plus redacted_at, the content-derived columns
-        (embedding, fact_keys) are cleared, and the row is archived.
-        Applies to already-archived (soft-deleted) rows too -- that is
-        the primary redaction target.
-        """
+    Content columns (title, canonical_text, summary, trust_reason,
+    value) become the redaction marker, metadata_json is scrubbed to
+    structural keys plus redacted_at, the content-derived columns
+    (embedding, fact_keys) are cleared, and the row is archived.
+    Applies to already-archived (soft-deleted) rows too -- that is
+    the primary redaction target.
+    """
+    self.lock_graph_mutation()
     current = self._fetch_optional_one(
         """
                 SELECT metadata_json
@@ -951,16 +985,17 @@ def redact_memory_content(self, *, memory_id: str, actor_type: str = "user") -> 
     )
     return row
 
+
 def redact_memory_revisions(self, *, memory_id: str, actor_type: str = "user") -> VNextRow:
     """Expunge revision content for a memory, keeping the skeleton.
 
-        text_before/text_after/reason become the marker (reasons can
-        carry content, so they are redacted too); previous_value/
-        new_value/candidate/metadata_json become {"redacted": true}.
-        NULL content stays NULL so the created-vs-edited shape survives.
-        ids, sequence/revision numbers, revision_type, actor columns,
-        and created_at are untouched.
-        """
+    text_before/text_after/reason become the marker (reasons can
+    carry content, so they are redacted too); previous_value/
+    new_value/candidate/metadata_json become {"redacted": true}.
+    NULL content stays NULL so the created-vs-edited shape survives.
+    ids, sequence/revision numbers, revision_type, actor columns,
+    and created_at are untouched.
+    """
     with self._redaction_mode():
         redacted = self._fetch_all(
             """
@@ -997,15 +1032,16 @@ def redact_memory_revisions(self, *, memory_id: str, actor_type: str = "user") -
     )
     return {"memory_id": memory_id, "redacted_revisions": len(redacted)}
 
+
 def redact_memory_events(self, *, memory_id: str, actor_type: str = "user") -> VNextRow:
     """Expunge event payloads that reference a memory.
 
-        Matching rows keep event_type, actor columns, target columns,
-        occurred_at, and trace/run references; payload_json becomes
-        {"redacted": true, "memory_id": ..., "event_type": <own column>}
-        and integrity_hash is cleared (it derives from the payload, so
-        keeping it would allow confirming guesses of redacted content).
-        """
+    Matching rows keep event_type, actor columns, target columns,
+    occurred_at, and trace/run references; payload_json becomes
+    {"redacted": true, "memory_id": ..., "event_type": <own column>}
+    and integrity_hash is cleared (it derives from the payload, so
+    keeping it would allow confirming guesses of redacted content).
+    """
     with self._redaction_mode():
         redacted = self._fetch_all(
             """
@@ -1031,6 +1067,7 @@ def redact_memory_events(self, *, memory_id: str, actor_type: str = "user") -> V
         payload={"operation": "redact_memory_events", "redacted_events": len(redacted)},
     )
     return {"memory_id": memory_id, "redacted_events": len(redacted)}
+
 
 def create_provenance_link(self, link: JsonObject, *, actor_type: str = "system") -> VNextRow:
     if link.get("quote") is not None:
@@ -1091,6 +1128,7 @@ def create_provenance_link(self, link: JsonObject, *, actor_type: str = "system"
     )
     return row
 
+
 def list_provenance_links(self, *, target_type: str, target_id: str) -> list[VNextRow]:
     return self._fetch_all(
         f"""
@@ -1102,6 +1140,7 @@ def list_provenance_links(self, *, target_type: str, target_id: str) -> list[VNe
                 """,
         (target_type, target_id),
     )
+
 
 def list_provenance_links_for_targets(
     self,

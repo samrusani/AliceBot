@@ -129,6 +129,12 @@ def _handle_alice_context_pack(context: MCPRuntimeContext, arguments: Mapping[st
         # compact memory rows alone (sources can also contribute event times),
         # so keep the compiler's machine-readable result in the compact view.
         payload["derived_values"] = dict(derived_values)
+    aggregation = pack.get("aggregation")
+    if isinstance(aggregation, Mapping) and aggregation:
+        # Phase 6 occurrence counts are independently reviewable reader
+        # evidence, not debug telemetry. Preserve the compiler's complete
+        # signed-unit contract in the compact view; absence remains dormant.
+        payload["aggregation"] = dict(aggregation)
     # -- entity grounding passthrough (vnext_grounding; single block) -------
     # pack["grounding"] exists only when a salient query entity has ZERO
     # corpus support (see vnext_grounding); the compact view must not

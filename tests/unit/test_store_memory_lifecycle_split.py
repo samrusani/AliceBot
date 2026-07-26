@@ -73,24 +73,24 @@ SQLITE_METHODS = (
 
 SOURCE_RECEIPTS = {
     COMMON_PATH: "191f0ebd106cf757f5082af171da06e2e77eee518d17e80e5489e9e0d81493fe",
-    POSTGRES_CARRIER_PATH: "1960ff3dd899c63c0f298e79b7e0ea13c9115ae7aacc91081967ce9473d92f92",
+    POSTGRES_CARRIER_PATH: "0bb236d89e4bbce5350ae84c800abd9d070635ea5343c273ee5984e44719f4d5",
     # SQLite carrier re-minted for the Phase 4 Stage 2 resident vector cache
     # (reviewed change): redaction paths that NULL a live embedding now bump
     # the embedding_stamp token in the same transaction (prompt eviction).
-    SQLITE_CARRIER_PATH: "5ebda2b3ff1bdf5bb5dc5be44923ec600c68e85f00725541b1c35df64b9a3a85",
+    SQLITE_CARRIER_PATH: "9aa71037c175093211e4bcc7600b4ddb8e8a13f02983d31156aff35e3e72f779",
 }
 EXPECTED_METHOD_AST_MANIFESTS = {
-    "postgres": "538d5a18c0dfa01b368b409832738d5a25d7ff4bd063ba17062b01fefbb05d3b",
-    "sqlite": "5bd15d28cf3b5424ad9cf8f033095827c33a5342c5caf51f8b05f3042ed880eb",
+    "postgres": "12340f41229043733f1c2690ce0ffdc7b425422da3ca037ed549ea4ed268f9d0",
+    "sqlite": "2913fd1196f88f8eb675860765b6c55b5412c9b866250ae56e6ed3a94f7b9de0",
 }
 EXPECTED_METADATA_MANIFESTS = {
-    "postgres": "af03955c805f720b8d3ec735f8202efeb5f405c8c7de1cc45cbfef3644867824",
-    "sqlite": "9a5a4a9f0ae533652250a9e9854cd34a068392d71ffde98b012c9c620134d2c4",
+    "postgres": "08ecfa4fcfe696ee596a42dc7cc3090593266f5ca8a32328fb565f38ca102dc7",
+    "sqlite": "66b03f5cdeb962718361a0e425a5c9d6af0dc6062c77bc62f32c84c5ed11dede",
 }
 EXPECTED_CLASS_ORDERS = {
-    # Two paired browser-clip capability methods extend both façades.
-    "PostgresVNextStore": (170, "5f28f1a17670a0c8b7b373acd0c314637c58e6a10ccf52053481a8a028bb3c09"),
-    "SQLiteVNextStore": (123, "72cbbffacc5fee804508f7e9517450c955f2c85235bd403d4f5759ee86c103e3"),
+    # Paired occurrence-substrate methods extend both façades.
+    "PostgresVNextStore": (208, "2258854f9a50ff1ce8abd562263ad64488425b85d6fc97fd040d457efb49d291"),
+    "SQLiteVNextStore": (161, "02e6f4a4a4c63d2fe170487fd312c15f70ff71c06a575c55c62827f0be3962b8"),
 }
 EXPECTED_FACADE_COMMENT_DIGESTS = {
     POSTGRES_FACADE_PATH: "d8599a46ee26dc35a3ae52c1a98a416509add9ae4a42ece780c5c5ed7e132b93",
@@ -103,9 +103,7 @@ EXPECTED_SUPPORT_AST = {
     ("postgres_primitives", "_sorted_field_names"): (
         "dfa6aeb9b7b9cb95ded740f952520dc52cd1ea1ec239ebcceacde00f0bf855cb"
     ),
-    ("sqlite_primitives", "_sorted_field_names"): (
-        "dfa6aeb9b7b9cb95ded740f952520dc52cd1ea1ec239ebcceacde00f0bf855cb"
-    ),
+    ("sqlite_primitives", "_sorted_field_names"): ("dfa6aeb9b7b9cb95ded740f952520dc52cd1ea1ec239ebcceacde00f0bf855cb"),
 }
 
 
@@ -198,13 +196,9 @@ def _assert_source_receipts(texts: dict[Path, str]) -> None:
 def _lifecycle_comment_digest(path: Path) -> str:
     source = path.read_text(encoding="utf-8")
     start = source.index("    create_memory = _lifecycle_create_memory")
-    end = source.index(
-        "    list_provenance_links_for_targets = _lifecycle_list_provenance_links_for_targets"
-    )
+    end = source.index("    list_provenance_links_for_targets = _lifecycle_list_provenance_links_for_targets")
     end = source.index("\n", end)
-    comments = "\n".join(
-        line for line in source[start:end].splitlines() if line.lstrip().startswith("#")
-    )
+    comments = "\n".join(line for line in source[start:end].splitlines() if line.lstrip().startswith("#"))
     return _digest(comments)
 
 
@@ -239,9 +233,7 @@ def test_lifecycle_methods_are_direct_native_order_grafts_with_exact_metadata() 
         assert {node.name for node in class_node.body if isinstance(node, ast.FunctionDef)}.isdisjoint(names)
         assignments = _assignment_map(class_node)
         assert [name for name in _class_members(class_node) if name in names] == list(names)
-        assert {name: assignments.get(name) for name in names} == {
-            name: f"_lifecycle_{name}" for name in names
-        }
+        assert {name: assignments.get(name) for name in names} == {name: f"_lifecycle_{name}" for name in names}
         members = _class_members(class_node)
         expected_count, expected_digest = EXPECTED_CLASS_ORDERS[class_name]
         assert len(members) == expected_count
@@ -273,10 +265,7 @@ def test_lifecycle_support_reexports_are_the_same_objects() -> None:
     assert postgres_store._is_redacted_memory_shape is common._is_redacted_memory_shape
     assert postgres_store.REDACTED_MEMORY_METADATA_KEYS is common.REDACTED_MEMORY_METADATA_KEYS
     assert postgres_store.PRIOR_REDACTED_MEMORY_METADATA_KEYS is common.PRIOR_REDACTED_MEMORY_METADATA_KEYS
-    assert (
-        postgres_store.PROJECT_UPDATE_REDACTED_METADATA_KEYS
-        is common.PROJECT_UPDATE_REDACTED_METADATA_KEYS
-    )
+    assert postgres_store.PROJECT_UPDATE_REDACTED_METADATA_KEYS is common.PROJECT_UPDATE_REDACTED_METADATA_KEYS
     assert postgres_store.PROVENANCE_COLUMNS is postgres_columns.PROVENANCE_COLUMNS
     assert postgres_store.ARTIFACT_COLUMNS is postgres_columns.ARTIFACT_COLUMNS
     assert sqlite_store.PROVENANCE_COLUMNS is sqlite_columns.PROVENANCE_COLUMNS
@@ -329,9 +318,7 @@ def test_lifecycle_carriers_import_standalone_without_facade_cycles() -> None:
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source)
         imports = {
-            node.module
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module is not None
+            node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module is not None
         }
         assert "alicebot_api.vnext_store" not in imports
         assert "alicebot_api.sqlite_store" not in imports

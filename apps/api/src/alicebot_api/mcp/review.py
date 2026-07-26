@@ -541,8 +541,18 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
                 actor_type=actor_type,
                 actor_id=actor_id,
             )
-            memory_service.refresh_memory_derived_state(updated, identity=identity, stage="mcp_review_approve")
+            updated = memory_service.refresh_memory_derived_state(
+                updated,
+                identity=identity,
+                stage="mcp_review_approve",
+            )
         elif resolved_action == "delete":
+            memory_service.retire_memory_occurrence_state(
+                memory,
+                identity=identity,
+                stage="mcp_review_delete",
+                reason=reason or "Memory was rejected through MCP review.",
+            )
             updated = store.update_memory(
                 memory_id=memory_id,
                 patch={
@@ -628,7 +638,11 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
                 actor_type=actor_type,
                 actor_id=actor_id,
             )
-            memory_service.refresh_memory_derived_state(updated, identity=identity, stage="mcp_review_edit_and_approve")
+            updated = memory_service.refresh_memory_derived_state(
+                updated,
+                identity=identity,
+                stage="mcp_review_edit_and_approve",
+            )
         else:  # supersede
             replacement_title = _parse_optional_text(arguments, "replacement_title")
             replacement_body = _parse_optional_json_object(arguments, "replacement_body")
@@ -661,6 +675,10 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
             )
             if validated_replacement_provenance is not None:
                 replacement_metadata["replacement_provenance"] = validated_replacement_provenance
+            # The old proposal receipt belongs to the original memory. Keep
+            # its structured occurrence input, but make the replacement write
+            # a fresh receipt under its own memory identity.
+            replacement_metadata.pop("occurrence_proposal", None)
             replacement_object = store.create_memory(
                 {
                     "memory_key": f"vnext.correction.supersede.{uuid4().hex[:16]}",
@@ -699,6 +717,22 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
                     },
                     actor_type=actor_type,
                 )
+            # Establish the replacement first. For a same-event correction,
+            # this adds reviewed replacement evidence to the accepted unit.
+            # Carrier reconciliation can then detach the old evidence and
+            # re-sign the surviving unit instead of retiring it.
+            replacement_object = memory_service.refresh_memory_derived_state(
+                replacement_object,
+                identity=identity,
+                stage="mcp_review_supersede_replacement",
+            )
+            replacement_object = store.get_memory(replacement_id) or replacement_object
+            memory_service.retire_memory_occurrence_state(
+                memory,
+                identity=identity,
+                stage="mcp_review_supersede",
+                reason=reason or "Memory was superseded through MCP review.",
+            )
             existing_metadata = _retired_review_metadata(memory, outcome="superseded")
             updated = store.update_memory(
                 memory_id=memory_id,
@@ -736,11 +770,6 @@ def _vnext_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, ob
                     "metadata_json": {"action": "supersede-existing", "supersedes": memory_id},
                 },
                 actor_type=actor_type,
-            )
-            memory_service.refresh_memory_derived_state(
-                replacement_object,
-                identity=identity,
-                stage="mcp_review_supersede_replacement",
             )
             event_payload["replacement_memory_id"] = replacement_id
 

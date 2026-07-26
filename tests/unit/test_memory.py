@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import hashlib
+import json
 from uuid import UUID, uuid4
 
 import psycopg
@@ -257,6 +259,330 @@ def seed_event(store: MemoryStoreStub, *, agent_profile_id: str = "assistant_def
         "created_at": store.base_time,
     }
     return event_id
+
+
+class _ObservedMemoryStore(MemoryStoreStub):
+    def __init__(self, events: list[str]) -> None:
+        super().__init__()
+        self.observed_events = events
+
+    def list_events_by_ids(self, event_ids: list[UUID]) -> list[dict[str, object]]:
+        self.observed_events.append("source_read")
+        return super().list_events_by_ids(event_ids)
+
+    def get_memory_by_key_and_profile(
+        self,
+        *,
+        memory_key: str,
+        agent_profile_id: str,
+    ) -> dict[str, object] | None:
+        self.observed_events.append("existing_read")
+        return super().get_memory_by_key_and_profile(
+            memory_key=memory_key,
+            agent_profile_id=agent_profile_id,
+        )
+
+    def create_memory(self, **kwargs) -> dict[str, object]:
+        self.observed_events.append("legacy_create")
+        return super().create_memory(**kwargs)
+
+    def update_memory(self, **kwargs) -> dict[str, object]:
+        self.observed_events.append("legacy_update")
+        return super().update_memory(**kwargs)
+
+    def append_memory_revision(self, **kwargs) -> dict[str, object]:
+        self.observed_events.append("legacy_revision")
+        return super().append_memory_revision(**kwargs)
+
+
+class _LegacyOccurrenceBridgeStub:
+    def __init__(
+        self,
+        legacy_store: MemoryStoreStub,
+        *,
+        user_id: UUID,
+        events: list[str],
+    ) -> None:
+        self.legacy_store = legacy_store
+        self.user_id = user_id
+        self.events = events
+        self.metadata_by_memory_id: dict[str, dict[str, object]] = {}
+        self.current_chunk_ids: set[str] = set()
+        self.fail_reconcile = False
+
+    def _row(self, memory_id: str) -> dict[str, object] | None:
+        memory = self.legacy_store._find_memory_by_id(UUID(memory_id))
+        if memory is None:
+            return None
+        return {
+            **memory,
+            "user_id": self.user_id,
+            "title": None,
+            "canonical_text": "",
+            "summary": None,
+            "domain": "personal",
+            "sensitivity": "private",
+            "first_seen_at": memory["created_at"],
+            "last_seen_at": memory["created_at"],
+            "metadata_json": dict(self.metadata_by_memory_id.get(memory_id, {})),
+            "project_id": None,
+        }
+
+    def lock_graph_mutation(self) -> None:
+        self.events.append("graph_lock")
+
+    def get_memory_for_redaction(self, memory_id: str) -> dict[str, object] | None:
+        self.events.append("full_memory_read")
+        return self._row(memory_id)
+
+    def reconcile_occurrence_evidence_carrier(self, **_kwargs) -> list[dict[str, object]]:
+        self.events.append("carrier_reconcile")
+        if self.fail_reconcile:
+            raise RuntimeError("reconcile failed")
+        return []
+
+    def write_occurrence_memory_metadata(
+        self,
+        *,
+        memory_id: str,
+        metadata_json: dict[str, object],
+        expected_metadata_json: dict[str, object] | None,
+        actor_type: str,
+        actor_id: str | None,
+    ) -> dict[str, object]:
+        assert actor_type == "user"
+        assert actor_id == str(self.user_id)
+        assert expected_metadata_json == self.metadata_by_memory_id.get(memory_id, {})
+        self.events.append("metadata_invalidate")
+        self.metadata_by_memory_id[memory_id] = dict(metadata_json)
+        self.events.append("coverage_invalidate")
+        row = self._row(memory_id)
+        assert row is not None
+        return row
+
+    def get_source_chunk_for_occurrence_accounting(
+        self,
+        source_chunk_id: str,
+    ) -> dict[str, object] | None:
+        return {"id": source_chunk_id} if source_chunk_id in self.current_chunk_ids else None
+
+    def invalidate_occurrence_extraction_dispositions(self, **kwargs) -> list[dict[str, object]]:
+        assert kwargs["_defer_occurrence_coverage"] is True
+        self.events.append(f"chunk_invalidate:{kwargs['source_chunk_id']}")
+        return []
+
+    def invalidate_occurrence_coverage(self, **_kwargs) -> tuple[None, bool]:
+        self.events.append("coverage_invalidate")
+        return None, True
+
+
+def _accepted_occurrence_metadata(source_chunk_id: UUID | None = None) -> dict[str, object]:
+    return {
+        "occurrence_proposal": {
+            "claim_id": str(uuid4()),
+            "materialization_status": "accepted",
+            "occurrence_unit_ids": [str(uuid4())],
+            "source_chunk_id": None if source_chunk_id is None else str(source_chunk_id),
+        }
+    }
+
+
+def test_legacy_admission_bridge_orders_add_and_preserves_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    user_id = uuid4()
+    store = _ObservedMemoryStore(events)
+    event_id = seed_event(store)
+    bridge = _LegacyOccurrenceBridgeStub(store, user_id=user_id, events=events)
+    monkeypatch.setattr(memory_module, "_legacy_admission_occurrence_store", lambda _store: bridge)
+
+    added = admit_memory_candidate(
+        store,  # type: ignore[arg-type]
+        user_id=user_id,
+        candidate=MemoryCandidateInput(
+            memory_key="user.preference.bridge",
+            value={"likes": "tea"},
+            source_event_ids=(event_id,),
+        ),
+    )
+
+    assert added.action == "ADD"
+    assert events[0] == "graph_lock"
+    assert events.index("graph_lock") < events.index("source_read")
+    assert events.index("legacy_revision") < events.index("metadata_invalidate")
+    assert events[-1] == "coverage_invalidate"
+    assert events.count("coverage_invalidate") == 1
+    memory_id = added.memory["id"]
+    invalidation = bridge.metadata_by_memory_id[memory_id]["occurrence_invalidation"]
+    assert isinstance(invalidation, dict)
+    receipt = dict(invalidation)
+    receipt_digest = receipt.pop("invalidation_receipt_digest")
+    assert receipt_digest == hashlib.sha256(
+        json.dumps(receipt, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+    events.clear()
+    noop = admit_memory_candidate(
+        store,  # type: ignore[arg-type]
+        user_id=user_id,
+        candidate=MemoryCandidateInput(
+            memory_key="user.preference.bridge",
+            value={"likes": "tea"},
+            source_event_ids=(event_id,),
+        ),
+    )
+    assert noop.action == "NOOP"
+    assert events[0] == "graph_lock"
+    assert "carrier_reconcile" not in events
+    assert "metadata_invalidate" not in events
+    assert "coverage_invalidate" not in events
+
+
+def test_legacy_admission_bridge_reconciles_changed_carrier_but_preserves_metadata_only_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    user_id = uuid4()
+    store = _ObservedMemoryStore(events)
+    event_id = seed_event(store)
+    existing = store.create_memory(
+        memory_key="user.preference.bridge-update",
+        value={"likes": "tea"},
+        status="active",
+        source_event_ids=[str(event_id)],
+    )
+    events.clear()
+    bridge = _LegacyOccurrenceBridgeStub(store, user_id=user_id, events=events)
+    bridge.metadata_by_memory_id[str(existing["id"])] = _accepted_occurrence_metadata()
+    monkeypatch.setattr(memory_module, "_legacy_admission_occurrence_store", lambda _store: bridge)
+
+    metadata_only = admit_memory_candidate(
+        store,  # type: ignore[arg-type]
+        user_id=user_id,
+        candidate=MemoryCandidateInput(
+            memory_key="user.preference.bridge-update",
+            value={"likes": "tea"},
+            source_event_ids=(event_id,),
+            confidence=0.9,
+        ),
+    )
+    assert metadata_only.action == "UPDATE"
+    assert "carrier_reconcile" not in events
+    assert "metadata_invalidate" not in events
+    assert "coverage_invalidate" not in events
+    assert bridge.metadata_by_memory_id[str(existing["id"])]["occurrence_proposal"][
+        "materialization_status"
+    ] == "accepted"
+
+    events.clear()
+    changed = admit_memory_candidate(
+        store,  # type: ignore[arg-type]
+        user_id=user_id,
+        candidate=MemoryCandidateInput(
+            memory_key="user.preference.bridge-update",
+            value={"likes": "coffee"},
+            source_event_ids=(event_id,),
+        ),
+    )
+    assert changed.action == "UPDATE"
+    assert events.index("legacy_revision") < events.index("carrier_reconcile")
+    assert events.index("carrier_reconcile") < events.index("metadata_invalidate")
+    assert events[-1] == "coverage_invalidate"
+    assert events.count("coverage_invalidate") == 1
+    metadata = bridge.metadata_by_memory_id[str(existing["id"])]
+    assert "occurrence_proposal" not in metadata
+    assert metadata["occurrence_invalidation"]["reason"] == "legacy_admission_carrier_changed"
+
+
+def test_legacy_admission_bridge_delete_invalidates_chunk_then_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    user_id = uuid4()
+    store = _ObservedMemoryStore(events)
+    event_id = seed_event(store)
+    existing = store.create_memory(
+        memory_key="user.preference.bridge-delete",
+        value={"likes": "tea"},
+        status="active",
+        source_event_ids=[str(event_id)],
+    )
+    events.clear()
+    bridge = _LegacyOccurrenceBridgeStub(store, user_id=user_id, events=events)
+    chunk_id = uuid4()
+    bridge.current_chunk_ids.add(str(chunk_id))
+    bridge.metadata_by_memory_id[str(existing["id"])] = _accepted_occurrence_metadata(chunk_id)
+    monkeypatch.setattr(memory_module, "_legacy_admission_occurrence_store", lambda _store: bridge)
+
+    deleted = admit_memory_candidate(
+        store,  # type: ignore[arg-type]
+        user_id=user_id,
+        candidate=MemoryCandidateInput(
+            memory_key="user.preference.bridge-delete",
+            value=None,
+            source_event_ids=(event_id,),
+            delete_requested=True,
+        ),
+    )
+
+    assert deleted.action == "DELETE"
+    assert events.index("carrier_reconcile") < events.index(f"chunk_invalidate:{chunk_id}")
+    assert events[-1] == "coverage_invalidate"
+    assert events.count("coverage_invalidate") == 1
+
+
+def test_legacy_admission_bridge_reactivation_clears_stale_materialization_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    user_id = uuid4()
+    store = _ObservedMemoryStore(events)
+    event_id = seed_event(store)
+    existing = store.create_memory(
+        memory_key="user.preference.bridge-reactivate",
+        value={"likes": "tea"},
+        status="active",
+        source_event_ids=[str(event_id)],
+    )
+    store.update_memory(
+        memory_id=existing["id"],
+        value=existing["value"],
+        status="deleted",
+        source_event_ids=existing["source_event_ids"],
+    )
+    events.clear()
+    bridge = _LegacyOccurrenceBridgeStub(store, user_id=user_id, events=events)
+    bridge.metadata_by_memory_id[str(existing["id"])] = _accepted_occurrence_metadata()
+    monkeypatch.setattr(memory_module, "_legacy_admission_occurrence_store", lambda _store: bridge)
+
+    reactivated = admit_memory_candidate(
+        store,  # type: ignore[arg-type]
+        user_id=user_id,
+        candidate=MemoryCandidateInput(
+            memory_key="user.preference.bridge-reactivate",
+            value={"likes": "tea"},
+            source_event_ids=(event_id,),
+        ),
+    )
+    assert reactivated.action == "UPDATE"
+    assert "occurrence_proposal" not in bridge.metadata_by_memory_id[str(existing["id"])]
+
+    bridge.metadata_by_memory_id[str(existing["id"])] = _accepted_occurrence_metadata()
+    bridge.fail_reconcile = True
+    events.clear()
+    with pytest.raises(RuntimeError, match="reconcile failed"):
+        admit_memory_candidate(
+            store,  # type: ignore[arg-type]
+            user_id=user_id,
+            candidate=MemoryCandidateInput(
+                memory_key="user.preference.bridge-reactivate",
+                value={"likes": "coffee"},
+                source_event_ids=(event_id,),
+            ),
+        )
+    assert "metadata_invalidate" not in events
+    assert "coverage_invalidate" not in events
 
 
 def test_admit_memory_candidate_defaults_to_noop_when_value_is_missing() -> None:

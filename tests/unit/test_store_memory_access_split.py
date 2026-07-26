@@ -157,9 +157,9 @@ SQLITE_QUERY_EXPORTS = (
 )
 
 EXPECTED_CLASS_ORDERS = {
-    # Two paired browser-clip capability methods extend both façades.
-    "PostgresVNextStore": (170, "5f28f1a17670a0c8b7b373acd0c314637c58e6a10ccf52053481a8a028bb3c09"),
-    "SQLiteVNextStore": (123, "72cbbffacc5fee804508f7e9517450c955f2c85235bd403d4f5759ee86c103e3"),
+    # Paired occurrence-substrate methods extend both façades.
+    "PostgresVNextStore": (208, "2258854f9a50ff1ce8abd562263ad64488425b85d6fc97fd040d457efb49d291"),
+    "SQLiteVNextStore": (161, "02e6f4a4a4c63d2fe170487fd312c15f70ff71c06a575c55c62827f0be3962b8"),
 }
 
 

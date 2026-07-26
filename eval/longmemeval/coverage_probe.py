@@ -41,7 +41,9 @@ Run from the repo root:
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -67,8 +69,10 @@ from alicebot_api.vnext_reranker import (
 
 # ---- reranker (disclosed precision stage) end -----------------------------
 from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService
+from alicebot_api.vnext_temporal_query import parse_event_datetime
 
 from longmemeval.adapter import max_items_from_env, question_run
+from longmemeval.chat import redacted_base_url
 from longmemeval.dataset import (
     RESULTS_DIR,
     WORK_DIR,
@@ -86,17 +90,146 @@ from longmemeval.runner import (
 )
 
 
-COVERAGE_SCHEMA = "longmemeval_coverage_v1"
+COVERAGE_SCHEMA = "longmemeval_coverage_v2"
 DEFAULT_WORK_DIR = WORK_DIR / "coverage"
+GOVERNED_NON_COUNT_SLICE = Path(__file__).resolve().parent / "slices" / "phase6-non-count-101.txt"
+GOVERNED_NON_COUNT_QUESTION_COUNT = 101
+GOVERNED_NON_COUNT_MANIFEST_SHA256 = "c660317b20610f578087dc1042b5454eed871cd395c558333fd927637e1627f0"
+GOVERNED_DATASET_PATH = Path(__file__).resolve().parent / "data" / "longmemeval_s_cleaned.json"
+GOVERNED_DATASET_SHA256 = "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442"
+GOVERNED_MAX_ITEMS = 16
+FROZEN_NON_COUNT_COVERAGE_FLOORS = {
+    "overall": {
+        "any_coverage": 0.9505,
+        "all_coverage": 0.8812,
+    },
+    "multi-session": {
+        "any_coverage": 0.9643,
+        "all_coverage": 0.8571,
+    },
+}
 
 EXIT_OK = 0
 EXIT_RUN_FAILURES = 1
 EXIT_CONFIG_ERROR = 2
+EXIT_STRATUM_FAILURES = 3
 
 _EMBEDDINGS_ENV_VARS = (EMBEDDINGS_BASE_URL_ENV, EMBEDDINGS_MODEL_ENV, EMBEDDINGS_API_KEY_ENV)
 # ---- reranker (disclosed precision stage) begin ---------------------------
 _RERANKER_ENV_VARS = (RERANKER_BASE_URL_ENV, RERANKER_MODEL_ENV, RERANKER_API_KEY_ENV)
 # ---- reranker (disclosed precision stage) end -----------------------------
+
+
+def question_id_manifest_sha256(question_ids: Sequence[str]) -> str:
+    """Digest an exact, ordered question-id manifest including its final LF."""
+    return hashlib.sha256(("\n".join(question_ids) + "\n").encode("utf-8")).hexdigest()
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def provider_summary_metadata() -> dict[str, str | None]:
+    embeddings_base_url = os.environ.get(EMBEDDINGS_BASE_URL_ENV, "").strip()
+    reranker_base_url = os.environ.get(RERANKER_BASE_URL_ENV, "").strip()
+    return {
+        "embeddings_model": os.environ.get(EMBEDDINGS_MODEL_ENV, "").strip() or None,
+        "embeddings_base_url": (redacted_base_url(embeddings_base_url) if embeddings_base_url else None),
+        "reranker_model": os.environ.get(RERANKER_MODEL_ENV, "").strip() or None,
+        "reranker_base_url": (redacted_base_url(reranker_base_url) if reranker_base_url else None),
+    }
+
+
+def is_governed_non_count_manifest(path: Path | None, question_ids: Sequence[str]) -> bool:
+    """Require both the checked-in path and its frozen ordered content."""
+    return bool(
+        path is not None
+        and path.resolve() == GOVERNED_NON_COUNT_SLICE.resolve()
+        and len(question_ids) == GOVERNED_NON_COUNT_QUESTION_COUNT
+        and question_id_manifest_sha256(question_ids) == GOVERNED_NON_COUNT_MANIFEST_SHA256
+    )
+
+
+def coverage_release_input_checks(
+    *,
+    dataset_path: Path,
+    dataset_sha256: str,
+    question_id_file: Path | None,
+    question_ids: Sequence[str],
+    limit: int | None,
+    max_items: int,
+    with_vectors: bool,
+    with_reranker: bool,
+) -> dict[str, bool]:
+    return {
+        "dataset_path_matches": dataset_path.resolve() == GOVERNED_DATASET_PATH.resolve(),
+        "dataset_sha256_matches": dataset_sha256 == GOVERNED_DATASET_SHA256,
+        "question_manifest_matches": is_governed_non_count_manifest(
+            question_id_file,
+            question_ids,
+        ),
+        "limit_disabled": limit is None,
+        "max_items_matches": max_items == GOVERNED_MAX_ITEMS,
+        "vectors_disabled": not with_vectors,
+        "reranker_disabled": not with_reranker,
+    }
+
+
+def all_probe_stores_fresh(rows: Sequence[Mapping[str, object]], *, expected_count: int) -> bool:
+    return bool(len(rows) == expected_count and all(row.get("reused_store") is False for row in rows))
+
+
+def coverage_release_gate(
+    summary: Mapping[str, object],
+    *,
+    release_eligible: bool,
+    has_errors: bool = False,
+) -> dict[str, object]:
+    """Build explicit frozen-floor gate metadata for the governed slice."""
+    checks: dict[str, dict[str, object]] = {}
+    overall = summary.get("overall")
+    per_type = summary.get("per_type")
+    for scope, floors in FROZEN_NON_COUNT_COVERAGE_FLOORS.items():
+        bucket: object
+        if scope == "overall":
+            bucket = overall
+        else:
+            bucket = per_type.get(scope) if isinstance(per_type, Mapping) else None
+        for metric, floor in floors.items():
+            observed = bucket.get(metric) if isinstance(bucket, Mapping) else None
+            passed = bool(
+                isinstance(observed, (int, float)) and not isinstance(observed, bool) and float(observed) >= floor
+            )
+            checks[f"{scope}.{metric}"] = {
+                "observed": observed,
+                "floor": floor,
+                "passed": passed,
+            }
+    floors_passed = all(bool(check["passed"]) for check in checks.values())
+    return {
+        "mode": "release" if release_eligible else "diagnostic",
+        "eligible": release_eligible,
+        "governed_question_id_file": str(GOVERNED_NON_COUNT_SLICE),
+        "governed_question_id_count": GOVERNED_NON_COUNT_QUESTION_COUNT,
+        "governed_question_id_manifest_sha256": GOVERNED_NON_COUNT_MANIFEST_SHA256,
+        "frozen_floors": FROZEN_NON_COUNT_COVERAGE_FLOORS,
+        "checks": checks,
+        "passed": bool(release_eligible and not has_errors and floors_passed),
+    }
+
+
+def exit_code_for_release_gate(
+    gate: Mapping[str, object],
+    *,
+    has_errors: bool,
+) -> int:
+    if has_errors:
+        return EXIT_RUN_FAILURES
+    return EXIT_OK if gate.get("passed") is True else EXIT_STRATUM_FAILURES
 
 
 def disable_embeddings_env() -> None:
@@ -115,6 +248,8 @@ def disable_reranker_env() -> None:
     """
     for name in _RERANKER_ENV_VARS:
         os.environ.pop(name, None)
+
+
 # ---- reranker (disclosed precision stage) end -----------------------------
 
 
@@ -270,6 +405,7 @@ def probe_question(
             max_items=max_items,
             include_sources=True,
             actor_type="system",
+            reference_time=parse_event_datetime(question.question_date),
         )
         retrieval_started = time.monotonic()
         pack = service.compile_context_pack(request)
@@ -320,7 +456,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--question-ids",
         type=Path,
         default=None,
-        help="file with one question_id per line; probe only those (dataset order)",
+        help="file with one question_id per line; comments ignored; probe only those (dataset order)",
     )
     parser.add_argument("--max-items", type=int, default=None, help="context-pack max_items (default: runner default)")
     parser.add_argument(
@@ -329,7 +465,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=DEFAULT_WORK_DIR,
         help="per-question SQLite stores; kept and reused across probes (default: eval/longmemeval/work/coverage)",
     )
-    parser.add_argument("--out", type=Path, default=None, help="per-question JSONL path (default: eval/longmemeval/results/)")
+    parser.add_argument(
+        "--out", type=Path, default=None, help="per-question JSONL path (default: eval/longmemeval/results/)"
+    )
     parser.add_argument("--workers", type=int, default=2, help="parallel questions in flight (default: 2)")
     parser.add_argument(
         "--with-vectors",
@@ -352,7 +490,7 @@ def _load_question_ids(path: Path) -> list[str] | None:
     except OSError as exc:
         print(f"[coverage] cannot read --question-ids file: {exc}", file=sys.stderr)
         return None
-    return [line.strip() for line in text.splitlines() if line.strip()]
+    return [line for raw_line in text.splitlines() if (line := raw_line.strip()) and not line.startswith("#")]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -372,37 +510,65 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return EXIT_CONFIG_ERROR
+    dataset_sha256 = file_sha256(dataset_path)
     try:
         questions = load_dataset(dataset_path)
     except LongMemEvalDatasetError as exc:
         print(f"[coverage] {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
 
+    requested_question_ids: list[str]
     if args.question_ids is not None:
         wanted_ids = _load_question_ids(args.question_ids)
         if wanted_ids is None:
             return EXIT_CONFIG_ERROR
         wanted = set(wanted_ids)
-        questions = tuple(question for question in questions if question.question_id in wanted)
-        missing = wanted - {question.question_id for question in questions}
+        available = {question.question_id for question in questions}
+        missing = wanted - available
         if missing:
-            print(f"[coverage] {len(missing)} requested question ids not in dataset: {sorted(missing)[:5]}...", file=sys.stderr)
+            print(
+                f"[coverage] {len(missing)} requested question ids not in dataset: {sorted(missing)[:5]}...",
+                file=sys.stderr,
+            )
+            return EXIT_CONFIG_ERROR
+        requested_question_ids = wanted_ids
+        questions = tuple(question for question in questions if question.question_id in wanted)
+    else:
+        requested_question_ids = [question.question_id for question in questions]
     if args.limit is not None:
         questions = questions[: args.limit]
     if not questions:
         print("[coverage] no questions selected", file=sys.stderr)
         return EXIT_CONFIG_ERROR
+    selected_question_ids = [question.question_id for question in questions]
 
     max_items = args.max_items if args.max_items is not None else max_items_from_env()
+    release_input_checks = coverage_release_input_checks(
+        dataset_path=dataset_path,
+        dataset_sha256=dataset_sha256,
+        question_id_file=args.question_ids,
+        question_ids=requested_question_ids,
+        limit=args.limit,
+        max_items=max_items,
+        with_vectors=args.with_vectors,
+        with_reranker=args.with_reranker,
+    )
+    release_candidate = bool(
+        all(release_input_checks.values())
+        and len(selected_question_ids) == GOVERNED_NON_COUNT_QUESTION_COUNT
+        and set(selected_question_ids) == set(requested_question_ids)
+    )
     dataset_sha256_prefix = _sha256_prefix(dataset_path)
     args.work_dir.mkdir(parents=True, exist_ok=True)
     out_path = args.out or RESULTS_DIR / f"coverage_{dataset_path.stem}.jsonl"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     vectors = "ambient" if args.with_vectors else "disabled"
+    reranker = "ambient" if args.with_reranker else "disabled"
     print(
         f"[coverage] dataset={dataset_path.name} questions={len(questions)} max_items={max_items} "
-        f"vectors={vectors} work_dir={args.work_dir} workers={max(1, args.workers)}"
+        f"vectors={vectors} reranker={reranker} gate={'release-candidate' if release_candidate else 'diagnostic'} "
+        f"work_dir={args.work_dir} workers={max(1, args.workers)}"
     )
 
     rows_by_id: dict[str, dict[str, object]] = {}
@@ -425,7 +591,11 @@ def main(argv: list[str] | None = None) -> int:
                 row = future.result()
             except Exception as exc:  # noqa: BLE001 - one bad question must not kill the probe
                 errors.append((question.question_id, f"{type(exc).__name__}: {exc}"))
-                print(f"[coverage] {completed}/{len(questions)} {question.question_id} ERROR: {exc}", flush=True, file=sys.stderr)
+                print(
+                    f"[coverage] {completed}/{len(questions)} {question.question_id} ERROR: {exc}",
+                    flush=True,
+                    file=sys.stderr,
+                )
                 continue
             rows_by_id[question.question_id] = row
             if completed % 25 == 0 or completed == len(questions):
@@ -437,15 +607,47 @@ def main(argv: list[str] | None = None) -> int:
             handle.write(json.dumps(row, ensure_ascii=True, sort_keys=True) + "\n")
 
     summary = summarize_rows(rows)
+    all_stores_fresh = all_probe_stores_fresh(
+        rows,
+        expected_count=len(selected_question_ids),
+    )
+    release_eligible = bool(release_candidate and all_stores_fresh)
+    release_gate = coverage_release_gate(
+        summary,
+        release_eligible=release_eligible,
+        has_errors=bool(errors),
+    )
+    release_gate["required_vectors"] = "disabled"
+    release_gate["required_reranker"] = "disabled"
+    release_gate["governed_dataset_path"] = str(GOVERNED_DATASET_PATH)
+    release_gate["governed_dataset_sha256"] = GOVERNED_DATASET_SHA256
+    release_gate["required_max_items"] = GOVERNED_MAX_ITEMS
+    release_gate["vectors"] = vectors
+    release_gate["reranker"] = reranker
+    release_gate["input_checks"] = release_input_checks
+    release_gate["all_stores_fresh"] = all_stores_fresh
+    release_gate["reused_store_count"] = sum(1 for row in rows if row.get("reused_store") is True)
+    exit_code = exit_code_for_release_gate(release_gate, has_errors=bool(errors))
     summary_path = out_path.with_suffix(".summary.json")
     summary_payload = {
         "schema": COVERAGE_SCHEMA + "_summary",
         "dataset_file": dataset_path.name,
+        "dataset_path": str(dataset_path),
+        "dataset_sha256": dataset_sha256,
         "dataset_sha256_prefix": dataset_sha256_prefix,
+        "question_id_file": str(args.question_ids) if args.question_ids is not None else None,
+        "question_id_manifest_count": len(requested_question_ids),
+        "question_id_manifest_sha256": question_id_manifest_sha256(requested_question_ids),
+        "selected_question_id_count": len(selected_question_ids),
+        "selected_question_id_manifest_sha256": question_id_manifest_sha256(selected_question_ids),
+        "limit": args.limit,
         "max_items": max_items,
         "vectors": vectors,
+        "reranker": reranker,
+        **provider_summary_metadata(),
         "questions": len(rows),
         "errors": [{"question_id": question_id, "error": error} for question_id, error in errors],
+        "release_gate": release_gate,
         **summary,
     }
     summary_path.write_text(json.dumps(summary_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -454,8 +656,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[coverage] done in {time.monotonic() - started:.1f}s rows={out_path} summary={summary_path}")
     if errors:
         print(f"[coverage] {len(errors)} questions failed", file=sys.stderr)
-        return EXIT_RUN_FAILURES
-    return EXIT_OK
+    elif not release_eligible:
+        print(
+            "[coverage] diagnostic run only; release-green requires the canonical dataset, exact governed "
+            "phase6-non-count-101 manifest, max_items=16, fresh stores, no --limit, and disabled providers",
+            file=sys.stderr,
+        )
+    elif exit_code != EXIT_OK:
+        print("[coverage] frozen non-count coverage floors not met", file=sys.stderr)
+    return exit_code
 
 
 if __name__ == "__main__":
@@ -465,17 +674,29 @@ if __name__ == "__main__":
 __all__ = [
     "COVERAGE_SCHEMA",
     "DEFAULT_WORK_DIR",
+    "GOVERNED_DATASET_PATH",
+    "GOVERNED_DATASET_SHA256",
+    "GOVERNED_MAX_ITEMS",
+    "EXIT_STRATUM_FAILURES",
     "EXIT_CONFIG_ERROR",
     "EXIT_OK",
     "EXIT_RUN_FAILURES",
     "INGEST_MARKER_SCHEMA",
     "build_arg_parser",
+    "all_probe_stores_fresh",
+    "coverage_release_input_checks",
+    "coverage_release_gate",
     "coverage_row",
     "disable_embeddings_env",
     "disable_reranker_env",
     "format_summary_table",
+    "file_sha256",
+    "exit_code_for_release_gate",
+    "is_governed_non_count_manifest",
     "main",
     "probe_question",
+    "provider_summary_metadata",
+    "question_id_manifest_sha256",
     "retrieved_sessions_from_pack",
     "summarize_rows",
 ]

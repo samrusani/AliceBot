@@ -51,11 +51,22 @@ from alicebot_api.vnext_lifecycle import (
     supersession_would_cycle,
 )
 from alicebot_api.vnext_memory_version import memory_matches_snapshot
+from alicebot_api.vnext_occurrence_write import (
+    establish_memory_occurrences,
+    reconcile_chunk_extraction_disposition,
+    retire_memory_occurrences,
+    retire_source_occurrences,
+    transfer_consolidated_occurrence_evidence,
+)
 from alicebot_api.vnext_project_update_guard import (
     PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE,
     is_pending_project_update_memory,
 )
-from alicebot_api.vnext_project_scope import project_scope_identity
+from alicebot_api.vnext_project_scope import (
+    project_scope_identity,
+    resolve_project_scope,
+    source_project_scope,
+)
 from alicebot_api.vnext_repositories import EventStore, JsonObject
 from alicebot_api.store import ContinuityStoreInvariantError
 from alicebot_api.vnext_store import PostgresVNextStore, VNextRow
@@ -883,6 +894,12 @@ class VNextMemoryCommitService:
                 agentic["confirmation"] = confirmation
                 agentic["status"] = "rejected"
                 agentic["lifecycle_status"] = "confirmation_expired"
+                self.retire_memory_occurrence_state(
+                    memory,
+                    identity=identity,
+                    stage="inline_confirmation_expired",
+                    reason="Inline memory confirmation expired.",
+                )
                 updated = self.store.update_memory(
                     memory_id=str(memory["id"]),
                     patch={
@@ -960,6 +977,12 @@ class VNextMemoryCommitService:
             response_status = "rejected"
             event_type = "agent.memory_confirmation_rejected"
             revision_type = "rejected"
+            self.retire_memory_occurrence_state(
+                memory,
+                identity=identity,
+                stage="inline_confirmation_rejected",
+                reason="Inline memory confirmation was rejected.",
+            )
         else:
             confirmation["status"] = "confirmed"
             next_status = "active"
@@ -994,7 +1017,7 @@ class VNextMemoryCommitService:
                 patch["title"] = next_text[:120]
         updated = self.store.update_memory(memory_id=str(memory["id"]), patch=patch, actor_type=actor_type)
         if next_status == "active":
-            self._refresh_memory_derived_state(
+            updated = self._refresh_memory_derived_state(
                 memory=updated,
                 identity=identity,
                 trace_id=str(agentic.get("trace_id") or "") or None,
@@ -1255,7 +1278,7 @@ class VNextMemoryCommitService:
             },
             actor_type=actor_type,
         )
-        self._refresh_memory_derived_state(
+        updated = self._refresh_memory_derived_state(
             memory=updated,
             identity=identity,
             trace_id=str(agentic.get("trace_id") or "") or None,
@@ -1480,9 +1503,6 @@ class VNextMemoryCommitService:
                     "consolidation candidate crosses project scopes; regenerate it before acceptance"
                 )
 
-        # Supersede the members before stamping the acceptance marker so a
-        # crash mid-way replays safely: already-superseded members are
-        # skipped, then promotion completes.
         superseded_member_ids: list[str] = []
         skipped_members: list[JsonObject] = []
         for member_id in proposed:
@@ -1493,24 +1513,6 @@ class VNextMemoryCommitService:
             if str(member.get("status") or "") == "superseded" or _supersession_pointer(member, "superseded_by"):
                 skipped_members.append({"member_id": member_id, "state": "already_superseded"})
                 continue
-            self._transition_memory(
-                identity=identity,
-                memory=member,
-                operation=SUPERSEDE_MEMBER,
-                lifecycle_status="superseded_by_consolidation",
-                next_status="superseded",
-                event_type="agent.memory_superseded",
-                revision_type="superseded",
-                action="agentic_memory_consolidation_supersede",
-                reason=f"Superseded by accepted consolidation candidate {accepted_id}.",
-                superseded_by=memory,
-                # The accepted row's single-valued supersedes pointer is set
-                # once below by the documented dedup/merge rule, not
-                # clobbered per member here.
-                set_successor_pointer=False,
-                exclude_derived_candidate_id=accepted_id,
-                allow_pending_consolidation_successor=True,
-            )
             superseded_member_ids.append(member_id)
 
         now = _utc_iso()
@@ -1539,7 +1541,41 @@ class VNextMemoryCommitService:
         else:
             next_metadata["merged_from"] = member_ids
         updated = self.store.update_memory(memory_id=accepted_id, patch=patch, actor_type=actor_type)
-        self._refresh_memory_derived_state(
+
+        # Transfer every distinct reviewed occurrence to the accepted carrier
+        # before retiring a member. The surrounding store transaction makes
+        # promotion, evidence refresh, and member supersession one atomic
+        # truth change; a duplicate member unit is transferred exactly once.
+        updated = transfer_consolidated_occurrence_evidence(
+            self.store,
+            updated,
+            [locked_members[member_id] for member_id in superseded_member_ids],
+            reviewer_id=actor_id or f"{actor_type}-reviewer",
+            reason=(f"Occurrence evidence transferred to accepted consolidation candidate {accepted_id}."),
+            actor_type=actor_type,
+            stage="consolidation_accepted",
+        )
+        for member_id in superseded_member_ids:
+            member = locked_members[member_id]
+            self._transition_memory(
+                identity=identity,
+                memory=member,
+                operation=SUPERSEDE_MEMBER,
+                lifecycle_status="superseded_by_consolidation",
+                next_status="superseded",
+                event_type="agent.memory_superseded",
+                revision_type="superseded",
+                action="agentic_memory_consolidation_supersede",
+                reason=f"Superseded by accepted consolidation candidate {accepted_id}.",
+                superseded_by=updated,
+                # The accepted row's single-valued supersedes pointer is set
+                # once above by the documented dedup/merge rule, not
+                # clobbered per member here.
+                set_successor_pointer=False,
+                exclude_derived_candidate_id=accepted_id,
+                preserve_occurrence_claim=True,
+            )
+        updated = self._refresh_memory_derived_state(
             memory=updated,
             identity=identity,
             trace_id=decision.trace_id,
@@ -1856,6 +1892,105 @@ class VNextMemoryCommitService:
 
         return self._policy_checked_write(identity=identity, action=action, memory=memory)
 
+    def reconcile_memory_occurrence_state(
+        self,
+        memory: Mapping[str, object],
+        *,
+        identity: AgentIdentity | None = None,
+        stage: str = "review_accepted",
+    ) -> JsonObject:
+        """Apply the existing memory decision to its occurrence proposal."""
+
+        actor_type = "agent" if identity is not None else "user"
+        actor_id = identity.agent_id if identity is not None else None
+        metadata = _memory_metadata(memory)
+        source_id = metadata.get("source_id")
+        get_source = getattr(self.store, "get_source", None)
+        source = get_source(str(source_id)) if source_id is not None and callable(get_source) else None
+        if isinstance(source, Mapping) and (
+            str(source.get("domain") or "unknown") != str(memory.get("domain") or "unknown")
+            or str(source.get("sensitivity") or "unknown") != str(memory.get("sensitivity") or "unknown")
+            or project_scope_identity(source_project_scope(source)) != resolve_project_scope(memory).identity
+        ):
+            # A memory may be re-scoped/reclassified independently of its
+            # source. The old source remains valid evidence for the old unit,
+            # but must not be attached to a replacement occurrence whose
+            # access-control identity no longer matches.
+            source = None
+        reconciled_source_chunk_ids: set[str] = set()
+        updated = establish_memory_occurrences(
+            self.store,
+            memory,
+            source=source if isinstance(source, Mapping) else None,
+            source_chunk_id=(
+                str(metadata["source_chunk_id"])
+                if isinstance(source, Mapping) and metadata.get("source_chunk_id") is not None
+                else None
+            ),
+            accepted=str(memory.get("status") or "") in {"active", "accepted"},
+            reviewer_id=actor_id or f"{actor_type}-reviewer",
+            reason=f"Occurrence state reconciled by {stage}.",
+            actor_type=actor_type,
+            stage=stage,
+            _reconciled_source_chunk_ids=reconciled_source_chunk_ids,
+        )
+        accounting_chunk_id = str(_memory_metadata(updated).get("source_chunk_id") or "")
+        if accounting_chunk_id and accounting_chunk_id not in reconciled_source_chunk_ids:
+            reconcile_chunk_extraction_disposition(
+                self.store,
+                source_chunk_id=accounting_chunk_id,
+                actor_type=actor_type,
+                reviewer_id=actor_id or f"{actor_type}-reviewer",
+                reason=f"Source chunk extraction reviewed by {stage}.",
+            )
+        return updated
+
+    def retire_memory_occurrence_state(
+        self,
+        memory: Mapping[str, object],
+        *,
+        identity: AgentIdentity | None = None,
+        stage: str,
+        reason: str,
+        preserve_claim: bool = False,
+        _defer_occurrence_accounting: bool = False,
+    ) -> list[str]:
+        """Retire stale occurrence units inside the caller's transaction."""
+
+        actor_type = "agent" if identity is not None else "user"
+        actor_id = identity.agent_id if identity is not None else None
+        return retire_memory_occurrences(
+            self.store,
+            memory,
+            reviewer_id=actor_id or f"{actor_type}-reviewer",
+            reason=f"{reason} ({stage})",
+            actor_type=actor_type,
+            reconcile_claim_evidence=not preserve_claim,
+            _defer_occurrence_accounting=_defer_occurrence_accounting,
+        )
+
+    def retire_source_occurrence_state(
+        self,
+        source_id: str,
+        *,
+        identity: AgentIdentity | None = None,
+        stage: str,
+        reason: str,
+        _defer_occurrence_accounting: bool = False,
+    ) -> list[str]:
+        """Retire occurrence units governed by a source before deletion."""
+
+        actor_type = "agent" if identity is not None else "user"
+        actor_id = identity.agent_id if identity is not None else None
+        return retire_source_occurrences(
+            self.store,
+            source_id,
+            reviewer_id=actor_id or f"{actor_type}-reviewer",
+            reason=f"{reason} ({stage})",
+            actor_type=actor_type,
+            _defer_occurrence_accounting=_defer_occurrence_accounting,
+        )
+
     def recent_commits(self, *, limit: int = 20) -> JsonObject:
         rows = []
         for memory in self.store.list_memories(status=None):
@@ -1873,7 +2008,7 @@ class VNextMemoryCommitService:
         identity: AgentIdentity | None = None,
         trace_id: str | None = None,
         stage: str = "review_accepted",
-    ) -> None:
+    ) -> JsonObject:
         """Reconcile indexes after an accepted mutation from another surface.
 
         HTTP/MCP review adapters that still own their row transition call this
@@ -1881,7 +2016,7 @@ class VNextMemoryCommitService:
         lifecycle here prevents those adapters from forking embedding,
         fact-key, and entity-edge semantics.
         """
-        self._refresh_memory_derived_state(
+        return self._refresh_memory_derived_state(
             memory=memory,
             identity=identity,
             trace_id=trace_id,
@@ -2190,6 +2325,15 @@ class VNextMemoryCommitService:
             actor_id=actor_id,
         )
         self._create_provenance_links(memory=memory, request=request, actor_type=actor_type)
+        memory = establish_memory_occurrences(
+            self.store,
+            memory,
+            accepted=True,
+            reviewer_id=actor_id or f"{actor_type}-reviewer",
+            reason="Occurrence proposal accepted with the committed memory.",
+            actor_type=actor_type,
+            stage="commit",
+        )
         self._link_memory_entities(
             memory=memory,
             identity=identity,
@@ -2273,6 +2417,15 @@ class VNextMemoryCommitService:
             },
             actor_type=actor_type,
             request=request,
+        )
+        memory = establish_memory_occurrences(
+            self.store,
+            memory,
+            accepted=False,
+            reviewer_id=actor_id or f"{actor_type}-reviewer",
+            reason="Occurrence proposal established pending inline confirmation.",
+            actor_type=actor_type,
+            stage="inline_confirmation_proposed",
         )
         self._attach_or_defer_memory_embedding(
             memory,
@@ -2360,6 +2513,15 @@ class VNextMemoryCommitService:
             },
             actor_type=actor_type,
             request=request,
+        )
+        memory = establish_memory_occurrences(
+            self.store,
+            memory,
+            accepted=False,
+            reviewer_id=actor_id or f"{actor_type}-reviewer",
+            reason="Occurrence proposal established pending dashboard review.",
+            actor_type=actor_type,
+            stage="dashboard_review_proposed",
         )
         self._attach_or_defer_memory_embedding(
             memory,
@@ -2537,7 +2699,7 @@ class VNextMemoryCommitService:
         trace_id: str | None,
         stage: str,
         replace_entity_links: bool,
-    ) -> None:
+    ) -> JsonObject:
         """Refresh every index derived from mutable memory content.
 
         Clear embeddings first so an unavailable provider degrades to no
@@ -2546,6 +2708,11 @@ class VNextMemoryCommitService:
         overwritten. Entity edges are temporal: content edits expire the
         old linker-owned edges before deriving the current set.
         """
+        memory = self.reconcile_memory_occurrence_state(
+            memory,
+            identity=identity,
+            stage=stage,
+        )
         actor_type = "agent" if identity is not None else "user"
         actor_id = identity.agent_id if identity is not None else None
         memory_id = str(memory["id"])
@@ -2580,6 +2747,7 @@ class VNextMemoryCommitService:
             trace_id=trace_id,
             stage=stage,
         )
+        return dict(memory)
 
     def _expire_memory_entity_links(
         self,
@@ -2776,6 +2944,7 @@ class VNextMemoryCommitService:
         set_successor_pointer: bool = True,
         exclude_derived_candidate_id: str | None = None,
         allow_pending_consolidation_successor: bool = False,
+        preserve_occurrence_claim: bool = False,
     ) -> JsonObject:
         # Central enforcement: reject undoing/forgetting/superseding a row that
         # is already retired, and reject re-superseding back to an ancestor.
@@ -2800,6 +2969,17 @@ class VNextMemoryCommitService:
             identity=identity,
             reason=f"source memory transitioned to {next_status} after the derived candidate was proposed",
             exclude_memory_id=exclude_derived_candidate_id,
+        )
+        # Occurrence units are governed by the reviewed memory lifecycle.
+        # Retire them before the row stops being live so a failed occurrence
+        # CAS aborts this surrounding transaction instead of leaving an
+        # accepted count unit behind a retired memory.
+        self.retire_memory_occurrence_state(
+            memory,
+            identity=identity,
+            stage=f"memory_transition_{lifecycle_status}",
+            reason=reason,
+            preserve_claim=preserve_occurrence_claim,
         )
         patch: JsonObject = {"status": next_status, "metadata_json": {**metadata, "agentic_memory": agentic}}
         successor_id: str | None = None

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from collections import defaultdict
 from datetime import datetime
+import hashlib
 import json
-from typing import TypedDict, cast
+from typing import Protocol, TypedDict, cast
 from uuid import UUID
 
 import psycopg
@@ -97,6 +99,7 @@ from alicebot_api.contracts import (
 from alicebot_api.retrieval_evaluation import get_retrieval_evaluation_summary
 from alicebot_api.store import (
     ContinuityStore,
+    ContinuityStoreInvariantError,
     EventRow,
     JsonObject,
     LabelCountRow,
@@ -104,6 +107,9 @@ from alicebot_api.store import (
     MemoryRevisionRow,
     MemoryRow,
     OpenLoopRow,
+)
+from alicebot_api.vnext_occurrence_predicates import (
+    occurrence_memory_carrier_facts_digest,
 )
 
 
@@ -139,12 +145,295 @@ class _ResolvedMemoryMetadata(TypedDict):
     last_confirmed_at: datetime | None
 
 
+class _LegacyAdmissionOccurrenceStore(Protocol):
+    """Truth-critical occurrence seam used by the retained legacy admission path."""
+
+    def lock_graph_mutation(self) -> None: ...
+
+    def get_memory_for_redaction(self, memory_id: str) -> Mapping[str, object] | None: ...
+
+    def reconcile_occurrence_evidence_carrier(
+        self,
+        *,
+        memory_id: str,
+        reviewer_id: str,
+        reason: str,
+        actor_type: str,
+        _defer_occurrence_accounting: bool,
+    ) -> list[Mapping[str, object]]: ...
+
+    def write_occurrence_memory_metadata(
+        self,
+        *,
+        memory_id: str,
+        metadata_json: JsonObject,
+        expected_metadata_json: JsonObject | None,
+        actor_type: str,
+        actor_id: str | None,
+    ) -> Mapping[str, object]: ...
+
+    def invalidate_occurrence_coverage(
+        self,
+        *,
+        reason: str,
+        actor_type: str,
+        actor_id: str | None,
+    ) -> tuple[Mapping[str, object] | None, bool]: ...
+
+    def get_source_chunk_for_occurrence_accounting(
+        self,
+        source_chunk_id: str,
+    ) -> Mapping[str, object] | None: ...
+
+    def invalidate_occurrence_extraction_dispositions(
+        self,
+        *,
+        source_chunk_id: str,
+        reason: str,
+        extractor_version: str | None,
+        actor_type: str,
+        actor_id: str | None,
+        _defer_occurrence_coverage: bool,
+    ) -> list[Mapping[str, object]]: ...
+
+
 _MEMORY_REVIEW_LABEL_ORDER: tuple[MemoryReviewLabelValue, ...] = (
     "correct",
     "incorrect",
     "outdated",
     "insufficient_evidence",
 )
+
+_LEGACY_OCCURRENCE_METADATA_KEYS = (
+    "occurrence_input",
+    "occurrence_proposal",
+    "occurrence_proposals",
+    "occurrence_candidate_texts",
+    "occurrence_carrier",
+)
+
+
+def _legacy_admission_occurrence_store(
+    store: ContinuityStore,
+) -> _LegacyAdmissionOccurrenceStore | None:
+    """Bridge the retained PostgreSQL admission seam to the shared graph.
+
+    The import stays runtime-local because ``vnext_store`` imports the legacy
+    store invariant type.  In-memory test doubles intentionally remain
+    occurrence-dormant.
+    """
+
+    if not isinstance(store, ContinuityStore):
+        return None
+    from alicebot_api.vnext_store import PostgresVNextStore
+
+    return cast(_LegacyAdmissionOccurrenceStore, PostgresVNextStore(store.conn))
+
+
+def _legacy_occurrence_source_chunk_ids(
+    memory: Mapping[str, object],
+) -> tuple[str, ...]:
+    metadata = memory.get("metadata_json")
+    if not isinstance(metadata, Mapping):
+        return ()
+    candidates = [metadata.get("source_chunk_id")]
+    proposal = metadata.get("occurrence_proposal")
+    if isinstance(proposal, Mapping):
+        candidates.append(proposal.get("source_chunk_id"))
+    chunk_ids: set[str] = set()
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            chunk_ids.add(str(UUID(str(candidate))))
+        except ValueError:
+            continue
+    return tuple(sorted(chunk_ids))
+
+
+def _require_legacy_occurrence_memory(
+    occurrence_store: _LegacyAdmissionOccurrenceStore,
+    memory: MemoryRow,
+    *,
+    user_id: UUID,
+) -> dict[str, object]:
+    """Load the complete shared row and prove it matches the legacy result."""
+
+    row = occurrence_store.get_memory_for_redaction(str(memory["id"]))
+    if not isinstance(row, Mapping):
+        raise ContinuityStoreInvariantError(
+            "legacy admission occurrence bridge lost its owned memory",
+        )
+    expected = {
+        "id": str(memory["id"]),
+        "user_id": str(user_id),
+        "agent_profile_id": str(memory["agent_profile_id"]),
+        "memory_key": memory["memory_key"],
+        "value": memory["value"],
+        "status": memory["status"],
+        "source_event_ids": list(memory["source_event_ids"]),
+        "memory_type": memory["memory_type"],
+        "valid_from": memory.get("valid_from"),
+        "valid_to": memory.get("valid_to"),
+    }
+    actual = {
+        "id": str(row.get("id")),
+        "user_id": str(row.get("user_id")),
+        "agent_profile_id": str(row.get("agent_profile_id")),
+        "memory_key": row.get("memory_key"),
+        "value": row.get("value"),
+        "status": row.get("status"),
+        "source_event_ids": list(cast(list[object], row.get("source_event_ids") or [])),
+        "memory_type": row.get("memory_type"),
+        "valid_from": row.get("valid_from"),
+        "valid_to": row.get("valid_to"),
+    }
+    if actual != expected:
+        raise ContinuityStoreInvariantError(
+            "legacy admission occurrence bridge observed divergent memory facts",
+        )
+    if (memory["status"] == "deleted") != (row.get("deleted_at") is not None):
+        raise ContinuityStoreInvariantError(
+            "legacy admission occurrence bridge observed an invalid deletion lifecycle",
+        )
+    metadata = row.get("metadata_json")
+    if not isinstance(metadata, Mapping):
+        raise ContinuityStoreInvariantError(
+            "legacy admission occurrence bridge requires object memory metadata",
+        )
+    return dict(row)
+
+
+def _invalidate_live_legacy_occurrence_metadata(
+    occurrence_store: _LegacyAdmissionOccurrenceStore,
+    memory: Mapping[str, object],
+    *,
+    action: str,
+    previous_carrier_facts_sha256: str | None,
+    pre_invalidation_carrier_facts_sha256: str,
+) -> None:
+    """Remove stale materialization claims and invalidate accounting once."""
+
+    raw_metadata = memory.get("metadata_json")
+    if not isinstance(raw_metadata, Mapping):
+        raise ContinuityStoreInvariantError(
+            "legacy admission occurrence bridge requires object memory metadata",
+        )
+    metadata = dict(cast(Mapping[str, object], raw_metadata))
+    for key in _LEGACY_OCCURRENCE_METADATA_KEYS:
+        metadata.pop(key, None)
+    receipt: JsonObject = {
+        "schema": "legacy_admission_occurrence_invalidation_v1",
+        "action": action,
+        "reason": (
+            "legacy_admission_unmodeled"
+            if previous_carrier_facts_sha256 is None
+            else "legacy_admission_carrier_changed"
+        ),
+        "previous_carrier_facts_sha256": previous_carrier_facts_sha256,
+        "pre_invalidation_carrier_facts_sha256": pre_invalidation_carrier_facts_sha256,
+    }
+    receipt["invalidation_receipt_digest"] = hashlib.sha256(
+        json.dumps(
+            receipt,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    metadata["occurrence_invalidation"] = receipt
+    updated = occurrence_store.write_occurrence_memory_metadata(
+        memory_id=str(memory["id"]),
+        metadata_json=cast(JsonObject, metadata),
+        expected_metadata_json=cast(JsonObject, dict(raw_metadata)),
+        actor_type="user",
+        actor_id=(
+            str(memory["user_id"])
+            if memory.get("user_id") is not None
+            else None
+        ),
+    )
+    updated_metadata = updated.get("metadata_json")
+    if (
+        not isinstance(updated_metadata, Mapping)
+        or dict(updated_metadata) != metadata
+        or any(key in updated_metadata for key in _LEGACY_OCCURRENCE_METADATA_KEYS)
+    ):
+        raise ContinuityStoreInvariantError(
+            "legacy admission occurrence metadata invalidation did not persist",
+        )
+
+
+def _finalize_legacy_admission_occurrences(
+    occurrence_store: _LegacyAdmissionOccurrenceStore | None,
+    *,
+    action: str,
+    user_id: UUID,
+    memory: MemoryRow,
+    previous_memory: Mapping[str, object] | None,
+) -> None:
+    """Reconcile legacy writes without guessing a replacement occurrence."""
+
+    if occurrence_store is None:
+        return
+    current = _require_legacy_occurrence_memory(
+        occurrence_store,
+        memory,
+        user_id=user_id,
+    )
+    current_digest = occurrence_memory_carrier_facts_digest(current)
+    previous_digest = occurrence_memory_carrier_facts_digest(previous_memory) if previous_memory is not None else None
+    carrier_changed = action in {"ADD", "DELETE"} or previous_digest != current_digest
+    if not carrier_changed:
+        return
+
+    reason = f"Legacy memory {action.lower()} changed the signed occurrence carrier."
+    if action in {"UPDATE", "DELETE"}:
+        occurrence_store.reconcile_occurrence_evidence_carrier(
+            memory_id=str(memory["id"]),
+            reviewer_id=str(user_id),
+            reason=reason,
+            actor_type="user",
+            _defer_occurrence_accounting=True,
+        )
+
+    if memory["status"] != "deleted":
+        _invalidate_live_legacy_occurrence_metadata(
+            occurrence_store,
+            current,
+            action=action,
+            previous_carrier_facts_sha256=previous_digest,
+            pre_invalidation_carrier_facts_sha256=current_digest,
+        )
+        return
+
+    # Deleted rows are deliberately unavailable to the occurrence metadata
+    # writer.  Their evidence/unit graph is already detached above; revoke the
+    # user's signed coverage as the final accounting mutation.
+    if previous_memory is None:
+        raise ContinuityStoreInvariantError(
+            "legacy delete occurrence reconciliation requires the prior memory",
+        )
+    for source_chunk_id in _legacy_occurrence_source_chunk_ids(previous_memory):
+        if (
+            occurrence_store.get_source_chunk_for_occurrence_accounting(
+                source_chunk_id,
+            )
+            is None
+        ):
+            continue
+        occurrence_store.invalidate_occurrence_extraction_dispositions(
+            source_chunk_id=source_chunk_id,
+            reason=reason,
+            extractor_version=None,
+            actor_type="user",
+            actor_id=str(user_id),
+            _defer_occurrence_coverage=True,
+        )
+    occurrence_store.invalidate_occurrence_coverage(
+        reason=reason,
+        actor_type="user",
+        actor_id=str(user_id),
+    )
 
 
 def _memory_status(value: str) -> MemoryStatus:
@@ -1738,7 +2027,11 @@ def admit_memory_candidate(
     user_id: UUID,
     candidate: MemoryCandidateInput,
 ) -> AdmissionDecisionOutput:
-    del user_id
+    occurrence_store = _legacy_admission_occurrence_store(store)
+    if occurrence_store is not None:
+        # This boundary must precede source/profile/existing-memory reads so
+        # legacy admission cannot interleave with the vNext occurrence graph.
+        occurrence_store.lock_graph_mutation()
 
     source_event_ids, derived_agent_profile_id = _validate_source_events(
         store,
@@ -1752,6 +2045,15 @@ def admit_memory_candidate(
     existing_memory = store.get_memory_by_key_and_profile(
         memory_key=candidate.memory_key,
         agent_profile_id=agent_profile_id,
+    )
+    previous_occurrence_memory = (
+        _require_legacy_occurrence_memory(
+            occurrence_store,
+            existing_memory,
+            user_id=user_id,
+        )
+        if occurrence_store is not None and existing_memory is not None
+        else None
     )
     resolved_metadata = _resolve_memory_typed_metadata(
         existing_memory=existing_memory,
@@ -1805,6 +2107,13 @@ def admit_memory_candidate(
                 resolved_agent_profile_id=agent_profile_id,
             ),
         )
+        _finalize_legacy_admission_occurrences(
+            occurrence_store,
+            action="DELETE",
+            user_id=user_id,
+            memory=memory,
+            previous_memory=previous_occurrence_memory,
+        )
         return AdmissionDecisionOutput(
             action="DELETE",
             reason="source_backed_delete",
@@ -1853,16 +2162,24 @@ def admit_memory_candidate(
                 resolved_agent_profile_id=agent_profile_id,
             ),
         )
+        open_loop = _create_open_loop_for_memory(
+            store,
+            candidate=candidate,
+            memory=memory,
+        )
+        _finalize_legacy_admission_occurrences(
+            occurrence_store,
+            action="ADD",
+            user_id=user_id,
+            memory=memory,
+            previous_memory=None,
+        )
         return AdmissionDecisionOutput(
             action="ADD",
             reason="source_backed_add",
             memory=_serialize_memory(memory),
             revision=_serialize_memory_revision(revision),
-            open_loop=_create_open_loop_for_memory(
-                store,
-                candidate=candidate,
-                memory=memory,
-            ),
+            open_loop=open_loop,
         )
 
     metadata_changed = any(
@@ -1932,14 +2249,22 @@ def admit_memory_candidate(
             resolved_agent_profile_id=agent_profile_id,
         ),
     )
+    open_loop = _create_open_loop_for_memory(
+        store,
+        candidate=candidate,
+        memory=memory,
+    )
+    _finalize_legacy_admission_occurrences(
+        occurrence_store,
+        action="UPDATE",
+        user_id=user_id,
+        memory=memory,
+        previous_memory=previous_occurrence_memory,
+    )
     return AdmissionDecisionOutput(
         action="UPDATE",
         reason="source_backed_update",
         memory=_serialize_memory(memory),
         revision=_serialize_memory_revision(revision),
-        open_loop=_create_open_loop_for_memory(
-            store,
-            candidate=candidate,
-            memory=memory,
-        ),
+        open_loop=open_loop,
     )

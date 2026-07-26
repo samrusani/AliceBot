@@ -136,6 +136,271 @@ def _artifact_response_properties() -> dict[str, dict[str, object]]:
     return properties
 
 
+def _occurrence_count_aggregation_schema() -> dict[str, object]:
+    """Describe the optional signed occurrence aggregation returned in a pack."""
+
+    nullable_string = {
+        "anyOf": [
+            {"type": "string"},
+            {"type": "null"},
+        ]
+    }
+    nonnegative_integer = {"type": "integer", "minimum": 0}
+    evidence_schema = {
+        "type": "object",
+        "anyOf": [
+            {"required": ["memory_id"]},
+            {"required": ["source_id"]},
+        ],
+        "dependentRequired": {
+            "source_chunk_id": ["source_id"],
+        },
+        "required": [
+            "evidence_id",
+            "evidence_key",
+            "evidence_role",
+            "review_status",
+            "review_receipt_digest",
+            "unit_review_receipt_digest",
+            "quote_sha256",
+        ],
+        "additionalProperties": False,
+        "properties": {
+            "evidence_id": {"type": "string"},
+            "evidence_key": {"type": "string"},
+            "evidence_role": {"type": "string", "enum": ["supports"]},
+            "review_status": {"type": "string", "enum": ["accepted"]},
+            "review_receipt_digest": {"type": "string"},
+            "unit_review_receipt_digest": {"type": "string"},
+            "memory_id": {"type": "string"},
+            "source_id": {"type": "string"},
+            "source_chunk_id": {"type": "string"},
+            "quote_sha256": {"type": "string"},
+        },
+    }
+    provenance_schema = {
+        "type": "object",
+        "required": [
+            "occurrence_unit_id",
+            "counted_member_keys",
+            "review_receipt_digest",
+            "reviewed_evidence_count",
+            "reviewed_evidence_digest",
+            "evidence",
+        ],
+        "additionalProperties": False,
+        "properties": {
+            "occurrence_unit_id": {"type": "string"},
+            "counted_member_keys": {
+                "type": "array",
+                "items": {"type": "string"},
+                "uniqueItems": True,
+            },
+            "review_receipt_digest": {"type": "string"},
+            "reviewed_evidence_count": nonnegative_integer,
+            "reviewed_evidence_digest": {"type": "string"},
+            "evidence": {
+                "type": "array",
+                "items": evidence_schema,
+                "minItems": 1,
+            },
+        },
+    }
+    coverage_schema = {
+        "type": "object",
+        "required": [
+            "id",
+            "coverage_mode",
+            "coverage_started_at",
+            "historical_review_status",
+            "complete_through",
+            "review_version",
+            "reviewer_id",
+            "review_reason",
+            "review_receipt_digest",
+            "receipt_valid",
+            "requested_start",
+            "requested_end",
+            "fully_covered",
+            "legacy_gap",
+        ],
+        "additionalProperties": False,
+        "properties": {
+            "id": nullable_string,
+            "coverage_mode": {"type": "string"},
+            "coverage_started_at": nullable_string,
+            "historical_review_status": {"type": "string"},
+            "complete_through": nullable_string,
+            "review_version": {
+                "anyOf": [
+                    {"type": "integer", "minimum": 0},
+                    {"type": "null"},
+                ]
+            },
+            "reviewer_id": nullable_string,
+            "review_reason": nullable_string,
+            "review_receipt_digest": nullable_string,
+            "receipt_valid": {"type": "boolean"},
+            "requested_start": nullable_string,
+            "requested_end": nullable_string,
+            "fully_covered": {"type": "boolean"},
+            "legacy_gap": {"type": "boolean"},
+        },
+    }
+    accepted_units_schema = {
+        "type": "object",
+        "required": [
+            "matching",
+            "disjoint_proven",
+            "relation_unknown",
+        ],
+        "additionalProperties": False,
+        "properties": {
+            "matching": nonnegative_integer,
+            "disjoint_proven": nonnegative_integer,
+            "relation_unknown": nonnegative_integer,
+        },
+    }
+    unresolved_claims_schema = {
+        "type": "object",
+        "required": [
+            "count",
+            "disjoint_proven",
+            "matching_or_unknown",
+            "saturated",
+        ],
+        "additionalProperties": False,
+        "properties": {
+            "count": nonnegative_integer,
+            "disjoint_proven": nonnegative_integer,
+            "matching_or_unknown": nonnegative_integer,
+            "saturated": {"type": "boolean"},
+        },
+    }
+    fields = (
+        "kind",
+        "answer_kind",
+        "exact",
+        "lower_bound",
+        "upper_bound",
+        "unit",
+        "aggregation_basis",
+        "counted_member_keys",
+        "occurrence_unit_ids",
+        "provenance",
+        "coverage",
+        "accepted_units",
+        "unresolved_claims",
+        "saturated",
+        "answer_sufficient",
+        "count",
+    )
+    return {
+        "type": "object",
+        "allOf": [
+            {
+                "oneOf": [
+                    {
+                        "properties": {
+                            "aggregation_basis": {"const": "event_instance"},
+                            "unit": {"const": "reviewed_occurrence_units"},
+                        }
+                    },
+                    {
+                        "properties": {
+                            "aggregation_basis": {"const": "object_member"},
+                            "unit": {"const": "reviewed_object_members"},
+                        }
+                    },
+                ]
+            }
+        ],
+        "oneOf": [
+            {
+                "properties": {
+                    "answer_kind": {"const": "exact"},
+                    "exact": {"const": True},
+                    "upper_bound": nonnegative_integer,
+                    "answer_sufficient": {"const": True},
+                },
+                "required": ["count"],
+            },
+            {
+                "properties": {
+                    "answer_kind": {"const": "range"},
+                    "exact": {"const": False},
+                    "upper_bound": nonnegative_integer,
+                    "answer_sufficient": {"const": False},
+                },
+                "not": {"required": ["count"]},
+            },
+            {
+                "properties": {
+                    "answer_kind": {"const": "at_least"},
+                    "exact": {"const": False},
+                    "upper_bound": {"type": "null"},
+                    "answer_sufficient": {"const": False},
+                },
+                "not": {"required": ["count"]},
+            },
+        ],
+        "required": list(fields[:-1]),
+        "additionalProperties": False,
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": ["occurrence_count"],
+            },
+            "answer_kind": {
+                "type": "string",
+                "enum": ["exact", "range", "at_least"],
+            },
+            "exact": {"type": "boolean"},
+            "lower_bound": nonnegative_integer,
+            "upper_bound": {
+                "anyOf": [
+                    nonnegative_integer,
+                    {"type": "null"},
+                ]
+            },
+            "unit": {
+                "type": "string",
+                "enum": [
+                    "reviewed_occurrence_units",
+                    "reviewed_object_members",
+                ],
+            },
+            "aggregation_basis": {
+                "type": "string",
+                "enum": [
+                    "event_instance",
+                    "object_member",
+                ],
+            },
+            "counted_member_keys": {
+                "type": "array",
+                "items": {"type": "string"},
+                "uniqueItems": True,
+            },
+            "occurrence_unit_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "uniqueItems": True,
+            },
+            "provenance": {
+                "type": "array",
+                "items": provenance_schema,
+            },
+            "coverage": coverage_schema,
+            "accepted_units": accepted_units_schema,
+            "unresolved_claims": unresolved_claims_schema,
+            "saturated": {"type": "boolean"},
+            "answer_sufficient": {"type": "boolean"},
+            "count": nonnegative_integer,
+        },
+    }
+
+
 def _operation_schema(
     title: str,
     fields: tuple[str, ...],
@@ -2273,17 +2538,17 @@ _OPENAPI_EXPLICIT_PROPERTY_SCHEMAS.update(
             objects=("connector",), strings=("status",)
         ),
         ("POST", "/v0/vnext/connectors/telegram/sync"): _typed_properties(objects=("telegram",), strings=("status",)),
-    ("POST", "/v0/vnext/connectors/local-folder/sync"): _typed_properties(
-        objects=("local_folder",), strings=("status",)
-    ),
-    ("POST", "/v0/vnext/connectors/browser-clipper/capabilities"): {
-        "status": {"type": "string"},
-        "capability": {"type": "string", "readOnly": True},
-        "origin": {"type": "string", "format": "uri"},
-        "expires_at": {"type": "string", "format": "date-time"},
-        "one_time": {"type": "boolean"},
-    },
-    ("POST", "/v0/vnext/connectors/browser-clipper/capture"): _typed_properties(
+        ("POST", "/v0/vnext/connectors/local-folder/sync"): _typed_properties(
+            objects=("local_folder",), strings=("status",)
+        ),
+        ("POST", "/v0/vnext/connectors/browser-clipper/capabilities"): {
+            "status": {"type": "string"},
+            "capability": {"type": "string", "readOnly": True},
+            "origin": {"type": "string", "format": "uri"},
+            "expires_at": {"type": "string", "format": "date-time"},
+            "one_time": {"type": "boolean"},
+        },
+        ("POST", "/v0/vnext/connectors/browser-clipper/capture"): _typed_properties(
             objects=("browser_clipper",), strings=("status",)
         ),
         ("POST", "/v0/vnext/agents/ingest-output"): _typed_properties(objects=("ingest_output",), strings=("status",)),
@@ -2885,6 +3150,7 @@ _OPENAPI_SOURCE_AUDITED_RESPONSES: dict[
             "open_loops",
             "supporting_evidence",
             "contradicting_evidence",
+            "aggregation",
             "recent_changes",
             "supersession_context",
             "missing_information",
@@ -3067,11 +3333,14 @@ for _operation_key in _OPENAPI_ARTIFACT_ROW_OPERATIONS:
 
 for _operation_key, (_fields, _required) in _OPENAPI_SOURCE_AUDITED_RESPONSES.items():
     _component_name, _previous_schema = OPENAPI_OPERATION_RESPONSE_SCHEMAS[_operation_key]
-    _source_properties = (
-        _OPENAPI_EXPLICIT_PROPERTY_SCHEMAS[_operation_key]
-        if _operation_key == ("POST", "/v0/vnext/connectors/browser-clipper/capabilities")
-        else None
-    )
+    _source_properties: dict[str, dict[str, object]] | None
+    if _operation_key == ("POST", "/v0/vnext/connectors/browser-clipper/capabilities"):
+        _source_properties = _OPENAPI_EXPLICIT_PROPERTY_SCHEMAS[_operation_key]
+    elif _operation_key == ("POST", "/v0/vnext/context-packs"):
+        _source_properties = {field: {} for field in _fields}
+        _source_properties["aggregation"] = _occurrence_count_aggregation_schema()
+    else:
+        _source_properties = None
     OPENAPI_OPERATION_RESPONSE_SCHEMAS[_operation_key] = (
         _component_name,
         _closed_source_schema(

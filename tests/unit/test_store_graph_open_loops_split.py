@@ -27,9 +27,7 @@ POSTGRES_FACADE_PATH = REPO_ROOT / "apps/api/src/alicebot_api/vnext_store.py"
 SQLITE_FACADE_PATH = REPO_ROOT / "apps/api/src/alicebot_api/sqlite_store.py"
 POSTGRES_COLUMNS_PATH = REPO_ROOT / "apps/api/src/alicebot_api/vnext_stores/postgres/columns.py"
 SQLITE_COLUMNS_PATH = REPO_ROOT / "apps/api/src/alicebot_api/vnext_stores/sqlite/columns.py"
-POSTGRES_CARRIER_PATH = (
-    REPO_ROOT / "apps/api/src/alicebot_api/vnext_stores/postgres/graph_open_loops.py"
-)
+POSTGRES_CARRIER_PATH = REPO_ROOT / "apps/api/src/alicebot_api/vnext_stores/postgres/graph_open_loops.py"
 SQLITE_CARRIER_PATH = REPO_ROOT / "apps/api/src/alicebot_api/vnext_stores/sqlite/graph_open_loops.py"
 
 POSTGRES_METHODS = (
@@ -122,26 +120,22 @@ EXPECTED_COMMENT_MANIFESTS = {
     SQLITE_CARRIER_PATH: (1, "8f448801a348111594f3d0f33c9e82756981958985c270d45a8716914892d71b"),
 }
 EXPECTED_CLASS_ORDERS = {
-    # Two paired browser-clip capability methods extend both façades.
-    "PostgresVNextStore": (170, "5f28f1a17670a0c8b7b373acd0c314637c58e6a10ccf52053481a8a028bb3c09"),
-    "SQLiteVNextStore": (123, "72cbbffacc5fee804508f7e9517450c955f2c85235bd403d4f5759ee86c103e3"),
+    # Paired occurrence-substrate methods extend both façades.
+    "PostgresVNextStore": (208, "2258854f9a50ff1ce8abd562263ad64488425b85d6fc97fd040d457efb49d291"),
+    "SQLiteVNextStore": (161, "02e6f4a4a4c63d2fe170487fd312c15f70ff71c06a575c55c62827f0be3962b8"),
 }
 EXPECTED_COLUMN_AST = {
     POSTGRES_COLUMNS_PATH: {
         "GRAPH_EDGE_COLUMNS": "b0f146d327870472bcd646b291c2aa77336dc92049fdcc21c664669cf182110e",
         "ENTITY_COLUMNS": "42217e33d0e5b732cb53db2f1fe70ae0128ebd890e3633f89f1ccbbd8a79a1c5",
-        "ENTITY_RELATIONSHIP_EVENT_COLUMNS": (
-            "c333a0dacf8733a16fb86f3acc1bbf61bd25fa66ce96cc3bc25805c4a85d9203"
-        ),
+        "ENTITY_RELATIONSHIP_EVENT_COLUMNS": ("c333a0dacf8733a16fb86f3acc1bbf61bd25fa66ce96cc3bc25805c4a85d9203"),
         "BELIEF_COLUMNS": "32bac57e9e38fead1af29b9324777978f3b03bfe20d5306695fae98079d82dc7",
         "OPEN_LOOP_COLUMNS": "651275ee48d37e13228bf339ac4f260a50333fc7b86197ab16573cc099f912bf",
     },
     SQLITE_COLUMNS_PATH: {
         "GRAPH_EDGE_COLUMNS": "587b88564c446c03420441371a180e11618ea6bf192e5e20d2ad5d426ce890f2",
         "ENTITY_COLUMNS": "fb248a2a3c594a3e3a85c38d4978e828d6877aed1eb8fdd65e31ee5f695a5b3e",
-        "ENTITY_RELATIONSHIP_EVENT_COLUMNS": (
-            "a66291abf36ff05d353efd34d45f8a740c29644c321060c55f1ae72c8d210829"
-        ),
+        "ENTITY_RELATIONSHIP_EVENT_COLUMNS": ("a66291abf36ff05d353efd34d45f8a740c29644c321060c55f1ae72c8d210829"),
         "OPEN_LOOP_COLUMNS": "7e07fc8938294633fbc90a9664375dd80b7389a3740303bc5f3926da43ea4b6a",
     },
 }
@@ -156,11 +150,7 @@ def _tree(path: Path, source: str | None = None) -> ast.Module:
 
 
 def _class_node(path: Path, class_name: str, source: str | None = None) -> ast.ClassDef:
-    matches = [
-        node
-        for node in _tree(path, source).body
-        if isinstance(node, ast.ClassDef) and node.name == class_name
-    ]
+    matches = [node for node in _tree(path, source).body if isinstance(node, ast.ClassDef) and node.name == class_name]
     assert len(matches) == 1
     return matches[0]
 
@@ -196,9 +186,7 @@ def _named_assignments(path: Path) -> dict[str, ast.Assign]:
     return {
         node.targets[0].id: node
         for node in _tree(path).body
-        if isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
     }
 
 
@@ -218,9 +206,7 @@ def _assert_grafts(
     assert {child.name for child in node.body if isinstance(child, ast.FunctionDef)}.isdisjoint(names)
     assignments = _assignment_map(node)
     assert [name for name in _class_members(node) if name in names] == list(names)
-    assert {name: assignments.get(name) for name in names} == {
-        name: f"_graph_{name}" for name in names
-    }
+    assert {name: assignments.get(name) for name in names} == {name: f"_graph_{name}" for name in names}
 
 
 def _metadata_manifest(module: object, path: Path) -> str:
@@ -288,12 +274,10 @@ def test_graph_open_loop_methods_are_direct_native_order_grafts_with_exact_metad
             assert method.__module__ == module_name
             assert method.__qualname__ == f"{class_name}.{name}"
 
-    assert _metadata_manifest(postgres_graph, POSTGRES_CARRIER_PATH) == EXPECTED_METADATA_MANIFESTS[
-        POSTGRES_CARRIER_PATH
-    ]
-    assert _metadata_manifest(sqlite_graph, SQLITE_CARRIER_PATH) == EXPECTED_METADATA_MANIFESTS[
-        SQLITE_CARRIER_PATH
-    ]
+    assert (
+        _metadata_manifest(postgres_graph, POSTGRES_CARRIER_PATH) == EXPECTED_METADATA_MANIFESTS[POSTGRES_CARRIER_PATH]
+    )
+    assert _metadata_manifest(sqlite_graph, SQLITE_CARRIER_PATH) == EXPECTED_METADATA_MANIFESTS[SQLITE_CARRIER_PATH]
 
 
 def test_graph_open_loop_columns_are_exact_single_source_reexports() -> None:
@@ -337,8 +321,7 @@ def test_graph_open_loop_carriers_import_standalone_without_facade_cycles() -> N
                 assert node.module not in {"alicebot_api.vnext_store", "alicebot_api.sqlite_store"}
             elif isinstance(node, ast.Import):
                 assert all(
-                    alias.name not in {"alicebot_api.vnext_store", "alicebot_api.sqlite_store"}
-                    for alias in node.names
+                    alias.name not in {"alicebot_api.vnext_store", "alicebot_api.sqlite_store"} for alias in node.names
                 )
 
     code = """

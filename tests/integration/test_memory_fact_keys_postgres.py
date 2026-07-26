@@ -74,6 +74,14 @@ def test_migration_up_backfill_and_downgrade_round_trip(database_urls, monkeypat
     with user_connection(database_urls["app"], user_id) as conn:
         ContinuityStore(conn).create_user(user_id, "fact-keys@example.invalid", "Fact Keys")
         store = PostgresVNextStore(conn)
+        # Current store writes invalidate Phase 6 occurrence coverage, but this
+        # fixture intentionally runs at 0081 to exercise only the 0082 data
+        # migration. Keep the historical seed inside that schema boundary.
+        monkeypatch.setattr(
+            store,
+            "invalidate_occurrence_coverage",
+            lambda **_kwargs: None,
+        )
         legacy = _create_instance_memory(store)
 
     command.upgrade(config, "head")

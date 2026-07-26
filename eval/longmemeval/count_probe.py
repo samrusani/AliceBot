@@ -1,19 +1,18 @@
 """Deterministic LongMemEval count-intent context-pack probe.
 
-This is the keyless Sprint 4 companion to ``coverage_probe.py``. It reuses
-the same per-question SQLite stores and compiles the same model-free context
-pack, then checks the diagnostic and selected-card surfaces separately:
+This keyless Phase 6 companion to ``coverage_probe.py`` reuses the same
+per-question SQLite stores and compiles the same model-free context pack. It
+keeps three surfaces separate:
 
-* a disclosed, bounded FTS candidate-instance statistic in the coverage
-  trace; and
-* whether an accepted count-bearing roll-up card was selected for measurement.
+* the Phase 4 bounded FTS candidate statistic, which remains trace-only;
+* accepted memory roll-up cards, whose members remain non-countable; and
+* the Phase 6 evidence-bearing ``occurrence_count`` reader contract.
 
-The probe never treats either signal as an oracle. A memory candidate or
-roll-up member is not reviewed as exactly one queried unit; a single memory can
-say "twice" or carry several items. After pack compilation the probe compares
-diagnostic candidate values with dev-slice gold strictly as measurement. It
-does not call a selected card answer-sufficient, and the carrier emits no
-reader-facing aggregate field.
+Only an exact occurrence aggregate backed by distinct reviewed members and
+per-unit supporting evidence can be answer-sufficient. Honest ``range`` and
+``at_least`` aggregates are validated and reported but do not earn the exact
+development-gold gate. Gold answers and ``answer_session_ids`` are comparison
+inputs after pack compilation only; they never create, merge, or review units.
 Numeric-value questions (hours/days/pages) and cadence questions ("how
 often") form explicit safe-non-emission strata: coverage mode may run, but a
 memory-row total must stay absent. The cadence abstention fixtures likewise
@@ -32,12 +31,13 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
 import json
 from pathlib import Path
 import re
 import sys
 import time
-from typing import Mapping
+from typing import Mapping, Sequence
 
 _EVAL_DIR = Path(__file__).resolve().parent.parent
 if str(_EVAL_DIR) not in sys.path:  # direct execution
@@ -55,7 +55,16 @@ from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalSe
 from alicebot_api.vnext_temporal_query import parse_event_datetime
 
 from longmemeval.adapter import max_items_from_env, question_run
-from longmemeval.coverage_probe import disable_embeddings_env, disable_reranker_env
+from longmemeval.coverage_probe import (
+    GOVERNED_DATASET_PATH,
+    GOVERNED_DATASET_SHA256,
+    GOVERNED_MAX_ITEMS,
+    all_probe_stores_fresh,
+    disable_embeddings_env,
+    disable_reranker_env,
+    file_sha256,
+    provider_summary_metadata,
+)
 from longmemeval.dataset import (
     RESULTS_DIR,
     LongMemEvalDatasetError,
@@ -71,9 +80,11 @@ from longmemeval.runner import (
 )
 
 
-COUNT_PROBE_SCHEMA = "longmemeval_count_probe_v2"
+COUNT_PROBE_SCHEMA = "longmemeval_count_probe_v3"
 DEFAULT_SLICE = Path(__file__).resolve().parent / "slices" / "stage1-150.txt"
 DEFAULT_WORK_DIR = Path(__file__).resolve().parent / "work" / "coverage"
+GOVERNED_AUDIT_QUESTION_COUNT = 172
+GOVERNED_AUDIT_MANIFEST_SHA256 = "cc93a902019a82401f1f9bffc5c9437b08d1e269da599e248d64a7980e67ef73"
 
 EXIT_OK = 0
 EXIT_RUN_FAILURES = 1
@@ -91,6 +102,74 @@ DEFAULT_AUDIT_MANIFEST = {
     "safety_checks": 9,
     "answer_sufficiency_checks": 14,
 }
+DEFAULT_ANSWER_SUFFICIENCY_TARGET = 8
+
+OCCURRENCE_AGGREGATION_KIND = "occurrence_count"
+OCCURRENCE_ANSWER_KINDS = frozenset({"exact", "range", "at_least"})
+OCCURRENCE_AGGREGATION_BASES = frozenset({"event_instance", "object_member"})
+OCCURRENCE_AGGREGATION_UNITS = {
+    "event_instance": "reviewed_occurrence_units",
+    "object_member": "reviewed_object_members",
+}
+_OCCURRENCE_COVERAGE_MODES = frozenset({"forward_only", "partial_history", "complete_history"})
+_OCCURRENCE_HISTORICAL_REVIEW_STATUSES = frozenset({"not_reviewed", "needs_review", "reviewed"})
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_OBJECT_MEMBER_KEY_RE = re.compile(r"^object:v1:[0-9a-f]{64}$")
+_OCCURRENCE_AGGREGATION_KEYS = frozenset(
+    {
+        "kind",
+        "answer_kind",
+        "exact",
+        "lower_bound",
+        "upper_bound",
+        "unit",
+        "aggregation_basis",
+        "counted_member_keys",
+        "occurrence_unit_ids",
+        "provenance",
+        "accepted_units",
+        "coverage",
+        "unresolved_claims",
+        "saturated",
+        "answer_sufficient",
+    }
+)
+_OCCURRENCE_PROVENANCE_KEYS = frozenset(
+    {
+        "occurrence_unit_id",
+        "counted_member_keys",
+        "review_receipt_digest",
+        "reviewed_evidence_digest",
+        "reviewed_evidence_count",
+        "evidence",
+    }
+)
+_OCCURRENCE_EVIDENCE_KEYS = frozenset(
+    {
+        "evidence_id",
+        "evidence_key",
+        "evidence_role",
+        "quote_sha256",
+        "review_status",
+        "review_receipt_digest",
+        "unit_review_receipt_digest",
+    }
+)
+_OCCURRENCE_EVIDENCE_CARRIER_KEYS = frozenset(
+    {
+        "memory_id",
+        "source_id",
+        "source_chunk_id",
+    }
+)
+_OCCURRENCE_UNRESOLVED_CLAIM_KEYS = frozenset(
+    {
+        "count",
+        "disjoint_proven",
+        "matching_or_unknown",
+        "saturated",
+    }
+)
 
 # Hand-audited development strata from the fixed stage-1 slice. These are
 # product-mechanism checks, not benchmark-label access during retrieval.
@@ -181,6 +260,356 @@ def _reader_aggregation_record(pack: Mapping[str, object]) -> dict[str, object] 
     return {str(key): value for key, value in aggregation.items()}
 
 
+def _is_plain_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_nonempty_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _coverage_receipt_is_valid(
+    coverage: Mapping[str, object],
+    *,
+    expected_user_id: str,
+) -> bool:
+    """Validate the redacted public receipt contract.
+
+    The complete-history accounting manifest is deliberately not exposed in a
+    context pack because it can contain source and chunk IDs outside the query
+    scope. The occurrence reader reconstructs and validates the full signed
+    receipt before producing this record; the probe therefore validates the
+    boolean result and the public receipt shape instead of attempting to
+    recreate a different, incomplete signature payload.
+    """
+
+    coverage_id = coverage.get("id")
+    coverage_started = parse_event_datetime(coverage.get("coverage_started_at"))
+    complete_through = parse_event_datetime(coverage.get("complete_through"))
+    review_version = coverage.get("review_version")
+    reviewer_id = coverage.get("reviewer_id")
+    review_reason = coverage.get("review_reason")
+    receipt = coverage.get("review_receipt_digest")
+    receipt_valid = coverage.get("receipt_valid")
+    if (
+        not _is_nonempty_string(coverage_id)
+        or not _is_nonempty_string(expected_user_id)
+        or coverage_started is None
+        or (coverage.get("complete_through") is not None and complete_through is None)
+        or not isinstance(receipt_valid, bool)
+    ):
+        return False
+    if not receipt_valid:
+        return False
+    return bool(
+        not isinstance(review_version, bool)
+        and isinstance(review_version, int)
+        and review_version >= 1
+        and _is_nonempty_string(reviewer_id)
+        and _is_nonempty_string(review_reason)
+        and isinstance(receipt, str)
+        and _SHA256_RE.fullmatch(receipt) is not None
+    )
+
+
+def _coverage_has_valid_closed_interval(
+    coverage: Mapping[str, object],
+) -> bool:
+    coverage_started = parse_event_datetime(coverage.get("coverage_started_at"))
+    complete_through = parse_event_datetime(coverage.get("complete_through"))
+    return bool(coverage_started is not None and complete_through is not None and complete_through >= coverage_started)
+
+
+def _validate_occurrence_reader_aggregation(
+    aggregation: Mapping[str, object] | None,
+    *,
+    expected_user_id: str,
+) -> tuple[dict[str, object] | None, str | None]:
+    """Validate the evidence-bearing reader contract without consulting gold."""
+
+    if aggregation is None:
+        return None, "missing"
+    record = {str(key): value for key, value in aggregation.items()}
+    if record.get("kind") != OCCURRENCE_AGGREGATION_KIND:
+        return None, "kind"
+    answer_kind = record.get("answer_kind")
+    if not isinstance(answer_kind, str) or answer_kind not in OCCURRENCE_ANSWER_KINDS:
+        return None, "answer_kind"
+    exact = record.get("exact")
+    if not isinstance(exact, bool) or exact is not (answer_kind == "exact"):
+        return None, "exact_flag"
+    aggregation_basis = record.get("aggregation_basis")
+    if not isinstance(aggregation_basis, str) or aggregation_basis not in OCCURRENCE_AGGREGATION_BASES:
+        return None, "aggregation_basis"
+    if record.get("unit") != OCCURRENCE_AGGREGATION_UNITS[aggregation_basis]:
+        return None, "unit"
+
+    lower_bound = record.get("lower_bound")
+    if not _is_plain_int(lower_bound) or lower_bound < 0 or (lower_bound == 0 and answer_kind != "exact"):
+        return None, "lower_bound"
+    upper_bound = record.get("upper_bound")
+    if answer_kind == "exact":
+        count = record.get("count")
+        if (
+            not _is_plain_int(count)
+            or count != lower_bound
+            or not _is_plain_int(upper_bound)
+            or upper_bound != lower_bound
+        ):
+            return None, "exact_bounds"
+    elif "count" in record:
+        return None, "non_exact_count"
+    elif answer_kind == "range":
+        if not _is_plain_int(upper_bound) or upper_bound <= lower_bound:
+            return None, "range_bounds"
+    elif upper_bound is not None:
+        return None, "at_least_upper_bound"
+
+    counted_member_keys = record.get("counted_member_keys")
+    if (
+        not isinstance(counted_member_keys, list)
+        or any(not _is_nonempty_string(member_key) for member_key in counted_member_keys)
+        or len(set(counted_member_keys)) != len(counted_member_keys)
+        or counted_member_keys != sorted(counted_member_keys)
+        or lower_bound != len(counted_member_keys)
+    ):
+        return None, "counted_member_keys"
+
+    unit_ids = record.get("occurrence_unit_ids")
+    if (
+        not isinstance(unit_ids, list)
+        or any(not _is_nonempty_string(unit_id) for unit_id in unit_ids)
+        or len(set(unit_ids)) != len(unit_ids)
+        or unit_ids != sorted(unit_ids)
+    ):
+        return None, "occurrence_unit_ids"
+
+    provenance = record.get("provenance")
+    if not isinstance(provenance, list) or len(provenance) != len(unit_ids):
+        return None, "provenance"
+    if lower_bound > 0 and (not counted_member_keys or not unit_ids):
+        return None, "nonzero_projection"
+    if lower_bound == 0 and (counted_member_keys or unit_ids or provenance):
+        return None, "exact_zero_projection"
+    if aggregation_basis == "event_instance" and lower_bound != len(unit_ids):
+        return None, "event_instance_projection"
+
+    provenance_ids: list[str] = []
+    provenance_member_keys: set[str] = set()
+    evidence_ids: set[str] = set()
+    evidence_keys: set[str] = set()
+    for item in provenance:
+        if not isinstance(item, Mapping):
+            return None, "provenance_item"
+        if set(item) - _OCCURRENCE_PROVENANCE_KEYS:
+            return None, "provenance_keys"
+        occurrence_unit_id = item.get("occurrence_unit_id")
+        if not _is_nonempty_string(occurrence_unit_id):
+            return None, "provenance_unit_id"
+        provenance_ids.append(occurrence_unit_id)
+        item_member_keys = item.get("counted_member_keys")
+        if (
+            not isinstance(item_member_keys, list)
+            or not item_member_keys
+            or any(not _is_nonempty_string(member_key) for member_key in item_member_keys)
+            or len(set(item_member_keys)) != len(item_member_keys)
+            or item_member_keys != sorted(item_member_keys)
+        ):
+            return None, "provenance_counted_member_keys"
+        if aggregation_basis == "event_instance":
+            if len(item_member_keys) != 1 or _SHA256_RE.fullmatch(item_member_keys[0]) is None:
+                return None, "event_instance_member_key"
+        elif any(_OBJECT_MEMBER_KEY_RE.fullmatch(member_key) is None for member_key in item_member_keys):
+            return None, "object_member_key"
+        provenance_member_keys.update(item_member_keys)
+        unit_review_receipt = item.get("review_receipt_digest")
+        reviewed_evidence_digest = item.get("reviewed_evidence_digest")
+        reviewed_evidence_count = item.get("reviewed_evidence_count")
+        if (
+            not isinstance(unit_review_receipt, str)
+            or _SHA256_RE.fullmatch(unit_review_receipt) is None
+            or not isinstance(reviewed_evidence_digest, str)
+            or _SHA256_RE.fullmatch(reviewed_evidence_digest) is None
+            or not _is_plain_int(reviewed_evidence_count)
+            or reviewed_evidence_count < 1
+        ):
+            return None, "unit_review_receipt"
+        evidence = item.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            return None, "evidence"
+        supporting_evidence_count = 0
+        for evidence_item in evidence:
+            if not isinstance(evidence_item, Mapping):
+                return None, "evidence_item"
+            evidence_item_keys = set(evidence_item)
+            if evidence_item_keys - (_OCCURRENCE_EVIDENCE_KEYS | _OCCURRENCE_EVIDENCE_CARRIER_KEYS):
+                return None, "evidence_keys"
+            carrier_keys = evidence_item_keys & _OCCURRENCE_EVIDENCE_CARRIER_KEYS
+            if not carrier_keys or any(not _is_nonempty_string(evidence_item.get(key)) for key in carrier_keys):
+                return None, "evidence_carrier"
+            if "source_chunk_id" in carrier_keys and "source_id" not in carrier_keys:
+                return None, "evidence_source_chunk_without_source"
+            evidence_id = evidence_item.get("evidence_id")
+            evidence_key = evidence_item.get("evidence_key")
+            evidence_role = evidence_item.get("evidence_role")
+            quote_sha256 = evidence_item.get("quote_sha256")
+            evidence_review_receipt = evidence_item.get("review_receipt_digest")
+            if (
+                not _is_nonempty_string(evidence_id)
+                or evidence_id in evidence_ids
+                or not _is_nonempty_string(evidence_key)
+                or evidence_key in evidence_keys
+                or evidence_role != "supports"
+                or not isinstance(quote_sha256, str)
+                or _SHA256_RE.fullmatch(quote_sha256) is None
+                or evidence_item.get("review_status") != "accepted"
+                or not isinstance(evidence_review_receipt, str)
+                or _SHA256_RE.fullmatch(evidence_review_receipt) is None
+                or evidence_item.get("unit_review_receipt_digest") != unit_review_receipt
+            ):
+                return None, "evidence_receipt"
+            evidence_ids.add(evidence_id)
+            evidence_keys.add(evidence_key)
+            supporting_evidence_count += 1
+        if supporting_evidence_count < 1:
+            return None, "supporting_evidence"
+        if reviewed_evidence_count != supporting_evidence_count:
+            return None, "reviewed_evidence_count"
+    if provenance_ids != unit_ids:
+        return None, "provenance_unit_ids"
+    if sorted(provenance_member_keys) != counted_member_keys:
+        return None, "counted_member_key_union"
+
+    accepted_units = record.get("accepted_units")
+    if not isinstance(accepted_units, Mapping) or set(accepted_units) != {
+        "matching",
+        "disjoint_proven",
+        "relation_unknown",
+    }:
+        return None, "accepted_unit_partition"
+    accepted_matching = accepted_units.get("matching")
+    accepted_disjoint = accepted_units.get("disjoint_proven")
+    accepted_unknown = accepted_units.get("relation_unknown")
+    if (
+        not _is_plain_int(accepted_matching)
+        or accepted_matching < 0
+        or not _is_plain_int(accepted_disjoint)
+        or accepted_disjoint < 0
+        or not _is_plain_int(accepted_unknown)
+        or accepted_unknown < 0
+        or accepted_matching != len(unit_ids)
+    ):
+        return None, "accepted_unit_partition"
+
+    coverage = record.get("coverage")
+    if not isinstance(coverage, Mapping):
+        return None, "coverage"
+    public_coverage_keys = {
+        "id",
+        "coverage_mode",
+        "coverage_started_at",
+        "historical_review_status",
+        "complete_through",
+        "review_version",
+        "reviewer_id",
+        "review_reason",
+        "review_receipt_digest",
+        "receipt_valid",
+        "requested_start",
+        "requested_end",
+        "fully_covered",
+        "legacy_gap",
+    }
+    if set(coverage) != public_coverage_keys:
+        return None, "coverage_accounting_metadata"
+    if coverage.get("coverage_mode") not in _OCCURRENCE_COVERAGE_MODES:
+        return None, "coverage_mode"
+    if not _is_nonempty_string(coverage.get("coverage_started_at")):
+        return None, "coverage_started_at"
+    if coverage.get("historical_review_status") not in _OCCURRENCE_HISTORICAL_REVIEW_STATUSES:
+        return None, "historical_review_status"
+    for key in ("complete_through", "requested_start", "requested_end"):
+        value = coverage.get(key)
+        if value is not None and not _is_nonempty_string(value):
+            return None, f"coverage_{key}"
+    if not isinstance(coverage.get("fully_covered"), bool):
+        return None, "fully_covered"
+    if not isinstance(coverage.get("legacy_gap"), bool):
+        return None, "legacy_gap"
+    receipt_valid = _coverage_receipt_is_valid(
+        coverage,
+        expected_user_id=expected_user_id,
+    )
+    if coverage.get("receipt_valid") is not receipt_valid:
+        return None, "coverage_receipt_flag"
+
+    unresolved_claims = record.get("unresolved_claims")
+    if not isinstance(unresolved_claims, Mapping):
+        return None, "unresolved_claims"
+    if set(unresolved_claims) - _OCCURRENCE_UNRESOLVED_CLAIM_KEYS:
+        return None, "unresolved_claim_keys"
+    unresolved_count = unresolved_claims.get("count")
+    if not _is_plain_int(unresolved_count) or unresolved_count < 0:
+        return None, "unresolved_claim_count"
+    disjoint_proven = unresolved_claims.get("disjoint_proven")
+    matching_or_unknown = unresolved_claims.get("matching_or_unknown")
+    if (
+        not _is_plain_int(disjoint_proven)
+        or disjoint_proven < 0
+        or not _is_plain_int(matching_or_unknown)
+        or matching_or_unknown < 0
+        or disjoint_proven + matching_or_unknown != unresolved_count
+    ):
+        return None, "unresolved_claim_partition"
+    if not isinstance(unresolved_claims.get("saturated"), bool):
+        return None, "unresolved_claim_saturation"
+    if not isinstance(record.get("saturated"), bool):
+        return None, "saturation"
+    if not isinstance(record.get("answer_sufficient"), bool):
+        return None, "answer_sufficient"
+
+    incomplete = bool(
+        not coverage["fully_covered"]
+        or coverage["legacy_gap"]
+        or accepted_unknown
+        or matching_or_unknown
+        or unresolved_claims["saturated"]
+        or record["saturated"]
+    )
+    complete_signed_coverage = bool(
+        coverage["coverage_mode"] == "complete_history"
+        and coverage["historical_review_status"] == "reviewed"
+        and coverage["fully_covered"]
+        and not coverage["legacy_gap"]
+        and receipt_valid
+        and _coverage_has_valid_closed_interval(coverage)
+    )
+    if answer_kind == "exact":
+        if incomplete or not complete_signed_coverage or record["answer_sufficient"] is not True:
+            return None, "unsafe_exact"
+    elif answer_kind == "range":
+        if (
+            aggregation_basis != "event_instance"
+            or not complete_signed_coverage
+            or unresolved_claims["saturated"]
+            or record["saturated"]
+            or accepted_unknown
+            or matching_or_unknown == 0
+        ):
+            return None, "unsafe_range"
+        if record["answer_sufficient"] is not False:
+            return None, "non_exact_answer_sufficient"
+    else:
+        if not incomplete:
+            return None, "unexplained_non_exact"
+        if record["answer_sufficient"] is not False:
+            return None, "non_exact_answer_sufficient"
+    expected_record_keys = _OCCURRENCE_AGGREGATION_KEYS | ({"count"} if answer_kind == "exact" else set())
+    if set(record) != expected_record_keys:
+        return None, "aggregation_keys"
+    return record, None
+
+
 def _selected_count_rollups(pack: Mapping[str, object]) -> list[dict[str, object]]:
     selected: list[dict[str, object]] = []
     memories = pack.get("relevant_memories")
@@ -243,6 +672,7 @@ def probe_row(
     question: LongMemEvalQuestion,
     pack: Mapping[str, object],
     *,
+    expected_user_id: str,
     reused_store: bool,
     accept_rollups: bool,
     ingest_seconds: float | None,
@@ -267,32 +697,40 @@ def probe_row(
         and gold_count is not None
         else None
     )
-    reader_verified_rollup = None
-    reader_verified_rollup_matches_gold = False
-    safe_non_emission = not trace_candidate_present and not reader_aggregation_present
-    safe_abstention_non_answer = bool(
-        stratum == STRATUM_CADENCE_ABSTENTION and safe_non_emission
+    (
+        reader_verified_occurrence_aggregation,
+        reader_aggregation_contract_error,
+    ) = _validate_occurrence_reader_aggregation(
+        reader_aggregation,
+        expected_user_id=expected_user_id,
     )
+    reader_answer_kind = (
+        str(reader_verified_occurrence_aggregation["answer_kind"])
+        if reader_verified_occurrence_aggregation is not None
+        else None
+    )
+    reader_exact_count_matches_gold = (
+        reader_verified_occurrence_aggregation.get("count") == gold_count
+        if reader_verified_occurrence_aggregation is not None
+        and reader_answer_kind == "exact"
+        and gold_count is not None
+        else None
+    )
+    safe_non_emission = not trace_candidate_present and not reader_aggregation_present
+    safe_abstention_non_answer = bool(stratum == STRATUM_CADENCE_ABSTENTION and safe_non_emission)
 
     if stratum == STRATUM_NUMERIC_SAFE_NON_EMISSION:
-        mechanism_expectation_met = bool(
-            intent is not None
-            and intent.sub_intent == COUNT_SUB_INTENT_NUMERIC_VALUE
-        )
+        mechanism_expectation_met = bool(intent is not None and intent.sub_intent == COUNT_SUB_INTENT_NUMERIC_VALUE)
         safety_expectation_met = safe_non_emission
     elif stratum == STRATUM_REJECTED_GATE_WIDENING:
         mechanism_expectation_met = intent is None
         safety_expectation_met = safe_non_emission
     elif stratum in {STRATUM_CADENCE_ANSWERABLE, STRATUM_CADENCE_ABSTENTION}:
-        mechanism_expectation_met = bool(
-            intent is not None and intent.sub_intent == COUNT_SUB_INTENT_CADENCE
-        )
+        mechanism_expectation_met = bool(intent is not None and intent.sub_intent == COUNT_SUB_INTENT_CADENCE)
         safety_expectation_met = safe_non_emission
     elif audited_answerable:
         mechanism_expectation_met = bool(
-            supports_candidate_instance_count(intent)
-            and trace_candidate_present
-            and non_oracle
+            supports_candidate_instance_count(intent) and trace_candidate_present and non_oracle
         )
         safety_expectation_met = None
     else:
@@ -303,8 +741,19 @@ def probe_row(
 
     if not audited_answerable:
         answer_sufficiency = "not_applicable"
+    elif reader_verified_occurrence_aggregation is not None:
+        if reader_answer_kind == "range":
+            answer_sufficiency = "verified_occurrence_range_not_exact_answer"
+        elif reader_answer_kind == "at_least":
+            answer_sufficiency = "verified_occurrence_at_least_not_exact_answer"
+        elif reader_verified_occurrence_aggregation["answer_sufficient"] is not True:
+            answer_sufficiency = "verified_occurrence_aggregation_not_answer_sufficient"
+        elif reader_exact_count_matches_gold:
+            answer_sufficiency = "verified_occurrence_aggregation_matches_dev_gold"
+        else:
+            answer_sufficiency = "verified_occurrence_aggregation_mismatches_dev_gold"
     elif reader_aggregation_present:
-        answer_sufficiency = "unexpected_reader_aggregation_not_an_answer"
+        answer_sufficiency = "invalid_reader_aggregation_not_an_answer"
     elif count_rollups:
         answer_sufficiency = "selected_unverified_count_rollup_not_an_answer"
     elif trace_candidate_present:
@@ -333,11 +782,14 @@ def probe_row(
         "trace_candidate_disclosure_is_non_oracle": non_oracle,
         "trace_candidate_count_matches_dev_gold": trace_candidate_matches_gold,
         "reader_aggregation_present": reader_aggregation_present,
-        "reader_aggregation": reader_aggregation,
-        "reader_aggregation_contract_valid": reader_verified_rollup is not None,
+        # Invalid producer payloads are never copied into the durable report.
+        "reader_aggregation": reader_verified_occurrence_aggregation,
+        "reader_aggregation_contract_valid": (reader_verified_occurrence_aggregation is not None),
+        "reader_aggregation_contract_error": reader_aggregation_contract_error,
+        "reader_aggregation_answer_kind": reader_answer_kind,
         "selected_count_bearing_rollups": count_rollups,
-        "reader_verified_rollup": reader_verified_rollup,
-        "reader_verified_rollup_matches_dev_gold": reader_verified_rollup_matches_gold,
+        "reader_verified_occurrence_aggregation": (reader_verified_occurrence_aggregation),
+        "reader_exact_count_matches_dev_gold": reader_exact_count_matches_gold,
         "safe_non_emission": safe_non_emission,
         "safe_abstention_non_answer": safe_abstention_non_answer,
         "mechanism_expectation_met": mechanism_expectation_met,
@@ -374,6 +826,7 @@ def probe_question(
     started = time.monotonic()
     ingest_seconds: float | None = None
     with question_run(question, db_path) as run:
+        expected_user_id = str(run.store.user_id)
         if not reuse:
             run.ingest(accept_rollups=accept_rollups)
             ingest_seconds = time.monotonic() - started
@@ -404,6 +857,7 @@ def probe_question(
     return probe_row(
         question,
         pack,
+        expected_user_id=expected_user_id,
         reused_store=reuse,
         accept_rollups=accept_rollups,
         ingest_seconds=ingest_seconds,
@@ -413,20 +867,12 @@ def probe_question(
 
 def summarize_rows(rows: list[dict[str, object]]) -> dict[str, object]:
     def summarize_bucket(bucket_rows: list[dict[str, object]]) -> dict[str, object]:
-        audited = [
-            row for row in bucket_rows if row.get("mechanism_expectation_met") is not None
-        ]
-        safety_checked = [
-            row for row in bucket_rows if row.get("safety_expectation_met") is not None
-        ]
+        audited = [row for row in bucket_rows if row.get("mechanism_expectation_met") is not None]
+        safety_checked = [row for row in bucket_rows if row.get("safety_expectation_met") is not None]
         candidate_gold_comparisons = [
-            row
-            for row in bucket_rows
-            if row.get("trace_candidate_count_matches_dev_gold") is not None
+            row for row in bucket_rows if row.get("trace_candidate_count_matches_dev_gold") is not None
         ]
-        answer_sufficiency_checks = [
-            row for row in bucket_rows if row.get("answer_sufficiency") != "not_applicable"
-        ]
+        answer_sufficiency_checks = [row for row in bucket_rows if row.get("answer_sufficiency") != "not_applicable"]
         return {
             "questions": len(bucket_rows),
             "audited": len(audited),
@@ -434,13 +880,9 @@ def summarize_rows(rows: list[dict[str, object]]) -> dict[str, object]:
             "with_trace_candidate_count": sum(
                 1 for row in bucket_rows if row.get("trace_candidate_count_present") is True
             ),
-            "with_reader_aggregation": sum(
-                1 for row in bucket_rows if row.get("reader_aggregation_present") is True
-            ),
+            "with_reader_aggregation": sum(1 for row in bucket_rows if row.get("reader_aggregation_present") is True),
             "with_valid_reader_aggregation": sum(
-                1
-                for row in bucket_rows
-                if row.get("reader_aggregation_contract_valid") is True
+                1 for row in bucket_rows if row.get("reader_aggregation_contract_valid") is True
             ),
             "with_count_bearing_accepted_rollup": sum(
                 1 for row in bucket_rows if row.get("selected_count_bearing_rollups")
@@ -463,52 +905,66 @@ def summarize_rows(rows: list[dict[str, object]]) -> dict[str, object]:
             "cadence_safe_non_emissions": sum(
                 1
                 for row in bucket_rows
-                if row.get("hand_audited_stratum")
-                in {STRATUM_CADENCE_ANSWERABLE, STRATUM_CADENCE_ABSTENTION}
+                if row.get("hand_audited_stratum") in {STRATUM_CADENCE_ANSWERABLE, STRATUM_CADENCE_ABSTENTION}
                 and row.get("safety_expectation_met") is True
             ),
-            "mechanism_expectations_met": sum(
-                1 for row in audited if row.get("mechanism_expectation_met") is True
-            ),
-            "mechanism_expectations_failed": sum(
-                1 for row in audited if row.get("mechanism_expectation_met") is False
-            ),
+            "mechanism_expectations_met": sum(1 for row in audited if row.get("mechanism_expectation_met") is True),
+            "mechanism_expectations_failed": sum(1 for row in audited if row.get("mechanism_expectation_met") is False),
             "safety_checks": len(safety_checked),
-            "safety_expectations_met": sum(
-                1 for row in safety_checked if row.get("safety_expectation_met") is True
-            ),
+            "safety_expectations_met": sum(1 for row in safety_checked if row.get("safety_expectation_met") is True),
             "safety_expectations_failed": sum(
                 1 for row in safety_checked if row.get("safety_expectation_met") is False
             ),
             "trace_candidate_counts_compared_to_dev_gold": len(candidate_gold_comparisons),
             "trace_candidate_counts_matching_dev_gold": sum(
-                1
-                for row in candidate_gold_comparisons
-                if row.get("trace_candidate_count_matches_dev_gold") is True
+                1 for row in candidate_gold_comparisons if row.get("trace_candidate_count_matches_dev_gold") is True
             ),
             "trace_candidate_counts_mismatching_dev_gold": sum(
-                1
-                for row in candidate_gold_comparisons
-                if row.get("trace_candidate_count_matches_dev_gold") is False
+                1 for row in candidate_gold_comparisons if row.get("trace_candidate_count_matches_dev_gold") is False
             ),
             "answer_sufficiency_checks": len(answer_sufficiency_checks),
-            "answer_sufficient_via_verified_rollup": sum(
+            "answer_sufficient_via_verified_occurrence_aggregation": sum(
                 1
                 for row in bucket_rows
-                if row.get("answer_sufficiency")
-                == "verified_count_bearing_rollup_matches_dev_gold"
+                if row.get("answer_sufficiency") == "verified_occurrence_aggregation_matches_dev_gold"
+            ),
+            "valid_exact_occurrence_aggregations": sum(
+                1
+                for row in bucket_rows
+                if row.get("reader_aggregation_contract_valid") is True
+                and row.get("reader_aggregation_answer_kind") == "exact"
+            ),
+            "valid_occurrence_ranges": sum(
+                1
+                for row in bucket_rows
+                if row.get("reader_aggregation_contract_valid") is True
+                and row.get("reader_aggregation_answer_kind") == "range"
+            ),
+            "valid_occurrence_at_least_answers": sum(
+                1
+                for row in bucket_rows
+                if row.get("reader_aggregation_contract_valid") is True
+                and row.get("reader_aggregation_answer_kind") == "at_least"
             ),
         }
 
     by_stratum: dict[str, list[dict[str, object]]] = {}
     for row in rows:
         by_stratum.setdefault(str(row["hand_audited_stratum"]), []).append(row)
+    overall = summarize_bucket(rows)
+    overall["answer_sufficiency_target"] = DEFAULT_ANSWER_SUFFICIENCY_TARGET
+    overall["answer_sufficiency_target_met"] = bool(
+        int(
+            overall.get(
+                "answer_sufficient_via_verified_occurrence_aggregation",
+                0,
+            )
+        )
+        >= DEFAULT_ANSWER_SUFFICIENCY_TARGET
+    )
     return {
-        "overall": summarize_bucket(rows),
-        "by_stratum": {
-            stratum: summarize_bucket(bucket_rows)
-            for stratum, bucket_rows in sorted(by_stratum.items())
-        },
+        "overall": overall,
+        "by_stratum": {stratum: summarize_bucket(bucket_rows) for stratum, bucket_rows in sorted(by_stratum.items())},
     }
 
 
@@ -517,10 +973,15 @@ def exit_code_for_summary(
     *,
     has_errors: bool,
     expected_manifest: Mapping[str, int] | None = None,
+    release_gate_eligible: bool | None = None,
 ) -> int:
     """Deterministic release-probe exit semantics, isolated for unit tests."""
     if has_errors:
         return EXIT_RUN_FAILURES
+    if release_gate_eligible is None:
+        release_gate_eligible = expected_manifest is not None
+    if not release_gate_eligible or expected_manifest is None:
+        return EXIT_STRATUM_FAILURES
     overall = summary.get("overall")
     if not isinstance(overall, Mapping):
         return EXIT_STRATUM_FAILURES
@@ -531,13 +992,16 @@ def exit_code_for_summary(
         int(overall.get(key, -1)) != expected for key, expected in expected_manifest.items()
     ):
         return EXIT_STRATUM_FAILURES
-    if int(overall.get("mechanism_expectations_failed", 0)) or int(
-        overall.get("safety_expectations_failed", 0)
-    ):
+    if int(overall.get("mechanism_expectations_failed", 0)) or int(overall.get("safety_expectations_failed", 0)):
         return EXIT_STRATUM_FAILURES
     checks = int(overall.get("answer_sufficiency_checks", 0))
-    sufficient = int(overall.get("answer_sufficient_via_verified_rollup", 0))
-    if checks > 0 and sufficient != checks:
+    sufficient = int(
+        overall.get(
+            "answer_sufficient_via_verified_occurrence_aggregation",
+            0,
+        )
+    )
+    if checks > 0 and sufficient < DEFAULT_ANSWER_SUFFICIENCY_TARGET:
         return EXIT_STRATUM_FAILURES
     return EXIT_OK
 
@@ -548,11 +1012,48 @@ def _load_question_ids(path: Path) -> list[str] | None:
     except OSError as exc:
         print(f"[count] cannot read question-id file: {exc}", file=sys.stderr)
         return None
-    return [
-        line
-        for raw_line in text.splitlines()
-        if (line := raw_line.strip()) and not line.startswith("#")
-    ]
+    return [line for raw_line in text.splitlines() if (line := raw_line.strip()) and not line.startswith("#")]
+
+
+def question_id_manifest_sha256(question_ids: Sequence[str]) -> str:
+    """Digest an exact, ordered question-id manifest including its final LF."""
+    return hashlib.sha256(("\n".join(question_ids) + "\n").encode("utf-8")).hexdigest()
+
+
+def is_governed_audit_manifest(path: Path, question_ids: Sequence[str]) -> bool:
+    """Require both the checked-in path and its frozen ordered content."""
+    return bool(
+        path.resolve() == DEFAULT_SLICE.resolve()
+        and len(question_ids) == GOVERNED_AUDIT_QUESTION_COUNT
+        and question_id_manifest_sha256(question_ids) == GOVERNED_AUDIT_MANIFEST_SHA256
+    )
+
+
+def count_release_input_checks(
+    *,
+    dataset_path: Path,
+    dataset_sha256: str,
+    question_id_file: Path,
+    question_ids: Sequence[str],
+    limit: int | None,
+    max_items: int,
+    with_vectors: bool,
+    with_reranker: bool,
+    accept_rollups: bool,
+) -> dict[str, bool]:
+    return {
+        "dataset_path_matches": dataset_path.resolve() == GOVERNED_DATASET_PATH.resolve(),
+        "dataset_sha256_matches": dataset_sha256 == GOVERNED_DATASET_SHA256,
+        "question_manifest_matches": is_governed_audit_manifest(
+            question_id_file,
+            question_ids,
+        ),
+        "limit_disabled": limit is None,
+        "max_items_matches": max_items == GOVERNED_MAX_ITEMS,
+        "vectors_disabled": not with_vectors,
+        "reranker_disabled": not with_reranker,
+        "rollups_disabled": not accept_rollups,
+    }
 
 
 def default_output_path(dataset_path: Path, *, accept_rollups: bool) -> Path:
@@ -561,18 +1062,17 @@ def default_output_path(dataset_path: Path, *, accept_rollups: bool) -> Path:
 
 
 def expected_audit_manifest(question_ids: Path) -> Mapping[str, int] | None:
-    """Return the governed full-slice manifest, including for limited runs."""
-    return (
-        DEFAULT_AUDIT_MANIFEST
-        if question_ids.resolve() == DEFAULT_SLICE.resolve()
-        else None
-    )
+    """Return the governed audit only when path and frozen content both match."""
+    loaded = _load_question_ids(question_ids)
+    if loaded is None:
+        return None
+    return DEFAULT_AUDIT_MANIFEST if is_governed_audit_manifest(question_ids, loaded) else None
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="count_probe.py",
-        description="Keyless context-pack aggregate-information probe for count-intent questions.",
+        description=("Keyless evidence-bearing occurrence-count context-pack probe for count-intent questions."),
     )
     parser.add_argument("--dataset-file", type=Path, default=None)
     parser.add_argument(
@@ -607,6 +1107,7 @@ def main(argv: list[str] | None = None) -> int:
     if dataset_path is None or not dataset_path.is_file():
         print("[count] dataset not found; pass --dataset-file", file=sys.stderr)
         return EXIT_CONFIG_ERROR
+    dataset_sha256 = file_sha256(dataset_path)
     try:
         questions = load_dataset(dataset_path)
     except LongMemEvalDatasetError as exc:
@@ -616,11 +1117,15 @@ def main(argv: list[str] | None = None) -> int:
     question_ids = _load_question_ids(args.question_ids)
     if question_ids is None:
         return EXIT_CONFIG_ERROR
+    expected_manifest = DEFAULT_AUDIT_MANIFEST if is_governed_audit_manifest(args.question_ids, question_ids) else None
     wanted = set(question_ids)
     selected = [question for question in questions if question.question_id in wanted]
     missing = wanted - {question.question_id for question in selected}
     if missing:
-        print(f"[count] requested ids missing from dataset: {sorted(missing)[:5]}", file=sys.stderr)
+        print(
+            f"[count] requested ids missing from dataset: {sorted(missing)[:5]}",
+            file=sys.stderr,
+        )
         return EXIT_CONFIG_ERROR
     # Keep all hand-audited rows, plus detector-positive rows for measurement.
     selected = [
@@ -637,18 +1142,33 @@ def main(argv: list[str] | None = None) -> int:
     if not selected:
         print("[count] no count-intent questions selected", file=sys.stderr)
         return EXIT_CONFIG_ERROR
+    selected_question_ids = [question.question_id for question in selected]
 
     max_items = args.max_items if args.max_items is not None else max_items_from_env()
+    release_input_checks = count_release_input_checks(
+        dataset_path=dataset_path,
+        dataset_sha256=dataset_sha256,
+        question_id_file=args.question_ids,
+        question_ids=question_ids,
+        limit=args.limit,
+        max_items=max_items,
+        with_vectors=args.with_vectors,
+        with_reranker=args.with_reranker,
+        accept_rollups=args.accept_rollups,
+    )
+    release_candidate = all(release_input_checks.values())
     args.work_dir.mkdir(parents=True, exist_ok=True)
     out_path = args.out or default_output_path(
         dataset_path,
         accept_rollups=args.accept_rollups,
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    vectors = "ambient" if args.with_vectors else "disabled"
+    reranker = "ambient" if args.with_reranker else "disabled"
     print(
         f"[count] dataset={dataset_path.name} questions={len(selected)} max_items={max_items} "
-        f"vectors={'ambient' if args.with_vectors else 'disabled'} work_dir={args.work_dir} "
-        f"workers={max(1, args.workers)} accept_rollups={args.accept_rollups}"
+        f"vectors={vectors} reranker={reranker} gate={'release-candidate' if release_candidate else 'diagnostic'} "
+        f"work_dir={args.work_dir} workers={max(1, args.workers)} accept_rollups={args.accept_rollups}"
     )
 
     rows_by_id: dict[str, dict[str, object]] = {}
@@ -672,7 +1192,11 @@ def main(argv: list[str] | None = None) -> int:
                 rows_by_id[question.question_id] = future.result()
             except Exception as exc:  # noqa: BLE001 - report every question independently
                 errors.append((question.question_id, f"{type(exc).__name__}: {exc}"))
-                print(f"[count] {question.question_id} ERROR: {exc}", file=sys.stderr, flush=True)
+                print(
+                    f"[count] {question.question_id} ERROR: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             if completed % 25 == 0 or completed == len(selected):
                 print(f"[count] {completed}/{len(selected)} probed", flush=True)
 
@@ -682,17 +1206,61 @@ def main(argv: list[str] | None = None) -> int:
             handle.write(json.dumps(row, ensure_ascii=True, sort_keys=True) + "\n")
 
     summary = summarize_rows(rows)
+    all_stores_fresh = all_probe_stores_fresh(
+        rows,
+        expected_count=len(selected_question_ids),
+    )
+    release_eligible = bool(release_candidate and all_stores_fresh)
+    exit_code = exit_code_for_summary(
+        summary,
+        has_errors=bool(errors),
+        expected_manifest=expected_manifest,
+        release_gate_eligible=release_eligible,
+    )
+    release_gate = {
+        "mode": "release" if release_eligible else "diagnostic",
+        "eligible": release_eligible,
+        "governed_question_id_file": str(DEFAULT_SLICE),
+        "governed_question_id_count": GOVERNED_AUDIT_QUESTION_COUNT,
+        "governed_question_id_manifest_sha256": GOVERNED_AUDIT_MANIFEST_SHA256,
+        "requested_manifest_matches": expected_manifest is not None,
+        "limit_applied": args.limit is not None,
+        "input_checks": release_input_checks,
+        "all_stores_fresh": all_stores_fresh,
+        "reused_store_count": sum(1 for row in rows if row.get("reused_store") is True),
+        "required_vectors": "disabled",
+        "required_reranker": "disabled",
+        "governed_dataset_path": str(GOVERNED_DATASET_PATH),
+        "governed_dataset_sha256": GOVERNED_DATASET_SHA256,
+        "required_max_items": GOVERNED_MAX_ITEMS,
+        "required_accept_rollups": False,
+        "vectors": vectors,
+        "reranker": reranker,
+        "answer_sufficiency_target": DEFAULT_ANSWER_SUFFICIENCY_TARGET,
+        "answer_sufficiency_checks": DEFAULT_AUDIT_MANIFEST["answer_sufficiency_checks"],
+        "passed": exit_code == EXIT_OK,
+    }
     summary_path = out_path.with_suffix(".summary.json")
     summary_payload = {
         "schema": COUNT_PROBE_SCHEMA + "_summary",
         "dataset_file": dataset_path.name,
+        "dataset_path": str(dataset_path),
+        "dataset_sha256": dataset_sha256,
         "dataset_sha256_prefix": _sha256_prefix(dataset_path),
         "question_id_file": str(args.question_ids),
+        "question_id_manifest_count": len(question_ids),
+        "question_id_manifest_sha256": question_id_manifest_sha256(question_ids),
+        "selected_question_id_count": len(selected_question_ids),
+        "selected_question_id_manifest_sha256": question_id_manifest_sha256(selected_question_ids),
+        "limit": args.limit,
         "max_items": max_items,
-        "vectors": "ambient" if args.with_vectors else "disabled",
+        "vectors": vectors,
+        "reranker": reranker,
+        **provider_summary_metadata(),
         "accept_rollups": args.accept_rollups,
         "questions": len(rows),
         "errors": [{"question_id": question_id, "error": error} for question_id, error in errors],
+        "release_gate": release_gate,
         **summary,
     }
     summary_path.write_text(
@@ -701,17 +1269,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     print(f"[count] done in {time.monotonic() - started:.1f}s rows={out_path} summary={summary_path}")
-    # A ``--limit`` run over the governed default slice is diagnostic only:
-    # keep the full manifest expectation so a partial prefix cannot become a
-    # green release receipt merely because every row it happened to include
-    # passed. Custom question-id manifests still use the generic non-zero
-    # stratum checks above.
-    expected_manifest = expected_audit_manifest(args.question_ids)
-    return exit_code_for_summary(
-        summary,
-        has_errors=bool(errors),
-        expected_manifest=expected_manifest,
-    )
+    if not release_eligible and not errors:
+        print(
+            "[count] diagnostic run only; release-green requires the canonical dataset, exact governed "
+            "stage1-150 manifest, max_items=16, fresh stores, no rollups/limit, and disabled providers",
+            file=sys.stderr,
+        )
+    return exit_code
 
 
 if __name__ == "__main__":
@@ -720,9 +1284,12 @@ if __name__ == "__main__":
 
 __all__ = [
     "COUNT_PROBE_SCHEMA",
+    "DEFAULT_ANSWER_SUFFICIENCY_TARGET",
     "DEFAULT_SLICE",
     "DEFAULT_AUDIT_MANIFEST",
     "DEFAULT_WORK_DIR",
+    "GOVERNED_AUDIT_MANIFEST_SHA256",
+    "GOVERNED_AUDIT_QUESTION_COUNT",
     "EXIT_CONFIG_ERROR",
     "EXIT_OK",
     "EXIT_RUN_FAILURES",
@@ -734,12 +1301,15 @@ __all__ = [
     "STRATUM_NUMERIC_SAFE_NON_EMISSION",
     "STRATUM_REJECTED_GATE_WIDENING",
     "build_arg_parser",
+    "count_release_input_checks",
     "default_output_path",
     "expected_audit_manifest",
     "exit_code_for_summary",
     "hand_audited_stratum",
+    "is_governed_audit_manifest",
     "main",
     "probe_question",
     "probe_row",
+    "question_id_manifest_sha256",
     "summarize_rows",
 ]

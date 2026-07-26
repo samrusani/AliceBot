@@ -84,9 +84,7 @@ EXPECTED_SIGNATURES = {
         "(self, *, source_id: 'str', memory_ids: 'Sequence[str]' = (), artifact_ids: 'Sequence[str]' = (), "
         "open_loop_ids: 'Sequence[str]' = (), limit: 'int' = 500) -> 'list[VNextRow]'"
     ),
-    "list_project_update_events": (
-        "(self, *, artifact_id: 'str', candidate_memory_id: 'str') -> 'list[VNextRow]'"
-    ),
+    "list_project_update_events": ("(self, *, artifact_id: 'str', candidate_memory_id: 'str') -> 'list[VNextRow]'"),
     "count_events": "(self, *, target_type: 'str | None' = None, target_id: 'str | None' = None) -> 'int'",
     "append_revision": "(self, revision: 'JsonObject', *, actor_type: 'str' = 'system') -> 'VNextRow'",
     "list_revisions": "(self, memory_id: 'str') -> 'list[VNextRow]'",
@@ -139,9 +137,9 @@ EXPECTED_PRIMITIVE_METADATA = {
     },
 }
 EXPECTED_CLASS_KEY_SHA256 = {
-    # Re-minted for the paired browser-clip capability façade methods.
-    "postgres": "88174a48507e75d260fa597319e8baec273a663b0036899d70c9550138bc6046",
-    "sqlite": "25cc77d828edc52ce8a1bea7ecc0964b9b9ad9a6656b6e0c37f4a012a03f2d8f",
+    # Re-minted for the paired occurrence-substrate façade methods.
+    "postgres": "7161da70702e32583b0df28fe815e1cc04ee1bc085af36d2bd3a5469184ca2f3",
+    "sqlite": "281f851681c06bbc1759fedd9032140106c5c8c6893903dba2863e3c6d432b28",
 }
 EXPECTED_SUPPORT_AST_SHA256 = {
     "postgres_columns": {
@@ -311,11 +309,7 @@ def test_event_revision_methods_are_moved_once_at_the_original_class_positions()
     postgres_class = _class_node(POSTGRES_FACADE_PATH, "PostgresVNextStore")
     sqlite_class = _class_node(SQLITE_FACADE_PATH, "SQLiteVNextStore")
     for class_node in (postgres_class, sqlite_class):
-        assert {
-            child.name
-            for child in class_node.body
-            if isinstance(child, ast.FunctionDef)
-        }.isdisjoint(METHOD_NAMES)
+        assert {child.name for child in class_node.body if isinstance(child, ast.FunctionDef)}.isdisjoint(METHOD_NAMES)
         assignments = [
             child.targets[0].id
             for child in class_node.body
@@ -328,7 +322,9 @@ def test_event_revision_methods_are_moved_once_at_the_original_class_positions()
 
     postgres_names = _class_binding_names(postgres_class)
     sqlite_names = _class_binding_names(sqlite_class)
-    assert postgres_names[postgres_names.index("_fetch_all") + 1 : postgres_names.index("list_resume_memory_events")] == [
+    assert postgres_names[
+        postgres_names.index("_fetch_all") + 1 : postgres_names.index("list_resume_memory_events")
+    ] == [
         "_append_mutation_event",
         "append_event",
         "list_events",
@@ -396,9 +392,9 @@ def test_event_revision_grafts_preserve_runtime_identity_signatures_and_class_sh
     for backend, facade_class, carrier, module_name in runtime_specs:
         assert facade_class.__bases__ == (object,)
         assert facade_class.__mro__ == (facade_class, object)
-        assert hashlib.sha256("\n".join(facade_class.__dict__).encode()).hexdigest() == EXPECTED_CLASS_KEY_SHA256[
-            backend
-        ]
+        assert (
+            hashlib.sha256("\n".join(facade_class.__dict__).encode()).hexdigest() == EXPECTED_CLASS_KEY_SHA256[backend]
+        )
         for method_name in METHOD_NAMES:
             method = facade_class.__dict__[method_name]
             assert method is getattr(carrier, method_name)
@@ -503,8 +499,7 @@ def test_event_revision_modules_do_not_import_facades_and_import_in_either_order
                     assert all(alias.name not in {"vnext_store", "sqlite_store"} for alias in node.names)
             elif isinstance(node, ast.Import):
                 assert all(
-                    alias.name not in {"alicebot_api.vnext_store", "alicebot_api.sqlite_store"}
-                    for alias in node.names
+                    alias.name not in {"alicebot_api.vnext_store", "alicebot_api.sqlite_store"} for alias in node.names
                 )
 
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
@@ -622,9 +617,7 @@ def test_event_queries_and_parameters_remain_byte_identical() -> None:
         "sqlite_count_filtered": _capture_call(
             sqlite_store.SQLiteVNextStore, "count_events", target_type="memory", target_id="m"
         ),
-        "sqlite_list_revisions": _capture_call(
-            sqlite_store.SQLiteVNextStore, "list_revisions", memory_id="memory"
-        ),
+        "sqlite_list_revisions": _capture_call(sqlite_store.SQLiteVNextStore, "list_revisions", memory_id="memory"),
     }
     observed = {name: _query_digest(capture.queries[0][0]) for name, capture in calls.items()}
     assert observed == {name: digest for name, digest in EXPECTED_QUERY_SHA256.items() if name in calls}

@@ -414,7 +414,9 @@ def test_released_0084_database_upgrades_through_current_head(database_urls):
     with psycopg.connect(database_urls["admin"], row_factory=dict_row) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT version_num FROM alembic_version")
-            assert cur.fetchone()["version_num"] == "20260721_0094"
+            # The released-0084 fixture must advance through every additive
+            # migration now present on the current Phase 6 head.
+            assert cur.fetchone()["version_num"] == "20260724_0095"
 
     # Repeat the additive post-release migrations through their downgrade
     # boundary. The already repaired data remains correct and the second

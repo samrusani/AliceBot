@@ -907,6 +907,60 @@ def test_rejecting_project_update_logs_rejection_without_updating_project() -> N
         service.review_project_update(artifact_id=str(artifact["id"]), action="accept")
 
 
+def test_rejecting_project_update_retires_occurrences_before_status_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _seed_store()
+    service = VNextProjectService(store)
+    artifact = service.generate_project_update_candidate(
+        ProjectAutomationRequest(project_id="project-1", domains=("project",))
+    )
+    candidate_memory_id = str(artifact["metadata_json"]["candidate_memory_id"])
+    calls: list[tuple[str, str]] = []
+    original_update = store.update_memory
+
+    def retire_before_rejection(
+        _service: VNextMemoryCommitService,
+        memory: dict[str, object],
+        **kwargs: object,
+    ) -> list[str]:
+        assert memory["status"] == "candidate"
+        assert kwargs["stage"] == "project_update_review_reject"
+        calls.append(("retire", str(memory["id"])))
+        return []
+
+    def tracked_update(
+        *,
+        memory_id: str,
+        patch: dict[str, object],
+        **kwargs: object,
+    ) -> dict[str, object]:
+        if patch.get("status") == "rejected":
+            calls.append(("reject", memory_id))
+        return original_update(
+            memory_id=memory_id,
+            patch=patch,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(
+        VNextMemoryCommitService,
+        "retire_memory_occurrence_state",
+        retire_before_rejection,
+    )
+    monkeypatch.setattr(store, "update_memory", tracked_update)
+
+    service.review_project_update(
+        artifact_id=str(artifact["id"]),
+        action="reject",
+    )
+
+    assert calls == [
+        ("retire", candidate_memory_id),
+        ("reject", candidate_memory_id),
+    ]
+
+
 @pytest.mark.parametrize("memory_key", [None, "", " \t\n"])
 def test_rejecting_project_update_requires_memory_key_before_any_mutation(memory_key: object) -> None:
     store = _seed_store()

@@ -224,6 +224,50 @@ ENTITY_TYPES = (
     "other",
 )
 
+OCCURRENCE_COVERAGE_MODES = (
+    "forward_only",
+    "partial_history",
+    "complete_history",
+)
+OCCURRENCE_HISTORICAL_REVIEW_STATUSES = (
+    "not_reviewed",
+    "needs_review",
+    "reviewed",
+)
+OCCURRENCE_RANGE_KINDS = ("exact", "at_least", "bounded", "unknown")
+OCCURRENCE_RESOLUTION_DECISIONS = ("new", "link_existing", "ambiguous")
+OCCURRENCE_RESOLUTION_STATUSES = ("pending", "resolved", "rejected")
+OCCURRENCE_IDENTITY_BASES = (
+    "external_event_id",
+    "exact_time",
+    "date_and_ordinal",
+    "session_and_ordinal",
+    "reviewed_manual",
+    "ambiguous",
+)
+OCCURRENCE_CLAIM_REVIEW_STATUSES = ("candidate", "accepted", "rejected")
+OCCURRENCE_UNIT_REVIEW_STATUSES = (
+    "candidate",
+    "accepted",
+    "rejected",
+    "superseded",
+    "retired",
+)
+OCCURRENCE_IDENTITY_STATUSES = ("resolved", "ambiguous")
+OCCURRENCE_EVIDENCE_ROLES = (
+    "supports",
+    "contradicts",
+    "same_event_hint",
+    "distinct_event_hint",
+)
+OCCURRENCE_EVIDENCE_REVIEW_STATUSES = ("candidate", "accepted", "rejected")
+OCCURRENCE_EXTRACTION_DISPOSITIONS = (
+    "accepted_occurrences",
+    "unresolved_claims",
+    "no_occurrence",
+)
+OCCURRENCE_EXTRACTION_REVIEW_STATUSES = ("candidate", "accepted", "rejected")
+
 PERMISSION_PROFILES = (
     "read_only_agent",
     "project_scoped_agent",
@@ -252,6 +296,85 @@ _EDGE_TYPES_SQL = _sql_list(EDGE_TYPES)
 _AGENT_TYPES_SQL = _sql_list(AGENT_TYPES)
 _PERMISSION_PROFILES_SQL = _sql_list(PERMISSION_PROFILES)
 _ENTITY_TYPES_SQL = _sql_list(ENTITY_TYPES)
+_OCCURRENCE_COVERAGE_MODES_SQL = _sql_list(OCCURRENCE_COVERAGE_MODES)
+_OCCURRENCE_HISTORICAL_REVIEW_STATUSES_SQL = _sql_list(OCCURRENCE_HISTORICAL_REVIEW_STATUSES)
+_OCCURRENCE_RANGE_KINDS_SQL = _sql_list(OCCURRENCE_RANGE_KINDS)
+_OCCURRENCE_RESOLUTION_DECISIONS_SQL = _sql_list(OCCURRENCE_RESOLUTION_DECISIONS)
+_OCCURRENCE_RESOLUTION_STATUSES_SQL = _sql_list(OCCURRENCE_RESOLUTION_STATUSES)
+_OCCURRENCE_IDENTITY_BASES_SQL = _sql_list(OCCURRENCE_IDENTITY_BASES)
+_OCCURRENCE_CLAIM_REVIEW_STATUSES_SQL = _sql_list(OCCURRENCE_CLAIM_REVIEW_STATUSES)
+_OCCURRENCE_UNIT_REVIEW_STATUSES_SQL = _sql_list(OCCURRENCE_UNIT_REVIEW_STATUSES)
+_OCCURRENCE_IDENTITY_STATUSES_SQL = _sql_list(OCCURRENCE_IDENTITY_STATUSES)
+_OCCURRENCE_EVIDENCE_ROLES_SQL = _sql_list(OCCURRENCE_EVIDENCE_ROLES)
+_OCCURRENCE_EVIDENCE_REVIEW_STATUSES_SQL = _sql_list(OCCURRENCE_EVIDENCE_REVIEW_STATUSES)
+_OCCURRENCE_EXTRACTION_DISPOSITIONS_SQL = _sql_list(OCCURRENCE_EXTRACTION_DISPOSITIONS)
+_OCCURRENCE_EXTRACTION_REVIEW_STATUSES_SQL = _sql_list(OCCURRENCE_EXTRACTION_REVIEW_STATUSES)
+_MAX_OCCURRENCE_AGGREGATION_MEMBERS = 32
+
+# CPython 3.12's fixed Unicode whitespace table used by ``str.strip()``.
+# SQLite's one-argument ``trim`` only removes ASCII spaces, so occurrence
+# evidence constraints use this explicit character set to match the writer.
+_PYTHON_312_STRIP_CODEPOINTS = (
+    0x0009,
+    0x000A,
+    0x000B,
+    0x000C,
+    0x000D,
+    0x001C,
+    0x001D,
+    0x001E,
+    0x001F,
+    0x0020,
+    0x0085,
+    0x00A0,
+    0x1680,
+    0x2000,
+    0x2001,
+    0x2002,
+    0x2003,
+    0x2004,
+    0x2005,
+    0x2006,
+    0x2007,
+    0x2008,
+    0x2009,
+    0x200A,
+    0x2028,
+    0x2029,
+    0x202F,
+    0x205F,
+    0x3000,
+)
+_PYTHON_312_STRIP_CHARS_SQL = "char(" + ", ".join(str(codepoint) for codepoint in _PYTHON_312_STRIP_CODEPOINTS) + ")"
+
+
+def _sqlite_occurrence_object_member_checks() -> str:
+    checks: list[str] = []
+    for index in range(1, _MAX_OCCURRENCE_AGGREGATION_MEMBERS):
+        identity_path = f"$.members[{index}].member_identity"
+        member_checks = [
+            f"json_type(aggregation_json, '$.members[{index}]') = 'object'",
+            (f"json_extract(aggregation_json, '$.members[{index}].basis') = 'object_member'"),
+            (f"json_extract(aggregation_json, '$.members[{index}].identity_basis') = 'reviewed_stable_object_v1'"),
+            (f"length(json_extract(aggregation_json, '{identity_path}')) BETWEEN 1 AND 500"),
+            (
+                f"json_extract(aggregation_json, '{identity_path}') "
+                "GLOB 'object:v1:????????????????????????????????????????????????????????????????'"
+            ),
+            (f"json_extract(aggregation_json, '{identity_path}') NOT GLOB 'object:v1:*[^0-9a-f]*'"),
+        ]
+        if index > 1:
+            previous_path = f"$.members[{index - 1}].member_identity"
+            member_checks.append(
+                f"json_extract(aggregation_json, '{previous_path}') < json_extract(aggregation_json, '{identity_path}')"
+            )
+        checks.append(
+            f"(json_array_length(aggregation_json, '$.members') <= {index} OR (" + " AND ".join(member_checks) + "))"
+        )
+    return "\n          AND ".join(checks)
+
+
+_OCCURRENCE_OBJECT_MEMBER_CHECKS_SQL = _sqlite_occurrence_object_member_checks()
 _PROJECT_UPDATE_EVENT_TYPES = (
     "project.update_candidate_created",
     "project.update_candidate_accepted",
@@ -758,6 +881,619 @@ _TABLE_STATEMENTS: tuple[str, ...] = (
         CHECK (json_type(metadata_json) = 'object')
     )
     """,
+    # Review-gated occurrence substrate (mirrors Postgres migration
+    # 20260724_0095). Existing SQLite files receive these tables empty;
+    # bootstrap never infers occurrence rows from legacy memories.
+    f"""
+    CREATE TABLE IF NOT EXISTS occurrence_coverage (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      coverage_mode TEXT NOT NULL,
+      coverage_started_at TEXT NOT NULL,
+      historical_review_status TEXT NOT NULL DEFAULT 'not_reviewed',
+      complete_through TEXT NULL,
+      reviewed_at TEXT NULL,
+      reviewer_id TEXT NULL,
+      review_reason TEXT NULL,
+      review_version INTEGER NOT NULL DEFAULT 0,
+      review_receipt_digest TEXT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{{}}',
+      created_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
+      updated_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
+      UNIQUE (id, user_id),
+      UNIQUE (user_id),
+      CONSTRAINT occurrence_coverage_mode_check
+        CHECK (coverage_mode IN ({_OCCURRENCE_COVERAGE_MODES_SQL})),
+      CONSTRAINT occurrence_coverage_historical_review_status_check
+        CHECK (
+          historical_review_status IN ({_OCCURRENCE_HISTORICAL_REVIEW_STATUSES_SQL})
+        ),
+      CONSTRAINT occurrence_coverage_complete_history_check
+        CHECK (
+          coverage_mode <> 'complete_history'
+          OR historical_review_status = 'reviewed'
+        ),
+      CONSTRAINT occurrence_coverage_complete_through_check
+        CHECK (
+          complete_through IS NULL
+          OR complete_through >= coverage_started_at
+        ),
+      CONSTRAINT occurrence_coverage_review_version_check
+        CHECK (review_version >= 0),
+      CONSTRAINT occurrence_coverage_review_receipt_digest_check
+        CHECK (
+          review_receipt_digest IS NULL
+          OR (
+            length(review_receipt_digest) = 64
+            AND review_receipt_digest = lower(review_receipt_digest)
+            AND review_receipt_digest NOT GLOB '*[^0-9a-f]*'
+          )
+        ),
+      CONSTRAINT occurrence_coverage_reviewed_state_check
+        CHECK (
+          historical_review_status <> 'reviewed'
+          OR (
+            reviewed_at IS NOT NULL
+            AND reviewer_id IS NOT NULL
+            AND length(trim(reviewer_id)) > 0
+            AND review_reason IS NOT NULL
+            AND length(trim(review_reason)) > 0
+            AND review_receipt_digest IS NOT NULL
+          )
+        ),
+      CONSTRAINT occurrence_coverage_historical_mode_check
+        CHECK (
+          coverage_mode = 'forward_only'
+          OR (
+            historical_review_status = 'reviewed'
+            AND complete_through IS NOT NULL
+          )
+        ),
+      CONSTRAINT occurrence_coverage_metadata_json_object_check
+        CHECK (json_type(metadata_json) = 'object')
+    )
+    """,
+    f"""
+    CREATE TABLE IF NOT EXISTS occurrence_claims (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      claim_key TEXT NOT NULL,
+      count_key TEXT NOT NULL,
+      predicate_json TEXT NOT NULL,
+      canonical_text TEXT NOT NULL,
+      quantity_min INTEGER NOT NULL,
+      quantity_max INTEGER NULL,
+      range_kind TEXT NOT NULL,
+      resolution_decision TEXT NOT NULL,
+      resolution_status TEXT NOT NULL DEFAULT 'pending',
+      identity_basis TEXT NOT NULL,
+      aggregation_json TEXT NOT NULL,
+      review_status TEXT NOT NULL DEFAULT 'candidate',
+      occurred_at_start TEXT NULL,
+      occurred_at_end TEXT NULL,
+      domain TEXT NOT NULL DEFAULT 'unknown',
+      sensitivity TEXT NOT NULL DEFAULT 'unknown',
+      project_scope TEXT NOT NULL DEFAULT '[]',
+      resolved_occurrence_id TEXT NULL,
+      reviewed_at TEXT NULL,
+      reviewer_id TEXT NULL,
+      review_reason TEXT NULL,
+      review_version INTEGER NOT NULL DEFAULT 0,
+      review_receipt_digest TEXT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{{}}',
+      created_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
+      updated_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
+      UNIQUE (id, user_id),
+      UNIQUE (id, user_id, count_key),
+      UNIQUE (user_id, claim_key),
+      CONSTRAINT occurrence_claims_resolved_occurrence_fkey
+        FOREIGN KEY (resolved_occurrence_id, user_id, count_key)
+        REFERENCES occurrence_units(id, user_id, count_key),
+      CONSTRAINT occurrence_claims_claim_key_length_check
+        CHECK (length(claim_key) BETWEEN 1 AND 200),
+      CONSTRAINT occurrence_claims_count_key_length_check
+        CHECK (length(count_key) BETWEEN 1 AND 500),
+      CONSTRAINT occurrence_claims_predicate_json_object_check
+        CHECK (
+          json_type(predicate_json) = 'object'
+          AND json_extract(predicate_json, '$.schema') = 'occurrence_predicate_v1'
+          AND json_extract(predicate_json, '$.taxonomy') = 'alice-occurrence-exact-v1'
+          AND json_extract(predicate_json, '$.op') IN ('atom', 'or', 'unknown')
+        ),
+      CONSTRAINT occurrence_claims_canonical_text_length_check
+        CHECK (length(canonical_text) BETWEEN 1 AND 10000),
+      CONSTRAINT occurrence_claims_quantity_min_check
+        CHECK (quantity_min >= 0),
+      CONSTRAINT occurrence_claims_quantity_range_check
+        CHECK (quantity_max IS NULL OR quantity_max >= quantity_min),
+      CONSTRAINT occurrence_claims_range_kind_check
+        CHECK (range_kind IN ({_OCCURRENCE_RANGE_KINDS_SQL})),
+      CONSTRAINT occurrence_claims_exact_range_check
+        CHECK (
+          range_kind <> 'exact'
+          OR (quantity_max IS NOT NULL AND quantity_min = quantity_max)
+        ),
+      CONSTRAINT occurrence_claims_bounded_range_check
+        CHECK (range_kind <> 'bounded' OR quantity_max IS NOT NULL),
+      CONSTRAINT occurrence_claims_resolution_decision_check
+        CHECK (resolution_decision IN ({_OCCURRENCE_RESOLUTION_DECISIONS_SQL})),
+      CONSTRAINT occurrence_claims_resolution_status_check
+        CHECK (resolution_status IN ({_OCCURRENCE_RESOLUTION_STATUSES_SQL})),
+      CONSTRAINT occurrence_claims_identity_basis_check
+        CHECK (identity_basis IN ({_OCCURRENCE_IDENTITY_BASES_SQL})),
+      CONSTRAINT occurrence_claims_aggregation_json_check
+        CHECK (
+          json_type(aggregation_json) = 'object'
+          AND json_extract(aggregation_json, '$.schema') = 'occurrence_aggregation_v1'
+          AND json_type(aggregation_json, '$.bases') = 'array'
+          AND json_array_length(aggregation_json, '$.bases') BETWEEN 1 AND 2
+          AND json_extract(aggregation_json, '$.bases[0].basis') = 'event_instance'
+          AND json_extract(aggregation_json, '$.bases[0].identity_basis') = 'occurrence_key'
+          AND (
+            json_array_length(aggregation_json, '$.bases') = 1
+            OR (
+              json_extract(aggregation_json, '$.bases[1].basis') = 'object_member'
+              AND json_extract(aggregation_json, '$.bases[1].identity_basis')
+                = 'reviewed_stable_object_v1'
+            )
+          )
+        ),
+      CONSTRAINT occurrence_claims_object_projection_quantity_check
+        CHECK (
+          json_array_length(aggregation_json, '$.bases') = 1
+          OR (
+            range_kind = 'exact'
+            AND quantity_min = 1
+            AND quantity_max = 1
+          )
+        ),
+      CONSTRAINT occurrence_claims_review_status_check
+        CHECK (review_status IN ({_OCCURRENCE_CLAIM_REVIEW_STATUSES_SQL})),
+      CONSTRAINT occurrence_claims_review_version_check
+        CHECK (review_version >= 0),
+      CONSTRAINT occurrence_claims_event_range_check
+        CHECK (
+          occurred_at_start IS NULL
+          OR occurred_at_end IS NULL
+          OR occurred_at_end >= occurred_at_start
+        ),
+      CONSTRAINT occurrence_claims_domain_check
+        CHECK (domain IN ({_DOMAINS_SQL})),
+      CONSTRAINT occurrence_claims_sensitivity_check
+        CHECK (sensitivity IN ({_SENSITIVITY_SQL})),
+      CONSTRAINT occurrence_claims_project_scope_array_check
+        CHECK (json_type(project_scope) = 'array'),
+      CONSTRAINT occurrence_claims_metadata_json_object_check
+        CHECK (json_type(metadata_json) = 'object'),
+      CONSTRAINT occurrence_claims_review_receipt_check
+        CHECK (
+          (
+            review_status = 'candidate'
+            AND review_receipt_digest IS NULL
+          )
+          OR (
+            reviewed_at IS NOT NULL
+            AND reviewer_id IS NOT NULL
+            AND length(trim(reviewer_id)) > 0
+            AND review_reason IS NOT NULL
+            AND length(trim(review_reason)) > 0
+            AND length(review_receipt_digest) = 64
+            AND review_receipt_digest = lower(review_receipt_digest)
+            AND review_receipt_digest NOT GLOB '*[^0-9a-f]*'
+          )
+        ),
+      CONSTRAINT occurrence_claims_resolved_state_check
+        CHECK (
+          resolution_status <> 'resolved'
+          OR (
+            review_status = 'accepted'
+            AND identity_basis <> 'ambiguous'
+            AND (
+              (
+                resolution_decision = 'new'
+                AND resolved_occurrence_id IS NULL
+              )
+              OR (
+                resolution_decision = 'link_existing'
+                AND resolved_occurrence_id IS NOT NULL
+              )
+            )
+          )
+        ),
+      CONSTRAINT occurrence_claims_ambiguous_state_check
+        CHECK (
+          resolution_decision <> 'ambiguous'
+          OR (
+            (
+              resolution_status = 'pending'
+              AND review_status = 'candidate'
+            )
+            OR (
+              resolution_status = 'rejected'
+              AND review_status = 'rejected'
+            )
+          )
+        )
+    )
+    """,
+    f"""
+    CREATE TABLE IF NOT EXISTS occurrence_units (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      claim_id TEXT NOT NULL,
+      claim_ordinal INTEGER NOT NULL,
+      occurrence_key TEXT NOT NULL,
+      count_key TEXT NOT NULL,
+      predicate_json TEXT NOT NULL,
+      canonical_text TEXT NOT NULL,
+      aggregation_json TEXT NOT NULL,
+      unit_value INTEGER NOT NULL DEFAULT 1,
+      review_status TEXT NOT NULL DEFAULT 'candidate',
+      identity_status TEXT NOT NULL,
+      ambiguity_group_key TEXT NULL,
+      occurred_at_start TEXT NULL,
+      occurred_at_end TEXT NULL,
+      domain TEXT NOT NULL DEFAULT 'unknown',
+      sensitivity TEXT NOT NULL DEFAULT 'unknown',
+      project_scope TEXT NOT NULL DEFAULT '[]',
+      reviewed_at TEXT NULL,
+      reviewer_id TEXT NULL,
+      review_reason TEXT NULL,
+      review_version INTEGER NOT NULL DEFAULT 0,
+      reviewed_evidence_count INTEGER NOT NULL DEFAULT 0,
+      reviewed_evidence_digest TEXT NULL,
+      review_receipt_digest TEXT NULL,
+      review_receipt_action TEXT NULL,
+      superseded_by TEXT NULL,
+      retired_at TEXT NULL,
+      retired_by TEXT NULL,
+      retirement_reason TEXT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{{}}',
+      created_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
+      updated_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
+      UNIQUE (id, user_id),
+      UNIQUE (id, user_id, count_key),
+      UNIQUE (id, claim_id, user_id),
+      UNIQUE (user_id, occurrence_key),
+      UNIQUE (user_id, claim_id, claim_ordinal),
+      CONSTRAINT occurrence_units_claim_fkey
+        FOREIGN KEY (claim_id, user_id, count_key)
+        REFERENCES occurrence_claims(id, user_id, count_key)
+        ON DELETE CASCADE,
+      CONSTRAINT occurrence_units_superseded_by_fkey
+        FOREIGN KEY (superseded_by, user_id, count_key)
+        REFERENCES occurrence_units(id, user_id, count_key),
+      CONSTRAINT occurrence_units_claim_ordinal_check
+        CHECK (claim_ordinal >= 1),
+      CONSTRAINT occurrence_units_occurrence_key_length_check
+        CHECK (length(occurrence_key) BETWEEN 1 AND 200),
+      CONSTRAINT occurrence_units_count_key_length_check
+        CHECK (length(count_key) BETWEEN 1 AND 500),
+      CONSTRAINT occurrence_units_predicate_json_atom_check
+        CHECK (
+          json_type(predicate_json) = 'object'
+          AND json_extract(predicate_json, '$.schema') = 'occurrence_predicate_v1'
+          AND json_extract(predicate_json, '$.taxonomy') = 'alice-occurrence-exact-v1'
+          AND json_extract(predicate_json, '$.op') = 'atom'
+        ),
+      CONSTRAINT occurrence_units_canonical_text_length_check
+        CHECK (length(canonical_text) BETWEEN 1 AND 10000),
+      CONSTRAINT occurrence_units_aggregation_json_check
+        CHECK (
+          json_type(aggregation_json) = 'object'
+          AND json_extract(aggregation_json, '$.schema') = 'occurrence_aggregation_v1'
+          AND json_type(aggregation_json, '$.members') = 'array'
+          AND json_array_length(aggregation_json, '$.members')
+            BETWEEN 1 AND {_MAX_OCCURRENCE_AGGREGATION_MEMBERS}
+          AND json_type(aggregation_json, '$.members[0]') = 'object'
+          AND json_extract(aggregation_json, '$.members[0].basis') = 'event_instance'
+          AND json_extract(aggregation_json, '$.members[0].identity_basis') = 'occurrence_key'
+          AND json_extract(aggregation_json, '$.members[0].member_identity')
+            = occurrence_key
+          AND length(
+            json_extract(aggregation_json, '$.members[0].member_identity')
+          ) BETWEEN 1 AND 500
+          AND {_OCCURRENCE_OBJECT_MEMBER_CHECKS_SQL}
+        ),
+      CONSTRAINT occurrence_units_unit_value_check
+        CHECK (unit_value = 1),
+      CONSTRAINT occurrence_units_review_status_check
+        CHECK (review_status IN ({_OCCURRENCE_UNIT_REVIEW_STATUSES_SQL})),
+      CONSTRAINT occurrence_units_identity_status_check
+        CHECK (identity_status IN ({_OCCURRENCE_IDENTITY_STATUSES_SQL})),
+      CONSTRAINT occurrence_units_review_version_check
+        CHECK (review_version >= 0),
+      CONSTRAINT occurrence_units_reviewed_evidence_count_check
+        CHECK (reviewed_evidence_count >= 0),
+      CONSTRAINT occurrence_units_event_range_check
+        CHECK (
+          occurred_at_start IS NULL
+          OR occurred_at_end IS NULL
+          OR occurred_at_end >= occurred_at_start
+        ),
+      CONSTRAINT occurrence_units_domain_check
+        CHECK (domain IN ({_DOMAINS_SQL})),
+      CONSTRAINT occurrence_units_sensitivity_check
+        CHECK (sensitivity IN ({_SENSITIVITY_SQL})),
+      CONSTRAINT occurrence_units_project_scope_array_check
+        CHECK (json_type(project_scope) = 'array'),
+      CONSTRAINT occurrence_units_metadata_json_object_check
+        CHECK (json_type(metadata_json) = 'object'),
+      CONSTRAINT occurrence_units_reviewed_evidence_digest_check
+        CHECK (
+          reviewed_evidence_digest IS NULL
+          OR (
+            length(reviewed_evidence_digest) = 64
+            AND reviewed_evidence_digest = lower(reviewed_evidence_digest)
+            AND reviewed_evidence_digest NOT GLOB '*[^0-9a-f]*'
+          )
+        ),
+      CONSTRAINT occurrence_units_review_receipt_digest_check
+        CHECK (
+          review_receipt_digest IS NULL
+          OR (
+            length(review_receipt_digest) = 64
+            AND review_receipt_digest = lower(review_receipt_digest)
+            AND review_receipt_digest NOT GLOB '*[^0-9a-f]*'
+          )
+        ),
+      CONSTRAINT occurrence_units_review_receipt_action_check
+        CHECK (
+          review_receipt_action IS NULL
+          OR review_receipt_action IN (
+            'accepted',
+            'refresh_evidence',
+            'reestablished',
+            'rejected',
+            'ambiguous',
+            'superseded',
+            'retired'
+          )
+        ),
+      CONSTRAINT occurrence_units_accepted_state_check
+        CHECK (
+          review_status <> 'accepted'
+          OR (
+            identity_status = 'resolved'
+            AND reviewed_at IS NOT NULL
+            AND reviewer_id IS NOT NULL
+            AND length(trim(reviewer_id)) > 0
+            AND reviewed_evidence_count >= 1
+            AND reviewed_evidence_digest IS NOT NULL
+            AND review_receipt_digest IS NOT NULL
+            AND review_receipt_action IS NOT NULL
+          )
+        ),
+      CONSTRAINT occurrence_units_superseded_state_check
+        CHECK (review_status <> 'superseded' OR superseded_by IS NOT NULL),
+      CONSTRAINT occurrence_units_retired_state_check
+        CHECK (
+          review_status <> 'retired'
+          OR (
+            retired_at IS NOT NULL
+            AND retired_by IS NOT NULL
+            AND length(trim(retired_by)) > 0
+            AND retirement_reason IS NOT NULL
+            AND length(trim(retirement_reason)) > 0
+          )
+        ),
+      CONSTRAINT occurrence_units_superseded_not_self_check
+        CHECK (superseded_by IS NULL OR superseded_by <> id)
+    )
+    """,
+    f"""
+    CREATE TABLE IF NOT EXISTS occurrence_evidence (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      claim_id TEXT NOT NULL,
+      occurrence_id TEXT NULL,
+      source_id TEXT NULL,
+      source_chunk_id TEXT NULL,
+      memory_id TEXT NULL,
+      evidence_key TEXT NOT NULL,
+      evidence_role TEXT NOT NULL,
+      quote TEXT NULL,
+      quote_sha256 TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0.5,
+      review_status TEXT NOT NULL DEFAULT 'candidate',
+      reviewed_at TEXT NULL,
+      reviewer_id TEXT NULL,
+      review_reason TEXT NULL,
+      review_receipt_digest TEXT NULL,
+      review_receipt_action TEXT NULL,
+      unit_review_receipt_digest TEXT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{{}}',
+      created_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
+      UNIQUE (id, user_id),
+      UNIQUE (user_id, evidence_key),
+      CONSTRAINT occurrence_evidence_claim_fkey
+        FOREIGN KEY (claim_id, user_id)
+        REFERENCES occurrence_claims(id, user_id)
+        ON DELETE CASCADE,
+      CONSTRAINT occurrence_evidence_unit_fkey
+        FOREIGN KEY (occurrence_id, user_id)
+        REFERENCES occurrence_units(id, user_id)
+        ON DELETE CASCADE,
+      CONSTRAINT occurrence_evidence_key_length_check
+        CHECK (length(evidence_key) BETWEEN 1 AND 200),
+      CONSTRAINT occurrence_evidence_role_check
+        CHECK (evidence_role IN ({_OCCURRENCE_EVIDENCE_ROLES_SQL})),
+      CONSTRAINT occurrence_evidence_quote_check
+        CHECK (
+          quote IS NOT NULL
+          AND length(trim(quote, {_PYTHON_312_STRIP_CHARS_SQL})) > 0
+        ),
+      CONSTRAINT occurrence_evidence_quote_sha256_check
+        CHECK (
+          length(quote_sha256) = 64
+          AND quote_sha256 = lower(quote_sha256)
+          AND quote_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+      CONSTRAINT occurrence_evidence_confidence_range_check
+        CHECK (confidence >= 0.0 AND confidence <= 1.0),
+      CONSTRAINT occurrence_evidence_review_status_check
+        CHECK (
+          review_status IN ({_OCCURRENCE_EVIDENCE_REVIEW_STATUSES_SQL})
+        ),
+      CONSTRAINT occurrence_evidence_review_receipt_digest_check
+        CHECK (
+          review_receipt_digest IS NULL
+          OR (
+            length(review_receipt_digest) = 64
+            AND review_receipt_digest = lower(review_receipt_digest)
+            AND review_receipt_digest NOT GLOB '*[^0-9a-f]*'
+          )
+        ),
+      CONSTRAINT occurrence_evidence_unit_review_receipt_digest_check
+        CHECK (
+          unit_review_receipt_digest IS NULL
+          OR (
+            length(unit_review_receipt_digest) = 64
+            AND unit_review_receipt_digest = lower(unit_review_receipt_digest)
+            AND unit_review_receipt_digest NOT GLOB '*[^0-9a-f]*'
+          )
+        ),
+      CONSTRAINT occurrence_evidence_review_receipt_action_check
+        CHECK (
+          review_receipt_action IS NULL
+          OR review_receipt_action IN (
+            'accepted',
+            'refresh_evidence',
+            'reestablished',
+            'rejected'
+          )
+        ),
+      CONSTRAINT occurrence_evidence_reviewed_state_check
+        CHECK (
+          review_status = 'candidate'
+          OR (
+            reviewed_at IS NOT NULL
+            AND reviewer_id IS NOT NULL
+            AND length(trim(reviewer_id)) > 0
+            AND review_receipt_digest IS NOT NULL
+            AND review_receipt_action IS NOT NULL
+          )
+        ),
+      CONSTRAINT occurrence_evidence_unit_receipt_state_check
+        CHECK (
+          unit_review_receipt_digest IS NULL
+          OR (
+            review_status = 'accepted'
+            AND occurrence_id IS NOT NULL
+          )
+        ),
+      CONSTRAINT occurrence_evidence_authorization_carrier_check
+        CHECK (
+          (memory_id IS NOT NULL AND length(trim(memory_id)) > 0)
+          OR (source_id IS NOT NULL AND length(trim(source_id)) > 0)
+        ),
+      CONSTRAINT occurrence_evidence_source_chunk_parent_check
+        CHECK (
+          source_chunk_id IS NULL
+          OR (source_id IS NOT NULL AND length(trim(source_id)) > 0)
+        ),
+      CONSTRAINT occurrence_evidence_metadata_json_object_check
+        CHECK (json_type(metadata_json) = 'object')
+    )
+    """,
+    f"""
+    CREATE TABLE IF NOT EXISTS occurrence_extraction_dispositions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      source_id TEXT NOT NULL,
+      source_chunk_id TEXT NOT NULL,
+      snapshot_sha256 TEXT NOT NULL,
+      extractor_version TEXT NOT NULL,
+      disposition TEXT NOT NULL,
+      predicate_keys TEXT NOT NULL DEFAULT '[]',
+      claim_ids TEXT NOT NULL DEFAULT '[]',
+      occurrence_ids TEXT NOT NULL DEFAULT '[]',
+      review_status TEXT NOT NULL DEFAULT 'candidate',
+      reviewed_at TEXT NULL,
+      reviewer_id TEXT NULL,
+      review_reason TEXT NULL,
+      review_version INTEGER NOT NULL DEFAULT 0,
+      review_receipt_digest TEXT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{{}}',
+      created_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
+      updated_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
+      UNIQUE (id, user_id),
+      UNIQUE (
+        user_id,
+        source_chunk_id,
+        snapshot_sha256,
+        extractor_version
+      ),
+      CONSTRAINT occurrence_extraction_dispositions_source_fkey
+        FOREIGN KEY (source_id, user_id)
+        REFERENCES sources(id, user_id)
+        ON DELETE CASCADE,
+      CONSTRAINT occurrence_extraction_dispositions_chunk_fkey
+        FOREIGN KEY (source_chunk_id, user_id)
+        REFERENCES source_chunks(id, user_id)
+        ON DELETE CASCADE,
+      CONSTRAINT occurrence_extraction_dispositions_snapshot_check
+        CHECK (
+          length(snapshot_sha256) = 64
+          AND snapshot_sha256 = lower(snapshot_sha256)
+          AND snapshot_sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+      CONSTRAINT occurrence_extraction_dispositions_extractor_length_check
+        CHECK (length(extractor_version) BETWEEN 1 AND 120),
+      CONSTRAINT occurrence_extraction_dispositions_disposition_check
+        CHECK (disposition IN ({_OCCURRENCE_EXTRACTION_DISPOSITIONS_SQL})),
+      CONSTRAINT occurrence_extraction_dispositions_predicates_array_check
+        CHECK (json_type(predicate_keys) = 'array'),
+      CONSTRAINT occurrence_extraction_dispositions_claims_array_check
+        CHECK (json_type(claim_ids) = 'array'),
+      CONSTRAINT occurrence_extraction_dispositions_occurrences_array_check
+        CHECK (json_type(occurrence_ids) = 'array'),
+      CONSTRAINT occurrence_extraction_dispositions_review_status_check
+        CHECK (review_status IN ({_OCCURRENCE_EXTRACTION_REVIEW_STATUSES_SQL})),
+      CONSTRAINT occurrence_extraction_dispositions_review_version_check
+        CHECK (review_version >= 0),
+      CONSTRAINT occurrence_extraction_dispositions_review_receipt_check
+        CHECK (
+          review_receipt_digest IS NULL
+          OR (
+            length(review_receipt_digest) = 64
+            AND review_receipt_digest = lower(review_receipt_digest)
+            AND review_receipt_digest NOT GLOB '*[^0-9a-f]*'
+          )
+        ),
+      CONSTRAINT occurrence_extraction_dispositions_reviewed_state_check
+        CHECK (
+          review_status = 'candidate'
+          OR (
+            reviewed_at IS NOT NULL
+            AND reviewer_id IS NOT NULL
+            AND length(trim(reviewer_id)) > 0
+            AND review_reason IS NOT NULL
+            AND length(trim(review_reason)) > 0
+            AND review_receipt_digest IS NOT NULL
+          )
+        ),
+      CONSTRAINT occurrence_extraction_dispositions_shape_check
+        CHECK (
+          (
+            disposition = 'accepted_occurrences'
+            AND json_array_length(occurrence_ids) > 0
+          )
+          OR (
+            disposition = 'unresolved_claims'
+            AND json_array_length(claim_ids) > 0
+          )
+          OR (
+            disposition = 'no_occurrence'
+            AND json_array_length(predicate_keys) = 0
+            AND json_array_length(claim_ids) = 0
+            AND json_array_length(occurrence_ids) = 0
+          )
+        ),
+      CONSTRAINT occurrence_extraction_dispositions_metadata_object_check
+        CHECK (json_type(metadata_json) = 'object')
+    )
+    """,
 )
 
 # Columns added to existing tables after their CREATE TABLE first shipped
@@ -1034,6 +1770,111 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS entity_relationship_events_entity_changed_idx
       ON entity_relationship_events (user_id, entity_id, changed_at DESC, id DESC)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS memories_occurrence_source_chunk_idx
+      ON memories (
+        user_id,
+        json_extract(metadata_json, '$.source_chunk_id'),
+        json_extract(
+          metadata_json,
+          '$.occurrence_proposal.source_chunk_id'
+        ),
+        id
+      )
+      WHERE deleted_at IS NULL
+        AND json_extract(metadata_json, '$.source_chunk_id') IS NOT NULL
+        AND json_extract(
+          metadata_json,
+          '$.occurrence_proposal.source_chunk_id'
+        ) IS NOT NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS memories_occurrence_root_source_chunk_idx
+      ON memories (
+        user_id,
+        json_extract(metadata_json, '$.source_chunk_id'),
+        id
+      )
+      WHERE deleted_at IS NULL
+        AND json_extract(metadata_json, '$.source_chunk_id') IS NOT NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS occurrence_claims_resolution_created_idx
+      ON occurrence_claims (
+        user_id,
+        resolution_status,
+        created_at DESC,
+        id DESC
+      )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS occurrence_claims_count_resolution_created_idx
+      ON occurrence_claims (
+        user_id,
+        count_key,
+        resolution_status,
+        created_at DESC,
+        id DESC
+      )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS occurrence_units_accepted_count_time_idx
+      ON occurrence_units (
+        user_id,
+        count_key,
+        occurred_at_start DESC,
+        id DESC
+      )
+      WHERE review_status = 'accepted' AND identity_status = 'resolved'
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS occurrence_units_ambiguity_group_idx
+      ON occurrence_units (user_id, ambiguity_group_key)
+      WHERE ambiguity_group_key IS NOT NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS occurrence_units_accepted_selector_scan_idx
+      ON occurrence_units (user_id, id)
+      WHERE review_status = 'accepted' AND identity_status = 'resolved'
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS occurrence_evidence_unit_created_idx
+      ON occurrence_evidence (
+        user_id,
+        occurrence_id,
+        created_at ASC,
+        id ASC
+      )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS occurrence_evidence_claim_created_idx
+      ON occurrence_evidence (
+        user_id,
+        claim_id,
+        created_at ASC,
+        id ASC
+      )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS occurrence_evidence_source_chunk_idx
+      ON occurrence_evidence (user_id, source_chunk_id)
+      WHERE source_chunk_id IS NOT NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS occurrence_evidence_memory_idx
+      ON occurrence_evidence (user_id, memory_id)
+      WHERE memory_id IS NOT NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS occurrence_extraction_dispositions_summary_idx
+      ON occurrence_extraction_dispositions (
+        user_id,
+        extractor_version,
+        source_chunk_id,
+        snapshot_sha256,
+        review_status
+      )
     """,
     # Content-derived memory/entity links must never outlive the text that
     # produced them. Expire them in the same database transaction as any

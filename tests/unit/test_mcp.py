@@ -4702,6 +4702,231 @@ def test_alice_context_pack_surfaces_the_token_report(monkeypatch, core_surface)
     assert "excluded_token_estimate" not in flat["token_report"]
 
 
+def test_alice_context_pack_forwards_occurrence_aggregation_only_when_present(monkeypatch, core_surface) -> None:
+    aggregation = {
+        "kind": "occurrence_count",
+        "answer_kind": "exact",
+        "exact": True,
+        "count": 2,
+        "lower_bound": 2,
+        "upper_bound": 2,
+        "unit": "reviewed_occurrence_units",
+        "occurrence_unit_ids": ["occurrence-1", "occurrence-2"],
+        "provenance": [
+            {
+                "occurrence_unit_id": "occurrence-1",
+                "review_receipt_digest": "a" * 64,
+                "reviewed_evidence_count": 1,
+                "reviewed_evidence_digest": "b" * 64,
+                "evidence": [
+                    {
+                        "evidence_id": "evidence-1",
+                        "evidence_key": "evidence:1",
+                        "evidence_role": "supports",
+                        "review_status": "accepted",
+                        "review_receipt_digest": "c" * 64,
+                        "unit_review_receipt_digest": "a" * 64,
+                        "memory_id": "memory-1",
+                        "quote_sha256": "1" * 64,
+                    }
+                ],
+            },
+            {
+                "occurrence_unit_id": "occurrence-2",
+                "review_receipt_digest": "d" * 64,
+                "reviewed_evidence_count": 1,
+                "reviewed_evidence_digest": "e" * 64,
+                "evidence": [
+                    {
+                        "evidence_id": "evidence-2",
+                        "evidence_key": "evidence:2",
+                        "evidence_role": "supports",
+                        "review_status": "accepted",
+                        "review_receipt_digest": "f" * 64,
+                        "unit_review_receipt_digest": "d" * 64,
+                        "memory_id": "memory-2",
+                        "quote_sha256": "2" * 64,
+                    }
+                ],
+            },
+        ],
+        "coverage": {
+            "coverage_mode": "complete_history",
+            "historical_review_status": "reviewed",
+            "fully_covered": True,
+            "legacy_gap": False,
+        },
+        "unresolved_claims": {"count": 0, "saturated": False},
+        "saturated": False,
+        "answer_sufficient": True,
+    }
+    base_pack = {
+        "context_pack_id": "pack-occurrences",
+        "query_interpretation": {
+            "query": "How many times did I service my bike?",
+            "query_type": "recall",
+        },
+        "relevant_memories": [],
+        "open_loops": [],
+        "sources": [],
+        "trace_id": "trace-occurrences",
+    }
+
+    _patch_mcp_binding(
+        monkeypatch,
+        "_vnext_context_pack_payload",
+        lambda _context, _arguments: {**base_pack, "aggregation": aggregation},
+    )
+    counted = call_mcp_tool(
+        _mcp_context(),
+        name="alice_context_pack",
+        arguments={"query": "How many times did I service my bike?"},
+    )
+    assert counted["aggregation"] == aggregation
+
+    _patch_mcp_binding(
+        monkeypatch,
+        "_vnext_context_pack_payload",
+        lambda _context, _arguments: dict(base_pack),
+    )
+    dormant = call_mcp_tool(
+        _mcp_context(),
+        name="alice_context_pack",
+        arguments={"query": "How many times did I service my bike?"},
+    )
+    assert "aggregation" not in dormant
+    dormant_bytes = json.dumps(
+        dormant,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    dormant_keys = set(dormant)
+
+    for empty_aggregation in (None, {}, []):
+        _patch_mcp_binding(
+            monkeypatch,
+            "_vnext_context_pack_payload",
+            lambda _context, _arguments, value=empty_aggregation: {
+                **base_pack,
+                "aggregation": value,
+            },
+        )
+        empty = call_mcp_tool(
+            _mcp_context(),
+            name="alice_context_pack",
+            arguments={"query": "How many times did I service my bike?"},
+        )
+        assert "aggregation" not in empty
+        assert set(empty) == dormant_keys
+        assert (
+            json.dumps(
+                empty,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            == dormant_bytes
+        )
+
+
+def test_alice_context_pack_live_occurrence_seam_is_canonically_dormant(
+    monkeypatch,
+    core_surface,
+) -> None:
+    class LivePopulatedOccurrenceStore(HybridRetrievalStore):
+        occurrence_units = [{"id": "occurrence-populated"}]
+
+        def begin_occurrence_read_snapshot(self) -> dict[str, object]:
+            raise AssertionError("non-count query must not enter occurrence reads")
+
+        def end_occurrence_read_snapshot(self) -> None:
+            raise AssertionError("non-count query must not enter occurrence reads")
+
+        def search_accepted_occurrence_units(
+            self,
+            **_kwargs: object,
+        ) -> list[dict[str, object]]:
+            raise AssertionError("non-count query must not enter occurrence reads")
+
+        def list_occurrence_evidence_for_units(
+            self,
+            _occurrence_ids: Sequence[str],
+            **_kwargs: object,
+        ) -> list[dict[str, object]]:
+            raise AssertionError("non-count query must not enter occurrence reads")
+
+        def get_occurrence_coverage(self) -> dict[str, object]:
+            raise AssertionError("non-count query must not enter occurrence reads")
+
+        def list_unresolved_occurrence_claims(
+            self,
+            **_kwargs: object,
+        ) -> list[dict[str, object]]:
+            raise AssertionError("non-count query must not enter occurrence reads")
+
+    query = "Tell me about hybrid retrieval history."
+    reference_time = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+
+    def compile_pack(
+        store: FakeVNextMCPStore,
+    ) -> tuple[dict[str, object], FakeEmbeddingProvider]:
+        counter = iter(range(1, 100))
+        monkeypatch.setattr(
+            vnext_retrieval_module,
+            "uuid4",
+            lambda: UUID(int=next(counter)),
+        )
+        provider = FakeEmbeddingProvider()
+        pack = vnext_retrieval_module.VNextRetrievalService(
+            store,
+            embedding_provider=provider,
+        ).compile_context_pack(
+            vnext_retrieval_module.VNextRetrievalRequest(
+                query=query,
+                context_depth="high",
+                reference_time=reference_time,
+                trace_id="trace-mcp-occurrence-dormancy",
+            )
+        )
+        return pack, provider
+
+    legacy_pack, legacy_provider = compile_pack(HybridRetrievalStore())
+    live_pack, live_provider = compile_pack(LivePopulatedOccurrenceStore())
+    assert legacy_provider.embedded == live_provider.embedded == [query]
+
+    _patch_mcp_binding(
+        monkeypatch,
+        "_vnext_context_pack_payload",
+        lambda _context, _arguments: legacy_pack,
+    )
+    baseline = call_mcp_tool(
+        _mcp_context(),
+        name="alice_context_pack",
+        arguments={"query": query},
+    )
+    _patch_mcp_binding(
+        monkeypatch,
+        "_vnext_context_pack_payload",
+        lambda _context, _arguments: live_pack,
+    )
+    live = call_mcp_tool(
+        _mcp_context(),
+        name="alice_context_pack",
+        arguments={"query": query},
+    )
+
+    assert set(live) == set(baseline)
+    assert json.dumps(
+        live,
+        sort_keys=True,
+        separators=(",", ":"),
+    ) == json.dumps(
+        baseline,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert "aggregation" not in live
+
+
 def test_alice_context_pack_forwards_the_grounding_statistic(monkeypatch, core_surface) -> None:
     # pack["grounding"] exists only when a salient query entity has zero
     # corpus support; the compact view must forward it, and its absence
@@ -5448,6 +5673,49 @@ def test_review_rejection_then_confirm_cannot_reactivate_the_memory(
     assert store.get_memory(memory_id)["status"] == "rejected"
 
 
+def test_mcp_review_rejects_occurrences_before_retiring_the_memory(
+    monkeypatch,
+    core_surface,
+    no_embedding_provider,
+) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory_id, _confirmation_id = _seed_pending_inline_confirmation(store)
+    retirement_calls: list[tuple[str, str]] = []
+
+    def retire(
+        _service,
+        memory,
+        *,
+        identity=None,
+        stage: str,
+        reason: str,
+    ) -> list[str]:
+        assert identity is None
+        assert reason
+        retirement_calls.append((str(memory["status"]), stage))
+        return []
+
+    monkeypatch.setattr(
+        mcp_review_module.VNextMemoryCommitService,
+        "retire_memory_occurrence_state",
+        retire,
+    )
+
+    rejected = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_correct",
+        arguments={
+            "review_item_id": memory_id,
+            "action": "reject",
+            "reason": "The event did not happen.",
+        },
+    )
+
+    assert retirement_calls == [("needs_review", "mcp_review_delete")]
+    assert rejected["memory"]["status"] == "rejected"
+
+
 def test_review_supersede_then_confirm_cannot_create_two_active_memories(
     monkeypatch, core_surface, no_embedding_provider
 ) -> None:
@@ -5483,6 +5751,109 @@ def test_review_supersede_then_confirm_cannot_create_two_active_memories(
     active_ids = {row["id"] for row in store.memories if row.get("status") == "active"}
     assert memory_id not in active_ids
     assert replacement_id in active_ids
+
+
+def test_mcp_same_event_supersession_establishes_replacement_before_retiring_original(
+    monkeypatch,
+    core_surface,
+    no_embedding_provider,
+) -> None:
+    order: list[str] = []
+
+    class OrderedOccurrenceStore(FakeVNextMCPStore):
+        def create_memory(self, memory, **kwargs):
+            created = super().create_memory(memory, **kwargs)
+            if memory.get("supersedes") is not None:
+                order.append("replacement_created")
+            return created
+
+        def update_memory(self, *, memory_id: str, patch, **kwargs):
+            if patch.get("status") == "superseded":
+                order.append("original_updated")
+            return super().update_memory(
+                memory_id=memory_id,
+                patch=patch,
+                **kwargs,
+            )
+
+    store = OrderedOccurrenceStore()
+    _patch_vnext_store(monkeypatch, store)
+    memory_id, _confirmation_id = _seed_pending_inline_confirmation(store)
+    original = store.get_memory(memory_id)
+    assert original is not None
+    original["metadata_json"]["occurrence_input"] = {
+        "count_key": "museum visit",
+        "external_event_id": "same-event",
+        "external_event_namespace": "calendar:test",
+        "quantity_min": 1,
+        "quantity_max": 1,
+    }
+    original["metadata_json"]["occurrence_proposal"] = {
+        "claim_id": "old-claim",
+        "claim_key": "old-key",
+    }
+
+    def refresh(
+        _service,
+        replacement,
+        *,
+        identity=None,
+        trace_id=None,
+        stage: str,
+    ) -> None:
+        assert identity is None
+        assert trace_id is None
+        assert stage == "mcp_review_supersede_replacement"
+        assert replacement["status"] == "active"
+        assert "occurrence_input" in replacement["metadata_json"]
+        assert "occurrence_proposal" not in replacement["metadata_json"]
+        order.append("replacement_reconciled")
+
+    def retire(
+        _service,
+        memory,
+        *,
+        identity=None,
+        stage: str,
+        reason: str,
+    ) -> list[str]:
+        assert identity is None
+        assert stage == "mcp_review_supersede"
+        assert reason
+        assert any(row.get("status") == "active" and row.get("supersedes") == memory_id for row in store.memories)
+        order.append("original_occurrence_reconciled")
+        return ["occurrence-1"]
+
+    monkeypatch.setattr(
+        mcp_review_module.VNextMemoryCommitService,
+        "refresh_memory_derived_state",
+        refresh,
+    )
+    monkeypatch.setattr(
+        mcp_review_module.VNextMemoryCommitService,
+        "retire_memory_occurrence_state",
+        retire,
+    )
+
+    result = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_correct",
+        arguments={
+            "review_item_id": memory_id,
+            "action": "supersede-existing",
+            "replacement_title": "A corrected description of the same event",
+            "replacement_body": {"text": "A corrected description of the same event"},
+            "reason": "Corrected wording only.",
+        },
+    )
+
+    assert result["memory"]["status"] == "superseded"
+    assert order == [
+        "replacement_created",
+        "replacement_reconciled",
+        "original_occurrence_reconciled",
+        "original_updated",
+    ]
 
 
 def test_alice_memory_manage_undo_and_forget_keep_the_audit_trail(

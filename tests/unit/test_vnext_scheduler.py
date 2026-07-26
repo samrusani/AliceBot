@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from copy import deepcopy
 from datetime import UTC, datetime
+from typing import Iterator
 
 import pytest
 
+from alicebot_api.vnext_memory_commit import VNextMemoryCommitService
 from alicebot_api.vnext_scheduler import (
     DEFAULT_STALENESS_WINDOW_DAYS,
     STALENESS_REVIEW_MEMORY_TYPES,
@@ -90,11 +94,19 @@ class InMemorySchedulerStore:
         self.revisions: list[dict[str, object]] = []
         self.locked_workflows: set[str] = set()
 
+    def lock_graph_mutation(self) -> None:
+        return None
+
+    def get_memory_for_update(self, memory_id: str) -> dict[str, object] | None:
+        return next((memory for memory in self.memories if memory.get("id") == memory_id), None)
+
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
         return event
 
-    def upsert_scheduler_workflow(self, workflow: dict[str, object], *, actor_type: str = "system") -> dict[str, object]:
+    def upsert_scheduler_workflow(
+        self, workflow: dict[str, object], *, actor_type: str = "system"
+    ) -> dict[str, object]:
         workflow_type = str(workflow["workflow_type"])
         row = {
             "id": f"workflow-{workflow_type}",
@@ -123,11 +135,7 @@ class InMemorySchedulerStore:
     ) -> dict[str, object]:
         row = self.workflows[workflow_type]
         row.update(
-            {
-                key: value
-                for key, value in patch.items()
-                if value is not None or key in {"last_error", "next_run_at"}
-            }
+            {key: value for key, value in patch.items() if value is not None or key in {"last_error", "next_run_at"}}
         )
         self.append_event({"event_type": "scheduler.workflow_updated", "actor_type": actor_type})
         return row
@@ -181,11 +189,7 @@ class InMemorySchedulerStore:
         return row
 
     def list_scheduler_runs(self, *, workflow_type: str | None = None, limit: int = 20) -> list[dict[str, object]]:
-        rows = [
-            row
-            for row in self.runs.values()
-            if workflow_type is None or row["workflow_type"] == workflow_type
-        ]
+        rows = [row for row in self.runs.values() if workflow_type is None or row["workflow_type"] == workflow_type]
         return rows[:limit]
 
     def try_scheduler_workflow_lock(self, workflow_type: str) -> bool:
@@ -226,7 +230,9 @@ class InMemorySchedulerStore:
         self.append_event({"event_type": "memory.created", "actor_type": actor_type, "target_id": row["id"]})
         return row
 
-    def update_memory(self, *, memory_id: str, patch: dict[str, object], actor_type: str = "system") -> dict[str, object]:
+    def update_memory(
+        self, *, memory_id: str, patch: dict[str, object], actor_type: str = "system"
+    ) -> dict[str, object]:
         for memory in self.memories:
             if memory["id"] == memory_id:
                 memory.update(patch)
@@ -466,8 +472,7 @@ def test_project_scoped_staleness_sweep_never_mutates_out_of_scope_decoys() -> N
             rows = [
                 memory
                 for memory in self.memories
-                if memory.get("status") == "active"
-                and (not allowed or memory.get("project_id") in allowed)
+                if memory.get("status") == "active" and (not allowed or memory.get("project_id") in allowed)
             ]
             return rows[:limit]
 
@@ -870,6 +875,211 @@ def test_staleness_sweep_marks_expired_and_unconfirmed_working_state_memories() 
         assert revision["revision_type"] == "edited"
         assert revision["metadata_json"]["requested_revision_type"] == "stale_marked"
         assert revision["reason"].startswith("stale_marked:")
+
+
+def test_staleness_sweep_prepare_has_no_occurrence_or_memory_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _staleness_store()
+    retired_ids: list[str] = []
+
+    def track_retirement(
+        _service: VNextMemoryCommitService,
+        memory: dict[str, object],
+        **kwargs: object,
+    ) -> list[str]:
+        retired_ids.append(str(memory["id"]))
+        return []
+
+    monkeypatch.setattr(
+        VNextMemoryCommitService,
+        "retire_memory_occurrence_state",
+        track_retirement,
+    )
+
+    service = VNextSchedulerService(store)
+    request = SchedulerRunRequest(
+        workflow_type="staleness_sweep",
+        options={"reference_time": "2026-07-04T03:30:00Z"},
+    )
+    started = service.begin_run(request)
+    plan = service.prepare_started_workflow(
+        request,
+        run=started["run"],
+    )
+
+    assert retired_ids == []
+    assert all(memory["status"] != "stale" for memory in store.memories)
+    assert store.revisions == []
+    assert not any(event.get("event_type") == "memory.stale_marked" for event in store.events)
+    assert [mutation.method for mutation in plan.mutations].count("stale_memory_lifecycle") == 2
+
+
+def test_staleness_sweep_publish_locks_and_rereads_before_retiring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class OrderedStore(InMemorySchedulerStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.order: list[str] = []
+
+        def lock_graph_mutation(self) -> None:
+            self.order.append("graph")
+
+        def get_memory_for_update(self, memory_id: str) -> dict[str, object] | None:
+            self.order.append(f"row:{memory_id}")
+            return super().get_memory_for_update(memory_id)
+
+        def update_memory(
+            self,
+            *,
+            memory_id: str,
+            patch: dict[str, object],
+            actor_type: str = "system",
+        ) -> dict[str, object]:
+            self.order.append(f"update:{memory_id}")
+            return super().update_memory(memory_id=memory_id, patch=patch, actor_type=actor_type)
+
+        def append_revision(
+            self,
+            revision: dict[str, object],
+            *,
+            actor_type: str = "system",
+        ) -> dict[str, object]:
+            self.order.append(f"revision:{revision['memory_id']}")
+            return super().append_revision(revision, actor_type=actor_type)
+
+    store = OrderedStore()
+    store.memories = [_staleness_store().memories[0]]
+    service = VNextSchedulerService(store)
+    request = SchedulerRunRequest(
+        workflow_type="staleness_sweep",
+        options={"reference_time": "2026-07-04T03:30:00Z"},
+    )
+    started = service.begin_run(request)
+    plan = service.prepare_started_workflow(request, run=started["run"])
+    store.memories[0]["canonical_text"] = "Concurrent current wording."
+    store.memories[0]["metadata_json"] = {"concurrent": True}
+
+    def track_retirement(
+        _service: VNextMemoryCommitService,
+        memory: dict[str, object],
+        **kwargs: object,
+    ) -> list[str]:
+        store.order.append(f"retire:{memory['id']}")
+        assert memory["canonical_text"] == "Concurrent current wording."
+        assert memory["metadata_json"] == {"concurrent": True}
+        assert kwargs["stage"] == "scheduler_staleness_sweep"
+        return []
+
+    monkeypatch.setattr(
+        VNextMemoryCommitService,
+        "retire_memory_occurrence_state",
+        track_retirement,
+    )
+
+    plan.publish(store)
+
+    assert store.order[:5] == [
+        "graph",
+        "row:memory-expired",
+        "retire:memory-expired",
+        "update:memory-expired",
+        "revision:memory-expired",
+    ]
+    assert store.memories[0]["metadata_json"]["concurrent"] is True
+    assert store.revisions[0]["text_before"] == "Concurrent current wording."
+
+
+def test_staleness_sweep_publish_fails_closed_when_target_was_refreshed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _staleness_store()
+    store.memories = [store.memories[1]]
+    service = VNextSchedulerService(store)
+    request = SchedulerRunRequest(
+        workflow_type="staleness_sweep",
+        options={"reference_time": "2026-07-04T03:30:00Z"},
+    )
+    started = service.begin_run(request)
+    plan = service.prepare_started_workflow(request, run=started["run"])
+    store.memories[0]["last_confirmed_at"] = "2026-07-04T02:00:00Z"
+    retired_ids: list[str] = []
+
+    monkeypatch.setattr(
+        VNextMemoryCommitService,
+        "retire_memory_occurrence_state",
+        lambda _service, memory, **_kwargs: retired_ids.append(str(memory["id"])),
+    )
+
+    with pytest.raises(VNextSchedulerValidationError, match="refreshed after preparation"):
+        plan.publish(store)
+
+    assert retired_ids == []
+    assert store.memories[0]["status"] == "active"
+    assert store.revisions == []
+    assert store.artifacts == {}
+
+
+def test_staleness_sweep_direct_run_rolls_back_composite_when_artifact_publish_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TransactionalStore(InMemorySchedulerStore):
+        def __init__(self) -> None:
+            super().__init__(fail_artifact_create=True)
+            self.conn = self
+            self.occurrence_status: dict[str, str] = {}
+
+        @contextmanager
+        def transaction(self) -> Iterator[None]:
+            snapshot = {
+                "memories": deepcopy(self.memories),
+                "occurrence_status": deepcopy(self.occurrence_status),
+                "revisions": deepcopy(self.revisions),
+                "artifacts": deepcopy(self.artifacts),
+                "events": deepcopy(self.events),
+            }
+            try:
+                yield
+            except BaseException:
+                self.memories = snapshot["memories"]
+                self.occurrence_status = snapshot["occurrence_status"]
+                self.revisions = snapshot["revisions"]
+                self.artifacts = snapshot["artifacts"]
+                self.events = snapshot["events"]
+                raise
+
+    store = TransactionalStore()
+    store.memories = [_staleness_store().memories[0]]
+    store.occurrence_status = {"memory-expired": "accepted"}
+
+    def retire_occurrence(
+        service: VNextMemoryCommitService,
+        memory: dict[str, object],
+        **_kwargs: object,
+    ) -> list[str]:
+        service.store.occurrence_status[str(memory["id"])] = "retired"
+        return [str(memory["id"])]
+
+    monkeypatch.setattr(
+        VNextMemoryCommitService,
+        "retire_memory_occurrence_state",
+        retire_occurrence,
+    )
+
+    result = VNextSchedulerService(store).run_now(
+        SchedulerRunRequest(
+            workflow_type="staleness_sweep",
+            options={"reference_time": "2026-07-04T03:30:00Z"},
+        )
+    )
+
+    assert result["run"]["status"] == "failed"
+    assert store.memories[0]["status"] == "active"
+    assert store.occurrence_status == {"memory-expired": "accepted"}
+    assert store.revisions == []
+    assert store.artifacts == {}
+    assert not any(event.get("event_type") == "memory.stale_marked" for event in store.events)
 
 
 def test_staleness_sweep_is_idempotent_across_runs() -> None:

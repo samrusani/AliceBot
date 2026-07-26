@@ -334,6 +334,16 @@ def redact_memory_flow(
     if str(memory.get("status") or "") not in _REDACT_RETIRED_STATUSES:
         memory_service.forget(identity=identity, memory_id=memory_id, reason=reason_text)
         forgotten_first = True
+    elif not exact_replay:
+        # Rows retired through an older path may still predate occurrence
+        # lifecycle integration. Close any surviving reviewed units before
+        # redaction removes the evidence needed to do so truthfully.
+        memory_service.retire_memory_occurrence_state(
+            memory,
+            identity=identity,
+            stage="memory_redaction",
+            reason=reason_text,
+        )
     result = store.redact_memory_bundle(
         memory_id=memory_id,
         project_update_artifacts=project_update_artifacts,
@@ -349,6 +359,9 @@ def redact_memory_flow(
         "redacted_artifact_ids": result.get("redacted_artifact_ids"),
         "redacted_quality_ratings": result.get("redacted_quality_ratings"),
         "redacted_provenance_links": result.get("redacted_provenance_links"),
+        "redacted_occurrence_evidence": result.get("redacted_occurrence_evidence"),
+        "redacted_occurrence_claims": result.get("redacted_occurrence_claims"),
+        "redacted_occurrence_units": result.get("redacted_occurrence_units"),
         "idempotent_replay": result.get("idempotent_replay"),
         "redaction_marker": REDACTION_MARKER,
         "reason": reason_text,
