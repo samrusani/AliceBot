@@ -972,6 +972,10 @@ def build_occurrence_aggregation(
         seen_occurrence_keys.add(occurrence_key)
         seen_claim_ordinals.add((claim_id, claim_ordinal))
         if not predicate_matches_query(predicate):
+            # Only an explicitly signed complete closure proves disjointness.
+            # The reviewed lexical vocabulary must never be used here: its
+            # leaves are folded inflections and synonyms, not a partition, so
+            # "bake" differing from "make" is no evidence of a different event.
             if predicate.get("closure_complete") is True:
                 accepted_disjoint_proven += 1
             else:

@@ -168,6 +168,167 @@ _NEGATED_EVENT = re.compile(
     re.IGNORECASE,
 )
 _ACTION_WORD_PATTERN = r"[a-z][a-z'-]{1,38}"
+# Reviewed irregular past-tense and past-participle surfaces.
+#
+# This is an explicit, frozen editorial list, not a morphological rule. Every
+# entry is a surface whose only reading in an ``I <verb> ...`` clause is a
+# completed past event, so the parser may treat it exactly as it treats a
+# regular ``-ed`` form. Reporting and mental verbs (``said``, ``thought``,
+# ``knew``, ``meant``, ``heard``, ``understood``) are deliberately absent: they
+# describe speech and belief rather than a countable completed event, and the
+# attribution guards elsewhere already depend on them not becoming carriers.
+_IRREGULAR_COMPLETED_VERBS: frozenset[str] = frozenset(
+    {
+        "ate",
+        "eaten",
+        "began",
+        "begun",
+        "bent",
+        "bit",
+        "bitten",
+        "blew",
+        "blown",
+        "bought",
+        "broke",
+        "broken",
+        "brought",
+        "burnt",
+        "built",
+        "came",
+        "became",
+        "caught",
+        "chose",
+        "chosen",
+        "crept",
+        "dealt",
+        "drank",
+        "drunk",
+        "drew",
+        "drawn",
+        "drove",
+        "driven",
+        "dug",
+        "fed",
+        "fell",
+        "fallen",
+        "felt",
+        "flew",
+        "flown",
+        "forgot",
+        "forgotten",
+        "found",
+        "froze",
+        "frozen",
+        "forgave",
+        "forgiven",
+        "gave",
+        "given",
+        "gone",
+        "got",
+        "gotten",
+        "grew",
+        "grown",
+        "held",
+        "hid",
+        "hidden",
+        "hung",
+        "kept",
+        "knelt",
+        "leapt",
+        "led",
+        "left",
+        "lent",
+        "lit",
+        "lost",
+        "made",
+        "met",
+        "mistook",
+        "mistaken",
+        "overcame",
+        "paid",
+        "ran",
+        "rebuilt",
+        "rang",
+        "rung",
+        "rode",
+        "ridden",
+        "rose",
+        "risen",
+        "sang",
+        "sung",
+        "sank",
+        "sunk",
+        "sat",
+        "saw",
+        "seen",
+        "sent",
+        "shone",
+        "shot",
+        "slept",
+        "slid",
+        "sold",
+        "sped",
+        "spent",
+        "spoke",
+        "spoken",
+        "sprang",
+        "sprung",
+        "spun",
+        "stole",
+        "stolen",
+        "stood",
+        "struck",
+        "stuck",
+        "stung",
+        "swam",
+        "swum",
+        "swept",
+        "swore",
+        "sworn",
+        "swung",
+        "taken",
+        "taught",
+        "threw",
+        "thrown",
+        "told",
+        "took",
+        "tore",
+        "torn",
+        "undertook",
+        "undertaken",
+        "went",
+        "wept",
+        "withdrew",
+        "withdrawn",
+        "woke",
+        "woken",
+        "won",
+        "wore",
+        "worn",
+        "wrote",
+        "written",
+    }
+)
+# Surfaces identical in the present and the past. ``I read books`` is habitual
+# while ``I read a book yesterday`` is one completed event, so these are
+# admitted only when the clause carries resolvable past-time context.
+_TENSE_AMBIGUOUS_COMPLETED_VERBS: frozenset[str] = frozenset(
+    {
+        "bet",
+        "cost",
+        "cut",
+        "hit",
+        "hurt",
+        "let",
+        "put",
+        "quit",
+        "read",
+        "run",
+        "set",
+        "shut",
+        "spread",
+    }
+)
 _PLAUSIBLE_FIRST_PERSON_EVENT_ASSERTION = re.compile(
     rf"""
     \b(?:i|we)(?P<contraction>['’](?:ve|d))?\s+
@@ -204,7 +365,9 @@ _PAST_EVENT_CONTEXT = re.compile(
     r"\b20\d{2}[/-](?:0?[1-9]|1[0-2])[/-](?:0?[1-9]|[12]\d|3[01])\b|"
     r"\b(?:0?[1-9]|1[0-2])/(?:0?[1-9]|[12]\d|3[01])"
     r"(?:/\d{2,4})?\b|"
-    r"\b(?:yesterday|last\s+(?:week|month|"
+    r"\b(?:yesterday|last\s+night|this\s+(?:morning|afternoon|evening)|"
+    r"earlier\s+today|over\s+the\s+weekend|"
+    r"last\s+(?:week|weekend|month|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b|"
     r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+"
     r"(?:days?|weeks?|months?)\s+ago\b|"
@@ -316,6 +479,24 @@ _OBJECT_RELATION_WORDS = {
     "to",
     "with",
 }
+# Function words that can be left dangling at the end of an object phrase once
+# a temporal or quantity tail is removed. None of them can be an object head.
+_DANGLING_OBJECT_TAIL_WORDS = _OBJECT_RELATION_WORDS | {
+    "about",
+    "again",
+    "along",
+    "around",
+    "away",
+    "back",
+    "off",
+    "out",
+    "over",
+    "roughly",
+    "since",
+    "then",
+    "through",
+    "up",
+}
 _QUANTITY_VALUE_PATTERN = r"(?:\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten)"
 _QUANTITY_TIMES = re.compile(
     rf"\b(?P<at_least>at\s+least\s+)?(?P<exactly>exactly\s+)?"
@@ -353,6 +534,9 @@ _TEMPORAL_TAIL = re.compile(
     r"\b(?:once|twice|one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
     r"\s+times?\b.*$|"
     r"\b(?:on|at|during|in|yesterday|today|last)\b.*$|"
+    r"\b(?:tonight|earlier\s+today|over\s+the\s+weekend)\b.*$|"
+    r"\bthis\s+(?:morning|afternoon|evening|week|weekend|month|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b.*$|"
     r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+"
     r"(?:days?|weeks?|months?)\s+ago\b.*$",
     re.IGNORECASE,
@@ -419,6 +603,60 @@ _RELATIVE_PERIOD = re.compile(
 _AGO_PERIOD = re.compile(
     r"\b(?P<value>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+"
     r"(?P<period>days?|weeks?|months?)\s+ago\b",
+    re.IGNORECASE,
+)
+# Same-day and previous-day expressions. Each resolves to exactly one calendar
+# date against the session reference, so none of them needs to guess.
+_RELATIVE_TODAY = re.compile(
+    r"\b(?:today|tonight|this\s+(?:morning|afternoon|evening)|earlier\s+today)\b",
+    re.IGNORECASE,
+)
+_RELATIVE_YESTERDAY = re.compile(
+    r"\b(?:yesterday(?:\s+(?:morning|afternoon|evening))?|last\s+night)\b",
+    re.IGNORECASE,
+)
+# A weekend spans two calendar days, so it resolves to a bounded range rather
+# than a date. Bounded ranges are useful query evidence but never a reviewed
+# ordinal, so they stay non-materializing exactly like ``last week``.
+_RELATIVE_WEEKEND = re.compile(
+    r"\b(?:last\s+weekend|(?:this\s+)?past\s+weekend|over\s+the\s+(?:last\s+|past\s+)?weekend)\b",
+    re.IGNORECASE,
+)
+_WEEKDAY_PATTERN = r"monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+_MONTH_NAME_PATTERN = (
+    r"january|february|march|april|may|june|july|august|september|october|november|december|"
+    r"jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec"
+)
+_FRONTED_TIME_EXPRESSION = (
+    r"(?:"
+    rf"{_QUANTITY_VALUE_PATTERN}\s+(?:days?|weeks?|months?)\s+ago|"
+    r"yesterday(?:\s+(?:morning|afternoon|evening))?|"
+    r"last\s+night|this\s+(?:morning|afternoon|evening)|earlier\s+today|today|tonight|"
+    r"(?:last|this)(?:\s+past)?\s+weekend|over\s+the\s+(?:last\s+|past\s+)?weekend|"
+    rf"(?:last|this)\s+(?:week|month|{_WEEKDAY_PATTERN})|"
+    r"20\d{2}[/-](?:0?[1-9]|1[0-2])[/-](?:0?[1-9]|[12]\d|3[01])|"
+    rf"(?:{_MONTH_NAME_PATTERN})\s+[0-3]?\d(?:st|nd|rd|th)?(?:,?\s*20\d{{2}})?"
+    r")"
+)
+# One bounded fronted time adverbial, with the preposition that may introduce
+# it. "Yesterday I bought a vinyl" and "On May 5, 2026 I visited the museum"
+# are ordinary assertions; only the anchoring position differs.
+_FRONTED_TEMPORAL = re.compile(
+    rf"^\s*(?:on|in|during)?\s*{_FRONTED_TIME_EXPRESSION}\s*,?\s+(?=(?:i|we)\b)",
+    re.IGNORECASE,
+)
+# Bounded, explicit discourse openers. These carry no event content, so a
+# completed assertion behind one is still a direct first-person assertion.
+# The list is exact rather than a catch-all "any words before I" rule, which
+# would swallow attributions such as "Alice said I baked cookies".
+_DISCOURSE_PREFIX = re.compile(
+    r"^\s*(?:"
+    r"by\s+the\s+way|btw|anyway|anyhow|incidentally|on\s+a\s+side\s+note|side\s+note|"
+    r"for\s+what\s+it['’]s\s+worth|fwiw|fyi|just\s+so\s+you\s+know|"
+    r"quick\s+update|small\s+update|update|to\s+be\s+clear|"
+    r"also|and|but|plus|so|well|oh|okay|ok|actually|honestly|basically|frankly|"
+    r"yeah|yep|hey|hi|hello"
+    r")\b\s*[,:;!.-]?\s*",
     re.IGNORECASE,
 )
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])(?:\s+|$)|\n+")
@@ -637,13 +875,17 @@ def _chunk_has_plausible_unaccounted_user_assertion(
             if _natural_zero_event_assertion(sentence):
                 continue
             subjectless_completed = _SUBJECTLESS_COMPLETED_ASSERTION.match(sentence)
+            sentence_past_context = _has_past_event_context(sentence)
             if (
                 _has_plausible_first_person_event_assertion(sentence)
                 or (
                     subjectless_completed is not None
                     and (
-                        _natural_completed_verb_allowed(str(subjectless_completed.group("verb")))
-                        or _has_past_event_context(sentence)
+                        _natural_completed_verb_allowed(
+                            str(subjectless_completed.group("verb")),
+                            past_context=sentence_past_context,
+                        )
+                        or sentence_past_context
                     )
                 )
                 or _SUBJECTLESS_DID_ASSERTION.match(sentence)
@@ -1179,13 +1421,24 @@ def _event_date_range(
                 resolved = reference.replace(year=year, month=month, day=day)
             iso = _iso_date(resolved.year, resolved.month, resolved.day)
             return iso, iso, False
-        if re.search(r"\byesterday\b", lowered):
+        if _RELATIVE_YESTERDAY.search(lowered):
             yesterday_value = reference - timedelta(days=1)
             iso = _iso_date(yesterday_value.year, yesterday_value.month, yesterday_value.day)
             return iso, iso, False
-        if re.search(r"\btoday\b", lowered):
+        if _RELATIVE_TODAY.search(lowered):
             iso = _iso_date(reference.year, reference.month, reference.day)
             return iso, iso, False
+        if _RELATIVE_WEEKEND.search(lowered):
+            # Saturday and Sunday of the week before the reference week. Two
+            # candidate days is a bounded range, never a single reviewed date.
+            current_start = reference - timedelta(days=reference.weekday())
+            saturday = current_start - timedelta(days=2)
+            sunday = current_start - timedelta(days=1)
+            return (
+                _iso_date(saturday.year, saturday.month, saturday.day),
+                _iso_date(sunday.year, sunday.month, sunday.day),
+                True,
+            )
         weekday = _RELATIVE_WEEKDAY.search(lowered)
         if weekday is not None:
             target = _WEEKDAYS[weekday.group("weekday").casefold()]
@@ -1223,6 +1476,10 @@ def _event_date_range(
 
 
 def _event_date_is_ambiguous(text: str) -> bool:
+    # Two spans mean two dates, so every relative pattern must match exactly
+    # one expression. ``_RELATIVE_WEEKEND`` and ``_RELATIVE_PERIOD`` do not
+    # overlap on "last weekend" because the latter's trailing word boundary
+    # already refuses to end inside "weekend".
     spans = {
         match.span()
         for pattern in (
@@ -1232,17 +1489,12 @@ def _event_date_is_ambiguous(text: str) -> bool:
             _RELATIVE_WEEKDAY,
             _RELATIVE_PERIOD,
             _AGO_PERIOD,
+            _RELATIVE_TODAY,
+            _RELATIVE_YESTERDAY,
+            _RELATIVE_WEEKEND,
         )
         for match in pattern.finditer(text)
     }
-    spans.update(
-        match.span()
-        for match in re.finditer(
-            r"\b(?:today|yesterday)\b",
-            text,
-            re.IGNORECASE,
-        )
-    )
     return len(spans) > 1 or _ALTERNATIVE_MONTH_DAY.search(text) is not None
 
 
@@ -1308,24 +1560,39 @@ def _quantity(text: str) -> tuple[int, int | None]:
     return quantity_min, quantity_max
 
 
-def _natural_completed_verb_allowed(value: str) -> bool:
-    """Admit one bounded regular-past surface without lemmatizing it.
+def _natural_completed_verb_allowed(value: str, *, past_context: bool = False) -> bool:
+    """Admit one bounded completed-past surface without guessing morphology.
 
-    The parser intentionally owns no verb-topic allowlist or semantic aliases.
-    A syntactic ``-ed``/``-ied`` form may become a review candidate while its
-    exact surface remains the predicate leaf.  Ambiguous non-``-ed`` forms
-    require structured reviewed input.  Words ending in ``-eed`` are
-    base-form morphology (for example ``feed`` and ``seed``), not regular
-    past tense.
+    Three sources, and only three, admit a surface:
+
+    * a syntactic ``-ed``/``-ied`` form, which is unambiguously regular past;
+    * an explicit entry in :data:`_IRREGULAR_COMPLETED_VERBS`, a reviewed
+      lexicon of irregular past and participle surfaces; and
+    * an explicit entry in :data:`_TENSE_AMBIGUOUS_COMPLETED_VERBS`, whose
+      surfaces are identical in the present and the past, admitted only when
+      the clause also carries resolvable past-time context.
+
+    No stemming library, no morphological guessing, and no ``-t``/``-ght``
+    heuristic is used: a heuristic would admit ``bright``, ``might`` and
+    ``thought`` alongside the real past forms.  Words ending in ``-eed`` are
+    base-form morphology (for example ``feed`` and ``seed``), not regular past
+    tense.  Admitting a surface here says only that it is a completed past
+    form; the canonical predicate leaf still comes from the separately
+    reviewed action vocabulary.
     """
 
     verb = " ".join(value.casefold().split())
     if (
         " " in verb
         or re.fullmatch(_ACTION_WORD_PATTERN, verb, re.IGNORECASE) is None
-        or verb.endswith("eed")
         or verb == "had"
     ):
+        return False
+    if verb in _IRREGULAR_COMPLETED_VERBS:
+        return True
+    if verb in _TENSE_AMBIGUOUS_COMPLETED_VERBS:
+        return past_context
+    if verb.endswith("eed"):
         return False
     return len(verb) > 3 and verb.endswith("ed")
 
@@ -1362,11 +1629,15 @@ def _has_past_event_context(value: str) -> bool:
 def _has_plausible_first_person_event_assertion(value: str) -> bool:
     """Detect an unparsed past assertion without an action-topic allowlist."""
 
+    past_context = _has_past_event_context(value)
     return any(
-        _natural_completed_verb_allowed(str(match.group("verb")))
+        _natural_completed_verb_allowed(
+            str(match.group("verb")),
+            past_context=past_context,
+        )
         or match.group("contraction") is not None
         or match.group("auxiliary") is not None
-        or _has_past_event_context(value)
+        or past_context
         for match in _PLAUSIBLE_FIRST_PERSON_EVENT_ASSERTION.finditer(value)
     )
 
@@ -1391,6 +1662,13 @@ def _predicate_object_projection(
     except ValueError:
         return "", (), True
     words = [token for token in tokens if not token.isdigit() and token not in _OBJECT_DETERMINERS]
+    # A phrase can end on a function word once its complement has been removed
+    # as a temporal or quantity tail ("... my fitness tracker about 3 months
+    # ago" leaves a trailing "about"). Such a word introduces a relation that
+    # is no longer present, so it is never the object head. Stripping it is
+    # what keeps the head a real noun instead of a preposition.
+    while words and words[-1] in _DANGLING_OBJECT_TAIL_WORDS:
+        words.pop()
     if not words:
         return "", (), True
     return (
@@ -1430,13 +1708,39 @@ def _stable_event_object_referent(value: str) -> str | None:
 def _completed_event_clause_verbs(text: str) -> list[str]:
     """Find subject-led and coordinated completed predicates without guessing."""
 
+    past_context = _has_past_event_context(text)
     matches: dict[int, str] = {}
     for pattern in (_EVENT_CLAUSE_START, _COORDINATED_EVENT_START):
         for match in pattern.finditer(text):
             verb = " ".join(match.group("verb").casefold().split())
-            if _natural_completed_verb_allowed(verb):
+            if _natural_completed_verb_allowed(verb, past_context=past_context):
                 matches.setdefault(match.start(), verb)
     return [matches[position] for position in sorted(matches)]
+
+
+def _assertion_body(clause: str) -> tuple[str, str]:
+    """Strip bounded discourse openers and one fronted time adverbial.
+
+    Returns ``(fronted_time, body)``.  ``body`` is what the completed-event
+    patterns are matched against; ``fronted_time`` is the removed adverbial and
+    remains available for date resolution, so "Yesterday I bought a vinyl"
+    keeps its date.  Both parts are exact substrings of ``clause``.
+    """
+
+    body = clause
+    fronted = ""
+    for _attempt in range(3):
+        discourse = _DISCOURSE_PREFIX.match(body)
+        if discourse is not None and discourse.end() > 0:
+            body = body[discourse.end() :]
+            continue
+        temporal = _FRONTED_TEMPORAL.match(body)
+        if temporal is not None and temporal.end() > 0 and not fronted:
+            fronted = body[: temporal.end()]
+            body = body[temporal.end() :]
+            continue
+        break
+    return fronted.strip(" ,;:"), body.strip()
 
 
 def _quote_aware_sentence_texts(text: str) -> list[str]:
@@ -1525,7 +1829,14 @@ def _speaker_text_blocks(text: str) -> list[tuple[str | None, str]]:
 
 
 def _natural_sentence_texts(text: str) -> list[str]:
-    """Return independently reviewable sentences from user-authored text."""
+    """Return independently reviewable sentences from user-authored text.
+
+    Splitting stops at the sentence. Coordination inside a sentence is left
+    intact deliberately: an operator that scopes over the whole sentence
+    ("Alice said that ...", "It is not true that ...") also scopes over every
+    coordinated clause inside it, and lifting a clause out of that scope would
+    turn reported or denied speech into a first-person occurrence.
+    """
 
     sentences: list[str] = []
     for role, block in _speaker_text_blocks(text):
@@ -1569,16 +1880,23 @@ def _natural_event_sentence_hint(
     if _NEGATED_EVENT.search(normalized):
         return None
 
-    clause_verbs = _completed_event_clause_verbs(normalized)
-    if len(clause_verbs) > 1:
-        return {
-            "count_key": "compound completed event " + " ".join(clause_verbs),
-            "quantity_min": 1,
-            "quantity_max": None,
-            "force_ambiguous": True,
-        }
+    # An assertion is not required to open its sentence. A bounded discourse
+    # opener and one fronted time adverbial are removed so the completed-event
+    # patterns see the same clause they would see in "I <verb> ..." order. The
+    # removed adverbial stays available for date resolution rather than being
+    # discarded. Every attribution and polarity guard above already ran on the
+    # whole sentence; ``_FIRST_PERSON_ATTRIBUTION_PREFIX`` runs again on the
+    # shortened body because it is anchored, so "By the way, I wrote that I
+    # baked cookies yesterday" would otherwise slip past it. The sibling
+    # anchored guards are not re-run: every completed-event pattern below
+    # requires the body to begin with "I"/"we", which already excludes a
+    # third-party attribution or an inverted question.
+    fronted_time, body = _assertion_body(normalized)
+    if _FIRST_PERSON_ATTRIBUTION_PREFIX.match(body.casefold()):
+        return None
+    past_context = _has_past_event_context(normalized)
 
-    nested = _NESTED_COMPLETED_EVENT.match(normalized)
+    nested = _NESTED_COMPLETED_EVENT.match(body)
     if nested is not None:
         # "used to VERB" is habitual; only a non-empty instrument/object
         # followed by an action complement entails a completed nested event.
@@ -1589,16 +1907,30 @@ def _natural_event_sentence_hint(
         event_tail = nested.group("object").strip()
     else:
         match = (
-            _PERFECT_COMPLETED_EVENT.match(normalized)
-            or _EMPHATIC_COMPLETED_EVENT.match(normalized)
-            or _COMPLETED_EVENT.match(normalized)
+            _PERFECT_COMPLETED_EVENT.match(body)
+            or _EMPHATIC_COMPLETED_EVENT.match(body)
+            or _COMPLETED_EVENT.match(body)
         )
         if match is None:
             return None
         verb = " ".join(match.group("verb").casefold().split())
-        if not _natural_completed_verb_allowed(verb):
+        if not _natural_completed_verb_allowed(verb, past_context=past_context):
             return None
         event_tail = match.group("object").strip()
+
+    # Only now that the body is known to open as a direct first-person
+    # completed assertion may a second coordinated predicate be read as a
+    # compound event. Testing this before the anchored patterns would lift
+    # "I bought a car" out of "It is not true that I bought a car and ...",
+    # because the clause-verb scan is a search rather than an anchored match.
+    clause_verbs = _completed_event_clause_verbs(body)
+    if len(clause_verbs) > 1:
+        return {
+            "count_key": "compound completed event " + " ".join(clause_verbs),
+            "quantity_min": 1,
+            "quantity_max": None,
+            "force_ambiguous": True,
+        }
 
     if _ZERO_EVENT_OBJECT.match(event_tail):
         return None
@@ -1636,14 +1968,18 @@ def _natural_event_sentence_hint(
         force_ambiguous = True
     stable_referent = _stable_event_object_referent(event_object)
     count_key = f"{_predicate_verb(verb)} {predicate_object}"
-    date_ambiguous = _event_date_is_ambiguous(event_tail)
+    # A fronted adverbial dates the same clause its verb belongs to, so both
+    # halves are considered together. Two distinct dates across the clause stay
+    # ambiguous exactly as two dates inside the tail already do.
+    dated_text = f"{fronted_time} {event_tail}".strip() if fronted_time else event_tail
+    date_ambiguous = _event_date_is_ambiguous(dated_text)
     if date_ambiguous:
         occurred_at_start = occurred_at_end = None
         bounded_date = False
         force_ambiguous = True
     else:
         occurred_at_start, occurred_at_end, bounded_date = _event_date_range(
-            event_tail,
+            dated_text,
             reference=_reference_datetime(source),
         )
     if bounded_date:

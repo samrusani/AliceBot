@@ -951,7 +951,7 @@ def test_plain_tagged_user_completed_event_uses_the_source_review_pipeline() -> 
 
     assert result.candidate_memory_count == 0
     assert len(claims) == 1
-    assert claims[0]["count_key"] == "baked cookies"
+    assert claims[0]["count_key"] == "bake cookies"
     assert len(store.list_occurrence_units_for_claim(str(claims[0]["id"]))) == 1
 
 
@@ -1035,8 +1035,8 @@ def test_multi_sentence_occurrences_share_one_retrieval_memory_end_to_end() -> N
         limit=201,
     )
     assert {claim["count_key"] for claim in claims} == {
-        "attended party",
-        "baked cookies",
+        "attend party",
+        "bake cookies",
     }
     assert all(len(store.list_occurrence_units_for_claim(str(claim["id"]))) == 1 for claim in claims)
     reviewed_ids = review_source_chunk_occurrences(

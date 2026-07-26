@@ -4,6 +4,7 @@ import json
 import sqlite3
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -458,7 +459,7 @@ def test_generic_completed_event_builds_a_review_gated_predicate_unit() -> None:
     claim = graph.only_claim()
     units = graph.units_for(claim)
 
-    assert claim["count_key"] == "painted fence"
+    assert claim["count_key"] == "paint fence"
     assert claim["identity_basis"] == "date_and_ordinal"
     assert _claim_identity_anchor(claim)["reviewed_date_ordinal"] == 1
     assert claim["resolution_status"] == "resolved"
@@ -553,8 +554,8 @@ def test_generic_predicate_key_ignores_descriptive_object_modifiers() -> None:
         accepted=False,
     )
 
-    assert blue.only_claim()["count_key"] == "painted fence"
-    assert old.only_claim()["count_key"] == "painted fence"
+    assert blue.only_claim()["count_key"] == "paint fence"
+    assert old.only_claim()["count_key"] == "paint fence"
 
 
 @pytest.mark.parametrize("existing_accepted", [False, True])
@@ -718,8 +719,10 @@ def test_booked_remains_an_exact_surface_without_inferring_a_dentist_visit() -> 
     natural = _capture_natural_graph(store, text)
     natural_claim = natural.only_claim()
 
-    assert natural_claim["count_key"] == "booked dentist"
-    assert natural_claim["predicate_json"]["action"]["leaf"] == "booked"
+    # "booked" folds onto the reviewed ``book`` leaf, which is deliberately not
+    # a member of any visiting category: booking an appointment is not a visit.
+    assert natural_claim["count_key"] == "book dentist"
+    assert natural_claim["predicate_json"]["action"]["leaf"] == "book"
     assert natural_claim["predicate_json"]["object"]["leaf"] == "dentist"
 
     explicit = _memory(
@@ -1863,7 +1866,7 @@ def test_trusted_assistant_provenance_suppresses_untagged_natural_event() -> Non
     )
 
     assert assistant.claims == []
-    assert user.only_claim()["count_key"] == "visited gallery"
+    assert user.only_claim()["count_key"] == "visit gallery"
 
 
 def test_tagged_assistant_event_is_ignored_but_user_event_is_reviewable() -> None:
@@ -1890,7 +1893,7 @@ def test_declarative_sentence_before_trailing_question_remains_eligible() -> Non
     )
     claim = graph.only_claim()
 
-    assert claim["count_key"] == "baked cookies"
+    assert claim["count_key"] == "bake cookies"
     assert claim["occurred_at_start"] == "2026-07-23T00:00:00.000000Z"
     assert claim["resolution_status"] == "resolved"
 
@@ -1950,7 +1953,7 @@ def test_complex_measure_relation_stays_unresolved_without_a_measure_allowlist()
     )
     claim = graph.only_claim()
 
-    assert claim["count_key"] == "baked buns"
+    assert claim["count_key"] == "bake buns"
     assert claim["resolution_status"] == "pending"
     assert graph.units_for(claim) == []
 
@@ -1971,25 +1974,260 @@ def test_regular_past_surfaces_and_n_weeks_ago_resolve_without_topic_alias() -> 
     baked_claim = baked.only_claim()
     created_claim = created.only_claim()
 
-    assert baked_claim["count_key"] == "baked cookies"
+    assert baked_claim["count_key"] == "bake cookies"
     assert created_claim["count_key"] == "created sculpture"
     assert baked_claim["occurred_at_start"] == "2026-07-10T00:00:00.000000Z"
     assert created_claim["occurred_at_start"] == "2026-07-10T00:00:00.000000Z"
 
 
 @pytest.mark.parametrize(
-    "text",
+    ("phrase", "expected_date"),
     [
-        "I drove a blue coupe on March 2, 2026.",
-        "I flew a red kite on March 3, 2026.",
-        "I went hiking on March 4, 2026.",
-        "I left the library on March 5, 2026.",
-        "I taught a pottery class on March 6, 2026.",
+        # Same-day expressions.
+        ("today", "2026-07-24T00:00:00.000000Z"),
+        ("this morning", "2026-07-24T00:00:00.000000Z"),
+        ("this afternoon", "2026-07-24T00:00:00.000000Z"),
+        ("this evening", "2026-07-24T00:00:00.000000Z"),
+        ("earlier today", "2026-07-24T00:00:00.000000Z"),
+        ("tonight", "2026-07-24T00:00:00.000000Z"),
+        # Previous-day expressions.
+        ("yesterday", "2026-07-23T00:00:00.000000Z"),
+        ("yesterday morning", "2026-07-23T00:00:00.000000Z"),
+        ("yesterday evening", "2026-07-23T00:00:00.000000Z"),
+        ("last night", "2026-07-23T00:00:00.000000Z"),
     ],
 )
-def test_unsourced_irregular_inflections_require_structured_review(
+def test_same_day_and_previous_day_expressions_resolve_to_one_date(
+    phrase: str,
+    expected_date: str,
+) -> None:
+    """Each of these resolves to exactly one calendar day against the session.
+
+    The reference session date is a Friday, so a wrong branch would land on a
+    visibly different day rather than coincidentally on the right one.
+    """
+
+    store = _store()
+    claim = _capture_natural_graph(
+        store,
+        f"I baked cookies {phrase}.",
+        session_date="2026-07-24T12:00:00Z",
+    ).only_claim()
+
+    assert claim["occurred_at_start"] == expected_date
+    assert claim["count_key"] == "bake cookies"
+    assert claim["resolution_status"] == "resolved"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_date"),
+    [
+        ("Yesterday I baked cookies.", "2026-07-23T00:00:00.000000Z"),
+        ("Yesterday, I baked cookies.", "2026-07-23T00:00:00.000000Z"),
+        ("This morning I baked cookies.", "2026-07-24T00:00:00.000000Z"),
+        ("Two weeks ago I baked cookies.", "2026-07-10T00:00:00.000000Z"),
+        ("On March 3, 2026 I baked cookies.", "2026-03-03T00:00:00.000000Z"),
+        ("Last Monday I baked cookies.", "2026-07-20T00:00:00.000000Z"),
+    ],
+)
+def test_a_fronted_time_adverbial_still_dates_its_event(
+    text: str,
+    expected_date: str,
+) -> None:
+    """The stripped adverbial must be handed to date resolution, not dropped.
+
+    These sentences carry their date only ahead of the verb. If the removed
+    prefix were discarded rather than reunited with the event tail, the event
+    would parse but arrive undated, which downgrades a perfectly resolvable
+    occurrence to a non-countable claim.
+    """
+
+    store = _store()
+    claim = _capture_natural_graph(
+        store,
+        text,
+        session_date="2026-07-24T12:00:00Z",
+    ).only_claim()
+
+    assert claim["count_key"] == "bake cookies"
+    assert claim["occurred_at_start"] == expected_date
+    assert claim["resolution_status"] == "resolved"
+
+
+@pytest.mark.parametrize("phrase", ["last weekend", "over the weekend", "this past weekend"])
+def test_a_weekend_is_a_bounded_range_and_never_a_reviewed_ordinal(
+    phrase: str,
+) -> None:
+    """A weekend spans two days, so it cannot anchor one countable event.
+
+    It must also not be silently read as "last week": the Saturday/Sunday pair
+    of the preceding weekend is a different span from Monday through Sunday,
+    and picking either day would be a guess.
+    """
+
+    store = _store()
+    graph = _capture_natural_graph(
+        store,
+        f"I baked cookies {phrase}.",
+        session_date="2026-07-24T12:00:00Z",
+        accepted=False,
+    )
+    claim = graph.only_claim()
+
+    assert claim["occurred_at_start"] is None
+    assert claim["resolution_status"] == "pending"
+    assert graph.units_for(claim) == []
+
+
+def test_last_weekend_resolves_to_the_weekend_and_not_the_week() -> None:
+    """A weekend and a week are different spans and must stay distinct.
+
+    Reading "last weekend" as "last week" would widen a two-day span to seven,
+    and the two patterns matching the same text would additionally look like
+    two dates in one clause and force needless ambiguity. Neither happens.
+    """
+
+    reference = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+
+    assert occurrence_write_module._event_date_range("last weekend", reference=reference) == (
+        "2026-07-18",
+        "2026-07-19",
+        True,
+    )
+    assert occurrence_write_module._event_date_range("last week", reference=reference) == (
+        "2026-07-13",
+        "2026-07-19",
+        True,
+    )
+    assert occurrence_write_module._event_date_is_ambiguous("last weekend") is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I baked cookies yesterday and on March 3, 2026.",
+        "I baked cookies today and yesterday.",
+        "I baked cookies last Monday and two weeks ago.",
+    ],
+)
+def test_two_distinct_dates_in_one_clause_stay_ambiguous(text: str) -> None:
+    """Overlap merging must not collapse genuinely different dates.
+
+    One expression seen by two patterns is one date; two expressions naming
+    different days are still ambiguous and must not resolve to whichever
+    branch happens to run first.
+    """
+
+    store = _store()
+    graph = _capture_natural_graph(
+        store,
+        text,
+        session_date="2026-07-24T12:00:00Z",
+        accepted=False,
+    )
+    claim = graph.only_claim()
+
+    assert claim["occurred_at_start"] is None
+    assert graph.units_for(claim) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_key"),
+    [
+        ("I got my new fitness tracker about 3 months ago.", "get tracker"),
+        ("I painted the garden fence over two weeks ago.", "paint fence"),
+    ],
+)
+def test_a_dangling_function_word_never_becomes_the_object_head(
+    text: str,
+    expected_key: str,
+) -> None:
+    """Removing a temporal or quantity tail can leave a trailing preposition.
+
+    "... my fitness tracker about 3 months ago" loses "3 months ago" and ends
+    on "about", which introduces a relation that is no longer present. Taking
+    it as the head produces the unqueryable predicate ``get about``.
+    """
+
+    store = _store()
+    claim = _capture_natural_graph(
+        store,
+        text,
+        session_date="2026-07-24T12:00:00Z",
+        accepted=False,
+    ).only_claim()
+
+    assert claim["count_key"] == expected_key
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Coordination under a third-party attribution.
+        "Alice said I baked cookies and I bought bread on March 3, 2026.",
+        "Bob told me I went to the museum and I saw the exhibit on March 3, 2026.",
+        # Coordination under an explicit denial.
+        "It's not true that I bought a car and I bought a bike on March 3, 2026.",
+        # Coordination under a first-person attribution behind a discourse
+        # opener, which the sentence-anchored guard alone cannot see.
+        "By the way, I wrote that I baked cookies on March 3, 2026.",
+    ],
+)
+def test_a_coordinated_clause_never_escapes_its_attribution_or_denial(
     text: str,
 ) -> None:
+    """An operator that scopes over a sentence scopes over its coordination.
+
+    Lifting "I bought bread" out of "Alice said I baked cookies and I bought
+    bread" would attribute someone else's reported speech to the user as a
+    countable first-person event. The same holds for a denial and for a
+    first-person reporting verb.
+    """
+
+    store = _store()
+
+    assert _capture_natural_graph(store, text, accepted=False).claims == []
+    assert occurrence_write_module.natural_occurrence_candidate_sentences(f"[USER]: {text}") == ()
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_key"),
+    [
+        ("I drove a blue coupe on March 2, 2026.", "drive coupe"),
+        ("I flew a red kite on March 3, 2026.", "fly kite"),
+        # ``went`` was reachable through the vocabulary as a surface of the
+        # ``go`` leaf while the extractor could not admit it, so the leaf was
+        # unproducible from prose. Both halves now agree.
+        ("I went hiking on March 4, 2026.", "go hiking"),
+        ("I left the library on March 5, 2026.", "leave library"),
+        ("I taught a pottery class on March 6, 2026.", "teach class"),
+        ("I stood guard on March 7, 2026.", "stand guard"),
+    ],
+)
+def test_reviewed_irregular_past_surfaces_extract_like_regular_ones(
+    text: str,
+    expected_key: str,
+) -> None:
+    # The reviewed irregular lexicon is an explicit list, so an irregular past
+    # surface on it is admitted exactly as a regular ``-ed`` surface is. The
+    # canonical leaf still comes from the reviewed action vocabulary.
+    store = _store()
+
+    assert _capture_natural_graph(store, text).only_claim()["count_key"] == expected_key
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I forwent the meeting on March 3, 2026.",
+        "I shrove the penitent on March 4, 2026.",
+    ],
+)
+def test_irregular_surfaces_outside_the_reviewed_lexicon_still_fail_closed(
+    text: str,
+) -> None:
+    # Nothing is guessed from morphology: a past form absent from the reviewed
+    # lexicon and not ending in ``-ed`` proposes nothing at all.
     store = _store()
 
     assert _capture_natural_graph(store, text).claims == []
@@ -2020,7 +2258,10 @@ def test_natural_named_or_quoted_mentions_never_propose_object_members(
     "text",
     [
         "I have been to Oslo on March 2, 2026.",
-        "I read the handbook on March 3, 2026.",
+        # ``read`` reads identically in the present and the past, so without
+        # resolvable past-time context it stays a habit, not one event.
+        "I read the handbook.",
+        "I put the kettle on.",
     ],
 )
 def test_unregistered_or_ambiguous_irregular_forms_fail_closed(
@@ -2029,6 +2270,19 @@ def test_unregistered_or_ambiguous_irregular_forms_fail_closed(
     store = _store()
 
     assert _capture_natural_graph(store, text).claims == []
+
+
+def test_tense_ambiguous_surface_needs_past_context_before_it_counts() -> None:
+    # The same surface is admitted once the clause carries a resolvable past
+    # date, which removes the habitual reading rather than guessing past it.
+    store = _store()
+
+    claim = _capture_natural_graph(
+        store,
+        "I read the handbook on March 3, 2026.",
+    ).only_claim()
+
+    assert claim["count_key"] == "read handbook"
 
 
 @pytest.mark.parametrize(
@@ -2132,7 +2386,7 @@ def test_explicit_future_completed_event_date_stays_ambiguous(
     [
         (
             "I visited the museum, and it was great on March 3, 2026.",
-            "visited museum",
+            "visit museum",
         ),
         (
             "I visited the museum and loved it on March 3, 2026.",
@@ -2140,7 +2394,7 @@ def test_explicit_future_completed_event_date_stays_ambiguous(
         ),
         (
             "I visited the museum, which was two times larger on March 3, 2026.",
-            "visited museum",
+            "visit museum",
         ),
     ],
 )
@@ -2171,7 +2425,7 @@ def test_subordinate_or_unrelated_text_never_becomes_event_object_or_date(
     graph = _capture_natural_graph(store, text)
     claim = graph.only_claim()
 
-    assert claim["count_key"] == "visited museum"
+    assert claim["count_key"] == "visit museum"
     assert claim["occurred_at_start"] is None
     assert claim["resolution_status"] == "pending"
 
@@ -2184,11 +2438,11 @@ def test_independent_completed_sentences_keep_separate_objects_and_dates() -> No
     )
     claims = {str(claim["count_key"]): claim for claim in graph.claims}
 
-    assert set(claims) == {"visited museum", "booked appointment"}
-    assert claims["visited museum"]["occurred_at_start"] is None
-    assert claims["visited museum"]["resolution_status"] == "pending"
-    assert claims["booked appointment"]["occurred_at_start"] == "2026-03-03T00:00:00.000000Z"
-    assert claims["booked appointment"]["resolution_status"] == "resolved"
+    assert set(claims) == {"visit museum", "book appointment"}
+    assert claims["visit museum"]["occurred_at_start"] is None
+    assert claims["visit museum"]["resolution_status"] == "pending"
+    assert claims["book appointment"]["occurred_at_start"] == "2026-03-03T00:00:00.000000Z"
+    assert claims["book appointment"]["resolution_status"] == "resolved"
 
 
 def test_quantity_is_bound_to_event_clause_and_valid_range_keeps_predicate() -> None:
@@ -2205,11 +2459,11 @@ def test_quantity_is_bound_to_event_clause_and_valid_range_keeps_predicate() -> 
     control_claim = control.only_claim()
     bounded_claim = bounded.only_claim()
 
-    assert control_claim["count_key"] == "visited museum"
+    assert control_claim["count_key"] == "visit museum"
     assert control_claim["quantity_min"] == 2
     assert control_claim["quantity_max"] == 2
     assert len(control.units_for(control_claim)) == 2
-    assert bounded_claim["count_key"] == "visited museum"
+    assert bounded_claim["count_key"] == "visit museum"
     assert bounded_claim["quantity_min"] == 2
     assert bounded_claim["quantity_max"] == 3
     assert bounded_claim["resolution_status"] == "pending"
@@ -2223,7 +2477,7 @@ def test_reversed_natural_range_never_falls_back_to_an_exact_count() -> None:
     )
     claim = graph.only_claim()
 
-    assert claim["count_key"] == "visited museum"
+    assert claim["count_key"] == "visit museum"
     assert claim["quantity_max"] is None
     assert claim["resolution_status"] == "pending"
     assert graph.units_for(claim) == []
@@ -2274,7 +2528,7 @@ def test_estimated_alternative_and_vague_quantities_never_materialize_exact(
     graph = _capture_natural_graph(store, text)
     claim = graph.only_claim()
 
-    assert claim["count_key"] == "visited museum"
+    assert claim["count_key"] == "visit museum"
     assert claim["resolution_status"] == "pending"
     assert graph.units_for(claim) == []
 
@@ -2299,7 +2553,7 @@ def test_unambiguous_exact_quantity_forms_materialize_every_unit(
     )
     claim = graph.only_claim()
 
-    assert claim["count_key"] == "visited museum"
+    assert claim["count_key"] == "visit museum"
     assert claim["quantity_min"] == expected_quantity
     assert claim["quantity_max"] == expected_quantity
     assert len(graph.units_for(claim)) == expected_quantity
@@ -2313,7 +2567,7 @@ def test_word_bounded_range_is_preserved_but_not_falsely_exact() -> None:
     )
     claim = graph.only_claim()
 
-    assert claim["count_key"] == "visited museum"
+    assert claim["count_key"] == "visit museum"
     assert claim["quantity_min"] == 3
     assert claim["quantity_max"] == 5
     assert claim["resolution_status"] == "pending"
@@ -2344,7 +2598,7 @@ def test_alternative_dates_stay_ambiguous_instead_of_choosing_first() -> None:
     )
     claim = graph.only_claim()
 
-    assert claim["count_key"] == "visited museum"
+    assert claim["count_key"] == "visit museum"
     assert claim["occurred_at_start"] is None
     assert claim["resolution_status"] == "pending"
     assert graph.units_for(claim) == []
@@ -2353,10 +2607,10 @@ def test_alternative_dates_stay_ambiguous_instead_of_choosing_first() -> None:
 @pytest.mark.parametrize(
     ("past", "expected_key"),
     [
-        ("baked cookies", "baked cookies"),
+        ("baked cookies", "bake cookies"),
         ("created a clay sculpture", "created sculpture"),
         ("stopped the timer", "stopped timer"),
-        ("walked the trail", "walked trail"),
+        ("walked the trail", "walk trail"),
     ],
 )
 def test_generic_past_tense_surfaces_remain_exact_predicate_identity(
@@ -2711,8 +2965,9 @@ def test_zero_candidate_chunk_requires_then_accepts_explicit_source_review() -> 
         "[USER]: Chose a venue on 2023-05-30.",
         "[USER]: Was interviewed by Acme yesterday.",
         "[USER]: My visit was helpful.",
-        "[USER]: Yesterday, I taught a class.",
-        "[USER]: On 2023-05-30, I taught a class.",
+        # "Yes," is not a recognized discourse opener and "After lunch," is not
+        # a resolvable time expression, so neither is stripped and neither
+        # assertion is parsed. The guard must still refuse to sign them off.
         "[USER]: Yes, I taught a class on 2023-05-30.",
         "[USER]: After lunch, I taught a class.",
     ],
@@ -2746,6 +3001,45 @@ def test_unrecognized_plausible_user_assertion_cannot_auto_review_no_occurrence(
     assert summary["unreviewed_count"] == 1
     assert summary["items"][0]["disposition"] == "no_occurrence"
     assert summary["items"][0]["review_status"] == "candidate"
+
+
+@pytest.mark.parametrize(
+    "raw_text",
+    [
+        "[USER]: Yesterday, I taught a class.",
+        "[USER]: On 2023-05-30, I taught a class.",
+        "[USER]: By the way, I taught a class on 2023-05-30.",
+    ],
+)
+def test_fronted_time_and_discourse_openers_are_accounted_not_unrecognized(
+    raw_text: str,
+) -> None:
+    # These are the same assertion in a different word order. The parser now
+    # recognizes them, so the chunk carries a durable occurrence claim instead
+    # of an unaccounted plausible assertion that blocks signing.
+    store = _store()
+    result = VNextCaptureService(store).capture_source(
+        SourceCaptureInput(
+            source_type="conversation",
+            raw_text=raw_text,
+            metadata_json={"session_date": "2023-05-31T12:00:00Z"},
+        )
+    )
+    chunk = store.list_source_chunks(str(result.source_id))[0]
+
+    reconcile_chunk_extraction_disposition(
+        store,
+        source_chunk_id=str(chunk["id"]),
+        actor_type="system",
+        reviewer_id="automated-corpus-review",
+        reason="Automated fresh-corpus extraction review.",
+    )
+    summary = store.summarize_occurrence_extraction_accounting(
+        extractor_version=OCCURRENCE_EXTRACTOR_VERSION,
+        source_ids=[str(result.source_id)],
+    )
+
+    assert summary["items"][0]["disposition"] != "no_occurrence"
 
 
 @pytest.mark.parametrize(

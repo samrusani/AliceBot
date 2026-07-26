@@ -1003,6 +1003,88 @@ def test_signed_complete_closure_disjoint_unit_does_not_block_exactness() -> Non
     }
 
 
+@pytest.mark.parametrize(
+    ("stored_action", "queried_action"),
+    [
+        ("made", "baked"),
+        ("cooked", "baked"),
+        ("got", "bought"),
+        ("watched", "saw"),
+    ],
+)
+def test_a_near_synonym_leaf_never_earns_an_exact_answer(
+    stored_action: str,
+    queried_action: str,
+) -> None:
+    """A store holding only "I made a cake" must not answer "how many cakes did
+    I bake?" with an exact zero.
+
+    The reviewed vocabulary folds inflections and a few synonyms; it does not
+    partition the action space. ``make`` and ``bake`` are separate leaves that
+    routinely describe one event, so a non-matching unit under a sibling leaf
+    is an unknown relation, never proven disjointness. If any code path ever
+    reads "different canonical leaf" as "different event", this test fails with
+    a confidently wrong count.
+    """
+
+    units, evidence = _signed_rows(1)
+    stored = build_occurrence_predicate_atom(action=stored_action, object_leaf="cake")
+    units[0]["predicate_json"] = stored
+    units[0]["count_key"] = f"{stored_action} cake"
+    _resign_reviewed_unit(units[0], [evidence[0]])
+    queried = build_occurrence_predicate_atom(action=queried_action, object_leaf="cake")
+
+    aggregation = _aggregate(
+        units=units,
+        evidence=evidence,
+        coverage=_coverage(),
+        requested_end="2026-04-01T00:00:00Z",
+        query_selector_keys=tuple(queried["selector_keys"]),
+        query_predicates=(queried,),
+    )
+
+    # No matching unit and no proven disjointness leaves nothing countable, so
+    # the reader stays silent rather than emitting exact zero.
+    assert aggregation is None
+
+
+def test_a_sibling_leaf_unit_blocks_exactness_for_a_real_match() -> None:
+    """The same hazard with one genuine match present.
+
+    Truth is two cake events, one stored as ``bake`` and one as ``make``. The
+    honest answer is "at least 1", never "exactly 1".
+    """
+
+    units, evidence = _signed_rows(2)
+    baked = build_occurrence_predicate_atom(action="baked", object_leaf="cake")
+    made = build_occurrence_predicate_atom(action="made", object_leaf="cake")
+    units[0]["predicate_json"] = baked
+    units[0]["count_key"] = "bake cake"
+    _resign_reviewed_unit(units[0], [evidence[0]])
+    units[1]["predicate_json"] = made
+    units[1]["count_key"] = "make cake"
+    _resign_reviewed_unit(units[1], [evidence[1]])
+
+    aggregation = _aggregate(
+        units=units,
+        evidence=evidence,
+        coverage=_coverage(),
+        requested_end="2026-04-01T00:00:00Z",
+        query_selector_keys=tuple(baked["selector_keys"]),
+        query_predicates=(baked,),
+    )
+
+    assert aggregation is not None
+    assert aggregation["answer_kind"] == "at_least"
+    assert aggregation["lower_bound"] == 1
+    assert aggregation["accepted_units"] == {
+        "matching": 1,
+        "disjoint_proven": 0,
+        "relation_unknown": 1,
+    }
+    assert "count" not in aggregation
+
+
 @pytest.mark.parametrize("closure_complete", [False, True])
 def test_nonmatching_unit_must_still_have_a_current_receipt(
     closure_complete: bool,

@@ -6269,13 +6269,66 @@ def test_occurrence_reader_emits_exact_signed_count_without_proposal_inference(
     assert store.snapshot_end_calls == 1
 
 
-def test_occurrence_reader_never_emits_selector_only_exact_zero_for_unknown_surface() -> None:
+def test_occurrence_reader_meets_a_stored_past_surface_with_a_present_query() -> None:
+    # "visited" and "visit" fold onto the same reviewed canonical leaf, so the
+    # write side and the query side reach the same selector instead of missing
+    # each other over inflection alone.
     memories, units, evidence = _reviewed_occurrence_rows(1)
     units[0]["count_key"] = "visited museum"
     units[0]["canonical_text"] = "I visited the museum."
     units[0]["predicate_json"] = build_occurrence_predicate_atom(
         action="visited",
         object_leaf="museum",
+    )
+    _resign_occurrence_test_unit(units[0], evidence)
+    store = OccurrenceReaderStore(
+        memories=memories,
+        units=units,
+        evidence=evidence,
+        coverage=_complete_occurrence_coverage(),
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="How many times did I visit museums?",
+            reference_time=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    assert pack["aggregation"]["answer_kind"] == "exact"
+    assert pack["aggregation"]["count"] == 1
+    assert pack["aggregation"]["accepted_units"] == {
+        "matching": 1,
+        "disjoint_proven": 0,
+        "relation_unknown": 0,
+    }
+    assert any(call["selector_key"] is None for call in store.occurrence_search_calls)
+    assert all(call["as_of"] is store.occurrence_search_calls[0]["as_of"] for call in store.occurrence_search_calls)
+
+
+@pytest.mark.parametrize(
+    ("stored_action", "stored_object", "count_key", "canonical_text"),
+    [
+        # The original target: a reviewed predicate that simply is not the one
+        # being asked about. Sharing the reviewed ``visit`` leaf with the query
+        # is exactly what makes this the sharpest case.
+        ("visited", "gallery", "visited gallery", "I visited the gallery."),
+        # An unreviewed surface, which proves nothing in either direction.
+        ("polished", "meteorite", "polished meteorite", "I polished the meteorite."),
+    ],
+)
+def test_occurrence_reader_never_emits_selector_only_exact_zero_for_unknown_surface(
+    stored_action: str,
+    stored_object: str,
+    count_key: str,
+    canonical_text: str,
+) -> None:
+    memories, units, evidence = _reviewed_occurrence_rows(1)
+    units[0]["count_key"] = count_key
+    units[0]["canonical_text"] = canonical_text
+    units[0]["predicate_json"] = build_occurrence_predicate_atom(
+        action=stored_action,
+        object_leaf=stored_object,
     )
     _resign_occurrence_test_unit(units[0], evidence)
     store = OccurrenceReaderStore(
