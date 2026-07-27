@@ -31,20 +31,39 @@ evidence base (real-host single-tenant deployment contract executed end to
 end, least-privilege operations, encrypted off-host backups with a tested
 restore, recorded security disposition) shipped in Phases 4 and 5.
 
-1. **Counting substrate (recommended Phase 6).** Multi-session accuracy is
-   the largest measured weakness, and Phase 4 forensics attribute the
-   dominant failures to undercounting. Phase 4 also proved that no
-   query-time mechanism over the current store can earn a count (the
-   recorded NO-GO in the Sprint 4 handoff; the count statistic shipped
-   trace-only). The fix is a substrate change: one reviewed occurrence unit
-   per countable event, established at write time, with provenance-aware
-   deduplication and honest ranges where evidence is ambiguous. Phase 6
-   work has not begun; when authorized it starts as a receipt-bound
-   carrier on the published `v0.14.0`.
-2. **Dogfood the agent interface daily.** Still open, and no build phase
-   can deliver it. Exercise the eleven-tool MCP core and equivalent
-   HTTP/CLI flows against a live deployment; measure correction quality,
-   review burden, project-scope usability, and end-to-end latency.
+1. **Dogfood the agent interface daily.** Still open, no build phase can
+   deliver it, and it now gates the counting decision below. Exercise the
+   eleven-tool MCP core and equivalent HTTP/CLI flows against a live
+   deployment; measure correction quality, review burden, project-scope
+   usability, and end-to-end latency.
+2. **Counting substrate (Phase 6): attempted, and parked.** Multi-session
+   accuracy is the largest measured weakness on LongMemEval, and Phase 4
+   forensics attribute the dominant failures to undercounting. Phase 4 also
+   proved that no query-time mechanism over the then-current store could
+   earn a count. Phase 6 built the substrate change: one reviewed occurrence
+   unit per countable event, established at write time, with
+   provenance-aware deduplication and honest ranges. The work is preserved
+   unmerged on `codex/phase6-counting-substrate` and is **parked, not
+   abandoned**.
+
+   What it achieved: a correct, conservative substrate with write-time
+   occurrence identity, provable sums with provenance, review gating, and no
+   reachable exact answer. Occurrence extraction from ordinary English went
+   from near zero to a small nonzero count, the query side parses ordinary
+   count questions or refuses cleanly, and relative date windows resolve.
+   Adversarial review found and removed a mechanism that would have reported
+   confidently wrong counts.
+
+   Why it is parked: the deterministic extractor recovers too few events from
+   real conversational prose to reach the acceptance target, and the query
+   and write stages are each short of it independently. The remaining gap is
+   semantic event extraction from arbitrary English, which pattern rules are
+   poorly suited to. The unused lever is model assistance at capture time
+   under the existing review-gated proposal pattern, which the design has
+   always permitted and which no increment has attempted; the house rule
+   barring model calls in pack compilation is unaffected. Any next attempt
+   should take that route and should be measured against real usage as well
+   as the benchmark, which is why dogfooding now precedes it.
 3. **Scale end-to-end recall past the FTS wall.** The vector stage stays
    interactive at 100k memories (resident cache; published in
    `docs/benchmarks/scale/`). The remaining wall at very large corpora is
