@@ -26,7 +26,7 @@
     "test:mvp:validation-matrix": "vitest run test/periphery-cut.test.ts lib/legacy-surfaces.server.test.ts components/shell-basics.test.tsx app/approvals/page.test.tsx app/tasks/page.test.tsx app/artifacts/page.test.tsx app/gmail/page.test.tsx app/calendar/page.test.tsx app/memories/page.test.tsx app/entities/page.test.tsx components/trace-list.test.tsx lib/api.test.ts"
   },
   "dependencies": {
-    "next": "15.5.21",
+    "next": "16.2.12",
     "react": "19.2.7",
     "react-dom": "19.2.7"
   },
