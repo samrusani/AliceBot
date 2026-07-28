@@ -541,8 +541,18 @@ def test_workflow_uses_full_action_shas_and_no_unpinned_images() -> None:
     pins = deployment.validate_supply_chain_pins(workflow)
 
     assert pins == {"actions": 5, "images": 0}
+    # Derive the pin actually in the workflow rather than hardcoding a digest,
+    # so this mutation keeps biting after a routine action bump instead of
+    # silently becoming a no-op replace that raises nothing.
+    checkout_pin = re.search(r"actions/checkout@([0-9a-f]{40})", workflow)
+    assert checkout_pin is not None, "workflow no longer pins actions/checkout by digest"
     with pytest.raises(deployment.DeploymentContractError) as action_error:
-        deployment.validate_supply_chain_pins(workflow.replace("actions/checkout@9c091", "actions/checkout@v7 # 9c091"))
+        deployment.validate_supply_chain_pins(
+            workflow.replace(
+                f"actions/checkout@{checkout_pin.group(1)}",
+                f"actions/checkout@v7 # {checkout_pin.group(1)}",
+            )
+        )
     assert action_error.value.code == "workflow_action_unpinned"
 
     workflow_with_floating_image = workflow.replace(

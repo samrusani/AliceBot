@@ -978,7 +978,7 @@ def test_ops_workflow_has_required_triggers_full_history_and_atomic_pins() -> No
     assert "fetch-depth: 0" in workflow
     assert "postgresql-client-16" in workflow
     assert 'echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"' in workflow
-    assert "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7" in workflow
+    assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7" in workflow
     assert "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6" in workflow
     assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7" in workflow
     assert "pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb" in workflow
