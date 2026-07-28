@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -104,7 +105,7 @@ def test_ops_job_preserves_check_identity_full_history_and_action_pins() -> None
     }
     assert (
         _field_value(_step(job, "Set up Python"), "uses", 8)
-        == "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
+        == "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
     )
     assert (
         _field_value(_step(job, "Upload sanitized evidence"), "uses", 8)
@@ -243,18 +244,34 @@ def test_raw_workflow_parser_rejects_shadow_steps_keys_and_comments() -> None:
     with pytest.raises(AssertionError, match="duplicate workflow mapping key: PGUSER"):
         _simple_mapping(_block(duplicate_env_setup, "env:", 8), 10)
 
-    checkout_pin = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+    # Derive both pins and their trailing comments from the workflow rather than
+    # hardcoding them. A pinned literal here silently decays into a no-op replace
+    # after any routine action bump, which retires the mutation while the test
+    # keeps passing.
+    checkout_use = re.search(
+        r"^        uses: (actions/checkout@[0-9a-f]{40})(.*)$", workflow, re.MULTILINE
+    )
+    python_use = re.search(
+        r"^        uses: (actions/setup-python@[0-9a-f]{40})(.*)$", workflow, re.MULTILINE
+    )
+    assert checkout_use is not None, "workflow no longer pins actions/checkout by digest"
+    assert python_use is not None, "workflow no longer pins actions/setup-python by digest"
+    checkout_pin = checkout_use.group(1)
     wrong_pin = "actions/checkout@0000000000000000000000000000000000000000"
     scoped_pin_workflow = workflow.replace(
-        f"        uses: {checkout_pin} # v7\n",
+        f"        uses: {checkout_pin}{checkout_use.group(2)}\n",
         f"        uses: {wrong_pin} # {checkout_pin}\n",
         1,
     ).replace(
-        "        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6\n",
+        f"        uses: {python_use.group(1)}{python_use.group(2)}\n",
         f"        uses: {checkout_pin} # wrong step\n",
         1,
     )
     assert scoped_pin_workflow != workflow
+    # Both halves of the mutation must have landed, or the scoping assertions
+    # below prove nothing.
+    assert wrong_pin in scoped_pin_workflow
+    assert "# wrong step" in scoped_pin_workflow
     scoped_job = _block(scoped_pin_workflow, "ops-evidence:", 2)
     scoped_checkout = _step(scoped_job, "Checkout full history")
     assert _field_value(scoped_checkout, "uses", 8) == wrong_pin
