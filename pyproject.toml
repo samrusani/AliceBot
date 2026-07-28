@@ -44,7 +44,7 @@ dev = [
   "pytest-cov>=6.2,<7.0",
   "ruff>=0.12,<1.0",
   "twine>=6.1,<7.0",
-  "virtualenv>=20.32,<21.0",
+  "virtualenv>=20.32,<22.0",
 ]
 
 [project.scripts]
