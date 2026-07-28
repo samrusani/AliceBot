@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
 import logging
+import re
 from typing import Callable, Mapping, cast
 from uuid import UUID, uuid4
 
@@ -224,11 +225,19 @@ EXPIRE_BLOCKED_STATUSES = ("superseded", "rejected")
 # NULL. Stores that grow a real clear_memory_valid_to seam make this
 # sentinel unnecessary; until then it is recorded in metadata_json.validity.
 VALID_TO_UNBOUNDED_SENTINEL = "9999-12-31T23:59:59Z"
+# Credential prefixes only count when they start a token and are followed by
+# key-shaped material. Matching them as bare substrings read "task-list" and
+# "risk-limit" as `sk-` keys, and a person named "Akia" as an AWS key id.
+SECRET_PREFIX_PATTERNS = (
+    re.compile(r"(?<![0-9a-z])sk-[0-9a-z_-]{8,}"),
+    re.compile(r"(?<![0-9a-z])ghp_[0-9a-z]{8,}"),
+    re.compile(r"(?<![0-9a-z])xoxb-[0-9a-z-]{8,}"),
+    re.compile(r"(?<![0-9a-z])akia[0-9a-z]{12,}"),
+)
+
+# Descriptive markers stay substring matches. They do not occur inside ordinary
+# words, and they legitimately appear embedded, as in "mypassword=hunter2".
 SECRET_MARKERS = (
-    "sk-",
-    "ghp_",
-    "xoxb-",
-    "akia",
     "api_key",
     "access_token",
     "refresh_token",
@@ -429,7 +438,46 @@ def _object_tuple(value: object) -> tuple[object, ...]:
 
 def _contains_secret_marker(text: str) -> bool:
     folded = text.casefold()
-    return any(marker in folded for marker in SECRET_MARKERS)
+    if any(marker in folded for marker in SECRET_MARKERS):
+        return True
+    return any(pattern.search(folded) for pattern in SECRET_PREFIX_PATTERNS)
+
+
+def _flatten_text(value: object) -> list[str]:
+    """Every string reachable inside a caller-supplied structure, keys included."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        flattened: list[str] = []
+        for key, item in value.items():
+            if isinstance(key, str):
+                flattened.append(key)
+            flattened.extend(_flatten_text(item))
+        return flattened
+    if isinstance(value, (list, tuple)):
+        flattened = []
+        for item in value:
+            flattened.extend(_flatten_text(item))
+        return flattened
+    if value is None:
+        return []
+    return [str(value)]
+
+
+def _request_contains_secret_marker(request: MemoryCommitRequest) -> bool:
+    """Scan every caller-supplied text field, not just the canonical body.
+
+    A credential pasted into the title, excerpt, rationale, or source refs is
+    stored and later returned inside context packs exactly like body text, so
+    guarding one field only moves the leak rather than closing it.
+    """
+    fields = [request.title, request.canonical_text]
+    if request.conversation_excerpt:
+        fields.append(request.conversation_excerpt)
+    if request.rationale:
+        fields.append(request.rationale)
+    fields.extend(_flatten_text(request.source_refs))
+    return any(_contains_secret_marker(value) for value in fields)
 
 
 def _source_ref_values(value: object) -> list[str]:
@@ -569,7 +617,7 @@ def evaluate_memory_commit_policy(
         reasons.append("agent_policy_blocked")
         mode = "reject"
         status = "rejected"
-    elif _contains_secret_marker(request.canonical_text):
+    elif _request_contains_secret_marker(request):
         reasons.append("unsafe_secret_storage")
         mode = "reject"
         status = "rejected"
