@@ -98,7 +98,7 @@ def test_ops_job_preserves_check_identity_full_history_and_action_pins() -> None
     assert _field_value(job, "name", 4) == JOB_NAME
     checkout = _step(job, "Checkout full history")
     assert _direct_keys(checkout, 8) == {"uses", "with"}
-    assert _field_value(checkout, "uses", 8) == "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
+    assert _field_value(checkout, "uses", 8) == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
     assert _simple_mapping(_block(checkout, "with:", 8), 10) == {
         "fetch-depth": "0",
     }
@@ -243,7 +243,7 @@ def test_raw_workflow_parser_rejects_shadow_steps_keys_and_comments() -> None:
     with pytest.raises(AssertionError, match="duplicate workflow mapping key: PGUSER"):
         _simple_mapping(_block(duplicate_env_setup, "env:", 8), 10)
 
-    checkout_pin = "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
+    checkout_pin = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
     wrong_pin = "actions/checkout@0000000000000000000000000000000000000000"
     scoped_pin_workflow = workflow.replace(
         f"        uses: {checkout_pin} # v7\n",
