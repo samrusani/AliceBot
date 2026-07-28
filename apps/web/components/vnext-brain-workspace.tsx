@@ -131,6 +131,11 @@ export function VNextBrainWorkspace({
   ]);
   const [operatorAgentApiKey, setOperatorAgentApiKey] = useState("");
   const [operatorAgentApiKeyActive, setOperatorAgentApiKeyActive] = useState(false);
+  const [previousLiveRefreshInputs, setPreviousLiveRefreshInputs] = useState(() => ({
+    apiBaseUrl,
+    liveModeReady,
+    userId,
+  }));
 
   const [captureTitle, setCaptureTitle] = useState("Launch note");
   const [captureText, setCaptureText] = useState(
@@ -138,7 +143,8 @@ export function VNextBrainWorkspace({
   );
   const [defaultDomain, setDefaultDomain] = useState<Domain>("project");
   const [defaultSensitivity, setDefaultSensitivity] = useState<Sensitivity>("private");
-  const [selectedSourceId, setSelectedSourceId] = useState("");
+  const initialSelectedSource = workspace.sources[0] ?? null;
+  const [selectedSourceId, setSelectedSourceId] = useState(initialSelectedSource?.id ?? "");
   const selectedSource = useMemo(
     () => workspace.sources.find((source) => source.id === selectedSourceId) ?? workspace.sources[0] ?? null,
     [selectedSourceId, workspace.sources],
@@ -150,23 +156,56 @@ export function VNextBrainWorkspace({
         : null,
     [selectedSource, workspace.traceability.items],
   );
-  const [sourceTitleDraft, setSourceTitleDraft] = useState("");
-  const [sourceDomainDraft, setSourceDomainDraft] = useState<Domain>("project");
-  const [sourceSensitivityDraft, setSourceSensitivityDraft] = useState<Sensitivity>("private");
-  const [sourceProjectDraft, setSourceProjectDraft] = useState("");
+  const initialSelectedSourceMetadata = asRecord(initialSelectedSource?.metadata_json);
+  const [sourceTitleDraft, setSourceTitleDraft] = useState(
+    initialSelectedSource
+      ? textValue(initialSelectedSource.title) || initialSelectedSource.source_type
+      : "",
+  );
+  const [sourceDomainDraft, setSourceDomainDraft] = useState<Domain>(
+    initialSelectedSource ? asDomain(initialSelectedSource.domain) : "project",
+  );
+  const [sourceSensitivityDraft, setSourceSensitivityDraft] = useState<Sensitivity>(
+    initialSelectedSource ? asSensitivity(initialSelectedSource.sensitivity) : "private",
+  );
+  const [sourceProjectDraft, setSourceProjectDraft] = useState(
+    textValue(initialSelectedSourceMetadata.project_id) || workspace.projects[0]?.id || "",
+  );
   const [sourceReviewNote, setSourceReviewNote] = useState("Reviewed from /vnext operator console.");
+  const [previousSourceDraftInputs, setPreviousSourceDraftInputs] = useState(() => ({
+    selectedSource,
+    projects: workspace.projects,
+  }));
 
-  const [selectedReviewId, setSelectedReviewId] = useState("");
+  const initialSelectedReview = workspace.reviewItems[0] ?? null;
+  const [selectedReviewId, setSelectedReviewId] = useState(initialSelectedReview?.id ?? "");
   const selectedReview = useMemo(
     () => workspace.reviewItems.find((item) => item.id === selectedReviewId) ?? workspace.reviewItems[0] ?? null,
     [selectedReviewId, workspace.reviewItems],
   );
-  const [draftTitle, setDraftTitle] = useState("");
-  const [draftText, setDraftText] = useState("");
-  const [draftDomain, setDraftDomain] = useState<Domain>("project");
-  const [draftSensitivity, setDraftSensitivity] = useState<Sensitivity>("private");
-  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const initialSelectedReviewMetadata = asRecord(initialSelectedReview?.metadata_json);
+  const [draftTitle, setDraftTitle] = useState(
+    initialSelectedReview
+      ? textValue(initialSelectedReview.title) || memoryText(initialSelectedReview)
+      : "",
+  );
+  const [draftText, setDraftText] = useState(
+    initialSelectedReview ? memoryText(initialSelectedReview) : "",
+  );
+  const [draftDomain, setDraftDomain] = useState<Domain>(
+    initialSelectedReview ? asDomain(initialSelectedReview.domain) : "project",
+  );
+  const [draftSensitivity, setDraftSensitivity] = useState<Sensitivity>(
+    initialSelectedReview ? asSensitivity(initialSelectedReview.sensitivity) : "private",
+  );
+  const [selectedProjectId, setSelectedProjectId] = useState(
+    textValue(initialSelectedReviewMetadata.project_id) || workspace.projects[0]?.id || "",
+  );
   const [inlineConfirmationDrafts, setInlineConfirmationDrafts] = useState<Record<string, string>>({});
+  const [previousReviewDraftInputs, setPreviousReviewDraftInputs] = useState(() => ({
+    selectedReview,
+    projects: workspace.projects,
+  }));
 
   const [question, setQuestion] = useState("What should I focus on before the product review?");
   const [answer, setAnswer] = useState<AskAnswer>({
@@ -181,17 +220,25 @@ export function VNextBrainWorkspace({
     sensitivity: "private",
   });
 
-  const [openLoopTitle, setOpenLoopTitle] = useState("Confirm launch checklist owner");
+  const [openLoopTitle, setOpenLoopTitle] = useState(
+    initialSelectedReview ? memoryText(initialSelectedReview) : "Confirm launch checklist owner",
+  );
   const [openLoopDescription, setOpenLoopDescription] = useState("Created from the selected memory candidate.");
   const [openLoopDueAt, setOpenLoopDueAt] = useState("");
   const [openLoopPriority, setOpenLoopPriority] = useState("normal");
-  const [selectedOpenLoopId, setSelectedOpenLoopId] = useState("");
+  const [selectedOpenLoopId, setSelectedOpenLoopId] = useState(workspace.openLoops[0]?.id ?? "");
 
   const [newProjectName, setNewProjectName] = useState("Product launch");
   const [newProjectState, setNewProjectState] = useState("Launch ownership is unresolved.");
 
-  const [charterText, setCharterText] = useState("# ALICE.md\n\nKeep generated artifacts reviewable before promotion.");
-  const [charterSensitivity, setCharterSensitivity] = useState<Sensitivity>("private");
+  const [charterText, setCharterText] = useState(
+    workspace.brainCharter?.content_markdown ??
+      "# ALICE.md\n\nKeep generated artifacts reviewable before promotion.",
+  );
+  const [charterSensitivity, setCharterSensitivity] = useState<Sensitivity>(
+    workspace.brainCharter ? asSensitivity(workspace.brainCharter.sensitivity) : "private",
+  );
+  const [previousBrainCharter, setPreviousBrainCharter] = useState(workspace.brainCharter);
   const [schedulerDrafts, setSchedulerDrafts] = useState<
     Record<string, { timeOfDay: string; dayOfWeek: string; timezone: string }>
   >({});
@@ -208,10 +255,30 @@ export function VNextBrainWorkspace({
   const [qualityVerbosity, setQualityVerbosity] = useState("right_sized");
   const [qualityComments, setQualityComments] = useState("");
   const [selectedConnectorId, setSelectedConnectorId] = useState("telegram");
-  const [connectorEnabled, setConnectorEnabled] = useState(true);
-  const [connectorDomain, setConnectorDomain] = useState<Domain>("personal");
-  const [connectorSensitivity, setConnectorSensitivity] = useState<Sensitivity>("private");
-  const [connectorSecretRef, setConnectorSecretRef] = useState("");
+  const initialSelectedConnector =
+    INITIAL_CONNECTORS.find((connector) => connector.id === "telegram") ?? INITIAL_CONNECTORS[0];
+  const initialSelectedConnectorHealth =
+    workspace.connectorHealth.items.find(
+      (item) => item.connector_name === initialSelectedConnector.id,
+    ) ?? null;
+  const [connectorEnabled, setConnectorEnabled] = useState(
+    Boolean(initialSelectedConnectorHealth?.enabled ?? false),
+  );
+  const [connectorDomain, setConnectorDomain] = useState<Domain>(
+    asDomain(initialSelectedConnectorHealth?.default_domain ?? initialSelectedConnector.defaultDomain),
+  );
+  const [connectorSensitivity, setConnectorSensitivity] = useState<Sensitivity>(
+    asSensitivity(
+      initialSelectedConnectorHealth?.default_sensitivity ?? initialSelectedConnector.defaultSensitivity,
+    ),
+  );
+  const [connectorSecretRef, setConnectorSecretRef] = useState(
+    initialSelectedConnector.id === "browser_clipper" ? "browser.capture_token.default" : "",
+  );
+  const [previousConnectorDraftInputs, setPreviousConnectorDraftInputs] = useState(() => ({
+    connectorHealth: workspace.connectorHealth,
+    selectedConnectorId,
+  }));
   const [telegramAllowedChats, setTelegramAllowedChats] = useState("999001");
   const [localFolderPath, setLocalFolderPath] = useState("~/Notes");
   const [localFolderExtensions, setLocalFolderExtensions] = useState(".md,.txt");
@@ -220,52 +287,32 @@ export function VNextBrainWorkspace({
   const [browserClipSelection, setBrowserClipSelection] = useState("Fact: Browser clipper test content remains untrusted.");
   const [browserClipperPreparedOrigin, setBrowserClipperPreparedOrigin] = useState("");
   const [browserClipperExpiresAt, setBrowserClipperExpiresAt] = useState("");
+  const [previousBrowserClipperInputs, setPreviousBrowserClipperInputs] = useState(() => ({
+    apiBaseUrl,
+    browserClipUrl,
+    connectorDomain,
+    connectorSensitivity,
+    userId,
+  }));
 
-  const dailyArtifact = latestArtifact(workspace.artifacts, "daily_brief");
-  const weeklyArtifact = latestArtifact(workspace.artifacts, "weekly_synthesis");
-  const projectUpdateArtifacts = workspace.artifacts.filter((artifact) => artifact.artifact_type === "project_update");
-
-  const refreshWorkspace = useCallback(
-    async (successMessage?: string) => {
-      if (!liveModeReady || !apiBaseUrl || !userId) {
-        return;
-      }
+  if (
+    apiBaseUrl !== previousLiveRefreshInputs.apiBaseUrl ||
+    liveModeReady !== previousLiveRefreshInputs.liveModeReady ||
+    userId !== previousLiveRefreshInputs.userId
+  ) {
+    setPreviousLiveRefreshInputs({ apiBaseUrl, liveModeReady, userId });
+    if (liveModeReady) {
       setIsRefreshing(true);
       setStatusTone("info");
       setStatusText("Refreshing live vNext workspace...");
-      try {
-        const payload = await getVNextWorkspace(apiBaseUrl, userId);
-        const nextWorkspace = workspaceFromPayload(payload);
-        setWorkspace(nextWorkspace);
-        setDataSource("live");
-        setStatusTone("success");
-        setStatusText(successMessage ?? "Live vNext workspace loaded.");
-        setActionLog((previous) => pushBoundedLog(successMessage ?? "Live workspace refreshed.", previous));
-      } catch (error) {
-        setStatusTone("danger");
-        setStatusText(`Unable to load live workspace: ${error instanceof Error ? error.message : "Request failed"}`);
-        setDataSource("live");
-      } finally {
-        setIsRefreshing(false);
-      }
-    },
-    [apiBaseUrl, liveModeReady, userId],
-  );
-
-  useEffect(
-    () => () => {
-      clearVNextOperatorAgentApiKey();
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (liveModeReady) {
-      void refreshWorkspace("Live vNext workspace loaded.");
     }
-  }, [liveModeReady, refreshWorkspace]);
+  }
 
-  useEffect(() => {
+  if (
+    selectedSource !== previousSourceDraftInputs.selectedSource ||
+    workspace.projects !== previousSourceDraftInputs.projects
+  ) {
+    setPreviousSourceDraftInputs({ selectedSource, projects: workspace.projects });
     if (selectedSource) {
       const metadata = asRecord(selectedSource.metadata_json);
       setSelectedSourceId(selectedSource.id);
@@ -278,9 +325,13 @@ export function VNextBrainWorkspace({
       setSourceTitleDraft("");
       setSourceProjectDraft(workspace.projects[0]?.id ?? "");
     }
-  }, [selectedSource, workspace.projects]);
+  }
 
-  useEffect(() => {
+  if (
+    selectedReview !== previousReviewDraftInputs.selectedReview ||
+    workspace.projects !== previousReviewDraftInputs.projects
+  ) {
+    setPreviousReviewDraftInputs({ selectedReview, projects: workspace.projects });
     if (selectedReview) {
       setSelectedReviewId(selectedReview.id);
       setDraftTitle(textValue(selectedReview.title) || memoryText(selectedReview));
@@ -296,38 +347,122 @@ export function VNextBrainWorkspace({
       setDraftText("");
       setSelectedProjectId(workspace.projects[0]?.id ?? "");
     }
-  }, [selectedReview, workspace.projects]);
+  }
 
-  useEffect(() => {
-    if (workspace.openLoops.length > 0 && !workspace.openLoops.some((loop) => loop.id === selectedOpenLoopId)) {
-      setSelectedOpenLoopId(workspace.openLoops[0].id);
-    }
-  }, [selectedOpenLoopId, workspace.openLoops]);
+  if (
+    workspace.openLoops.length > 0 &&
+    !workspace.openLoops.some((loop) => loop.id === selectedOpenLoopId)
+  ) {
+    setSelectedOpenLoopId(workspace.openLoops[0].id);
+  }
 
-  useEffect(() => {
+  if (workspace.brainCharter !== previousBrainCharter) {
+    setPreviousBrainCharter(workspace.brainCharter);
     if (workspace.brainCharter) {
       setCharterText(workspace.brainCharter.content_markdown);
       setCharterSensitivity(asSensitivity(workspace.brainCharter.sensitivity));
     }
-  }, [workspace.brainCharter]);
+  }
 
-  useEffect(() => {
-    const connector = INITIAL_CONNECTORS.find((item) => item.id === selectedConnectorId) ?? INITIAL_CONNECTORS[0];
-    const health = workspace.connectorHealth.items.find((item) => item.connector_name === connector.id) ?? null;
+  if (
+    selectedConnectorId !== previousConnectorDraftInputs.selectedConnectorId ||
+    workspace.connectorHealth !== previousConnectorDraftInputs.connectorHealth
+  ) {
+    setPreviousConnectorDraftInputs({
+      connectorHealth: workspace.connectorHealth,
+      selectedConnectorId,
+    });
+    const connector =
+      INITIAL_CONNECTORS.find((item) => item.id === selectedConnectorId) ?? INITIAL_CONNECTORS[0];
+    const health =
+      workspace.connectorHealth.items.find((item) => item.connector_name === connector.id) ?? null;
     setConnectorEnabled(Boolean(health?.enabled ?? false));
     setConnectorDomain(asDomain(health?.default_domain ?? connector.defaultDomain));
-    setConnectorSensitivity(asSensitivity(health?.default_sensitivity ?? connector.defaultSensitivity));
-    if (connector.id === "browser_clipper") {
-      setConnectorSecretRef("browser.capture_token.default");
-    } else {
-      setConnectorSecretRef("");
-    }
-  }, [selectedConnectorId, workspace.connectorHealth]);
+    setConnectorSensitivity(
+      asSensitivity(health?.default_sensitivity ?? connector.defaultSensitivity),
+    );
+    setConnectorSecretRef(
+      connector.id === "browser_clipper" ? "browser.capture_token.default" : "",
+    );
+  }
 
-  useEffect(() => {
+  if (
+    apiBaseUrl !== previousBrowserClipperInputs.apiBaseUrl ||
+    browserClipUrl !== previousBrowserClipperInputs.browserClipUrl ||
+    connectorDomain !== previousBrowserClipperInputs.connectorDomain ||
+    connectorSensitivity !== previousBrowserClipperInputs.connectorSensitivity ||
+    userId !== previousBrowserClipperInputs.userId
+  ) {
+    setPreviousBrowserClipperInputs({
+      apiBaseUrl,
+      browserClipUrl,
+      connectorDomain,
+      connectorSensitivity,
+      userId,
+    });
     setBrowserClipperPreparedOrigin("");
     setBrowserClipperExpiresAt("");
-  }, [apiBaseUrl, browserClipUrl, connectorDomain, connectorSensitivity, userId]);
+  }
+
+  const dailyArtifact = latestArtifact(workspace.artifacts, "daily_brief");
+  const weeklyArtifact = latestArtifact(workspace.artifacts, "weekly_synthesis");
+  const projectUpdateArtifacts = workspace.artifacts.filter((artifact) => artifact.artifact_type === "project_update");
+
+  const loadWorkspace = useCallback(
+    (successMessage?: string) => {
+      if (!liveModeReady || !apiBaseUrl || !userId) {
+        return Promise.resolve();
+      }
+      return getVNextWorkspace(apiBaseUrl, userId)
+        .then((payload) => {
+          const nextWorkspace = workspaceFromPayload(payload);
+          setWorkspace(nextWorkspace);
+          setDataSource("live");
+          setStatusTone("success");
+          setStatusText(successMessage ?? "Live vNext workspace loaded.");
+          setActionLog((previous) =>
+            pushBoundedLog(successMessage ?? "Live workspace refreshed.", previous),
+          );
+        })
+        .catch((error: unknown) => {
+          setStatusTone("danger");
+          setStatusText(
+            `Unable to load live workspace: ${error instanceof Error ? error.message : "Request failed"}`,
+          );
+          setDataSource("live");
+        })
+        .finally(() => {
+          setIsRefreshing(false);
+        });
+    },
+    [apiBaseUrl, liveModeReady, userId],
+  );
+
+  const refreshWorkspace = useCallback(
+    async (successMessage?: string) => {
+      if (!liveModeReady || !apiBaseUrl || !userId) {
+        return;
+      }
+      setIsRefreshing(true);
+      setStatusTone("info");
+      setStatusText("Refreshing live vNext workspace...");
+      await loadWorkspace(successMessage);
+    },
+    [apiBaseUrl, liveModeReady, loadWorkspace, userId],
+  );
+
+  useEffect(
+    () => () => {
+      clearVNextOperatorAgentApiKey();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (liveModeReady) {
+      void loadWorkspace("Live vNext workspace loaded.");
+    }
+  }, [liveModeReady, loadWorkspace]);
 
   function handleOperatorAgentApiKeyChange(value: string) {
     clearVNextOperatorAgentApiKey();

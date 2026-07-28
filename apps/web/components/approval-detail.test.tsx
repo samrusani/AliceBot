@@ -251,4 +251,72 @@ describe("ApprovalDetail", () => {
     expect(screen.getByRole("button", { name: "Reject" })).toBeDisabled();
     expect(screen.getByText("Approve and reject controls are disabled in fixture mode.")).toBeInTheDocument();
   });
+
+  it("adopts refreshed detail objects without over-resetting write-back form state", () => {
+    const { rerender } = render(
+      <ApprovalDetail
+        initialApproval={approval}
+        detailSource="live"
+        initialExecution={execution}
+        executionSource="live"
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Memory key"), {
+      target: { value: "user.preference.supplement.magnesium" },
+    });
+    fireEvent.change(screen.getByLabelText("Memory value (JSON)"), {
+      target: { value: "not-json" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Submit memory write-back" }));
+    expect(screen.getByText("Memory value must be valid JSON.")).toBeInTheDocument();
+
+    const refreshedApproval = {
+      ...approval,
+      tool: { ...approval.tool, name: "Updated Merchant Proxy" },
+    };
+    const refreshedExecution = {
+      ...execution,
+      id: "execution-2",
+      trace_id: "trace-execution-2",
+      request_event_id: "event-request-2",
+      result_event_id: "event-result-2",
+    };
+    rerender(
+      <ApprovalDetail
+        initialApproval={refreshedApproval}
+        detailSource="live"
+        initialExecution={refreshedExecution}
+        executionSource="live"
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Updated Merchant Proxy" })).toBeInTheDocument();
+    expect(screen.getAllByText("event-result-2").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("event-request-2").length).toBeGreaterThan(0);
+    expect(screen.getByText("Memory value must be valid JSON.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Memory key")).toHaveValue("user.preference.supplement.magnesium");
+    expect(screen.getByLabelText("Memory value (JSON)")).toHaveValue("not-json");
+
+    rerender(
+      <ApprovalDetail
+        initialApproval={refreshedApproval}
+        detailSource="live"
+        initialExecution={null}
+        executionSource="live"
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+      />,
+    );
+
+    expect(
+      screen.getByText("Execution evidence is required before memory write-back can be submitted."),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Memory key")).toHaveValue("user.preference.supplement.magnesium");
+    expect(screen.getByLabelText("Memory value (JSON)")).toHaveValue("not-json");
+  });
 });

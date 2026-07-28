@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 
 import { useRouter } from "next/navigation";
 
@@ -93,8 +93,25 @@ export function WorkflowMemoryWritebackForm({
       hasPreview: Boolean(preview),
     }),
   );
+  const [previousStatusInputs, setPreviousStatusInputs] = useState(() => ({
+    evidenceEventCount: evidenceEventIds.length,
+    liveModeReady,
+    preview,
+    source,
+  }));
 
-  useEffect(() => {
+  if (
+    evidenceEventIds.length !== previousStatusInputs.evidenceEventCount ||
+    liveModeReady !== previousStatusInputs.liveModeReady ||
+    preview !== previousStatusInputs.preview ||
+    source !== previousStatusInputs.source
+  ) {
+    setPreviousStatusInputs({
+      evidenceEventCount: evidenceEventIds.length,
+      liveModeReady,
+      preview,
+      source,
+    });
     setStatusTone("info");
     setStatusText(
       defaultStatusText({
@@ -104,7 +121,7 @@ export function WorkflowMemoryWritebackForm({
         hasPreview: Boolean(preview),
       }),
     );
-  }, [evidenceEventIds.length, liveModeReady, preview, source]);
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

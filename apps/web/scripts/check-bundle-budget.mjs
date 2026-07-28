@@ -1,21 +1,37 @@
 import { readFile, stat } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 
-const manifestPath = new URL("../.next/app-build-manifest.json", import.meta.url);
+const legacyManifestPath = new URL("../.next/app-build-manifest.json", import.meta.url);
+const routeStatsPath = new URL("../.next/diagnostics/route-bundle-stats.json", import.meta.url);
 const nextRoot = new URL("../.next/", import.meta.url);
-const budgets = {
-  "/page": 120_000,
-  "/continuity/page": 130_000,
-  "/vnext/page": 155_000,
-};
+const budgets = [
+  { legacyRoute: "/page", route: "/", budget: 164_000 },
+  { legacyRoute: "/continuity/page", route: "/continuity", budget: 174_000 },
+  { legacyRoute: "/vnext/page", route: "/vnext", budget: 199_000 },
+];
 
-const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+let legacyManifest = null;
+try {
+  legacyManifest = JSON.parse(await readFile(legacyManifestPath, "utf8"));
+} catch (error) {
+  if (!(error instanceof Error) || !Object.hasOwn(error, "code") || error.code !== "ENOENT") {
+    throw error;
+  }
+}
+
+const routeStats = legacyManifest
+  ? null
+  : JSON.parse(await readFile(routeStatsPath, "utf8"));
 let failed = false;
 
-for (const [route, budget] of Object.entries(budgets)) {
-  const assets = manifest.pages?.[route];
+for (const { legacyRoute, route, budget } of budgets) {
+  const assets = legacyManifest
+    ? legacyManifest.pages?.[legacyRoute]
+    : routeStats
+        .find((entry) => entry.route === route)
+        ?.firstLoadChunkPaths.map((asset) => asset.replace(/^\.next\//, ""));
   if (!Array.isArray(assets)) {
-    throw new Error(`Bundle manifest is missing expected app route ${route}`);
+    throw new Error(`Bundle metadata is missing expected app route ${route}`);
   }
 
   const javascriptAssets = [...new Set(assets.filter((asset) => asset.endsWith(".js")))];

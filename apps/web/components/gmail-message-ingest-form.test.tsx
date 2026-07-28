@@ -134,4 +134,84 @@ describe("GmailMessageIngestForm", () => {
     ).toBeInTheDocument();
     expect(ingestGmailMessageMock).not.toHaveBeenCalled();
   });
+
+  it("preserves typed input and result while reconciling workspace and status props", async () => {
+    const secondWorkspace = {
+      ...baseWorkspaces[0],
+      id: "workspace-2",
+      task_id: "task-2",
+      local_path: "/tmp/task-workspaces/task-2",
+    };
+    const replacementWorkspace = {
+      ...baseWorkspaces[0],
+      id: "workspace-3",
+      task_id: "task-3",
+      local_path: "/tmp/task-workspaces/task-3",
+    };
+    ingestGmailMessageMock.mockResolvedValue({
+      account: baseAccount,
+      message: {
+        provider_message_id: "msg-001",
+        artifact_relative_path: "gmail/acct-owner-001/msg-001.eml",
+        media_type: "message/rfc822",
+      },
+      artifact: {
+        id: "artifact-1",
+        task_id: "task-1",
+        task_workspace_id: "workspace-2",
+        status: "registered",
+        ingestion_status: "ingested",
+        relative_path: "gmail/acct-owner-001/msg-001.eml",
+        media_type_hint: "message/rfc822",
+        created_at: "2026-03-18T10:10:00Z",
+        updated_at: "2026-03-18T10:11:00Z",
+      },
+      summary: {
+        total_count: 1,
+        total_characters: 128,
+        media_type: "message/rfc822",
+        chunking_rule: "normalized_utf8_text_fixed_window_1000_chars_v1",
+        order: ["sequence_no_asc", "id_asc"],
+      },
+    });
+
+    const renderForm = (account = baseAccount, taskWorkspaces = [baseWorkspaces[0], secondWorkspace]) => (
+      <GmailMessageIngestForm
+        account={account}
+        accountSource="live"
+        taskWorkspaces={taskWorkspaces}
+        taskWorkspaceSource="live"
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+      />
+    );
+    const { rerender } = render(renderForm());
+
+    fireEvent.change(screen.getByLabelText("Provider message ID"), {
+      target: { value: "msg-001" },
+    });
+    fireEvent.change(screen.getByLabelText("Task workspace"), {
+      target: { value: "workspace-2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Ingest selected message" }));
+    await screen.findByText(/Ingestion completed\./i);
+
+    rerender(renderForm({ ...baseAccount }, [{ ...baseWorkspaces[0] }, { ...secondWorkspace }]));
+    expect(screen.getByLabelText("Provider message ID")).toHaveValue("msg-001");
+    expect(screen.getByLabelText("Task workspace")).toHaveValue("workspace-2");
+    expect(screen.getByText("Enter one provider message ID and select one task workspace.")).toBeInTheDocument();
+    expect(screen.getAllByText("gmail/acct-owner-001/msg-001.eml").length).toBeGreaterThan(0);
+
+    rerender(renderForm({ ...baseAccount }, [replacementWorkspace]));
+    expect(screen.getByLabelText("Task workspace")).toHaveValue("workspace-3");
+    fireEvent.click(screen.getByRole("button", { name: "Ingest selected message" }));
+    await waitFor(() => {
+      expect(ingestGmailMessageMock).toHaveBeenLastCalledWith(
+        "https://api.example.com",
+        "gmail-account-1",
+        "msg-001",
+        { user_id: "user-1", task_workspace_id: "workspace-3" },
+      );
+    });
+  });
 });
