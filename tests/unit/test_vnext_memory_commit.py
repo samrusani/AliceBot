@@ -118,6 +118,110 @@ def test_direct_user_commit_keeps_non_identity_safeguards() -> None:
     assert external.write_mode == "propose_review"
     assert "external_source_requires_review" in external.reasons
 
+
+@pytest.mark.parametrize(
+    ("field", "payload"),
+    [
+        ("title", "sk-live_abcd1234"),
+        ("canonical_text", "The api_key for staging is tucked in here."),
+        ("conversation_excerpt", "here it is: ghp_aaaabbbbcccc"),
+        ("rationale", "stored password=hunter2 for later"),
+    ],
+)
+def test_secret_markers_are_rejected_in_every_text_field(field: str, payload: str) -> None:
+    """A credential is a leak wherever it is pasted, not only in the body.
+
+    Every one of these fields is stored and later replayed inside context packs,
+    so guarding canonical_text alone moved the leak instead of closing it.
+    """
+    decision = evaluate_memory_commit_policy(
+        identity=None,
+        request=_request(**{field: payload}),
+    )
+
+    assert decision.write_mode == "reject", f"{field} accepted a credential"
+    assert "unsafe_secret_storage" in decision.reasons
+
+
+@pytest.mark.parametrize(
+    "source_refs",
+    [
+        ("xoxb-9999-secret-token",),
+        ({"source_id": "AKIAIOSFODNN7EXAMPLE"},),
+        ({"note": {"deep": "ghp_aaaabbbbcccc"}},),
+        ({"api_key": "value-is-clean"},),
+        (["nested", ["deeper", "sk-live_abcd1234"]],),
+    ],
+)
+def test_secret_markers_are_rejected_anywhere_inside_source_refs(source_refs: tuple[object, ...]) -> None:
+    decision = evaluate_memory_commit_policy(
+        identity=None,
+        request=_request(source_refs=source_refs),
+    )
+
+    assert decision.write_mode == "reject"
+    assert "unsafe_secret_storage" in decision.reasons
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The task-list template is in docs/templates.",
+        "Reviewed the risk-limit changes today.",
+        "Akia is a colleague on the platform team.",
+        "Filed under desk-level notes.",
+        "Ask-list of questions for the retro.",
+        "Check disk-usage before the next deploy.",
+    ],
+)
+def test_ordinary_prose_is_not_read_as_a_credential(text: str) -> None:
+    """Credential prefixes must start a token, not match inside a word.
+
+    Matched as bare substrings, `sk-` fires inside "task-list", "risk-limit",
+    "desk-level" and "disk-usage", and `akia` fires on the name "Akia".
+    """
+    decision = evaluate_memory_commit_policy(
+        identity=None,
+        request=_request(canonical_text=text, domain="professional", sensitivity="internal"),
+    )
+
+    assert decision.write_mode == "commit", f"ordinary prose rejected: {text}"
+    assert "unsafe_secret_storage" not in decision.reasons
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The key is sk-live_abcd1234 for staging.",
+        "Token ghp_aaaabbbbcccc was rotated.",
+        "Slack bot uses xoxb-9999-secret-token now.",
+        "Root id AKIAIOSFODNN7EXAMPLE must be revoked.",
+        "Saved mypassword=hunter2 by mistake.",
+    ],
+)
+def test_real_credentials_are_still_rejected_after_the_boundary_fix(text: str) -> None:
+    decision = evaluate_memory_commit_policy(
+        identity=None,
+        request=_request(canonical_text=text),
+    )
+
+    assert decision.write_mode == "reject", f"credential accepted: {text}"
+    assert "unsafe_secret_storage" in decision.reasons
+
+
+def test_ordinary_source_refs_still_commit() -> None:
+    decision = evaluate_memory_commit_policy(
+        identity=None,
+        request=_request(
+            domain="professional",
+            sensitivity="internal",
+            source_refs=("doc-1", {"source_id": "doc-2"}, ["doc-3"]),
+        ),
+    )
+
+    assert decision.write_mode == "commit"
+    assert "unsafe_secret_storage" not in decision.reasons
+
     sensitive = evaluate_memory_commit_policy(
         identity=None,
         request=_request(domain="health", sensitivity="confidential"),
