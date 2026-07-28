@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import type { ApprovalExecutionResponse, ApprovalItem, ApiSource, ToolExecutionItem } from "../lib/api";
 import { EmptyState } from "./empty-state";
@@ -55,12 +55,20 @@ export function ApprovalDetail({
   const [approval, setApproval] = useState(initialApproval);
   const [execution, setExecution] = useState(initialExecution);
   const [executionPreview, setExecutionPreview] = useState<ApprovalExecutionResponse | null>(null);
+  const [previousInitialState, setPreviousInitialState] = useState(() => ({
+    approval: initialApproval,
+    execution: initialExecution,
+  }));
 
-  useEffect(() => {
+  if (
+    initialApproval !== previousInitialState.approval ||
+    initialExecution !== previousInitialState.execution
+  ) {
+    setPreviousInitialState({ approval: initialApproval, execution: initialExecution });
     setApproval(initialApproval);
     setExecution(initialExecution);
     setExecutionPreview(null);
-  }, [initialApproval, initialExecution]);
+  }
 
   if (!approval) {
     return (

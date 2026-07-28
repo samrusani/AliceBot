@@ -1,7 +1,7 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { useRouter } from "next/navigation";
 
@@ -25,6 +25,23 @@ type GmailMessageIngestFormProps = {
   apiBaseUrl?: string;
   userId?: string;
 };
+
+function defaultStatusText(options: {
+  hasAccount: boolean;
+  hasTaskWorkspace: boolean;
+  liveModeReady: boolean;
+}) {
+  if (!options.hasAccount) {
+    return "Select a Gmail account to enable single-message ingestion.";
+  }
+  if (!options.hasTaskWorkspace) {
+    return "No task workspace is available for ingestion target selection.";
+  }
+  if (options.liveModeReady) {
+    return "Enter one provider message ID and select one task workspace.";
+  }
+  return "Message ingestion is unavailable until live API configuration, live account detail, and live task workspace list are present.";
+}
 
 export function GmailMessageIngestForm({
   account,
@@ -57,47 +74,46 @@ export function GmailMessageIngestForm({
     [account, accountSource, apiBaseUrl, userId, taskWorkspaceSource, taskWorkspaces.length],
   );
 
-  const [statusText, setStatusText] = useState(
-    !account
-      ? "Select a Gmail account to enable single-message ingestion."
-      : taskWorkspaces.length === 0
-        ? "No task workspace is available for ingestion target selection."
-        : liveModeReady
-          ? "Enter one provider message ID and select one task workspace."
-          : "Message ingestion is unavailable until live API configuration, live account detail, and live task workspace list are present.",
+  const [statusText, setStatusText] = useState(() =>
+    defaultStatusText({
+      hasAccount: Boolean(account),
+      hasTaskWorkspace: taskWorkspaces.length > 0,
+      liveModeReady,
+    }),
   );
+  const [previousStatusInputs, setPreviousStatusInputs] = useState(() => ({
+    account,
+    liveModeReady,
+    taskWorkspaceCount: taskWorkspaces.length,
+  }));
 
-  useEffect(() => {
-    const hasWorkspace = taskWorkspaces.some((workspace) => workspace.id === taskWorkspaceId);
-    if (!hasWorkspace) {
-      setTaskWorkspaceId(taskWorkspaces[0]?.id ?? "");
-    }
-  }, [taskWorkspaceId, taskWorkspaces]);
+  const fallbackTaskWorkspaceId = taskWorkspaces[0]?.id ?? "";
+  if (
+    !taskWorkspaces.some((workspace) => workspace.id === taskWorkspaceId) &&
+    taskWorkspaceId !== fallbackTaskWorkspaceId
+  ) {
+    setTaskWorkspaceId(fallbackTaskWorkspaceId);
+  }
 
-  useEffect(() => {
-    if (!account) {
-      setStatusTone("info");
-      setStatusText("Select a Gmail account to enable single-message ingestion.");
-      return;
-    }
-
-    if (taskWorkspaces.length === 0) {
-      setStatusTone("info");
-      setStatusText("No task workspace is available for ingestion target selection.");
-      return;
-    }
-
-    if (!liveModeReady) {
-      setStatusTone("info");
-      setStatusText(
-        "Message ingestion is unavailable until live API configuration, live account detail, and live task workspace list are present.",
-      );
-      return;
-    }
-
+  if (
+    account !== previousStatusInputs.account ||
+    liveModeReady !== previousStatusInputs.liveModeReady ||
+    taskWorkspaces.length !== previousStatusInputs.taskWorkspaceCount
+  ) {
+    setPreviousStatusInputs({
+      account,
+      liveModeReady,
+      taskWorkspaceCount: taskWorkspaces.length,
+    });
     setStatusTone("info");
-    setStatusText("Enter one provider message ID and select one task workspace.");
-  }, [account, liveModeReady, taskWorkspaces.length]);
+    setStatusText(
+      defaultStatusText({
+        hasAccount: Boolean(account),
+        hasTaskWorkspace: taskWorkspaces.length > 0,
+        liveModeReady,
+      }),
+    );
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

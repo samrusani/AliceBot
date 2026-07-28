@@ -1,7 +1,7 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { useRouter } from "next/navigation";
 
@@ -27,6 +27,27 @@ type CalendarEventIngestFormProps = {
   apiBaseUrl?: string;
   userId?: string;
 };
+
+function defaultStatusText(options: {
+  hasAccount: boolean;
+  hasTaskWorkspace: boolean;
+  hasSelectedEvent: boolean;
+  liveModeReady: boolean;
+}) {
+  if (!options.hasAccount) {
+    return "Select a Calendar account to enable single-event ingestion.";
+  }
+  if (!options.hasTaskWorkspace) {
+    return "No task workspace is available for ingestion target selection.";
+  }
+  if (!options.hasSelectedEvent) {
+    return "Select one discovered event before submitting ingestion.";
+  }
+  if (options.liveModeReady) {
+    return "Select one task workspace to ingest the discovered event.";
+  }
+  return "Event ingestion is unavailable until live API configuration, live account detail, and live task workspace list are present.";
+}
 
 export function CalendarEventIngestForm({
   account,
@@ -61,55 +82,51 @@ export function CalendarEventIngestForm({
     [account, accountSource, apiBaseUrl, userId, taskWorkspaceSource, taskWorkspaces.length],
   );
 
-  const [statusText, setStatusText] = useState(
-    !account
-      ? "Select a Calendar account to enable single-event ingestion."
-      : taskWorkspaces.length === 0
-        ? "No task workspace is available for ingestion target selection."
-        : !hasSelectedEvent
-          ? "Select one discovered event before submitting ingestion."
-        : liveModeReady
-          ? "Select one task workspace to ingest the discovered event."
-          : "Event ingestion is unavailable until live API configuration, live account detail, and live task workspace list are present.",
+  const [statusText, setStatusText] = useState(() =>
+    defaultStatusText({
+      hasAccount: Boolean(account),
+      hasTaskWorkspace: taskWorkspaces.length > 0,
+      hasSelectedEvent,
+      liveModeReady,
+    }),
   );
+  const [previousStatusInputs, setPreviousStatusInputs] = useState(() => ({
+    account,
+    hasSelectedEvent,
+    liveModeReady,
+    taskWorkspaceCount: taskWorkspaces.length,
+  }));
 
-  useEffect(() => {
-    const hasWorkspace = taskWorkspaces.some((workspace) => workspace.id === taskWorkspaceId);
-    if (!hasWorkspace) {
-      setTaskWorkspaceId(taskWorkspaces[0]?.id ?? "");
-    }
-  }, [taskWorkspaceId, taskWorkspaces]);
+  const fallbackTaskWorkspaceId = taskWorkspaces[0]?.id ?? "";
+  if (
+    !taskWorkspaces.some((workspace) => workspace.id === taskWorkspaceId) &&
+    taskWorkspaceId !== fallbackTaskWorkspaceId
+  ) {
+    setTaskWorkspaceId(fallbackTaskWorkspaceId);
+  }
 
-  useEffect(() => {
-    if (!account) {
-      setStatusTone("info");
-      setStatusText("Select a Calendar account to enable single-event ingestion.");
-      return;
-    }
-
-    if (taskWorkspaces.length === 0) {
-      setStatusTone("info");
-      setStatusText("No task workspace is available for ingestion target selection.");
-      return;
-    }
-
-    if (!hasSelectedEvent) {
-      setStatusTone("info");
-      setStatusText("Select one discovered event before submitting ingestion.");
-      return;
-    }
-
-    if (!liveModeReady) {
-      setStatusTone("info");
-      setStatusText(
-        "Event ingestion is unavailable until live API configuration, live account detail, and live task workspace list are present.",
-      );
-      return;
-    }
-
+  if (
+    account !== previousStatusInputs.account ||
+    hasSelectedEvent !== previousStatusInputs.hasSelectedEvent ||
+    liveModeReady !== previousStatusInputs.liveModeReady ||
+    taskWorkspaces.length !== previousStatusInputs.taskWorkspaceCount
+  ) {
+    setPreviousStatusInputs({
+      account,
+      hasSelectedEvent,
+      liveModeReady,
+      taskWorkspaceCount: taskWorkspaces.length,
+    });
     setStatusTone("info");
-    setStatusText("Select one task workspace to ingest the discovered event.");
-  }, [account, hasSelectedEvent, liveModeReady, taskWorkspaces.length]);
+    setStatusText(
+      defaultStatusText({
+        hasAccount: Boolean(account),
+        hasTaskWorkspace: taskWorkspaces.length > 0,
+        hasSelectedEvent,
+        liveModeReady,
+      }),
+    );
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

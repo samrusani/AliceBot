@@ -235,6 +235,72 @@ describe("VNextPage", () => {
     expect(screen.getByText("Follow up with Sam about launch owner")).toBeInTheDocument();
   }, 60000); // heavy multi-action page test; allow bounded CI contention headroom
 
+  it("repopulates source, memory, and connector drafts when their selections change", async () => {
+    await renderVNextPage();
+
+    fireEvent.change(screen.getByLabelText("Selected source title"), {
+      target: { value: "Unsaved source draft" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Vendor legal note/ }));
+    expect(screen.getByLabelText("Selected source title")).toHaveValue("Vendor legal note");
+    expect(screen.getByLabelText("Source domain")).toHaveValue("legal");
+    expect(screen.getByLabelText("Source sensitivity")).toHaveValue("internal");
+
+    fireEvent.click(screen.getByRole("button", { name: /Launch review note/ }));
+    expect(screen.getByLabelText("Selected source title")).toHaveValue("Launch review note");
+    expect(screen.getByLabelText("Source domain")).toHaveValue("project");
+    expect(screen.getByLabelText("Source sensitivity")).toHaveValue("private");
+
+    fireEvent.change(screen.getByLabelText("Edited memory title"), {
+      target: { value: "Unsaved memory draft" },
+    });
+    fireEvent.change(screen.getByLabelText("Open-loop title"), {
+      target: { value: "Unsaved open-loop draft" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Vendor legal review is waiting for Priya/ }),
+    );
+    expect(screen.getByLabelText("Edited memory title")).toHaveValue(
+      "Vendor legal review is waiting for Priya.",
+    );
+    expect(screen.getByLabelText("Edited memory text")).toHaveValue(
+      "Vendor legal review is waiting for Priya.",
+    );
+    expect(screen.getByLabelText("Domain label")).toHaveValue("legal");
+    expect(screen.getByLabelText("Sensitivity label")).toHaveValue("internal");
+    expect(screen.getByLabelText("Assigned project")).toHaveValue("project-fixture-1");
+    expect(screen.getByLabelText("Open-loop title")).toHaveValue(
+      "Vendor legal review is waiting for Priya.",
+    );
+
+    fireEvent.change(screen.getByLabelText("Connector"), {
+      target: { value: "browser_clipper" },
+    });
+    expect(screen.getByLabelText("Enabled")).toHaveValue("enabled");
+    expect(
+      screen.getByLabelText("Default domain", { selector: "#vnext-connector-domain" }),
+    ).toHaveValue("professional");
+    fireEvent.change(
+      screen.getByLabelText("Default domain", { selector: "#vnext-connector-domain" }),
+      { target: { value: "legal" } },
+    );
+    fireEvent.change(screen.getByLabelText("Connector"), {
+      target: { value: "local_folder" },
+    });
+    expect(
+      screen.getByLabelText("Default domain", { selector: "#vnext-connector-domain" }),
+    ).toHaveValue("project");
+    fireEvent.change(screen.getByLabelText("Connector"), {
+      target: { value: "browser_clipper" },
+    });
+    expect(
+      screen.getByLabelText("Default domain", { selector: "#vnext-connector-domain" }),
+    ).toHaveValue("professional");
+    expect(screen.getByLabelText("Trusted-client capture secret ref")).toHaveValue(
+      "browser.capture_token.default",
+    );
+  }, 30000);
+
   it("refreshes Ask Alice output and generates reviewable artifacts", async () => {
     await renderVNextPage();
 

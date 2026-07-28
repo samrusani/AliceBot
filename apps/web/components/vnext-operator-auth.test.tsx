@@ -64,6 +64,49 @@ describe("VNextBrainWorkspace operator authentication", () => {
     vi.unstubAllEnvs();
   });
 
+  it.each([
+    {
+      label: "success",
+      response: new Response(JSON.stringify(EMPTY_LIVE_WORKSPACE), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+      expectedStatus: "Live vNext workspace loaded.",
+    },
+    {
+      label: "failure",
+      response: new Response(JSON.stringify({ detail: "Workspace offline" }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      }),
+      expectedStatus: "Unable to load live workspace: Workspace offline",
+    },
+  ])("starts one immediate live request and reaches the $label state", async ({ response, expectedStatus }) => {
+    let resolveWorkspaceRequest: ((value: Response) => void) | undefined;
+    fetchMock.mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveWorkspaceRequest = resolve;
+        }),
+    );
+
+    render(
+      <VNextBrainWorkspace
+        apiBaseUrl="http://127.0.0.1:8000"
+        userId="user-1"
+        initialSource="live"
+      />,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Loading live vNext workspace from the trusted API.")).toBeInTheDocument();
+    expect(screen.queryByText("Refreshing live vNext workspace...")).not.toBeInTheDocument();
+
+    resolveWorkspaceRequest?.(response);
+    expect((await screen.findAllByText(expectedStatus)).length).toBeGreaterThan(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("loads the remote same-origin page with the entered key without forwarding it to an evil origin", async () => {
     const agentApiKey = "alice_sk_remote_operator_secret";
     vi.stubEnv("NEXT_PUBLIC_ALICEBOT_API_BASE_URL", "https://alice.example.com");
@@ -230,6 +273,46 @@ describe("VNextBrainWorkspace operator authentication", () => {
     expect(window.sessionStorage.length).toBe(0);
     expect(window.location.href).not.toContain(capability);
     expect(document.documentElement.outerHTML).not.toContain(capability);
-    expect(screen.getByText(/Prepared for https:\/\/example.com/)).toBeInTheDocument();
+    const preparedPattern = /Prepared for https:\/\/example.com/;
+    expect(screen.getByText(preparedPattern)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Selected text"), {
+      target: { value: "Fact: Editing clip content does not invalidate the bound capability." },
+    });
+    expect(screen.getByText(preparedPattern)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Page URL"), {
+      target: { value: "https://example.com/changed" },
+    });
+    expect(screen.queryByText(preparedPattern)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Page URL"), {
+      target: { value: "https://example.com/article" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Issue and copy one-time bookmarklet" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(screen.getByText(preparedPattern)).toBeInTheDocument();
+
+    fireEvent.change(
+      screen.getByLabelText("Default domain", { selector: "#vnext-connector-domain" }),
+      { target: { value: "personal" } },
+    );
+    expect(screen.queryByText(preparedPattern)).not.toBeInTheDocument();
+
+    fireEvent.change(
+      screen.getByLabelText("Default domain", { selector: "#vnext-connector-domain" }),
+      { target: { value: "professional" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Issue and copy one-time bookmarklet" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(3));
+    expect(screen.getByText(preparedPattern)).toBeInTheDocument();
+
+    fireEvent.change(
+      screen.getByLabelText("Default sensitivity", {
+        selector: "#vnext-connector-sensitivity",
+      }),
+      { target: { value: "confidential" } },
+    );
+    expect(screen.queryByText(preparedPattern)).not.toBeInTheDocument();
   });
 });

@@ -154,4 +154,82 @@ describe("CalendarEventIngestForm", () => {
     expect(screen.getByText("Select one discovered event before submitting ingestion.")).toBeInTheDocument();
     expect(ingestCalendarEventMock).not.toHaveBeenCalled();
   });
+
+  it("preserves valid workspace state and resets only prop-derived status when inputs change", async () => {
+    const secondWorkspace = {
+      ...baseWorkspaces[0],
+      id: "workspace-2",
+      task_id: "task-2",
+      local_path: "/tmp/task-workspaces/task-2",
+    };
+    const replacementWorkspace = {
+      ...baseWorkspaces[0],
+      id: "workspace-3",
+      task_id: "task-3",
+      local_path: "/tmp/task-workspaces/task-3",
+    };
+    ingestCalendarEventMock.mockResolvedValue({
+      account: baseAccount,
+      event: {
+        provider_event_id: "evt-001",
+        artifact_relative_path: "calendar/acct-owner-001/evt-001.txt",
+        media_type: "text/plain",
+      },
+      artifact: {
+        id: "artifact-1",
+        task_id: "task-1",
+        task_workspace_id: "workspace-2",
+        status: "registered",
+        ingestion_status: "ingested",
+        relative_path: "calendar/acct-owner-001/evt-001.txt",
+        media_type_hint: "text/plain",
+        created_at: "2026-03-18T10:10:00Z",
+        updated_at: "2026-03-18T10:11:00Z",
+      },
+      summary: {
+        total_count: 1,
+        total_characters: 256,
+        media_type: "text/plain",
+        chunking_rule: "normalized_utf8_text_fixed_window_1000_chars_v1",
+        order: ["sequence_no_asc", "id_asc"],
+      },
+    });
+
+    const renderForm = (account = baseAccount, taskWorkspaces = [baseWorkspaces[0], secondWorkspace]) => (
+      <CalendarEventIngestForm
+        account={account}
+        accountSource="live"
+        selectedProviderEventId="evt-001"
+        selectedEventSource="live"
+        taskWorkspaces={taskWorkspaces}
+        taskWorkspaceSource="live"
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+      />
+    );
+    const { rerender } = render(renderForm());
+
+    fireEvent.change(screen.getByLabelText("Task workspace"), {
+      target: { value: "workspace-2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Ingest selected event" }));
+    await screen.findByText(/Ingestion completed\./i);
+
+    rerender(renderForm({ ...baseAccount }, [{ ...baseWorkspaces[0] }, { ...secondWorkspace }]));
+    expect(screen.getByLabelText("Task workspace")).toHaveValue("workspace-2");
+    expect(screen.getByText("Select one task workspace to ingest the discovered event.")).toBeInTheDocument();
+    expect(screen.getAllByText("calendar/acct-owner-001/evt-001.txt").length).toBeGreaterThan(0);
+
+    rerender(renderForm({ ...baseAccount }, [replacementWorkspace]));
+    expect(screen.getByLabelText("Task workspace")).toHaveValue("workspace-3");
+    fireEvent.click(screen.getByRole("button", { name: "Ingest selected event" }));
+    await waitFor(() => {
+      expect(ingestCalendarEventMock).toHaveBeenLastCalledWith(
+        "https://api.example.com",
+        "calendar-account-1",
+        "evt-001",
+        { user_id: "user-1", task_workspace_id: "workspace-3" },
+      );
+    });
+  });
 });
