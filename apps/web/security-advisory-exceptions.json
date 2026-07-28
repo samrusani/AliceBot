@@ -1,0 +1,20 @@
+{
+  "$comment": [
+    "Disclosed exceptions to the full dependency audit. Each entry names ONE",
+    "advisory URL and ONE package, must carry a written justification, and",
+    "expires on a stated date. Expired entries stop applying and fail the audit,",
+    "so an exception cannot become permanent by neglect. The production audit",
+    "never consults this file: anything reaching a shipped artifact blocks",
+    "unconditionally. Add an entry only when there is no available remediation,",
+    "and prefer fixing the dependency."
+  ],
+  "exceptions": [
+    {
+      "advisory_url": "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
+      "package": "brace-expansion",
+      "expires": "2026-09-25",
+      "scope": "development tooling only",
+      "justification": "Denial of service via unbounded brace expansion, reachable only through a maliciously crafted glob pattern. No remediation is available: the advisory covers everything up to 5.0.7, the installed 1.1.16 and 2.1.2 have no patched release in their major lines, and forcing the tree to the patched 5.0.8 requires minimatch 10, which is ESM-only with no default export and cannot be loaded by eslint. Verified 2026-07-27: brace-expansion 5.0.8 alone breaks the vitest coverage provider through test-exclude and glob, and adding a minimatch 10 override fixes coverage but breaks lint. The package is absent from the production audit set and is reached only by build and test tooling whose glob patterns come from committed configuration, never from untrusted input. Revisit when eslint and glob have migrated to brace-expansion 5."
+    }
+  ]
+}
