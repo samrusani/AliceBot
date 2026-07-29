@@ -42,7 +42,8 @@ Agent developers — people building or operating AI agents who need durable, ex
   Zero behavior change.** It relocates oversized HTTP, store, contract, MCP,
   and CLI modules behind stable facades and entrypoints without changing the
   local-first product boundary.
-- Phase 4 shipped as `v0.13.1`. Phase 5 (enterprise track) has not begun.
+- Phase 4 shipped as `v0.13.1`. Phase 5, the enterprise track, shipped as
+  `v0.14.0`. Phase 6, the counting substrate, is parked; see ROADMAP.
 
 ## Non-Goals (Now)
 - Hosted service, multi-tenant control plane, SLA, or managed cloud.

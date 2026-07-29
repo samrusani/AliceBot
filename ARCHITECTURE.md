@@ -238,7 +238,7 @@ usage justifies a separately reviewed boundary.
 - The carrier is uncommitted and targets `v0.12.0`; its independent final
   verdict is owned only by the handoff's `REVIEW_REPORT.md`. The version cut,
   exact-SHA gates, checksums, tag, GitHub Release, and PyPI readback remain
-  outside the local structural freeze. Phase 4 has not begun.
+  outside the local structural freeze.
 - `v0.10.4` is the prior published release; later changes were not part of its
   immutable artifacts.
 - The default deployment is local-first and single-workspace. A future hosted

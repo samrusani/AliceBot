@@ -19,7 +19,11 @@ This alpha is intentionally limited.
 - scheduler is local
 - model providers require user configuration
 - secrets fallback is alpha-grade unless OS or managed secret provider is configured
-- no automatic trusted-memory promotion
+- automatic memory promotion is off unless a deployment opts in with
+  `ALICE_MEMORY_PERSONA`, and is only ever available to a writer whose
+  identity was established by an issued agent key; a compromised key can
+  write durable memory, and `alicebot vnext memories quarantine` is the
+  command-line-only sweep for that case
 - passive memory capture is structured and English-biased; general conversation is not guaranteed to become memory
 - `/vnext` is the operator console, not the main agent interface
 - after any active agent key exists, the full `/vnext` console requires a dedicated unbound `admin_agent` key entered again for each mounted browser session; `trusted_local_agent` is not full admin-review parity
