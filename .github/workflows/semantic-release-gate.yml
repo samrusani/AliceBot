@@ -2,6 +2,13 @@ name: Semantic release gate
 
 on:
   workflow_dispatch:
+  # Two release-gate-only failures reached a release cut on 2026-07-29: mypy
+  # errors that only appear in the full 232-file release set, and a test that
+  # silently depended on ambient embedding configuration. Both had been latent
+  # since before v0.14.0 with CI green throughout, because these checks only
+  # ever ran at release time. Weekly, so they surface while they are cheap.
+  schedule:
+    - cron: "41 4 * * 2"
 
 permissions:
   contents: read
@@ -58,6 +65,9 @@ jobs:
           "
           test "$(psql -h localhost -U alicebot_admin -d alicebot -Atqc "SELECT split_part(extversion, '.', 1)::int > 0 OR (split_part(extversion, '.', 1)::int = 0 AND split_part(extversion, '.', 2)::int >= 8) FROM pg_extension WHERE extname = 'vector'")" = "t"
           python -m alembic -c apps/api/alembic.ini upgrade head
+
+      - name: Static release gate (lint, types, control-doc truth)
+        run: make release-static
 
       - name: Require configured embedding provider
         env:
