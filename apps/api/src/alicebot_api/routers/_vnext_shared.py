@@ -14,6 +14,8 @@ from alicebot_api.vnext_agent_control import (
     AgentIdentityValidationError,
     AgentPolicyBlockedError,
     PolicyDecision,
+    PromotionCandidate,
+    PromotionSettings,
     append_policy_events,
     evaluate_agent_policy,
     resource_project_scope,
@@ -430,6 +432,9 @@ def _vnext_policy_checked(
     target_type: str | None = None,
     target_id: str | None = None,
     require_explicit_project_scope: bool = False,
+    promotion_settings: PromotionSettings | None = None,
+    promotion_candidate: PromotionCandidate | None = None,
+    owner_verified: bool = False,
 ) -> PolicyDecision:
     _vnext_agent_record(store, identity)
     decision = evaluate_agent_policy(
@@ -441,6 +446,9 @@ def _vnext_policy_checked(
         workflow_type=workflow_type,
         write_policy=write_policy,
         require_explicit_project_scope=require_explicit_project_scope,
+        promotion_settings=promotion_settings,
+        promotion_candidate=promotion_candidate,
+        owner_verified=owner_verified,
     )
     append_policy_events(store, identity=identity, decision=decision, target_type=target_type, target_id=target_id)
     return decision

@@ -43,6 +43,7 @@ from alicebot_api.vnext_agent_control import (
     AgentPolicyBlockedError,
     agent_metadata,
     append_policy_events,
+    append_promotion_event,
     resource_project_scope,
 )
 from alicebot_api.vnext_agent_keys import (
@@ -64,9 +65,13 @@ from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_memory_commit import (
     VNextMemoryCommitService,
     VNextMemoryCommitValidationError,
+    _brain_charter_row,
+    agent_api_keys_provisioned,
     is_pending_consolidation_candidate,
+    load_promotion_settings,
     memory_commit_request_from_payload,
 )
+from alicebot_api.vnext_promotion_policy import promotion_candidate_for_proposal
 from alicebot_api.vnext_project_update_guard import (
     PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE,
     is_pending_project_update_memory,
@@ -1250,9 +1255,23 @@ def create_vnext_memory_proposal(
                 domains=(request.domain,),
                 sensitivity_allowed=(request.sensitivity,),
                 project_scope=tuple(request.project_scope),
+                promotion_settings=load_promotion_settings(brain_charter=_brain_charter_row(store)),
+                promotion_candidate=promotion_candidate_for_proposal(
+                    canonical_text=request.canonical_text,
+                    title=request.title,
+                    domain=request.domain,
+                    sensitivity=request.sensitivity,
+                    source_type=getattr(request, "source_type", None) or "trusted_agent",
+                    source_refs=request.source_refs,
+                ),
+                owner_verified=agent_api_keys_provisioned(store),
             )
             if decision.decision == "blocked":
                 return _vnext_permission_response(decision)
+            # A promoted proposal is a live memory, not a review item. With no
+            # persona configured review_required stays True and this stays the
+            # candidate row it always was.
+            review_required = decision.review_required
             proposal_id = str(uuid4())
             metadata = {
                 "proposal_id": proposal_id,
@@ -1260,7 +1279,7 @@ def create_vnext_memory_proposal(
                 "source_refs": request.source_refs,
                 "project_scope": list(decision.effective_project_scope),
                 "rationale": request.rationale,
-                "review_required": True,
+                "review_required": review_required,
                 **agent_metadata(identity, decision),
             }
             memory = store.create_memory(
@@ -1273,7 +1292,7 @@ def create_vnext_memory_proposal(
                         "source_refs": request.source_refs,
                         "rationale": request.rationale,
                     },
-                    "status": "candidate",
+                    "status": "candidate" if review_required else "active",
                     "project_id": (
                         decision.effective_project_scope[0] if len(decision.effective_project_scope) == 1 else None
                     ),
@@ -1317,16 +1336,25 @@ def create_vnext_memory_proposal(
                     "policy_decision": decision.to_record(),
                 },
             )
-            append_event(
+            if review_required:
+                append_event(
+                    store,
+                    event_type="review.item_created",
+                    actor_type="agent",
+                    actor_id=identity.agent_id,
+                    target_type="memory",
+                    target_id=str(memory["id"]),
+                    trace_id=request.trace_id or decision.trace_id,
+                    run_id=identity.agent_run_id,
+                    payload={"review_required": True, "proposal_type": request.proposal_type},
+                )
+            append_promotion_event(
                 store,
-                event_type="review.item_created",
-                actor_type="agent",
-                actor_id=identity.agent_id,
+                identity=identity,
+                decision=decision,
                 target_type="memory",
                 target_id=str(memory["id"]),
                 trace_id=request.trace_id or decision.trace_id,
-                run_id=identity.agent_run_id,
-                payload={"review_required": True, "proposal_type": request.proposal_type},
             )
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)
@@ -1336,7 +1364,11 @@ def create_vnext_memory_proposal(
     return JSONResponse(
         status_code=201,
         content=jsonable_encoder(
-            {"proposal": memory, "policy_decision": decision.to_record(), "review_required": True}
+            {
+                "proposal": memory,
+                "policy_decision": decision.to_record(),
+                "review_required": review_required,
+            }
         ),
     )
 
@@ -1362,7 +1394,17 @@ def commit_vnext_memory(
             identity = _vnext_authenticated_agent_identity(
                 store, request, user_id=request.user_id, authorization=authorization
             )
-            service = VNextMemoryCommitService(store, defer_embeddings=True)
+            # This route resolves identity through
+            # resolve_protected_agent_identity, which rejects a keyless
+            # request once any key exists. Getting here with no agent
+            # identity on a keyed install therefore does mean the
+            # authenticated human, and this is the only surface that can say
+            # so.
+            service = VNextMemoryCommitService(
+                store,
+                defer_embeddings=True,
+                owner_verified=agent_api_keys_provisioned(store),
+            )
             payload = service.commit(identity=identity, request=commit_request)
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)

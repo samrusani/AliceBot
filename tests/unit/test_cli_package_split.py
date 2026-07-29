@@ -42,9 +42,13 @@ EXPECTED_MODULES = {
     "shared.py",
     "smokes.py",
 }
+# Re-measured under each flag state after adding `alicebot vnext memories
+# quarantine`, the operator surface for the memory promotion incident
+# control. Both keys are updated together: leaving one at its old value is
+# how the other half silently rots.
 EXPECTED_PARSER_RECEIPTS = {
-    False: (158, 718, 121, 117),
-    True: (162, 751, 124, 120),
+    False: (159, 730, 122, 118),
+    True: (163, 763, 125, 121),
 }
 EXPECTED_PUBLIC_NAME_COUNT = 270
 EXPECTED_PUBLIC_NAMES_SHA256 = "8d97ffb088d5d8dea239c81589e9c109b81f7dc50b916d7bfb593ce13acae5fa"

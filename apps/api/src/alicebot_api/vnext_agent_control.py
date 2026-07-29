@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterable, Mapping
 from uuid import uuid4
 
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_promotion_policy import (
+    PromotionCandidate,
+    PromotionDecision,
+    PromotionSettings,
+    evaluate_promotion,
+    writer_trust_for,
+)
 from alicebot_api.vnext_project_scope import (
     normalize_project_identifier,
     normalize_project_scope,
@@ -71,6 +78,7 @@ WRITE_ACTIONS = {
     "memory.redact",
     "memory.accept_consolidation",
     "memory.propose",
+    "memory.quarantine",
     "http.route.mutate",
     "open_loop.create",
     "open_loop.update",
@@ -101,6 +109,12 @@ HUMAN_OR_ADMIN_ACTIONS = frozenset(
         "memory.review",
         "memory.redact",
         "memory.accept_consolidation",
+        # Quarantining everything one agent key auto-promoted is an operator
+        # action. An agent that could run it against another key could bury
+        # that key's writes; an agent that could run it against its own could
+        # not erase anything (the sweep only expires, and is itself audited),
+        # but it still has no business holding the control.
+        "memory.quarantine",
     }
 )
 
@@ -197,9 +211,13 @@ class PolicyDecision:
     review_required: bool = False
     trace_id: str = ""
     workflow_type: str | None = None
+    # Populated only when a deployment has configured a promotion persona.
+    # Left None otherwise so an unconfigured deployment records byte-identical
+    # policy payloads to the pre-promotion engine.
+    promotion: PromotionDecision | None = None
 
     def to_record(self) -> JsonObject:
-        return {
+        record: JsonObject = {
             "decision": self.decision,
             "action": self.action,
             "permission_profile": self.permission_profile,
@@ -214,6 +232,9 @@ class PolicyDecision:
             "trace_id": self.trace_id,
             "workflow_type": self.workflow_type,
         }
+        if self.promotion is not None:
+            record["promotion"] = self.promotion.to_record()
+        return record
 
 
 def _optional_text(value: object) -> str | None:
@@ -300,6 +321,9 @@ def evaluate_agent_policy(
     workflow_type: str | None = None,
     write_policy: str | None = None,
     require_explicit_project_scope: bool = False,
+    promotion_settings: PromotionSettings | None = None,
+    promotion_candidate: PromotionCandidate | None = None,
+    owner_verified: bool = False,
 ) -> PolicyDecision:
     trace_id = f"policy-{uuid4()}"
     if identity is None:
@@ -318,6 +342,26 @@ def evaluate_agent_policy(
         )
 
     profile = identity.permission_profile
+    # Promotion is computed here, from the candidate, rather than accepted
+    # ready-made: the hard floor must be recomputed by the engine on every
+    # evaluation so no caller can hand in a decision that skips it.
+    promotion: PromotionDecision | None = None
+    if promotion_settings is not None:
+        candidate = promotion_candidate or PromotionCandidate(
+            domain=domains[0] if domains else "unknown",
+            sensitivity=sensitivity_allowed[0] if sensitivity_allowed else "unknown",
+        )
+        # An agent is evaluating (the identity-None case returned above), so
+        # the candidate is agent-written whatever the caller supplied, and how
+        # far that agent is trusted comes from how its identity was
+        # established rather than from anything in the payload.
+        promotion = evaluate_promotion(
+            settings=promotion_settings,
+            candidate=replace(candidate, written_by_agent=True),
+            permission_profile=profile,
+            writer_trust=writer_trust_for(identity_auth=identity.auth, owner_verified=owner_verified),
+        )
+    promotion_permits_write = promotion is not None and promotion.auto_promote
     reasons: list[str] = []
     effective_domains, filtered_domains = _filtered_domains(profile, domains)
     effective_sensitivity, filtered_sensitivity = _filtered_sensitivity(profile, sensitivity_allowed)
@@ -390,7 +434,12 @@ def evaluate_agent_policy(
         reasons.append("trusted_or_admin_agent_required_for_artifact_export")
         decision = "blocked"
 
-    if write_policy and write_policy != "proposal_only" and profile != "admin_agent":
+    if (
+        write_policy
+        and write_policy != "proposal_only"
+        and profile != "admin_agent"
+        and not promotion_permits_write
+    ):
         reasons.append("no_auto_promotion")
         decision = "blocked"
 
@@ -433,6 +482,15 @@ def evaluate_agent_policy(
         reasons.append("trusted_or_admin_agent_required_for_scheduler_due_run")
         decision = "blocked"
 
+    # Promotion may only upgrade an outcome the engine already permitted and
+    # merely gated on review. "blocked" and "allowed_with_filtering" are
+    # untouchable here: a persona setting must never widen an authorization
+    # boundary, only remove the human gate in front of one.
+    if promotion_permits_write and decision == "requires_review":
+        reasons.append("promotion_auto_promoted")
+        decision = "allowed"
+        review_required = False
+
     return PolicyDecision(
         decision=decision,
         action=action,
@@ -447,6 +505,7 @@ def evaluate_agent_policy(
         review_required=review_required or decision == "requires_review",
         trace_id=trace_id,
         workflow_type=workflow_type,
+        promotion=promotion,
     )
 
 
@@ -682,6 +741,63 @@ def append_policy_events(
         )
 
 
+def append_promotion_event(
+    store,
+    *,
+    identity: AgentIdentity | None,
+    decision: PolicyDecision,
+    target_type: str,
+    target_id: str,
+    trace_id: str | None = None,
+) -> bool:
+    """Record a proposal that promotion wrote directly instead of gating.
+
+    Returns whether an event was appended, which is True only when a
+    configured persona actually changed the outcome. An unconfigured
+    deployment carries no promotion record, so nothing is written and the
+    event stream is unchanged.
+    """
+
+    promotion = decision.promotion
+    if promotion is None or not promotion.auto_promote or decision.review_required:
+        return False
+    append_event(
+        store,
+        event_type="memory.auto_promoted",
+        actor_type=identity.actor_type if identity is not None else "user",
+        actor_id=identity.agent_id if identity is not None else None,
+        target_type=target_type,
+        target_id=target_id,
+        trace_id=trace_id or decision.trace_id,
+        run_id=identity.agent_run_id if identity is not None else None,
+        payload={
+            "promotion": promotion.to_record(),
+            "promoted_from": "requires_review",
+            "gated_status_without_promotion": "review_required",
+            "action": decision.action,
+            "reversible_via": "memory.undo",
+        },
+    )
+    if promotion.review_is_advisory:
+        append_event(
+            store,
+            event_type="review.item_created",
+            actor_type=identity.actor_type if identity is not None else "user",
+            actor_id=identity.agent_id if identity is not None else None,
+            target_type=target_type,
+            target_id=target_id,
+            trace_id=trace_id or decision.trace_id,
+            run_id=identity.agent_run_id if identity is not None else None,
+            payload={
+                "review_required": False,
+                "review_mode": "digest",
+                "proposal_type": "auto_promoted_memory",
+                "persona": promotion.persona,
+            },
+        )
+    return True
+
+
 def agent_metadata(identity: AgentIdentity | None, decision: PolicyDecision | None = None) -> JsonObject:
     metadata: JsonObject = {}
     if identity is not None:
@@ -707,8 +823,12 @@ __all__ = [
     "AgentIdentityValidationError",
     "AgentPolicyBlockedError",
     "PolicyDecision",
+    "PromotionCandidate",
+    "PromotionDecision",
+    "PromotionSettings",
     "agent_metadata",
     "append_policy_events",
+    "append_promotion_event",
     "ensure_policy_allowed",
     "evaluate_agent_policy",
     "resource_project_scope",

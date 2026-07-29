@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
@@ -52,6 +52,18 @@ from alicebot_api.vnext_lifecycle import (
     supersession_would_cycle,
 )
 from alicebot_api.vnext_memory_version import memory_matches_snapshot
+from alicebot_api.vnext_promotion_policy import (
+    PromotionCandidate,
+    PromotionDecision,
+    PromotionSettings,
+    PromotionSettingsValidationError,
+    SECRET_ASSIGNMENT_PATTERN,
+    evaluate_promotion,
+    looks_like_credential,
+    looks_like_secret_value,
+    resolve_promotion_settings,
+    writer_trust_for,
+)
 from alicebot_api.vnext_project_update_guard import (
     PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE,
     is_pending_project_update_memory,
@@ -64,6 +76,7 @@ from alicebot_api.vnext_store import PostgresVNextStore, VNextRow
 
 MEMORY_COMMIT_WRITE_MODES = ("commit", "confirm_inline", "propose_review", "reject")
 MEMORY_COMMIT_STATUSES = ("committed", "confirmation_required", "review_required", "rejected")
+AUTO_PROMOTED_EVENT = "memory.auto_promoted"
 ENTITY_LINKING_ERROR_CODE = "entity_linking_failed"
 ENTITY_LINKING_ERROR_MESSAGE = "Memory entity linking failed"
 logger = logging.getLogger(__name__)
@@ -237,24 +250,12 @@ SECRET_PREFIX_PATTERNS = (
     re.compile(r"-----begin(?: [a-z]+)* private key-----"),
 )
 
-# "password" or "secret" embedded in a longer word is still a credential name,
-# as in PGPASSWORD. "key" is not: monkey, turkey and keyboard all contain it,
-# so it only counts as a whole underscore or hyphen separated segment.
-_SECRET_NAME_EMBEDDABLE = r"(?:password|passwd|secret|token|credentials?|apikey)"
-_SECRET_NAME_SEGMENTED = r"key"
-
-# A credential is a secret-shaped NAME assigned an actual VALUE. Prose that
-# merely mentions api_key or a private key is discussing one, not leaking one,
-# and rejecting those outright made ordinary notes unstorable.
-SECRET_ASSIGNMENT_PATTERN = re.compile(
-    r"(?<![0-9A-Za-z])"
-    r"(?:[A-Za-z0-9]+[_-])*"
-    r"(?:[A-Za-z0-9]*" + _SECRET_NAME_EMBEDDABLE + r"|" + _SECRET_NAME_SEGMENTED + r")"
-    r"(?:[_-][A-Za-z0-9]+)*"
-    r"[\"']?\s*[:=]\s*[\"']?"
-    r"(?P<value>[A-Za-z0-9_\-+/=.]{6,})",
-    re.IGNORECASE,
-)
+# SECRET_ASSIGNMENT_PATTERN and looks_like_secret_value are imported from
+# vnext_promotion_policy rather than defined twice. The floor needs the
+# same rule and cannot import from here without a cycle, and two copies of
+# "is this an assignment of a secret" is exactly how the two guards drifted
+# apart in the first place. Re-exported here so the name still resolves on
+# this module.
 
 
 class VNextMemoryCommitValidationError(ValueError):
@@ -276,9 +277,15 @@ class MemoryCommitPolicyDecision:
     requires_confirmation: bool
     requires_dashboard_review: bool
     policy_decision: PolicyDecision
+    # Present only when a persona has been configured; absent otherwise so an
+    # unconfigured deployment writes byte-identical metadata.
+    promotion: PromotionDecision | None = None
+    # The write mode this request would have received without promotion.
+    # Set only when promotion actually changed the outcome.
+    promoted_from: str | None = None
 
     def to_record(self) -> JsonObject:
-        return {
+        record: JsonObject = {
             "write_mode": self.write_mode,
             "status": self.status,
             "reason": self.reason,
@@ -288,6 +295,11 @@ class MemoryCommitPolicyDecision:
             "policy_decision": self.policy_decision.to_record(),
             "trace_id": self.policy_decision.trace_id,
         }
+        if self.promotion is not None:
+            record["promotion"] = self.promotion.to_record()
+        if self.promoted_from is not None:
+            record["promoted_from"] = self.promoted_from
+        return record
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,26 +459,33 @@ def _object_tuple(value: object) -> tuple[object, ...]:
     return tuple(value)
 
 
-def _looks_like_secret_value(value: str) -> bool:
-    """Tell a credential from an ordinary word sitting after a colon.
-
-    Real credentials carry entropy: a digit, a capital, punctuation, or simple
-    length. Without this, "the password= convention in the wiki" reads as an
-    assignment of the secret "convention".
-    """
-    if len(value) >= 24:
-        return True
-    if any(character.isdigit() or character.isupper() for character in value):
-        return True
-    return any(character in "_-+/=." for character in value)
-
-
 def _contains_secret_marker(text: str) -> bool:
+    """Whether one text carries credential-shaped material.
+
+    Delegates to the promotion floor's detector so the two guards cannot
+    drift apart. They had: measured on eleven real credential shapes, this
+    path caught four and the floor caught ten, so six genuine secrets were
+    accepted outright by the guard whose job is to refuse them, and on an
+    unconfigured deployment the floor never runs to catch them. The floor
+    also normalises, which this path did not, so a zero-width space or a
+    fullwidth "s" defeated it.
+
+    The prefix patterns and the assignment rule are still consulted after it,
+    so this stays a strict superset rather than a replacement whose coverage
+    has to be argued. The two are complementary, not redundant: the floor
+    normalises and decodes, which catches unicode, zero-width and fullwidth
+    defeats; the assignment rule reads a secret-shaped name followed by a
+    real value, which catches X_API_TOKEN= and PGPASSWORD=. Neither catches
+    the other's set.
+    """
+
+    if looks_like_credential(text):
+        return True
     folded = text.casefold()
     if any(pattern.search(folded) for pattern in SECRET_PREFIX_PATTERNS):
         return True
     return any(
-        _looks_like_secret_value(match.group("value"))
+        looks_like_secret_value(match.group("value"))
         for match in SECRET_ASSIGNMENT_PATTERN.finditer(text)
     )
 
@@ -627,11 +646,126 @@ def _append_policy_decision(
     append_policy_events(store, identity=identity, decision=decision, target_type=target_type, target_id=target_id)
 
 
+def _brain_charter_row(store: object) -> Mapping[str, object] | None:
+    """Best-effort read of the owner's Brain Charter row.
+
+    Guarded rather than assumed: several adapters and tests pass store
+    doubles that carry no charter seam, and a missing charter must resolve to
+    "no persona configured" rather than raise.
+    """
+
+    getter = getattr(store, "get_brain_charter", None)
+    if not callable(getter):
+        return None
+    try:
+        loaded = getter()
+    except Exception:  # pragma: no cover - defensive, store shapes vary
+        # Warning rather than debug: an operator who configured a persona and
+        # is silently not getting it needs a signal above the default level.
+        logger.warning("brain charter lookup failed; promotion stays review-gated", exc_info=True)
+        return None
+    return loaded if isinstance(loaded, Mapping) else None
+
+
+def load_promotion_settings(
+    *,
+    brain_charter: Mapping[str, object] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> PromotionSettings | None:
+    """Resolve the deployment's promotion persona, or None when unconfigured.
+
+    Reads configuration only: an optional already-loaded Brain Charter row and
+    the process environment. It issues no query of its own.
+
+    Fails closed. An absent charter key, an unset environment variable, an
+    empty escalation-filter value, or a malformed persona all resolve to the
+    strictest posture available rather than a loosened one; a malformed
+    persona resolves to None, meaning every write stays review-gated.
+    """
+
+    try:
+        return resolve_promotion_settings(brain_charter=brain_charter, environ=environ)
+    except PromotionSettingsValidationError:
+        logger.warning("invalid memory promotion settings; falling back to review-gated writes")
+        return None
+
+
+def agent_api_keys_provisioned(store: object) -> bool:
+    """Whether this user has at least one active agent API key.
+
+    This is one half of the owner test, and on its own it proves nothing
+    about a particular call. It is the codebase's own precondition for
+    ``resolve_protected_agent_identity`` rejecting keyless callers, so an
+    adapter that runs that check may combine it with this to conclude that an
+    identity-less request is the authenticated human.
+
+    An adapter that does NOT enforce keys must not use it. MCP resolves
+    against a key only when ``ALICE_AGENT_API_KEY`` is set in its own
+    environment, and the CLI has no enforcement path at all, so on those two
+    surfaces an absent agent identity means nobody in particular. Treating
+    "a key exists somewhere on this install" as evidence about this call is
+    what let a caller reach owner standing by omitting one optional field.
+    """
+
+    counter = getattr(store, "count_active_agent_api_keys", None)
+    if not callable(counter):
+        return False
+    try:
+        return int(counter()) > 0
+    except Exception:  # pragma: no cover - defensive, store shapes vary
+        logger.warning("agent key count failed; promotion stays review-gated", exc_info=True)
+        return False
+
+
+def writer_trust_for_commit(*, identity: AgentIdentity | None, owner_verified: bool) -> str:
+    """Classify the writer of a commit from transport facts only.
+
+    ``owner_verified`` is asserted by the adapter that actually enforced a
+    credential on this request. It is a parameter rather than something this
+    function works out, because only the adapter knows whether its own
+    surface rejects keyless callers.
+    """
+
+    return writer_trust_for(
+        identity_auth=identity.auth if identity is not None else None,
+        owner_verified=owner_verified,
+    )
+
+
+def promotion_candidate_for_request(
+    *,
+    identity: AgentIdentity | None,
+    request: MemoryCommitRequest,
+) -> PromotionCandidate:
+    """Project a commit request onto the facts the promotion layer may read.
+
+    ``written_by_agent`` is recorded for provenance only. Whether the write
+    may skip review is decided by ``writer_trust_for_commit`` from how the
+    identity was established, never from the payload or from the text.
+    """
+
+    return PromotionCandidate(
+        canonical_text=request.canonical_text,
+        title=request.title,
+        memory_type=request.memory_type,
+        domain=request.domain,
+        sensitivity=request.sensitivity,
+        intent=request.intent,
+        source_type=request.source_type,
+        source_refs=tuple(request.source_refs),
+        contradiction_refs=tuple(request.contradiction_refs),
+        conversation_excerpt=request.conversation_excerpt,
+        written_by_agent=identity is not None,
+    )
+
+
 def evaluate_memory_commit_policy(
     *,
     identity: AgentIdentity | None,
     request: MemoryCommitRequest,
     policy_decision: PolicyDecision | None = None,
+    promotion_settings: PromotionSettings | None = None,
+    writer_trust: str = "unverified",
 ) -> MemoryCommitPolicyDecision:
     base_decision = policy_decision or evaluate_agent_policy(
         identity=identity,
@@ -715,6 +849,25 @@ def evaluate_memory_commit_policy(
             mode = "propose_review"
             status = "review_required"
 
+    # Promotion runs strictly after the existing gate, on the gate's own
+    # result. It can lift "this needs a human" to "write it"; it can never
+    # lift a rejection, so every authorization, scope and secret-marker
+    # rejection above still stands exactly as it did.
+    promotion: PromotionDecision | None = None
+    promoted_from: str | None = None
+    if promotion_settings is not None:
+        promotion = evaluate_promotion(
+            settings=promotion_settings,
+            candidate=promotion_candidate_for_request(identity=identity, request=request),
+            permission_profile=base_decision.permission_profile,
+            writer_trust=writer_trust,
+        )
+        if promotion.auto_promote and mode in {"propose_review", "confirm_inline"}:
+            reasons.append("promotion_auto_promoted")
+            promoted_from = mode
+            mode = "commit"
+            status = "committed"
+
     reason = reasons[-1] if reasons else "explicit_trusted_memory_commit"
     return MemoryCommitPolicyDecision(
         write_mode=mode,
@@ -724,6 +877,8 @@ def evaluate_memory_commit_policy(
         requires_confirmation=mode == "confirm_inline",
         requires_dashboard_review=mode == "propose_review",
         policy_decision=base_decision,
+        promotion=promotion,
+        promoted_from=promoted_from,
     )
 
 
@@ -733,10 +888,39 @@ class VNextMemoryCommitService:
         store: PostgresVNextStore,
         *,
         defer_embeddings: bool = False,
+        promotion_settings: PromotionSettings | None = None,
+        owner_verified: bool = False,
     ):
         self.store = store
         self._defer_embeddings = defer_embeddings
+        # Only an adapter that enforced a credential on this request may set
+        # this. The default is False, so a surface that never authenticates
+        # anybody cannot promote an identity-less caller to owner standing by
+        # doing nothing, which is how MCP and the CLI reached the top trust
+        # level with no credential at all.
+        self._owner_verified = owner_verified
+        self._explicit_promotion_settings = promotion_settings
+        # Resolution is deferred to first use. The service is constructed on
+        # every memory API call, including undo, forget, expire, audit and
+        # recent_commits, none of which consult a persona. Resolving eagerly
+        # made a deployment that has configured nothing pay a charter read on
+        # all of them; resolving here means only commit pays it, once.
+        self._resolved_promotion_settings: PromotionSettings | None = None
+        self._promotion_settings_resolved = False
         self._deferred_embedding_inputs: list[DeferredMemoryEmbedding] = []
+
+    @property
+    def promotion_settings(self) -> PromotionSettings | None:
+        """Effective settings, resolved once and cached for this instance."""
+
+        if self._explicit_promotion_settings is not None:
+            return self._explicit_promotion_settings
+        if not self._promotion_settings_resolved:
+            self._resolved_promotion_settings = load_promotion_settings(
+                brain_charter=_brain_charter_row(self.store)
+            )
+            self._promotion_settings_resolved = True
+        return self._resolved_promotion_settings
 
     @property
     def deferred_embedding_inputs(self) -> tuple[DeferredMemoryEmbedding, ...]:
@@ -866,7 +1050,20 @@ class VNextMemoryCommitService:
             project_scope=request.project_scope,
         )
         _append_policy_decision(self.store, identity=identity, decision=base_decision)
-        return evaluate_memory_commit_policy(identity=identity, request=request, policy_decision=base_decision)
+        settings = self.promotion_settings
+        return evaluate_memory_commit_policy(
+            identity=identity,
+            request=request,
+            policy_decision=base_decision,
+            promotion_settings=settings,
+            # Only computed when a persona is configured, so an unconfigured
+            # deployment issues no extra query on any path.
+            writer_trust=(
+                writer_trust_for_commit(identity=identity, owner_verified=self._owner_verified)
+                if settings is not None
+                else "unverified"
+            ),
+        )
 
     def commit(
         self,
@@ -1937,6 +2134,172 @@ class VNextMemoryCommitService:
 
         return self._policy_checked_write(identity=identity, action=action, memory=memory)
 
+    def auto_promoted_by_agent(
+        self,
+        *,
+        agent_id: str,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> list[JsonObject]:
+        """Every memory a named agent auto-promoted in a window.
+
+        Read off the ``memory.auto_promoted`` events the write path already
+        emits, which is the only record that distinguishes a write promotion
+        actually changed from one that would have committed anyway. Ordinary
+        reviewed writes and human writes carry no such event and are
+        therefore unreachable from here.
+        """
+
+        normalized_agent = " ".join(str(agent_id).split()).strip()
+        if not normalized_agent:
+            raise VNextMemoryCommitValidationError("agent_id is required")
+
+        events = self.store.list_events(
+            target_type="memory",
+            occurred_at_start=since,
+            occurred_at_end=until,
+        )
+        seen: set[str] = set()
+        rows: list[JsonObject] = []
+        for event in events:
+            if str(event.get("event_type") or "") != AUTO_PROMOTED_EVENT:
+                continue
+            if str(event.get("actor_id") or "") != normalized_agent:
+                continue
+            target_id = event.get("target_id")
+            if not target_id or str(target_id) in seen:
+                continue
+            seen.add(str(target_id))
+            rows.append({"memory_id": str(target_id), "event": event})
+        return rows
+
+    def quarantine_by_agent_key(
+        self,
+        *,
+        identity: AgentIdentity | None,
+        agent_id: str,
+        reason: str,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        dry_run: bool = False,
+    ) -> JsonObject:
+        """Expire everything one agent key auto-promoted in a window.
+
+        The control a compromised key needs and did not have. Revoking a key
+        stops the next write; it does nothing about the rows already written,
+        whose blast radius was otherwise unbounded in both count and time,
+        with no sweep and no way to find them except by hand.
+
+        Four properties keep the sweep from becoming an attack of its own.
+
+        It is operator-only. ``memory.quarantine`` is in
+        ``HUMAN_OR_ADMIN_ACTIONS``, so the policy engine blocks every agent
+        below ``admin_agent``, and it is in ``WRITE_ACTIONS``, so a read-only
+        agent is blocked before that.
+
+        It cannot reach anything it did not cause. The candidate set comes
+        from ``memory.auto_promoted`` events attributed to that agent id, so
+        a reviewed write, a human write, or another agent's write is not
+        addressable by this call at all.
+
+        It erases nothing. Rows are expired, not deleted or redacted: the
+        row, its revisions, its provenance and its events all survive, and
+        ``memory.unexpire`` reverses it row by row. The sweep records the
+        exact set it acted on, so the reversal set is knowable afterwards.
+
+        It can be inspected first. ``dry_run`` returns the same envelope
+        without writing.
+        """
+
+        decision = evaluate_agent_policy(
+            identity=identity,
+            action="memory.quarantine",
+            promotion_settings=None,
+        )
+        append_policy_events(self.store, identity=identity, decision=decision)
+        if decision.decision == "blocked":
+            raise AgentPolicyBlockedError(decision)
+
+        reason_text = " ".join(str(reason).split()).strip()
+        if not reason_text:
+            raise VNextMemoryCommitValidationError("reason is required")
+
+        normalized_agent = " ".join(str(agent_id).split()).strip()
+        if identity is not None and normalized_agent != identity.agent_id:
+            # An admin key may clean up after itself and nothing else. Letting
+            # one agent sweep another's writes would make the control a way to
+            # bury somebody else's memories, which is the attack an
+            # operator-only action has to rule out. Sweeping an arbitrary key
+            # is the human operator's to do.
+            raise AgentPolicyBlockedError(
+                replace(
+                    decision,
+                    decision="blocked",
+                    reasons=tuple(
+                        dict.fromkeys((*decision.reasons, "quarantine_limited_to_own_agent_id"))
+                    ),
+                )
+            )
+
+        candidates = self.auto_promoted_by_agent(agent_id=normalized_agent, since=since, until=until)
+        sweep_id = f"quarantine-{uuid4()}"
+        actor_type = "agent" if identity is not None else "user"
+        actor_id = identity.agent_id if identity is not None else None
+
+        expired: list[JsonObject] = []
+        skipped: list[JsonObject] = []
+        for candidate in candidates:
+            memory_id = str(candidate["memory_id"])
+            memory = self.store.get_memory(memory_id)
+            if memory is None:
+                skipped.append({"memory_id": memory_id, "reason": "memory_not_found"})
+                continue
+            if _is_unbounded_valid_to(memory.get("valid_to")) is False and memory.get("valid_to") is not None:
+                skipped.append({"memory_id": memory_id, "reason": "already_expired"})
+                continue
+            if dry_run:
+                expired.append({"memory_id": memory_id, "status": "would_expire"})
+                continue
+            try:
+                self.expire(memory_id, reason=f"{reason_text} (sweep {sweep_id})", identity=identity)
+            except (VNextMemoryCommitValidationError, LifecycleTransitionError) as exc:
+                skipped.append({"memory_id": memory_id, "reason": str(exc)})
+                continue
+            expired.append({"memory_id": memory_id, "status": "expired"})
+
+        envelope: JsonObject = {
+            "sweep_id": sweep_id,
+            "agent_id": normalized_agent,
+            "since": _utc_iso(since) if since is not None else None,
+            "until": _utc_iso(until) if until is not None else None,
+            "dry_run": dry_run,
+            "candidate_count": len(candidates),
+            "expired": expired,
+            "skipped": skipped,
+            "reversible_via": "memory.unexpire",
+            "policy_decision": decision.to_record(),
+        }
+        if not dry_run:
+            append_event(
+                self.store,
+                event_type="memory.quarantine_sweep",
+                actor_type=actor_type,
+                actor_id=actor_id,
+                target_type="agent",
+                    target_id=normalized_agent,
+                trace_id=decision.trace_id,
+                payload={
+                    "sweep_id": sweep_id,
+                    "reason": reason_text,
+                    "since": envelope["since"],
+                    "until": envelope["until"],
+                    "expired_memory_ids": [row["memory_id"] for row in expired],
+                    "skipped": skipped,
+                    "reversible_via": "memory.unexpire",
+                },
+            )
+        return envelope
+
     def recent_commits(self, *, limit: int = 20) -> JsonObject:
         rows = []
         for memory in self.store.list_memories(status=None):
@@ -2292,6 +2655,51 @@ class VNextMemoryCommitService:
                 "agent_identity": identity.to_record() if identity is not None else None,
             },
         )
+        # One event per write that a human would otherwise have gated. This
+        # is what makes the false-promotion rate countable after the fact
+        # instead of being lost inside the general commit stream.
+        if decision.promotion is not None and decision.promoted_from is not None:
+            append_event(
+                self.store,
+                event_type="memory.auto_promoted",
+                actor_type=actor_type,
+                actor_id=actor_id,
+                target_type="memory",
+                target_id=str(memory["id"]),
+                trace_id=request.trace_id or decision.policy_decision.trace_id,
+                run_id=identity.agent_run_id if identity is not None else None,
+                payload={
+                    "promotion": decision.promotion.to_record(),
+                    "promoted_from": decision.promoted_from,
+                    "gated_status_without_promotion": "confirmation_required"
+                    if decision.promoted_from == "confirm_inline"
+                    else "review_required",
+                    "reasons": list(decision.reasons),
+                    "reversible_via": "memory.undo",
+                },
+            )
+            # This is what separates ``team`` from ``personal``: the write
+            # lands either way, but a team deployment also gets a review
+            # entry it can work through after the fact. It carries
+            # review_required False, so nothing is gated on it.
+            if decision.promotion.review_is_advisory:
+                append_event(
+                    self.store,
+                    event_type="review.item_created",
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    target_type="memory",
+                    target_id=str(memory["id"]),
+                    trace_id=request.trace_id or decision.policy_decision.trace_id,
+                    run_id=identity.agent_run_id if identity is not None else None,
+                    payload={
+                        "review_required": False,
+                        "review_mode": "digest",
+                        "proposal_type": "auto_promoted_memory",
+                        "persona": decision.promotion.persona,
+                        "promoted_from": decision.promoted_from,
+                    },
+                )
         return {
             "status": "committed",
             "write_mode": "confirm_inline" if confirmed_inline else "commit",
@@ -3017,5 +3425,8 @@ __all__ = [
     "VNEXT_SENSITIVITY_LEVELS",
     "evaluate_memory_commit_policy",
     "is_pending_consolidation_candidate",
+    "AUTO_PROMOTED_EVENT",
+    "load_promotion_settings",
     "memory_commit_request_from_payload",
+    "promotion_candidate_for_request",
 ]

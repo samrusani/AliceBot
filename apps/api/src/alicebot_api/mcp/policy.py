@@ -14,6 +14,7 @@ from alicebot_api.vnext_agent_control import (
     evaluate_agent_policy,
 )
 from alicebot_api.vnext_agent_keys import AgentKeyAuthenticationError, resolve_agent_identity
+from alicebot_api.vnext_promotion_policy import PromotionCandidate, PromotionSettings
 from alicebot_api.vnext_store import PostgresVNextStore
 
 from .runtime import _vnext_store_context
@@ -68,6 +69,9 @@ def _policy_checked(
     require_unfiltered_target: bool = False,
     target_type: str | None = None,
     target_id: str | None = None,
+    promotion_settings: PromotionSettings | None = None,
+    promotion_candidate: PromotionCandidate | None = None,
+    owner_verified: bool = False,
 ) -> tuple[str, str | None, PolicyDecision]:
     if identity is not None:
         store.upsert_agent_identity(
@@ -89,6 +93,9 @@ def _policy_checked(
         workflow_type=workflow_type,
         write_policy=write_policy,
         require_explicit_project_scope=require_explicit_project_scope,
+        promotion_settings=promotion_settings,
+        promotion_candidate=promotion_candidate,
+        owner_verified=owner_verified,
     )
     if require_unfiltered_target and decision.decision == "allowed_with_filtering":
         decision = replace(

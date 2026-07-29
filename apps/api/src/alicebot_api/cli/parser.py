@@ -136,6 +136,7 @@ from .memories import (
     _run_vnext_memory_correct,
     _run_vnext_memory_expire,
     _run_vnext_memory_forget,
+    _run_vnext_memory_quarantine,
     _run_vnext_memory_recent,
     _run_vnext_memory_redact,
     _run_vnext_memory_undo,
@@ -974,6 +975,30 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_memory_confirm_parser.add_argument("--text", default=None, help="Edited canonical memory text.")
     vnext_memory_confirm_parser.add_argument("--rationale", default=None, help="Confirmation rationale.")
     vnext_memory_confirm_parser.set_defaults(handler=_run_vnext_memory_confirm)
+
+    vnext_memory_quarantine_parser = vnext_memories_subparsers.add_parser(
+        "quarantine",
+        help="Expire everything one agent key auto-promoted (operator action).",
+    )
+    _add_vnext_agent_arguments(vnext_memory_quarantine_parser)
+    vnext_memory_quarantine_parser.add_argument(
+        "--target-agent-id",
+        required=True,
+        help="The agent whose auto-promoted memories should be expired.",
+    )
+    vnext_memory_quarantine_parser.add_argument(
+        "--reason", required=True, help="Why the sweep is being run. Recorded on every row."
+    )
+    vnext_memory_quarantine_parser.add_argument(
+        "--since", default=None, help="ISO-8601 lower bound on the promotion time."
+    )
+    vnext_memory_quarantine_parser.add_argument(
+        "--until", default=None, help="ISO-8601 upper bound on the promotion time."
+    )
+    vnext_memory_quarantine_parser.add_argument(
+        "--dry-run", action="store_true", help="Report the set without expiring anything."
+    )
+    vnext_memory_quarantine_parser.set_defaults(handler=_run_vnext_memory_quarantine)
 
     vnext_memory_undo_parser = vnext_memories_subparsers.add_parser("undo", help="Undo an agentic memory commit.")
     _add_vnext_agent_arguments(vnext_memory_undo_parser)
