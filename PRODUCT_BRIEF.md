@@ -63,4 +63,4 @@ Agent developers — people building or operating AI agents who need durable, ex
 - The MCP surface is small enough to learn in one sitting.
 - Every claim in the docs matches shipped behavior.
 
-`v0.15.0` is the current release candidate. It is not published.
+`v0.15.1` is the current release candidate. It is not published.

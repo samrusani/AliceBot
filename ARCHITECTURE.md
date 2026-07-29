@@ -247,4 +247,4 @@ usage justifies a separately reviewed boundary.
   `docs/handoff/`; it does not constrain legitimate future production trees or
   approve them automatically.
 
-`v0.15.0` is the current release candidate. It is not published.
+`v0.15.1` is the current release candidate. It is not published.

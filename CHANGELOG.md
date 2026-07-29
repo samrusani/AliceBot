@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## v0.15.0 — 2026-07-29
+## v0.15.1 — 2026-07-29
 
 - Tiered memory promotion keyed on authenticated identity, so a trusted local
   agent can write durable memory directly instead of filling a review queue.

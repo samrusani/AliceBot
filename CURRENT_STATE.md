@@ -143,6 +143,12 @@ the `v0.14.0` release notes.
   update graph; it does not undo accepted project state or erase shared source
   evidence, upstream systems, exports, backups, or external logs.
 
-## What `v0.15.0` Targets
+## What `v0.15.1` Targets
 
-`v0.15.0` is the current release candidate. It is not published.
+`v0.15.1` is the current release candidate. It is not published.
+
+The `v0.15.0` tag exists but was never published. The commit it points at
+carried a release-gate step that could not run on a CI runner, so the gate
+could never pass from that tag, and repository rules correctly refuse both
+deletion and update of stable tags. No GitHub Release or PyPI artifact was
+ever created for it.
