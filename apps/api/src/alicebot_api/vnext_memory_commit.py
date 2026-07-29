@@ -225,24 +225,35 @@ EXPIRE_BLOCKED_STATUSES = ("superseded", "rejected")
 # NULL. Stores that grow a real clear_memory_valid_to seam make this
 # sentinel unnecessary; until then it is recorded in metadata_json.validity.
 VALID_TO_UNBOUNDED_SENTINEL = "9999-12-31T23:59:59Z"
-# Credential prefixes only count when they start a token and are followed by
-# key-shaped material. Matching them as bare substrings read "task-list" and
-# "risk-limit" as `sk-` keys, and a person named "Akia" as an AWS key id.
+# Self-identifying credentials: the value itself announces what it is. These
+# only count when they start a token and are followed by key-shaped material,
+# because as bare substrings they read "task-list" as an `sk-` key and a person
+# named "Akia" as an AWS key id.
 SECRET_PREFIX_PATTERNS = (
     re.compile(r"(?<![0-9a-z])sk-[0-9a-z_-]{8,}"),
     re.compile(r"(?<![0-9a-z])ghp_[0-9a-z]{8,}"),
     re.compile(r"(?<![0-9a-z])xoxb-[0-9a-z-]{8,}"),
     re.compile(r"(?<![0-9a-z])akia[0-9a-z]{12,}"),
+    re.compile(r"-----begin(?: [a-z]+)* private key-----"),
 )
 
-# Descriptive markers stay substring matches. They do not occur inside ordinary
-# words, and they legitimately appear embedded, as in "mypassword=hunter2".
-SECRET_MARKERS = (
-    "api_key",
-    "access_token",
-    "refresh_token",
-    "password=",
-    "private key",
+# "password" or "secret" embedded in a longer word is still a credential name,
+# as in PGPASSWORD. "key" is not: monkey, turkey and keyboard all contain it,
+# so it only counts as a whole underscore or hyphen separated segment.
+_SECRET_NAME_EMBEDDABLE = r"(?:password|passwd|secret|token|credentials?|apikey)"
+_SECRET_NAME_SEGMENTED = r"key"
+
+# A credential is a secret-shaped NAME assigned an actual VALUE. Prose that
+# merely mentions api_key or a private key is discussing one, not leaking one,
+# and rejecting those outright made ordinary notes unstorable.
+SECRET_ASSIGNMENT_PATTERN = re.compile(
+    r"(?<![0-9A-Za-z])"
+    r"(?:[A-Za-z0-9]+[_-])*"
+    r"(?:[A-Za-z0-9]*" + _SECRET_NAME_EMBEDDABLE + r"|" + _SECRET_NAME_SEGMENTED + r")"
+    r"(?:[_-][A-Za-z0-9]+)*"
+    r"[\"']?\s*[:=]\s*[\"']?"
+    r"(?P<value>[A-Za-z0-9_\-+/=.]{6,})",
+    re.IGNORECASE,
 )
 
 
@@ -436,11 +447,28 @@ def _object_tuple(value: object) -> tuple[object, ...]:
     return tuple(value)
 
 
+def _looks_like_secret_value(value: str) -> bool:
+    """Tell a credential from an ordinary word sitting after a colon.
+
+    Real credentials carry entropy: a digit, a capital, punctuation, or simple
+    length. Without this, "the password= convention in the wiki" reads as an
+    assignment of the secret "convention".
+    """
+    if len(value) >= 24:
+        return True
+    if any(character.isdigit() or character.isupper() for character in value):
+        return True
+    return any(character in "_-+/=." for character in value)
+
+
 def _contains_secret_marker(text: str) -> bool:
     folded = text.casefold()
-    if any(marker in folded for marker in SECRET_MARKERS):
+    if any(pattern.search(folded) for pattern in SECRET_PREFIX_PATTERNS):
         return True
-    return any(pattern.search(folded) for pattern in SECRET_PREFIX_PATTERNS)
+    return any(
+        _looks_like_secret_value(match.group("value"))
+        for match in SECRET_ASSIGNMENT_PATTERN.finditer(text)
+    )
 
 
 def _flatten_text(value: object) -> list[str]:
@@ -452,6 +480,11 @@ def _flatten_text(value: object) -> list[str]:
         for key, item in value.items():
             if isinstance(key, str):
                 flattened.append(key)
+                # Keep the pair adjacent as well. A credential is recognised by
+                # a secret-shaped name next to its value, and flattening a
+                # mapping into separate strings would break exactly that.
+                if isinstance(item, (str, int, float)):
+                    flattened.append(f"{key}={item}")
             flattened.extend(_flatten_text(item))
         return flattened
     if isinstance(value, (list, tuple)):
