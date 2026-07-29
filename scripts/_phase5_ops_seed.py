@@ -17,6 +17,21 @@ from typing import Any
 from uuid import UUID
 
 
+def _as_int(value: object) -> int:
+    """Narrow a database cell to int.
+
+    A psycopg row cell is typed `object`, so `int(cell)` does not type-check.
+    This narrows explicitly rather than casting, so a column that is not
+    integer-like fails loudly here instead of somewhere further downstream.
+    """
+
+    if isinstance(value, int):
+        return value
+    if isinstance(value, (str, float)):
+        return int(value)
+    raise TypeError(f"expected an integer-like database value, got {type(value).__name__}")
+
+
 USER_ID = UUID("00000000-0000-0000-0000-000000005001")
 MEMORY_ID = "00000000-0000-0000-0000-000000005101"
 ARTIFACT_ID = "00000000-0000-0000-0000-000000005201"
@@ -174,9 +189,9 @@ def _seed_postgres(
         if users_row is None or memories_row is None or events_row is None:
             raise RuntimeError("PostgreSQL seed count query returned no row")
         counts = {
-            "users": int(users_row["count"]),
-            "memories": int(memories_row["count"]),
-            "event_log": int(events_row["count"]),
+            "users": _as_int(users_row["count"]),
+            "memories": _as_int(memories_row["count"]),
+            "event_log": _as_int(events_row["count"]),
         }
     return {"backend": "postgres", "counts": counts, "seeded": True}
 
