@@ -3,11 +3,11 @@
 ## Scope Boundary
 
 
-- **Published boundary:** `v0.14.0` is the latest published release,
+- **Published boundary:** `v0.15.1` is the latest published release,
   carrying the Phase 4 core-roadmap work (replicated benchmark evidence,
   SQLite vector scale, reference integrations, trace-only count
   diagnostics); artifact digests are in
-  `docs/release/v0.14.0-checksums.txt`.
+  `docs/release/v0.15.1-checksums.txt`.
 - **Prior published:** `v0.12.0` is the prior published release. It is
   tagged and immutable, passed the exact-SHA CI, semantic, and
   repository-control gates, and is published on PyPI with Trusted Publishing
@@ -223,7 +223,7 @@ usage justifies a separately reviewed boundary.
 
 ## Current Architectural Posture
 
-- `v0.14.0` is the latest published release and reconciles runtime and product
+- `v0.15.1` is the latest published release and reconciles runtime and product
   identity around the agent interface, retrieval/memory quality, and a
   real-host-proven single-tenant deployment contract.
 - Phase 3 reduces `main.py` to app assembly and shared middleware,
@@ -247,4 +247,5 @@ usage justifies a separately reviewed boundary.
   `docs/handoff/`; it does not constrain legitimate future production trees or
   approve them automatically.
 
-`v0.15.1` is the current release candidate. It is not published.
+`v0.15.1` is the latest published release and remains the install, checksum,
+and baseline reference.
