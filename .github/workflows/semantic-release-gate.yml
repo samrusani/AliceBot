@@ -67,7 +67,7 @@ jobs:
           python -m alembic -c apps/api/alembic.ini upgrade head
 
       - name: Static release gate (lint, types, control-doc truth)
-        run: make release-static
+        run: make release-static PYTHON=python
 
       - name: Require configured embedding provider
         env:
