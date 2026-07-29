@@ -103,7 +103,11 @@ def test_direct_user_commit_keeps_non_identity_safeguards() -> None:
     secret = evaluate_memory_commit_policy(
         identity=None,
         request=_request(
-            canonical_text="The api_key for staging is tucked in here.",
+            # Was "The api_key for staging is tucked in here." A bare mention of
+            # api_key no longer rejects, so this now carries an actual assignment
+            # to keep testing what the test is named for. The changed behaviour
+            # is pinned separately in the mention tests below.
+            canonical_text="The staging api_key=hunter2 is tucked in here.",
             domain="professional",
             sensitivity="internal",
         ),
@@ -123,7 +127,7 @@ def test_direct_user_commit_keeps_non_identity_safeguards() -> None:
     ("field", "payload"),
     [
         ("title", "sk-live_abcd1234"),
-        ("canonical_text", "The api_key for staging is tucked in here."),
+        ("canonical_text", "The staging api_key=hunter2 is tucked in here."),
         ("conversation_excerpt", "here it is: ghp_aaaabbbbcccc"),
         ("rationale", "stored password=hunter2 for later"),
     ],
@@ -160,6 +164,74 @@ def test_secret_markers_are_rejected_anywhere_inside_source_refs(source_refs: tu
     )
 
     assert decision.write_mode == "reject"
+    assert "unsafe_secret_storage" in decision.reasons
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "We reviewed the api_key rotation policy doc.",
+        "I bought a private keyboard for the office.",
+        "The private key ceremony is scheduled for Tuesday.",
+        "Her password= convention in the wiki is outdated.",
+        "Access token lifetimes came up in the review.",
+        "Rotate the api key every 90 days.",
+        "monkey=abc123 was the test fixture name.",
+    ],
+)
+def test_naming_a_credential_is_not_storing_one(text: str) -> None:
+    """BEHAVIOUR CHANGE: a bare mention no longer rejects.
+
+    Previously any text containing `api_key`, `private key`, `password=` or
+    `access_token` was rejected outright, so ordinary notes discussing
+    credential hygiene could not be stored at all. A credential is now
+    recognised as a secret-shaped name assigned an actual value.
+
+    The cost is stated rather than hidden: a sentence that says a key is
+    present without showing one, such as "The api_key for staging is tucked in
+    here.", now commits. That sentence is grammatically indistinguishable from
+    the first case above, so no rule separates them without semantics.
+    """
+    decision = evaluate_memory_commit_policy(
+        identity=None,
+        request=_request(canonical_text=text, domain="professional", sensitivity="internal"),
+    )
+
+    assert decision.write_mode == "commit", f"ordinary prose rejected: {text}"
+    assert "unsafe_secret_storage" not in decision.reasons
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Synthetic fixtures, not real credentials. They have to keep the shape
+        # of the real thing to exercise the guard, which is also the shape the
+        # repository secret scanner looks for, so each is allowed explicitly
+        # rather than by broadening the scanner's configuration.
+        "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG",  # gitleaks:allow
+        "X_API_TOKEN=abcdef123456",  # gitleaks:allow
+        "AZURE_STORAGE_ACCOUNT_KEY=abc123",  # gitleaks:allow
+        "PGPASSWORD=hunter2",  # gitleaks:allow
+        "OPENAI_API_KEY=sk-proj_QQQQQQQQ",  # gitleaks:allow
+        "export AWS_SECRET_ACCESS_KEY=wJalrXUtn9",  # gitleaks:allow
+        '{"secret_key": "abcdef123456"}',  # gitleaks:allow
+        "ALICE_AGENT_API_KEY=alice_sk_HGl9",  # gitleaks:allow
+        "-----BEGIN RSA PRIVATE KEY-----",  # gitleaks:allow
+    ],
+)
+def test_prefixed_credential_assignments_are_rejected(text: str) -> None:
+    """A vendor prefix used to defeat the guard entirely.
+
+    The old key-name rule led with a word boundary, and an underscore is a word
+    character, so `SECRET_KEY=` matched while `AWS_SECRET_ACCESS_KEY=` did not.
+    A pasted .env line is the most ordinary route a live key takes into a note.
+    """
+    decision = evaluate_memory_commit_policy(
+        identity=None,
+        request=_request(canonical_text=text),
+    )
+
+    assert decision.write_mode == "reject", f"credential accepted: {text}"
     assert "unsafe_secret_storage" in decision.reasons
 
 
