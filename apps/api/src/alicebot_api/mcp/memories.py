@@ -10,6 +10,7 @@ from alicebot_api.vnext_agent_control import (
     AgentPolicyBlockedError,
     PolicyDecision,
     agent_metadata,
+    append_promotion_event,
     evaluate_agent_policy,
     resource_project_scope,
 )
@@ -18,8 +19,11 @@ from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_memory_commit import (
     VNextMemoryCommitService,
     VNextMemoryCommitValidationError,
+    _brain_charter_row,
+    load_promotion_settings,
     memory_commit_request_from_payload,
 )
+from alicebot_api.vnext_promotion_policy import promotion_candidate_for_proposal
 from alicebot_api.vnext_project_update_guard import (
     PENDING_PROJECT_UPDATE_MEMORY_MUTATION_MESSAGE,
     is_pending_project_update_memory,
@@ -67,10 +71,29 @@ def _handle_alice_vnext_propose_memory(context: MCPRuntimeContext, arguments: Ma
             domains=(domain,),
             sensitivity_allowed=(sensitivity,),
             project_scope=_parse_string_list(arguments, "project_scope"),
+            promotion_settings=load_promotion_settings(brain_charter=_brain_charter_row(store)),
+            promotion_candidate=promotion_candidate_for_proposal(
+                canonical_text=canonical_text,
+                title=_parse_optional_text(arguments, "title") or "",
+                domain=domain,
+                sensitivity=sensitivity,
+                source_type=_parse_optional_text(arguments, "source_type") or "trusted_agent",
+                source_refs=_parse_string_list(arguments, "source_refs"),
+                contradiction_refs=_parse_string_list(arguments, "contradiction_refs"),
+                conversation_excerpt=_parse_optional_text(arguments, "conversation_excerpt"),
+            ),
+            # MCP never authenticates a human. Without ALICE_AGENT_API_KEY
+            # it honours payload identity outright, so an absent agent_id is
+            # nobody in particular rather than the owner.
+            owner_verified=False,
         )
         if decision.decision == "blocked":
             blocked_decision = decision
         else:
+            # A promoted proposal is a live memory, not a review item. With no
+            # persona configured review_required stays True and this is the
+            # candidate row it always was.
+            review_required = decision.review_required
             proposal_id = _parse_optional_text(arguments, "proposal_id") or str(uuid4())
             memory = store.create_memory(
                 {
@@ -84,7 +107,7 @@ def _handle_alice_vnext_propose_memory(context: MCPRuntimeContext, arguments: Ma
                     }.get(proposal_type, "semantic"),
                     "memory_key": f"agent_proposal.{proposal_type}.{proposal_id}",
                     "value": {"proposal_type": proposal_type, "text": canonical_text},
-                    "status": "candidate",
+                    "status": "candidate" if review_required else "active",
                     "confidence": _parse_optional_float(arguments, "confidence") or 0.5,
                     "title": _parse_optional_text(arguments, "title") or canonical_text[:120],
                     "canonical_text": canonical_text,
@@ -93,7 +116,7 @@ def _handle_alice_vnext_propose_memory(context: MCPRuntimeContext, arguments: Ma
                     "sensitivity": sensitivity,
                     "metadata_json": {
                         "proposal_type": proposal_type,
-                        "review_required": True,
+                        "review_required": review_required,
                         **agent_metadata(identity, decision),
                     },
                 },
@@ -110,11 +133,25 @@ def _handle_alice_vnext_propose_memory(context: MCPRuntimeContext, arguments: Ma
                 run_id=identity.agent_run_id,
                 payload={"proposal_type": proposal_type, "agent_identity": identity.to_record()},
             )
+            append_promotion_event(
+                store,
+                identity=identity,
+                decision=decision,
+                target_type="memory",
+                target_id=str(memory["id"]),
+                trace_id=_parse_optional_text(arguments, "trace_id") or decision.trace_id,
+            )
     if blocked_decision is not None:
         _raise_mcp_policy_blocked(blocked_decision)
     if memory is None or decision is None:
         raise MCPToolError("vNext memory proposal did not complete")
-    return _json_object({"proposal": memory, "policy_decision": decision.to_record(), "review_required": True})
+    return _json_object(
+        {
+            "proposal": memory,
+            "policy_decision": decision.to_record(),
+            "review_required": decision.review_required,
+        }
+    )
 
 
 def _handle_alice_vnext_commit_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:

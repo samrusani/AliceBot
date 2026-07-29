@@ -84,6 +84,7 @@ from alicebot_api.vnext_embeddings import (
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_grounding import compute_query_grounding
 from alicebot_api.vnext_json import json_safe
+from alicebot_api.vnext_promotion_policy import memory_write_provenance
 from alicebot_api.vnext_project_scope import (
     project_scope_identity,
     resolve_project_scope,
@@ -1417,12 +1418,33 @@ def _memory_title(memory: JsonObject) -> str:
     return str(memory.get("id"))
 
 
+def _with_write_provenance(memory: JsonObject) -> JsonObject:
+    """Surface who wrote an ungated memory, on the row the reader sees.
+
+    Absent for every memory that went through review, so a deployment that
+    has never auto-promoted emits byte-identical context packs.
+    """
+
+    provenance = memory_write_provenance(memory)
+    if provenance is None:
+        return memory
+    return {**memory, "write_provenance": provenance}
+
+
 def _memory_reference(memory: JsonObject) -> JsonObject:
-    return {
+    reference: JsonObject = {
         "id": str(memory.get("id")),
         "title": _memory_title(memory),
         "memory_type": memory.get("memory_type"),
     }
+    # The compact projection is the view a downstream agent is most likely to
+    # consume, so a row that was written without a human gate has to be
+    # recognisable here too. Absent for every reviewed row, which keeps an
+    # unconfigured deployment's packs identical.
+    provenance = memory.get("write_provenance") or memory_write_provenance(memory)
+    if provenance is not None:
+        reference["write_provenance"] = provenance
+    return reference
 
 
 def _source_event_time(source: JsonObject) -> datetime | None:
@@ -2910,7 +2932,15 @@ class VNextRetrievalService:
         for section in BUDGET_STRATEGY_SECTION_ORDERS[strategy]:
             budget.open_section(section)
             if section == SECTION_RELEVANT_MEMORIES:
-                selected_memories = [item for item in ordered_memories if budget.admit(item, section=section)]
+                # Wrap before admitting. Admitting the bare row and emitting
+                # the wrapped one made the budget count something smaller
+                # than the pack carries, under-counting every promoted row by
+                # the whole provenance record.
+                selected_memories = [
+                    wrapped
+                    for wrapped in (_with_write_provenance(item) for item in ordered_memories)
+                    if budget.admit(wrapped, section=section)
+                ]
                 memories_packed = True
             elif section == SECTION_OPEN_LOOPS:
                 selected_open_loops = [item for item in ranked_open_loops if budget.admit(item, section=section)]

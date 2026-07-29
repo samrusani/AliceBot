@@ -26,6 +26,8 @@ from .errors import EmbeddingBackfillFailure, _emit_cli_error
 from .models import CLIContext
 from .shared import (
     _json_dumps,
+    _vnext_append_promotion_event,
+    _vnext_proposal_promotion_candidate,
     _persist_deferred_embedding_inputs,
     _store_context,
     _vnext_agent_identity_from_args,
@@ -46,12 +48,17 @@ def _run_vnext_agent_propose_memory(ctx: CLIContext, args: argparse.Namespace) -
             args,
             action="memory.propose",
             domains=(args.domain,),
+            promotion_candidate=_vnext_proposal_promotion_candidate(args),
         )
         if decision.decision == "blocked":
             blocked_decision = decision
         else:
             if identity is None:
                 raise ValueError("--agent-id is required")
+            # A promoted proposal is a live memory, not a review item. With no
+            # persona configured review_required stays True and this stays the
+            # candidate row it always was.
+            review_required = decision.review_required
             memory = store.create_memory(
                 {
                     "memory_type": args.memory_type,
@@ -61,7 +68,7 @@ def _run_vnext_agent_propose_memory(ctx: CLIContext, args: argparse.Namespace) -
                         "text": args.canonical_text,
                         "rationale": args.rationale,
                     },
-                    "status": "candidate",
+                    "status": "candidate" if review_required else "active",
                     "confidence": args.confidence,
                     "title": args.title,
                     "canonical_text": args.canonical_text,
@@ -70,7 +77,7 @@ def _run_vnext_agent_propose_memory(ctx: CLIContext, args: argparse.Namespace) -
                     "sensitivity": args.sensitivity,
                     "metadata_json": {
                         "proposal_type": args.proposal_type,
-                        "review_required": True,
+                        "review_required": review_required,
                         **agent_metadata(identity, decision),
                     },
                 },
@@ -87,11 +94,25 @@ def _run_vnext_agent_propose_memory(ctx: CLIContext, args: argparse.Namespace) -
                 run_id=identity.agent_run_id,
                 payload={"proposal_type": args.proposal_type, "agent_identity": identity.to_record()},
             )
+            _vnext_append_promotion_event(
+                store,
+                identity=identity,
+                decision=decision,
+                target_type="memory",
+                target_id=str(memory["id"]),
+                trace_id=decision.trace_id,
+            )
     if blocked_decision is not None:
         ensure_policy_allowed(blocked_decision)
     if memory is None or decision is None:
         raise RuntimeError("agent memory proposal did not complete")
-    return _json_dumps({"proposal": memory, "policy_decision": decision.to_record(), "review_required": True})
+    return _json_dumps(
+        {
+            "proposal": memory,
+            "policy_decision": decision.to_record(),
+            "review_required": decision.review_required,
+        }
+    )
 
 
 def _run_vnext_memory_commit(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -116,6 +137,11 @@ def _run_vnext_memory_commit(ctx: CLIContext, args: argparse.Namespace) -> str:
             },
             user_id=ctx.user_id,
         )
+        # Writer trust is derived inside the service from the resolved
+        # identity and whether agent API keys are provisioned, so this call
+        # site needs no extra argument and the CLI is no longer a special
+        # case. That also removes the constructor-signature blocker that
+        # rounds 1 and 2 had to report here.
         service = VNextMemoryCommitService(store, defer_embeddings=True)
         payload = service.commit(identity=identity, request=request)
         deferred_embedding_inputs = service.deferred_embedding_inputs
@@ -168,6 +194,41 @@ def _run_vnext_memory_undo(ctx: CLIContext, args: argparse.Namespace) -> str:
             identity=identity,
             memory_id=args.memory_id,
             reason=args.reason,
+        )
+    return _json_dumps(payload)
+
+
+def _run_vnext_memory_quarantine(ctx: CLIContext, args: argparse.Namespace) -> str:
+    """Expire everything one agent key auto-promoted in a window.
+
+    The operator surface for a compromised key. Revoking the key stops the
+    next write; this bounds what it already wrote. It expires rather than
+    deletes, so nothing in the audit trail is erased and every row reverses
+    through ``memory unexpire``.
+    """
+
+    from datetime import UTC, datetime
+
+    def _moment(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+    with _vnext_store_context(ctx) as store:
+        identity, _actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
+            store,
+            args,
+            action="memory.quarantine",
+        )
+        ensure_policy_allowed(decision)
+        payload = VNextMemoryCommitService(store).quarantine_by_agent_key(
+            identity=identity,
+            agent_id=args.target_agent_id,
+            reason=args.reason,
+            since=_moment(getattr(args, "since", None)),
+            until=_moment(getattr(args, "until", None)),
+            dry_run=bool(getattr(args, "dry_run", False)),
         )
     return _json_dumps(payload)
 

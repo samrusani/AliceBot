@@ -213,6 +213,9 @@ def _vnext_sensitivity_allowed(args: argparse.Namespace) -> tuple[str, ...]:
     return tuple(values) if values else DEFAULT_VNEXT_SENSITIVITY_ALLOWED
 
 
+_AGENT_API_KEY_ENV = "ALICE_AGENT_API_KEY"
+
+
 def _vnext_agent_identity_from_args(args: argparse.Namespace) -> AgentIdentity | None:
     agent_id = getattr(args, "agent_id", None)
     if not agent_id:
@@ -227,6 +230,94 @@ def _vnext_agent_identity_from_args(args: argparse.Namespace) -> AgentIdentity |
     )
 
 
+def _vnext_authenticated_agent_identity_from_args(
+    store: PostgresVNextStore,
+    args: argparse.Namespace,
+) -> AgentIdentity | None:
+    """Resolve a CLI agent identity, against an issued key when one is given.
+
+    Without this the CLI had no key path at all, so every ``--agent-id`` was
+    self-asserted and could never be trusted, while omitting ``--agent-id``
+    produced no identity. That inverted the intended order: the
+    unauthenticated invocation outranked the authenticated one.
+
+    With ``ALICE_AGENT_API_KEY`` set, identity is resolved and enforced
+    against the key record exactly as the HTTP and MCP surfaces do, so a CLI
+    agent can hold a server-enforced profile. Without it, the payload
+    identity is honoured for authorization as before and stays marked
+    unauthenticated, which is what keeps it out of promotion.
+
+    Imported inside the function on purpose: tests/unit/test_cli_package_split.py
+    pins the public names the CLI facade re-exports.
+    """
+
+    import os
+
+    from alicebot_api.vnext_agent_keys import (
+        AgentKeyAuthenticationError,
+        resolve_agent_identity,
+    )
+
+    claimed = _vnext_agent_identity_from_args(args)
+    raw_key = (os.environ.get(_AGENT_API_KEY_ENV) or "").strip() or None
+    if raw_key is None or claimed is None:
+        return claimed
+    try:
+        return resolve_agent_identity(
+            store,
+            user_id=getattr(args, "user_id", None) or getattr(store, "user_id", None),
+            raw_key=raw_key,
+            payload=claimed.to_record(),
+        )
+    except AgentKeyAuthenticationError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+# Both helpers below import inside the function body and carry leading
+# underscores on purpose. tests/unit/test_cli_package_split.py pins the exact
+# set of PUBLIC names the CLI facade re-exports, so a module-level import or a
+# public helper name here would fail a guard that exists to keep this package
+# thin. Respecting it costs two local imports.
+def _vnext_proposal_promotion_candidate(args: argparse.Namespace) -> object:
+    """Build the promotion candidate for a CLI ``memory.propose`` call."""
+
+    from alicebot_api.vnext_promotion_policy import promotion_candidate_for_proposal
+
+    return promotion_candidate_for_proposal(
+        canonical_text=getattr(args, "canonical_text", "") or "",
+        title=getattr(args, "title", "") or "",
+        memory_type=getattr(args, "memory_type", "semantic") or "semantic",
+        domain=getattr(args, "domain", "unknown") or "unknown",
+        sensitivity=getattr(args, "sensitivity", "unknown") or "unknown",
+        source_type=getattr(args, "source_type", None) or "trusted_agent",
+        source_refs=getattr(args, "source_ref", None) or (),
+        contradiction_refs=getattr(args, "contradiction_ref", None) or (),
+    )
+
+
+def _vnext_append_promotion_event(
+    store: PostgresVNextStore,
+    *,
+    identity: AgentIdentity | None,
+    decision: PolicyDecision,
+    target_type: str,
+    target_id: str,
+    trace_id: str | None = None,
+) -> bool:
+    """Record a CLI proposal that promotion wrote instead of gating."""
+
+    from alicebot_api.vnext_agent_control import append_promotion_event
+
+    return append_promotion_event(
+        store,
+        identity=identity,
+        decision=decision,
+        target_type=target_type,
+        target_id=target_id,
+        trace_id=trace_id,
+    )
+
+
 def _vnext_policy_checked_for_args(
     store: PostgresVNextStore,
     args: argparse.Namespace,
@@ -235,8 +326,19 @@ def _vnext_policy_checked_for_args(
     domains: tuple[str, ...] = (),
     workflow_type: str | None = None,
     write_policy: str | None = None,
+    promotion_candidate: object | None = None,
 ) -> tuple[AgentIdentity | None, str, str | None, PolicyDecision]:
-    identity = _vnext_agent_identity_from_args(args)
+    # Imported inside the function on purpose. tests/unit/test_cli_package_split.py
+    # pins the exact set of public names the CLI facade re-exports, and a
+    # module-level import here would add two of them. That guard exists to
+    # keep the CLI package thin, so it is respected rather than retargeted.
+    from alicebot_api.vnext_memory_commit import _brain_charter_row, load_promotion_settings
+    from alicebot_api.vnext_promotion_policy import PromotionCandidate
+
+    if promotion_candidate is not None and not isinstance(promotion_candidate, PromotionCandidate):
+        raise TypeError("promotion_candidate must be a PromotionCandidate")
+
+    identity = _vnext_authenticated_agent_identity_from_args(store, args)
     if identity is not None:
         store.upsert_agent_identity(
             {
@@ -248,6 +350,11 @@ def _vnext_policy_checked_for_args(
             },
             actor_type="agent",
         )
+    promotion_settings = (
+        load_promotion_settings(brain_charter=_brain_charter_row(store))
+        if promotion_candidate is not None
+        else None
+    )
     decision = evaluate_agent_policy(
         identity=identity,
         action=action,
@@ -256,6 +363,12 @@ def _vnext_policy_checked_for_args(
         project_scope=tuple(getattr(args, "project_scope", None) or ()),
         workflow_type=workflow_type,
         write_policy=write_policy,
+        promotion_settings=promotion_settings,
+        promotion_candidate=promotion_candidate,
+        # The CLI enforces no credential on an identity-less invocation, so
+        # it can never vouch that the caller is the owner. An agent that
+        # wants promotion here presents ALICE_AGENT_API_KEY and --agent-id.
+        owner_verified=False,
     )
     append_policy_events(store, identity=identity, decision=decision)
     return (
