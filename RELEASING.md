@@ -405,4 +405,4 @@ the tag and must not have claimed publication early.
 Verify checksum files on Linux with `sha256sum -c SHA256SUMS` and on stock
 macOS with `shasum -a 256 -c SHA256SUMS`.
 
-`v0.15.0` is the current release candidate. It is not published.
+`v0.15.1` is the current release candidate. It is not published.
