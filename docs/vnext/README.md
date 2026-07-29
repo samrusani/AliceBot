@@ -81,3 +81,5 @@ readiness checks, and generate a first daily brief. It must not claim managed
 connector OAuth, packaged browser extensions, hosted connector polling, cloud
 sync, channel transport, OCR/transcription execution, a hosted SLA, or automatic
 promotion of generated artifacts into trusted memory.
+
+`v0.15.0` is the current release candidate. It is not published.

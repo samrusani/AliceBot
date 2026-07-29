@@ -246,3 +246,5 @@ usage justifies a separately reviewed boundary.
 - Release and review evidence for prior repair batches lives under
   `docs/handoff/`; it does not constrain legitimate future production trees or
   approve them automatically.
+
+`v0.15.0` is the current release candidate. It is not published.

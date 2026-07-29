@@ -142,3 +142,7 @@ the `v0.14.0` release notes.
 - Coupled true redaction scrubs governed content copies in the memory/project-
   update graph; it does not undo accepted project state or erase shared source
   evidence, upstream systems, exports, backups, or external logs.
+
+## What `v0.15.0` Targets
+
+`v0.15.0` is the current release candidate. It is not published.
