@@ -148,6 +148,8 @@ _PDF_CONTENT_OPERATORS = {
     b"y",
 }
 _DOCX_DOCUMENT_XML_PATH = "word/document.xml"
+# Matches a DTD declaration anywhere in the leading bytes of an XML part.
+_XML_DOCTYPE_PATTERN = re.compile(rb"<!DOCTYPE", re.IGNORECASE)
 _DOCX_WORDPROCESSING_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _DOCX_PARAGRAPH_TAG = f"{{{_DOCX_WORDPROCESSING_NAMESPACE}}}p"
 _DOCX_TEXT_TAG = f"{{{_DOCX_WORDPROCESSING_NAMESPACE}}}t"
@@ -322,6 +324,14 @@ def _extract_text_from_docx_artifact_bytes(*, relative_path: str, payload: bytes
             document_xml = archive.read(_DOCX_DOCUMENT_XML_PATH)
     except (KeyError, zipfile.BadZipFile) as exc:
         raise TaskArtifactValidationError(f"artifact {relative_path} is not a valid DOCX") from exc
+
+    # A DOCX part never legitimately declares a DTD, and ElementTree expands
+    # internal entities, so a document with a nested entity chain expands
+    # exponentially and exhausts memory before any of the checks below run.
+    # External entities are already refused by the parser, so rejecting the
+    # declaration outright closes the remaining half without a new dependency.
+    if _XML_DOCTYPE_PATTERN.search(document_xml):
+        raise TaskArtifactValidationError(f"artifact {relative_path} is not a valid DOCX")
 
     try:
         document_root = ET.fromstring(document_xml)

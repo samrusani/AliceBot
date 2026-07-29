@@ -17,6 +17,7 @@ from alicebot_api.artifacts import (
     TaskArtifactChunkRetrievalValidationError,
     TaskArtifactNotFoundError,
     TaskArtifactValidationError,
+    _extract_text_from_docx_artifact_bytes,
     build_workspace_relative_artifact_path,
     chunk_normalized_artifact_text,
     ensure_artifact_path_is_rooted,
@@ -1287,6 +1288,48 @@ def test_ingest_task_artifact_record_rejects_textless_docx(tmp_path) -> None:
             user_id=user_id,
             request=TaskArtifactIngestInput(task_artifact_id=artifact["id"]),
         )
+
+
+def test_docx_extraction_rejects_a_declared_dtd_before_expanding_entities() -> None:
+    """A nested entity chain expands exponentially and exhausts memory.
+
+    ElementTree already refuses external entities, so no file disclosure was
+    reachable, but it does expand internal ones: four levels of a ten-way
+    chain reach 30,000 characters, and each further level multiplies by ten.
+    A DOCX part never legitimately declares a DTD, so the declaration is
+    refused before the parser sees it. Found by Bandit B314.
+    """
+
+    import io
+    import zipfile
+
+    def _docx(document_xml: bytes) -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("word/document.xml", document_xml)
+        return buffer.getvalue()
+
+    namespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    bomb = (
+        b'<?xml version="1.0"?>\n'
+        b'<!DOCTYPE lolz [<!ENTITY lol "lol">\n'
+        b'  <!ENTITY lol1 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">\n'
+        b'  <!ENTITY lol2 "&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;">]>\n'
+        b'<w:document xmlns:w="' + namespace.encode() + b'"><w:body>&lol2;</w:body></w:document>'
+    )
+
+    with pytest.raises(TaskArtifactValidationError, match="is not a valid DOCX"):
+        _extract_text_from_docx_artifact_bytes(relative_path="bomb.docx", payload=_docx(bomb))
+
+    ordinary = (
+        b'<?xml version="1.0"?>'
+        b'<w:document xmlns:w="' + namespace.encode() + b'"><w:body><w:p><w:r>'
+        b"<w:t>hello world</w:t></w:r></w:p></w:body></w:document>"
+    )
+    assert (
+        _extract_text_from_docx_artifact_bytes(relative_path="ok.docx", payload=_docx(ordinary))
+        == "hello world"
+    )
 
 
 def test_ingest_task_artifact_record_rejects_malformed_docx(tmp_path) -> None:
