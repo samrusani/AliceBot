@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## v0.15.0 — 2026-07-29
+
+- Tiered memory promotion keyed on authenticated identity, so a trusted local
+  agent can write durable memory directly instead of filling a review queue.
+  Opt in per deployment with `ALICE_MEMORY_PERSONA`; unconfigured deployments
+  are unchanged.
+- The always-review floor now models sentence shape rather than keywords, so
+  ordinary notes stop being gated while agent-directed instructions still are.
+- Credential detection corrected in both directions: notes that merely mention
+  a credential are storable again, and vendor-prefixed assignments such as
+  `AWS_SECRET_ACCESS_KEY=` are no longer accepted. The rule is now scanned in
+  every text field, including titles, excerpts, rationales and source refs.
+- `alicebot vnext memories quarantine` expires everything a named agent key
+  auto-promoted in a window, for use when a key is compromised.
+- Memories carry `write_provenance`; reviewed rows omit it so existing context
+  packs are unchanged.
+- Web console migrated to Next 16, eslint-config-next 16 and TypeScript 6.
+
+
 ## v0.14.0 — 2026-07-24
 
 - Single-tenant self-hosted deployment contract: hardened guide, mutual-TLS

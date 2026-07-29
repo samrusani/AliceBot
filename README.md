@@ -200,3 +200,5 @@ If you discover a security issue, follow the process in [SECURITY.md](https://gi
 ## License
 
 MIT — see [LICENSE](https://github.com/samrusani/AliceBot/blob/main/LICENSE).
+
+`v0.15.0` is the current release candidate. It is not published.

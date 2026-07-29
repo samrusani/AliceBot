@@ -84,3 +84,5 @@ restore, recorded security disposition) shipped in Phases 4 and 5.
 - A consumer knowledge-management product.
 - OCR or transcription execution; Alice accepts text extracted elsewhere.
 - Re-expanding the default MCP surface beyond the eleven core tools.
+
+`v0.15.0` is the current release candidate. It is not published.

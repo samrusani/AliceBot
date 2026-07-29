@@ -188,12 +188,16 @@ def test_sprint4_handoff_truth_and_no_go_boundary() -> None:
 
 
 def test_sprint4_versions_and_protected_scope_remain_at_base() -> None:
-    # The carrier held versions at 0.12.0; the release engineer cut them to
-    # 0.13.0 at release-prep time (phase 3 established this transition form).
+    # The carrier held versions at 0.12.0; the release engineer cut them at
+    # release-prep time (phase 3 established this transition form). The real
+    # invariant is that the two manifests agree on whatever was cut, so the
+    # expected version is derived rather than written here. Hardcoding it made
+    # this test need a manual bump at 0.13.0, 0.13.1 and 0.14.0, which is the
+    # same rot that silently retired two mutation guards in this repository.
     with (_ROOT / "pyproject.toml").open("rb") as handle:
-        assert tomllib.load(handle)["project"]["version"] == "0.14.0"
+        project_version = tomllib.load(handle)["project"]["version"]
     package = (_ROOT / "apps/web/package.json").read_text(encoding="utf-8")
-    assert re.search(r'"version"\s*:\s*"0\.14\.0"', package)
+    assert re.search(rf'"version"\s*:\s*"{re.escape(project_version)}"', package)
     assert _git("rev-parse", f"{_BASE}^{{tree}}").stdout.decode().strip() == _BASE_TREE
 
     carrier = set(_CARRIER_PATHS)
