@@ -26,6 +26,8 @@ from datetime import UTC, datetime
 import json
 from pathlib import Path
 
+import pytest
+
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user, sqlite_user_connection
 from alicebot_api.vnext_capture import SourceCaptureInput, VNextCaptureService
 from alicebot_api.vnext_retrieval import (
@@ -41,6 +43,24 @@ from alicebot_api.vnext_temporal_query import TemporalAnchor
 
 
 USER_ID = "33333333-3333-4333-8333-333333333333"
+
+
+@pytest.fixture(autouse=True)
+def _clear_embedding_env(monkeypatch) -> None:
+    """Pin these tests to the fusion layer rather than to ambient config.
+
+    These assertions are about tie-break stability, and one of them guards
+    that the corpus really produces an exact fused tie so the stability it
+    proves is not trivially true. A configured embedding provider adds a
+    vector stage that separates those scores, so the guard fires and the test
+    reports a corpus problem it does not have. Nine sibling test modules
+    already isolate the same way; this one did not, so it passed everywhere
+    except the release gate, which is the one place a provider is required.
+    """
+
+    monkeypatch.delenv("ALICE_EMBEDDINGS_BASE_URL", raising=False)
+    monkeypatch.delenv("ALICE_EMBEDDINGS_MODEL", raising=False)
+    monkeypatch.delenv("ALICE_EMBEDDINGS_API_KEY", raising=False)
 
 
 # -- cascade unit tests ---------------------------------------------------------
