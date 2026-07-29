@@ -29,6 +29,23 @@ from urllib.parse import parse_qs, unquote, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 
+def _as_int(value: object) -> int:
+    """Narrow a database cell to int.
+
+    A psycopg row cell is typed `object`, so `int(cell)` does not type-check.
+    Narrowed explicitly rather than cast, so a column that is not integer-like
+    fails loudly here instead of somewhere further downstream. Duplicated from
+    the seed script on purpose: that script runs as a subprocess under a
+    different PYTHONPATH so the two cannot share an import.
+    """
+
+    if isinstance(value, int):
+        return value
+    if isinstance(value, (str, float)):
+        return int(value)
+    raise TypeError(f"expected an integer-like database value, got {type(value).__name__}")
+
+
 ROOT_DIR = Path(__file__).resolve().parents[1]
 CURRENT_SOURCE_DIR = ROOT_DIR / "apps" / "api" / "src"
 SEED_SCRIPT = ROOT_DIR / "scripts" / "_phase5_ops_seed.py"
@@ -1055,7 +1072,7 @@ def _verify_migration_0093(admin_url: str) -> None:
             """,
             (ARTIFACT_ID, REVIEWER_ID),
         ).fetchall()
-        normalized_rows = [(str(row["id"]), int(row["usefulness"])) for row in rows]
+        normalized_rows = [(str(row["id"]), _as_int(row["usefulness"])) for row in rows]
         if normalized_rows != [(NEWER_RATING_ID, 5)]:
             raise EvidenceError("migration_0093_survivor_mismatch")
         try:
