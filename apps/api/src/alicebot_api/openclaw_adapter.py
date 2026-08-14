@@ -348,11 +348,43 @@ def _extract_context(
     )
 
 
+def _select_openclaw_source_paths(candidates: list[Path]) -> list[Path]:
+    """Narrow a directory listing to the files the adapter will actually parse.
+
+    Selection runs on the listing rather than on already-read text, for two
+    reasons. An unrelated neighbour is never opened or decoded, so a stray
+    ``.json`` file with invalid UTF-8 no longer fails an import that had no
+    reason to look at it. And the set that gets archived becomes the same set
+    the parse is handed, because both are driven by the one snapshot taken
+    after this narrowing, so the parse can no longer reach content that was
+    never archived.
+
+    The reverse can still happen and is harmless: when a directory holds more
+    than one workspace-named file, every one of them is archived while the
+    parse consumes the first, so the archive is a superset. Nothing is imported
+    from outside it, which is the direction that matters.
+    """
+
+    by_name = {path.name: path for path in candidates}
+    named = [
+        by_name[filename]
+        for filename in (*_SUPPORTED_WORKSPACE_FILENAMES, *_SUPPORTED_MEMORY_FILENAMES)
+        if filename in by_name
+    ]
+    if named:
+        return named
+    if not candidates:
+        raise OpenClawAdapterValidationError("no OpenClaw memory entries were found at the source path")
+    return list(candidates)
+
+
 def snapshot_openclaw_source(source: str | Path) -> tuple[Path, list[ImportSourceFile]]:
-    """Read every JSON file the adapter may consult, exactly once.
+    """Read every JSON file the adapter will consult, exactly once.
 
     A directory source is read one level deep, which is the only level the
-    selection rules below look at, and never through a symlink.
+    selection rules below look at, and never through a symlink. Selection is
+    applied to the listing first, so a file the adapter will not parse is not
+    read either.
     """
 
     source_path = Path(source).expanduser().resolve()
@@ -379,7 +411,7 @@ def snapshot_openclaw_source(source: str | Path) -> tuple[Path, list[ImportSourc
     )
     return source_path, snapshot_source_files(
         source_path,
-        json_files,
+        _select_openclaw_source_paths(json_files),
         error_factory=OpenClawAdapterValidationError,
     )
 

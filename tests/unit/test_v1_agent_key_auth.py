@@ -273,7 +273,7 @@ def test_v1_routes_reject_an_unknown_bearer_key(
     assert (status, payload) == (401, _AUTHENTICATION_FAILED)
 
 
-def test_v1_request_with_a_valid_key_acts_as_that_keys_actor(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_v1_request_with_a_valid_key_resolves_that_keys_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     user_id = uuid4()
     settings = _settings(user_id)
     store = _AgentKeyStore(user_id=user_id)

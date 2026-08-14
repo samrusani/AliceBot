@@ -354,7 +354,9 @@ def import_markdown_source(
     source: str | Path,
 ) -> JsonObject:
     # One snapshot feeds both the evidence archive and the parse, so the
-    # archived bytes are provably the bytes that were imported.
+    # archived text is the text that was imported. It is decoded text and not
+    # the disk bytes: the read is text mode, so CRLF arrives as LF and the
+    # archive will not checksum against the original file.
     source_path, snapshot = _snapshot_markdown_source(source)
     archived_artifacts = archive_import_source_files(
         store,

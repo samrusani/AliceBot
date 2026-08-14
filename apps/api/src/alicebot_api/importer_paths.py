@@ -139,7 +139,16 @@ def read_contained_source_text(
         raise
 
     with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
-        return stream.read()
+        try:
+            return stream.read()
+        except UnicodeDecodeError as exc:
+            # Decoding is part of reading the file, so a bad byte has to leave
+            # as the caller's own validation error naming the file. Raised bare
+            # it surfaces as a byte offset with no path attached, which tells an
+            # operator nothing about which file to go and look at.
+            raise error_factory(
+                f"import source file is not valid UTF-8 text: {file_path}"
+            ) from exc
 
 
 def snapshot_source_files(

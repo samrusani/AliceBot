@@ -1121,8 +1121,15 @@ async def enforce_v1_agent_authentication(
     ``/v1`` routes resolve their user from ``ALICEBOT_AUTH_USER_ID`` or the
     identity header, which binds the data but proves nothing about the caller.
     Once the bound user has provisioned an agent API key, every ``/v1`` request
-    must present it, and the resolved key is the actor for that request. While
-    no key exists the surface stays keyless for local callers only.
+    must present it. While no key exists the surface stays keyless for local
+    callers only.
+
+    This authenticates and does not authorize. No handler reads the resolved
+    identity, so ``/v1`` enforces no permission profile and records no agent on
+    the rows it writes: any valid key can do anything any other valid key can,
+    and a revoked key's ``/v1`` writes are not reachable by an agent-keyed
+    quarantine sweep. Keep ``/v1`` loopback-only, as
+    ``docs/deployment/single-tenant-self-hosted.md`` instructs.
     """
 
     if not _is_v1_path(request.url.path):

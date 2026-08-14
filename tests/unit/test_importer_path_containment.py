@@ -191,7 +191,7 @@ def test_read_contained_source_text_refuses_a_symlink_swapped_in_after_listing(t
         read_contained_source_text(listed, error_factory=MarkdownImportValidationError)
 
 
-def test_read_contained_source_text_returns_the_bytes_it_opened(tmp_path: Path) -> None:
+def test_read_contained_source_text_returns_the_text_it_opened(tmp_path: Path) -> None:
     root = _markdown_root(tmp_path)
 
     assert read_contained_source_text(
@@ -345,7 +345,48 @@ def test_each_importer_opens_a_source_file_once_and_archives_what_it_parsed(
 
     archived_files = archived["files"]
     assert len(archived_files) == 1
-    # The archived evidence is byte-identical to what is on disk, and the
-    # parse ran off the same in-memory snapshot rather than a second read.
+    # The archived evidence is the decoded text the parse consumed, taken from
+    # the same in-memory snapshot rather than a second read. It is text and not
+    # the disk bytes: the read applies universal newlines, so a CRLF source
+    # archives as LF and will not checksum against the original file.
     assert archived_files[0].content_text == body
     assert parsed["batch"].items
+
+
+def test_openclaw_snapshot_skips_neighbours_the_selection_rule_excludes(tmp_path: Path) -> None:
+    """A neighbour that will not be parsed must never be opened either.
+
+    Selection used to run after every top-level ``.json`` had been read, so one
+    unrelated file with bytes that are not UTF-8 failed an import that had no
+    reason to look at it.
+    """
+
+    root = _openclaw_root(tmp_path)
+    (root / "workspace.json").write_text(json.dumps(_OPENCLAW_BODY), encoding="utf-8")
+    (root / "unrelated.json").write_bytes(b'{"note": "\xff\xfe not utf-8"}')
+
+    _source_path, selected = list_openclaw_source_files(root)
+    assert [path.name for path in selected] == ["workspace.json", "memories.json"]
+
+    batch = load_openclaw_payload(root)
+    assert batch.items
+    assert "unrelated.json" not in {item.source_file for item in batch.items}
+
+
+def test_read_contained_source_text_names_the_file_that_is_not_utf8(tmp_path: Path) -> None:
+    """A selected file with undecodable bytes leaves as the caller's own error.
+
+    Raised bare, a ``UnicodeDecodeError`` reports a byte offset and no path,
+    which does not tell an operator which file to go and look at.
+    """
+
+    root = _markdown_root(tmp_path)
+    broken = root / "broken.md"
+    broken.write_bytes(b"- Note: \xff\xfe not utf-8\n")
+
+    with pytest.raises(MarkdownImportValidationError, match="not valid UTF-8 text") as caught:
+        read_contained_source_text(broken, error_factory=MarkdownImportValidationError)
+
+    assert broken.name in str(caught.value)
+    # The offset is still recoverable for anyone debugging the source file.
+    assert isinstance(caught.value.__cause__, UnicodeDecodeError)
