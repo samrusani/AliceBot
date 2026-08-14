@@ -48,7 +48,10 @@ def _invoke_get(
         "raw_path": path.encode("utf-8"),
         "query_string": urlencode({"user_id": str(user_id)}).encode("ascii"),
         "headers": headers,
-        "client": ("stage-a-key-isolation", 50000),
+        # An in-process caller is a loopback peer. Anything else is refused by
+        # the keyless loopback gate before key resolution runs, which would
+        # make the per-user assertions below pass for the wrong reason.
+        "client": ("127.0.0.1", 50000),
         "server": ("testserver", 80),
         "root_path": "",
     }

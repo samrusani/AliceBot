@@ -42,7 +42,7 @@ def invoke_request(
         "raw_path": path.encode("utf-8"),
         "query_string": b"",
         "headers": request_headers,
-        "client": ("testclient", 50000),
+        "client": ("127.0.0.1", 50000),
         "server": ("testserver", 80),
         "root_path": "",
     }

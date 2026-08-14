@@ -48,7 +48,7 @@ def invoke_request(
         "raw_path": path.encode(),
         "query_string": query_string,
         "headers": [(b"content-type", b"application/json")],
-        "client": ("testclient", 50000),
+        "client": ("127.0.0.1", 50000),
         "server": ("testserver", 80),
         "root_path": "",
     }

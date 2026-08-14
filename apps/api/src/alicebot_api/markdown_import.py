@@ -20,6 +20,12 @@ from alicebot_api.importer_models import (
     parse_optional_confidence,
     parse_optional_status,
 )
+from alicebot_api.importer_paths import (
+    ImportSourceFile,
+    contained_source_files,
+    read_contained_source_text,
+    snapshot_source_files,
+)
 from alicebot_api.importers.common import ImportPersistenceConfig, import_normalized_batch
 from alicebot_api.store import ContinuityStore, JsonObject, JsonValue
 
@@ -111,14 +117,37 @@ def _read_markdown_source(source: str | Path) -> tuple[Path, list[Path]]:
             raise MarkdownImportValidationError("markdown source file must end with .md")
         return source_path, [source_path]
 
-    files = sorted(
-        path
-        for path in source_path.rglob("*.md")
-        if path.is_file()
+    files = contained_source_files(
+        source_path,
+        suffixes=(".md",),
+        recursive=True,
+        error_factory=MarkdownImportValidationError,
     )
     if not files:
         raise MarkdownImportValidationError(f"no markdown files were found at {source_path}")
     return source_path, files
+
+
+def _snapshot_markdown_source(source: str | Path) -> tuple[Path, list[ImportSourceFile]]:
+    """Select the markdown files and read each of them exactly once."""
+
+    source_path, markdown_files = _read_markdown_source(source)
+    if source_path.is_file():
+        return source_path, [
+            ImportSourceFile(
+                path=source_path,
+                relative_path=source_path.name,
+                text=read_contained_source_text(
+                    source_path,
+                    error_factory=MarkdownImportValidationError,
+                ),
+            )
+        ]
+    return source_path, snapshot_source_files(
+        source_path,
+        markdown_files,
+        error_factory=MarkdownImportValidationError,
+    )
 
 
 def _resolve_object_type_and_text(*, text: str, type_hint: str | None) -> tuple[str, str]:
@@ -135,12 +164,6 @@ def _resolve_object_type_and_text(*, text: str, type_hint: str | None) -> tuple[
         return object_type, stripped
 
     return "Note", text
-
-
-def _relative_source_file(source_root: Path, file_path: Path) -> str:
-    if source_root.is_dir():
-        return str(file_path.relative_to(source_root))
-    return file_path.name
 
 
 def _parse_line_tags(line: str) -> tuple[str, dict[str, str]]:
@@ -179,8 +202,14 @@ def _merge_source_event_ids(*, existing: list[str], maybe_csv: str | None, singl
 
 
 def load_markdown_payload(source: str | Path) -> ImporterNormalizedBatch:
-    source_path, markdown_files = _read_markdown_source(source)
+    source_path, snapshot = _snapshot_markdown_source(source)
+    return _load_markdown_batch(source_path, snapshot)
 
+
+def _load_markdown_batch(
+    source_path: Path,
+    snapshot: list[ImportSourceFile],
+) -> ImporterNormalizedBatch:
     fixture_id: str | None = None
     workspace_id: str | None = None
     workspace_name: str | None = None
@@ -190,9 +219,9 @@ def load_markdown_payload(source: str | Path) -> ImporterNormalizedBatch:
 
     items: list[ImporterNormalizedItem] = []
 
-    for file_path in markdown_files:
-        raw_text = file_path.read_text(encoding="utf-8")
-        metadata, lines = _parse_frontmatter(raw_text)
+    for source_file in snapshot:
+        file_path = source_file.path
+        metadata, lines = _parse_frontmatter(source_file.text)
 
         if fixture_id is None:
             fixture_id = normalize_optional_text(metadata.get("fixture_id"))
@@ -256,11 +285,7 @@ def load_markdown_payload(source: str | Path) -> ImporterNormalizedBatch:
             source_provenance = merge_json_objects(
                 default_scope,
                 file_scope,
-                {
-                    "markdown_source_relpath": str(file_path.relative_to(source_path))
-                    if source_path.is_dir()
-                    else file_path.name,
-                },
+                {"markdown_source_relpath": source_file.relative_path},
             )
 
             for key in ("thread_id", "task_id", "project", "person", "confirmation_status"):
@@ -292,7 +317,7 @@ def load_markdown_payload(source: str | Path) -> ImporterNormalizedBatch:
             items.append(
                 ImporterNormalizedItem(
                     source_item_id=source_item_id,
-                    source_file=_relative_source_file(source_path, file_path),
+                    source_file=source_file.relative_path,
                     source_locator={"line_number": line_number, "source_item_id": source_item_id},
                     source_segment_text=raw_line,
                     source_segment_kind="markdown_line",
@@ -328,7 +353,11 @@ def import_markdown_source(
     user_id: UUID,
     source: str | Path,
 ) -> JsonObject:
-    source_path, markdown_files = _read_markdown_source(source)
+    # One snapshot feeds both the evidence archive and the parse, so the
+    # archived text is the text that was imported. It is decoded text and not
+    # the disk bytes: the read is text mode, so CRLF arrives as LF and the
+    # archive will not checksum against the original file.
+    source_path, snapshot = _snapshot_markdown_source(source)
     archived_artifacts = archive_import_source_files(
         store,
         user_id=user_id,
@@ -336,15 +365,15 @@ def import_markdown_source(
         import_source_path=str(source_path),
         files=[
             SourceArtifactArchiveInput(
-                relative_path=_relative_source_file(source_path, file_path),
-                display_name=file_path.name,
+                relative_path=source_file.relative_path,
+                display_name=source_file.path.name,
                 media_type="text/markdown",
-                content_text=file_path.read_text(encoding="utf-8"),
+                content_text=source_file.text,
             )
-            for file_path in markdown_files
+            for source_file in snapshot
         ],
     )
-    batch = load_markdown_payload(source_path)
+    batch = _load_markdown_batch(source_path, snapshot)
     return import_normalized_batch(
         store,
         user_id=user_id,

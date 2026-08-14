@@ -22,7 +22,10 @@ def main() -> int:
         "alicebot_api.main:app",
         host=settings.app_host,
         port=settings.app_port,
-        reload=_env_flag("APP_RELOAD", default=True),
+        # Reload watches the source tree and re-executes on change. That is a
+        # development convenience, never a serving posture, so it stays off
+        # unless APP_RELOAD explicitly turns it on.
+        reload=_env_flag("APP_RELOAD", default=False),
         access_log=settings.app_access_log,
         log_config=build_uvicorn_log_config(settings),
     )

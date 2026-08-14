@@ -11,6 +11,7 @@ WorkingDirectory=__ALICE_INSTALL_DIR__
 EnvironmentFile=__ALICE_ENV_FILE__
 Environment=APP_HOST=127.0.0.1
 Environment=APP_PORT=8000
+Environment=APP_RELOAD=false
 Environment=APP_LOG_MODE=stdout
 Environment=APP_ACCESS_LOG=false
 ExecStart=__ALICE_INSTALL_DIR__/.venv/bin/python -m alicebot_api.local_server

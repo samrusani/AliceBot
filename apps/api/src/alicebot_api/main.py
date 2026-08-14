@@ -965,6 +965,9 @@ async def _vnext_protected_http_auth(
             and isinstance(payload.get("capture_capability"), str)
             and bool(str(payload["capture_capability"]).strip())
         )
+        raw_key = agent_key_from_authorization(request.headers.get("authorization"))
+        if raw_key is None and not capability_capture and _keyless_request_is_off_loopback(request, settings):
+            return _authentication_failed_response("keyless vNext requests are restricted to loopback clients")
         if capability_capture:
             # The capability is the narrow credential for this endpoint. Its
             # hash/origin/user/expiry/consumption checks run atomically in the
@@ -980,7 +983,7 @@ async def _vnext_protected_http_auth(
                 _resolve_vnext_http_auth,
                 settings=settings,
                 user_id=user_id,
-                raw_key=agent_key_from_authorization(request.headers.get("authorization")),
+                raw_key=raw_key,
                 payload=payload,
                 method=request.method,
                 route_path=route_path,
@@ -1028,6 +1031,149 @@ def _request_client_is_loopback(request: Request, settings: Settings) -> bool:
     except ValueError:
         return client_identifier in {"localhost", "localhost.localdomain"}
     return client_ip.is_loopback
+
+
+def _keyless_request_is_off_loopback(request: Request, settings: Settings) -> bool:
+    """Report whether a keyless request must be refused before dispatch.
+
+    Unconditional by design. Deriving this from ``APP_ENV`` or ``APP_HOST``
+    would trust settings that can disagree with the real bind: a process
+    started outside ``local_server`` on ``0.0.0.0`` still reports the default
+    loopback ``APP_HOST``. The peer address is the only fact that cannot lie,
+    and ``_request_client_is_loopback`` reads ``X-Forwarded-For`` only when the
+    peer is a configured trusted proxy.
+    """
+
+    return not _request_client_is_loopback(request, settings)
+
+
+def _authentication_failed_response(reason: str) -> JSONResponse:
+    """Return the repository's one stable 401 body for a refused request."""
+
+    return public_exception_response(
+        AgentKeyAuthenticationError(reason, status_code=401),
+        status_code=401,
+    )
+
+
+def _is_v1_path(path: str) -> bool:
+    return path == "/v1" or path.startswith("/v1/")
+
+
+async def _v1_request_payload(request: Request) -> dict[str, object]:
+    """Read the JSON body an agent-key claim could be hiding in."""
+
+    if request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
+        return {}
+    if "application/json" not in request.headers.get("content-type", "").casefold():
+        return {}
+    try:
+        candidate = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return candidate if isinstance(candidate, dict) else {}
+
+
+def _v1_request_claims_other_user(
+    request: Request,
+    payload: dict[str, object],
+    authenticated_user_id: UUID,
+) -> bool:
+    """Report whether the request body or query claims a different user.
+
+    ``/v1`` handlers take their user from the server-side binding, never from
+    the payload. This keeps that true by construction: a payload that names
+    another user is refused rather than quietly ignored.
+    """
+
+    expected_user_id = str(authenticated_user_id)
+    query_user_id = request.query_params.get("user_id")
+    if query_user_id is not None and query_user_id.strip() != expected_user_id:
+        return True
+    body_user_id = payload.get("user_id")
+    return body_user_id is not None and str(body_user_id).strip() != expected_user_id
+
+
+def _resolve_v1_http_auth(
+    *,
+    settings: Settings,
+    user_id: UUID,
+    raw_key: str | None,
+    payload: dict[str, object],
+) -> AgentIdentity | None:
+    """Run ``/v1`` agent-key authentication off the event-loop thread."""
+
+    with user_connection(settings.database_url, user_id) as conn:
+        return resolve_protected_agent_identity(
+            PostgresVNextStore(conn),
+            user_id=user_id,
+            raw_key=raw_key,
+            payload=payload,
+        )
+
+
+async def enforce_v1_agent_authentication(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    """Authenticate the complete ``/v1`` surface before any handler runs.
+
+    ``/v1`` routes resolve their user from ``ALICEBOT_AUTH_USER_ID`` or the
+    identity header, which binds the data but proves nothing about the caller.
+    Once the bound user has provisioned an agent API key, every ``/v1`` request
+    must present it. While no key exists the surface stays keyless for local
+    callers only.
+
+    This authenticates and does not authorize. No handler reads the resolved
+    identity, so ``/v1`` enforces no permission profile and records no agent on
+    the rows it writes: any valid key can do anything any other valid key can,
+    and a revoked key's ``/v1`` writes are not reachable by an agent-keyed
+    quarantine sweep. Keep ``/v1`` loopback-only, as
+    ``docs/deployment/single-tenant-self-hosted.md`` instructs.
+    """
+
+    if not _is_v1_path(request.url.path):
+        return await call_next(request)
+    if request.method.upper() == "OPTIONS":
+        return await call_next(request)
+
+    settings = get_settings()
+    raw_key = agent_key_from_authorization(request.headers.get("authorization"))
+    if raw_key is None and _keyless_request_is_off_loopback(request, settings):
+        return _authentication_failed_response("keyless /v1 requests are restricted to loopback clients")
+
+    try:
+        user_id = _resolve_authenticated_v1_user_id(settings, request)
+    except ValueError:
+        # No bound user means no privilege to grant. The route handler owns the
+        # stable "local identity is required" contract for that case.
+        return await call_next(request)
+
+    payload = await _v1_request_payload(request)
+    if _v1_request_claims_other_user(request, payload, user_id):
+        return _authentication_failed_response("request user_id does not match the authenticated user")
+
+    try:
+        identity = await run_in_threadpool(
+            _resolve_v1_http_auth,
+            settings=settings,
+            user_id=user_id,
+            raw_key=raw_key,
+            payload=payload,
+        )
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
+    except AgentIdentityValidationError as exc:
+        return public_exception_response(exc, status_code=400)
+
+    request.state.v1_agent_identity = identity
+    return await call_next(request)
+
+
+# Registered after the vNext middleware and before the security-posture
+# middleware, so a refused /v1 request still leaves with the standard CORS and
+# security headers.
+app.middleware("http")(enforce_v1_agent_authentication)
 
 
 def _append_vary_header(response: Response, value: str) -> None:

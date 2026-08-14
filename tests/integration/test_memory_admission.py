@@ -41,7 +41,7 @@ def invoke_admit_memory(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         "raw_path": b"/v0/memories/admit",
         "query_string": b"",
         "headers": [(b"content-type", b"application/json")],
-        "client": ("testclient", 50000),
+        "client": ("127.0.0.1", 50000),
         "server": ("testserver", 80),
         "root_path": "",
     }
