@@ -61,3 +61,7 @@ docs/archive/sprints/
 docs/phase5-sprint-17-20-plan.md
 docs/phase8-sprint-29-32-plan.md
 build/
+
+# Internal working wiki. Never published: contains unfixed security detail,
+# candid competitive assessment, and host operational notes. See wiki/README.md.
+wiki/
