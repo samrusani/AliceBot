@@ -104,9 +104,9 @@ Use [docs/runbooks/vnext-local-scheduler.service](../runbooks/vnext-local-schedu
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now alicebot-vnext-scheduler.service
-systemctl --user status alicebot-vnext-scheduler.service
-systemctl --user stop alicebot-vnext-scheduler.service
+systemctl --user enable --now alice-scheduler.service
+systemctl --user status alice-scheduler.service
+systemctl --user stop alice-scheduler.service
 ```
 
 ## Validation

@@ -94,7 +94,7 @@ configuration-management layer before installing files, then verify them:
 ```bash
 id alicebot
 getent group alicebot
-git clone https://github.com/samrusani/AliceBot.git /opt/alicebot
+git clone https://github.com/samrusani/AliceMemory.git /opt/alicebot
 cd /opt/alicebot
 git fetch --tags --force
 ALICE_RELEASE_REF='replace-with-verified-tag-or-sha'
@@ -407,7 +407,7 @@ or use the equivalent container-namespace inspection for another supervisor;
 never dump `/proc/.../environ` into logs or a receipt.
 
 ```bash
-api_pid="$(systemctl show --property MainPID --value alicebot-api.service)"
+api_pid="$(systemctl show --property MainPID --value alice-api.service)"
 test "$api_pid" -gt 0
 sudo /opt/alicebot/.venv/bin/python - "$api_pid" <<'PY'
 import sys

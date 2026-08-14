@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_URL="${ALICEBOT_REPO_URL:-https://github.com/samrusani/AliceBot.git}"
+REPO_URL="${ALICEBOT_REPO_URL:-https://github.com/samrusani/AliceMemory.git}"
 TAG=""
 BRANCH="main"
 INSTALL_DIR="${HOME}/alicebot"

@@ -15,9 +15,9 @@ and `alicebot-mcp` entrypoints.
 
 ## Learn more
 
-- [Source and documentation](https://github.com/samrusani/AliceBot)
-- [Release history](https://github.com/samrusani/AliceBot/releases)
-- [Issue tracker](https://github.com/samrusani/AliceBot/issues)
+- [Source and documentation](https://github.com/samrusani/AliceMemory)
+- [Release history](https://github.com/samrusani/AliceMemory/releases)
+- [Issue tracker](https://github.com/samrusani/AliceMemory/issues)
 
 Alice is evolving software. Review the project documentation and release
 history before deploying it in a production workflow.

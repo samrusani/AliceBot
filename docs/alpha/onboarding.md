@@ -19,8 +19,8 @@ onboarding program.
 ## Install
 
 ```bash
-git clone https://github.com/samrusani/AliceBot.git
-cd AliceBot
+git clone https://github.com/samrusani/AliceMemory.git
+cd AliceMemory
 cp .env.example .env
 make setup
 make migrate

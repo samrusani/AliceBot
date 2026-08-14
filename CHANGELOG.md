@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- The repository was renamed from `samrusani/AliceBot` to
+  `samrusani/AliceMemory` on 2026-08-14, matching the `alice-memory` package
+  name and the alicememory.com domain. Documents under `docs/release/` and
+  `docs/archive/` intentionally retain the former name: they describe artifacts
+  that were built and signed from it, and PyPI's attestations bind those bytes
+  to the old slug permanently. The Python module, console scripts, database
+  roles and install paths are unchanged.
+
 ## v0.15.2 — 2026-08-14
 
 - `/v1` now requires an agent API key once one has been provisioned. Before

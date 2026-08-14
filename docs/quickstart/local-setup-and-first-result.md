@@ -5,8 +5,8 @@ The canonical setup walkthrough lives at [docs/alpha/quickstart.md](../alpha/qui
 Short version:
 
 ```bash
-git clone https://github.com/samrusani/AliceBot.git
-cd AliceBot
+git clone https://github.com/samrusani/AliceMemory.git
+cd AliceMemory
 make setup
 make migrate
 make doctor
