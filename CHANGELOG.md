@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## v0.15.2 — 2026-08-14
+
+- `/v1` now requires an agent API key once one has been provisioned. Before
+  this release the surface had no agent-key authentication at all.
+- Keyless requests are refused unless they come from a loopback client,
+  unconditionally rather than depending on the bind address.
+- Importers refuse symlinks out of the selected root, read each source once so
+  the parsed text is the archived text, and refuse a source that is not a
+  regular file.
+- OpenClaw selection runs on the directory listing, so an unrelated JSON
+  neighbour is never opened and the archived set is the set handed to the parse.
+- A source file that cannot be decoded raises an error naming the file instead
+  of a bare byte offset.
+- Fixed the brace-expansion and js-yaml advisories by pinning each patched
+  major line, and deleted the standing exception rather than letting it expire.
+- Corrected a middleware docstring that claimed the resolved `/v1` key was the
+  actor for the request. It is not: `/v1` authenticates but does not authorize.
+
 ## v0.15.1 — 2026-07-29
 
 - Tiered memory promotion keyed on authenticated identity, so a trusted local
