@@ -5,6 +5,8 @@ WEB_DIR ?= apps/web
 DIST_DIR ?= dist
 REPRO_DIST_DIR ?= $(DIST_DIR)-reproducibility-check
 PROJECT_VERSION = $(shell $(PYTHON) -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+# Reload is off unless a developer opts in: APP_RELOAD=true make dev
+APP_RELOAD ?= false
 ALICE_WEB_HOST ?= 127.0.0.1
 ALICE_WEB_PORT ?= 3000
 
@@ -39,14 +41,14 @@ migrate:
 	./scripts/dev_up.sh
 
 api:
-	APP_RELOAD=false ./scripts/api_dev.sh
+	APP_RELOAD=$(APP_RELOAD) ./scripts/api_dev.sh
 
 doctor:
 	$(ALICEBOT) vnext doctor --fix-safe --ci
 
 dev:
 	./scripts/dev_up.sh
-	APP_RELOAD=false ./scripts/api_dev.sh & \
+	APP_RELOAD=$(APP_RELOAD) ./scripts/api_dev.sh & \
 	api_pid=$$!; \
 	$(PNPM) --dir $(WEB_DIR) dev & \
 	web_pid=$$!; \
@@ -56,7 +58,7 @@ dev:
 runtime:
 	./scripts/dev_up.sh
 	$(PNPM) --dir $(WEB_DIR) build
-	APP_RELOAD=false ./scripts/api_dev.sh & \
+	APP_RELOAD=$(APP_RELOAD) ./scripts/api_dev.sh & \
 	api_pid=$$!; \
 	$(PNPM) --dir $(WEB_DIR) start --hostname $(ALICE_WEB_HOST) --port $(ALICE_WEB_PORT) & \
 	web_pid=$$!; \

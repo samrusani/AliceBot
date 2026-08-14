@@ -44,7 +44,12 @@ CARRIER_NAMES = tuple(
     _matched_vnext_route_path
     _vnext_central_route_policy _resolve_vnext_http_auth
     _vnext_protected_http_auth build_healthcheck_payload
-    _request_client_is_loopback _append_vary_header _cors_origin_allowed
+    _request_client_is_loopback
+    _keyless_request_is_off_loopback
+    _authentication_failed_response _is_v1_path _v1_request_payload
+    _v1_request_claims_other_user _resolve_v1_http_auth
+    enforce_v1_agent_authentication
+    _append_vary_header _cors_origin_allowed
     _resolve_cors_allow_origin_value _apply_cors_headers _apply_security_headers
     apply_http_security_posture enforce_authenticated_user_identity healthcheck
     _apply_legacy_surface_mount_policy
@@ -78,8 +83,8 @@ EXPECTED_SUPPORT_AST_SHA256 = "878128b51d8e8fd091f189f4595ab7774c736667f68e25139
 EXPECTED_ROUTE_NAME_MANIFEST_SHA256 = "225c57c08bd8314156c56352dd1c53ffed3f556ce285c666dd6fca125115d0b4"
 EXPECTED_OPERATION_MANIFEST_SHA256 = "c320979b62d7ee8de244fe38bde5bf3761a4f9d76f76bf3cd8576c30fce9857e"
 EXPECTED_IMPORT_MANIFEST_SHA256 = "8d9669a4024ea5258cd50f92ac290c2a040ff224dd0a67b5c60faed5ae722517"
-EXPECTED_CARRIER_NAMES_SHA256 = "00f4b8aba8e03d77e9936205d45003365df5f4f3afd0b7f6eced5b0b6ab49a9b"
-EXPECTED_CARRIER_AST_SHA256 = "1465fa9c2d60479ab41c44f2a2d9dbb2bca4319b4d8368c132b4b158241cf294"
+EXPECTED_CARRIER_NAMES_SHA256 = "2c109fc234a05dd8f44e4c34bee49e797fbb5e49e92413391541a7e504da328b"
+EXPECTED_CARRIER_AST_SHA256 = "145059a46221f6f1e83998ce8ef66e7980fdf727cb2bddf88eaba2d2089873aa"
 EXPECTED_ROUTE_NODE_SHA256 = {
     "get_vnext_workspace": "6c2151bf38b1b1311f016c00d14394afc7077a6ea219f7ce3dcfd9b701474ae7",
     "bootstrap_v1_workspace": "07b1fe2a4cd03a5ba69abe76e258a457e85e92b0bfba592520ee02d01d759c4b",
@@ -475,7 +480,9 @@ def test_workspace_import_direction_pruning_timing_and_runtime_identities_are_ex
     main_loads = {
         node.id for node in ast.walk(main_tree) if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
     }
-    assert (main_imports & router_import_bindings) - main_loads == {"_resolve_authenticated_v1_user_id"}
+    # /v1 agent-key authentication resolves the bound user in main, so no
+    # shared binding is a re-export-only import any more.
+    assert (main_imports & router_import_bindings) - main_loads == set()
 
     provider_module_imports = [
         node
@@ -706,9 +713,9 @@ def test_workspace_test_patches_and_release_controls_follow_moved_ownership() ->
         )
         for path in paths
     }
-    assert call_counts["apps/api/src/alicebot_api/main.py"] == 2
+    assert call_counts["apps/api/src/alicebot_api/main.py"] == 4
     assert call_counts[workspace_path] == 4
-    assert sum(call_counts.values()) == 298
+    assert sum(call_counts.values()) == 300
 
 
 def test_workspace_split_receipts_fail_on_old_or_mutated_carriers() -> None:

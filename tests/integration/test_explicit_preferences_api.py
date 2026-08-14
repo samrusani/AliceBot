@@ -39,7 +39,7 @@ def invoke_extract_explicit_preferences(payload: dict[str, str]) -> tuple[int, d
         "raw_path": b"/v0/memories/extract-explicit-preferences",
         "query_string": b"",
         "headers": [(b"content-type", b"application/json")],
-        "client": ("testclient", 50000),
+        "client": ("127.0.0.1", 50000),
         "server": ("testserver", 80),
         "root_path": "",
     }

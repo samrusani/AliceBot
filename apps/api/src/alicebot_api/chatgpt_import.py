@@ -21,6 +21,12 @@ from alicebot_api.importer_models import (
     parse_optional_confidence,
     parse_optional_status,
 )
+from alicebot_api.importer_paths import (
+    ImportSourceFile,
+    contained_source_files,
+    read_contained_source_text,
+    snapshot_source_files,
+)
 from alicebot_api.importers.common import ImportPersistenceConfig, import_normalized_batch
 from alicebot_api.store import ContinuityStore, JsonObject, JsonValue
 
@@ -63,9 +69,9 @@ def _build_raw_content(*, object_type: str, text: str) -> str:
     return f"{prefix}: {text}"
 
 
-def _read_json(path: Path) -> object:
+def _parse_json(path: Path, raw_text: str) -> object:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(raw_text)
     except json.JSONDecodeError as exc:
         raise ChatGPTImportValidationError(
             f"invalid JSON at {path}: {exc.msg}"
@@ -77,16 +83,41 @@ def _read_chatgpt_source_files(source: str | Path) -> tuple[Path, list[Path]]:
     if not source_path.exists():
         raise ChatGPTImportValidationError(f"ChatGPT source path does not exist: {source_path}")
 
-    source_files = [source_path] if source_path.is_file() else sorted(source_path.rglob("*.json"))
+    source_files = (
+        [source_path]
+        if source_path.is_file()
+        else contained_source_files(
+            source_path,
+            suffixes=(".json",),
+            recursive=True,
+            error_factory=ChatGPTImportValidationError,
+        )
+    )
     if not source_files:
         raise ChatGPTImportValidationError("no ChatGPT JSON files were found at the source path")
     return source_path, source_files
 
 
-def _relative_source_file(source_root: Path, file_path: Path) -> str:
-    if source_root.is_dir():
-        return str(file_path.relative_to(source_root))
-    return file_path.name
+def _snapshot_chatgpt_source(source: str | Path) -> tuple[Path, list[ImportSourceFile]]:
+    """Select the ChatGPT export files and read each of them exactly once."""
+
+    source_path, source_files = _read_chatgpt_source_files(source)
+    if source_path.is_file():
+        return source_path, [
+            ImportSourceFile(
+                path=source_path,
+                relative_path=source_path.name,
+                text=read_contained_source_text(
+                    source_path,
+                    error_factory=ChatGPTImportValidationError,
+                ),
+            )
+        ]
+    return source_path, snapshot_source_files(
+        source_path,
+        source_files,
+        error_factory=ChatGPTImportValidationError,
+    )
 
 
 def _normalize_message_text(value: object) -> str | None:
@@ -261,16 +292,22 @@ def _message_text(message: JsonObject) -> str | None:
 
 
 def load_chatgpt_payload(source: str | Path) -> ImporterNormalizedBatch:
-    source_path, source_files = _read_chatgpt_source_files(source)
+    source_path, snapshot = _snapshot_chatgpt_source(source)
+    return _load_chatgpt_batch(source_path, snapshot)
 
+
+def _load_chatgpt_batch(
+    source_path: Path,
+    snapshot: list[ImportSourceFile],
+) -> ImporterNormalizedBatch:
     fixture_id: str | None = None
     workspace_id: str | None = None
     workspace_name: str | None = None
 
     items: list[ImporterNormalizedItem] = []
 
-    for source_file in source_files:
-        payload = _read_json(source_file)
+    for source_file in snapshot:
+        payload = _parse_json(source_file.path, source_file.text)
 
         maybe_fixture_id, maybe_workspace_id, maybe_workspace_name = _extract_workspace_metadata(payload)
         if fixture_id is None:
@@ -363,7 +400,7 @@ def load_chatgpt_payload(source: str | Path) -> ImporterNormalizedBatch:
                 items.append(
                     ImporterNormalizedItem(
                         source_item_id=source_item_id,
-                        source_file=_relative_source_file(source_path, source_file),
+                        source_file=source_file.relative_path,
                         source_locator={
                             "conversation_id": conversation_id,
                             "message_id": message_id,
@@ -403,7 +440,9 @@ def import_chatgpt_source(
     user_id: UUID,
     source: str | Path,
 ) -> JsonObject:
-    source_path, source_files = _read_chatgpt_source_files(source)
+    # One snapshot feeds both the evidence archive and the parse, so the
+    # archived bytes are provably the bytes that were imported.
+    source_path, snapshot = _snapshot_chatgpt_source(source)
     archived_artifacts = archive_import_source_files(
         store,
         user_id=user_id,
@@ -411,15 +450,15 @@ def import_chatgpt_source(
         import_source_path=str(source_path),
         files=[
             SourceArtifactArchiveInput(
-                relative_path=_relative_source_file(source_path, file_path),
-                display_name=file_path.name,
+                relative_path=source_file.relative_path,
+                display_name=source_file.path.name,
                 media_type="application/json",
-                content_text=file_path.read_text(encoding="utf-8"),
+                content_text=source_file.text,
             )
-            for file_path in source_files
+            for source_file in snapshot
         ],
     )
-    batch = load_chatgpt_payload(source_path)
+    batch = _load_chatgpt_batch(source_path, snapshot)
     return import_normalized_batch(
         store,
         user_id=user_id,

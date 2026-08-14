@@ -155,7 +155,10 @@ def _invoke_vnext_request(
         "raw_path": path.encode("utf-8"),
         "query_string": urlencode(query).encode("ascii"),
         "headers": headers,
-        "client": ("stage-a-auth-sweep", 50000),
+        # Loopback, so the unconditional keyless off-loopback gate cannot answer
+        # first. This sweep is about the agent-key requirement, and a synthetic
+        # non-loopback host made it pass whether or not that requirement held.
+        "client": ("127.0.0.1", 50000),
         "server": ("testserver", 80),
         "root_path": "",
     }

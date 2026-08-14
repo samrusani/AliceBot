@@ -79,7 +79,9 @@ def _invoke_http(
             (b"content-type", b"application/json"),
             (b"x-alicebot-user-id", str(user_id).encode("ascii")),
         ],
-        "client": ("default-surface-smoke", 50000),
+        # An in-process caller is a loopback peer; a synthetic host would be
+        # refused by the keyless loopback gate before reaching the route.
+        "client": ("127.0.0.1", 50000),
         "server": ("testserver", 80),
         "root_path": "",
     }

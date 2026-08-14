@@ -9,22 +9,21 @@ from alicebot_api.importer_models import (
     ImporterNormalizedItem,
     ImporterWorkspaceContext,
 )
+from alicebot_api.importer_paths import ImportSourceFile
 from alicebot_api.importers.common import ImportPersistenceConfig, import_normalized_batch
-from alicebot_api.openclaw_adapter import list_openclaw_source_files, load_openclaw_payload
+from alicebot_api.openclaw_adapter import (
+    load_openclaw_batch_from_snapshot,
+    select_openclaw_source_files,
+    snapshot_openclaw_source,
+)
 from alicebot_api.store import ContinuityStore, JsonObject
 
 
 _OPENCLAW_DEDUPE_POSTURE = "workspace_and_payload_fingerprint"
 
 
-def _relative_source_file(source_root: Path, file_path: Path) -> str:
-    if source_root.is_dir():
-        return str(file_path.relative_to(source_root))
-    return file_path.name
-
-
-def _to_generic_batch(source: str | Path) -> ImporterNormalizedBatch:
-    batch = load_openclaw_payload(source)
+def _to_generic_batch(source_path: Path, snapshot: list[ImportSourceFile]) -> ImporterNormalizedBatch:
+    batch = load_openclaw_batch_from_snapshot(source_path, snapshot)
     return ImporterNormalizedBatch(
         context=ImporterWorkspaceContext(
             fixture_id=batch.context.fixture_id,
@@ -59,7 +58,9 @@ def import_openclaw_source(
     user_id: UUID,
     source: str | Path,
 ) -> JsonObject:
-    source_path, source_files = list_openclaw_source_files(source)
+    # One snapshot feeds both the evidence archive and the parse, so the
+    # archived bytes are provably the bytes that were imported.
+    source_path, snapshot = snapshot_openclaw_source(source)
     archived_artifacts = archive_import_source_files(
         store,
         user_id=user_id,
@@ -67,15 +68,15 @@ def import_openclaw_source(
         import_source_path=str(source_path),
         files=[
             SourceArtifactArchiveInput(
-                relative_path=_relative_source_file(source_path, file_path),
-                display_name=file_path.name,
+                relative_path=source_file.relative_path,
+                display_name=source_file.path.name,
                 media_type="application/json",
-                content_text=file_path.read_text(encoding="utf-8"),
+                content_text=source_file.text,
             )
-            for file_path in source_files
+            for source_file in select_openclaw_source_files(source_path, snapshot)
         ],
     )
-    generic_batch = _to_generic_batch(source)
+    generic_batch = _to_generic_batch(source_path, snapshot)
     return import_normalized_batch(
         store,
         user_id=user_id,

@@ -5,6 +5,12 @@ import json
 from pathlib import Path
 from typing import cast
 
+from alicebot_api.importer_paths import (
+    ImportSourceFile,
+    contained_source_files,
+    read_contained_source_text,
+    snapshot_source_files,
+)
 from alicebot_api.openclaw_models import (
     OpenClawAdapterValidationError,
     OpenClawNormalizedBatch,
@@ -113,9 +119,9 @@ def _build_raw_content(*, object_type: str, text: str) -> str:
     return f"{prefix}: {text}"
 
 
-def _read_json(path: Path) -> object:
+def _parse_json(path: Path, raw_text: str) -> object:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(raw_text)
     except json.JSONDecodeError as exc:
         raise OpenClawAdapterValidationError(
             f"invalid JSON at {path}: {exc.msg}"
@@ -342,51 +348,100 @@ def _extract_context(
     )
 
 
-def list_openclaw_source_files(source: str | Path) -> tuple[Path, list[Path]]:
+def snapshot_openclaw_source(source: str | Path) -> tuple[Path, list[ImportSourceFile]]:
+    """Read every JSON file the adapter may consult, exactly once.
+
+    A directory source is read one level deep, which is the only level the
+    selection rules below look at, and never through a symlink.
+    """
+
     source_path = Path(source).expanduser().resolve()
     if not source_path.exists():
         raise OpenClawAdapterValidationError(f"OpenClaw source path does not exist: {source_path}")
 
     if source_path.is_file():
-        return source_path, [source_path]
+        return source_path, [
+            ImportSourceFile(
+                path=source_path,
+                relative_path=source_path.name,
+                text=read_contained_source_text(
+                    source_path,
+                    error_factory=OpenClawAdapterValidationError,
+                ),
+            )
+        ]
 
-    files: list[Path] = []
-    for filename in (*_SUPPORTED_WORKSPACE_FILENAMES, *_SUPPORTED_MEMORY_FILENAMES):
-        candidate = source_path / filename
-        if candidate.exists():
-            files.append(candidate)
+    json_files = contained_source_files(
+        source_path,
+        suffixes=(".json",),
+        recursive=False,
+        error_factory=OpenClawAdapterValidationError,
+    )
+    return source_path, snapshot_source_files(
+        source_path,
+        json_files,
+        error_factory=OpenClawAdapterValidationError,
+    )
 
-    if files:
-        return source_path, files
 
-    json_files = sorted(path for path in source_path.iterdir() if path.suffix == ".json")
-    if not json_files:
+def select_openclaw_source_files(
+    source_path: Path,
+    snapshot: list[ImportSourceFile],
+) -> list[ImportSourceFile]:
+    """Apply the adapter's file-selection rule to an already-read snapshot."""
+
+    if source_path.is_file():
+        return list(snapshot)
+
+    files_by_name = {source_file.path.name: source_file for source_file in snapshot}
+    named = [
+        files_by_name[filename]
+        for filename in (*_SUPPORTED_WORKSPACE_FILENAMES, *_SUPPORTED_MEMORY_FILENAMES)
+        if filename in files_by_name
+    ]
+    if named:
+        return named
+    if not snapshot:
         raise OpenClawAdapterValidationError("no OpenClaw memory entries were found at the source path")
-    return source_path, json_files
+    return list(snapshot)
+
+
+def list_openclaw_source_files(source: str | Path) -> tuple[Path, list[Path]]:
+    source_path, snapshot = snapshot_openclaw_source(source)
+    return source_path, [
+        source_file.path for source_file in select_openclaw_source_files(source_path, snapshot)
+    ]
 
 
 def load_openclaw_payload(source: str | Path) -> OpenClawNormalizedBatch:
-    source_path = Path(source).expanduser().resolve()
-    if not source_path.exists():
-        raise OpenClawAdapterValidationError(f"OpenClaw source path does not exist: {source_path}")
+    source_path, snapshot = snapshot_openclaw_source(source)
+    return load_openclaw_batch_from_snapshot(source_path, snapshot)
 
+
+def load_openclaw_batch_from_snapshot(
+    source_path: Path,
+    snapshot: list[ImportSourceFile],
+) -> OpenClawNormalizedBatch:
     entries_by_file: list[tuple[str, list[JsonObject]]] = []
     workspace_payload: JsonObject | None = None
     fixture_id: str | None = None
 
     if source_path.is_file():
-        payload = _read_json(source_path)
+        only_file = snapshot[0]
+        payload = _parse_json(only_file.path, only_file.text)
         parsed_workspace, entries = _extract_workspace_payloads(payload)
         if isinstance(payload, dict):
             fixture_id = normalize_optional_text(payload.get("fixture_id"))
         workspace_payload = parsed_workspace
         entries_by_file.append((source_path.name, entries))
     else:
+        files_by_name = {candidate.path.name: candidate for candidate in snapshot}
+
         for filename in _SUPPORTED_WORKSPACE_FILENAMES:
-            candidate = source_path / filename
-            if not candidate.exists():
+            candidate = files_by_name.get(filename)
+            if candidate is None:
                 continue
-            payload = _read_json(candidate)
+            payload = _parse_json(candidate.path, candidate.text)
             parsed_workspace, _ = _extract_workspace_payloads(payload)
             workspace_payload = parsed_workspace or workspace_payload
             if isinstance(payload, dict):
@@ -394,10 +449,10 @@ def load_openclaw_payload(source: str | Path) -> OpenClawNormalizedBatch:
             break
 
         for filename in _SUPPORTED_MEMORY_FILENAMES:
-            candidate = source_path / filename
-            if not candidate.exists():
+            candidate = files_by_name.get(filename)
+            if candidate is None:
                 continue
-            payload = _read_json(candidate)
+            payload = _parse_json(candidate.path, candidate.text)
             parsed_workspace, entries = _extract_workspace_payloads(payload)
             if parsed_workspace is not None:
                 workspace_payload = parsed_workspace
@@ -406,16 +461,15 @@ def load_openclaw_payload(source: str | Path) -> OpenClawNormalizedBatch:
             entries_by_file.append((filename, entries))
 
         if not entries_by_file:
-            json_files = sorted(path for path in source_path.iterdir() if path.suffix == ".json")
-            for path in json_files:
-                payload = _read_json(path)
+            for candidate in snapshot:
+                payload = _parse_json(candidate.path, candidate.text)
                 parsed_workspace, entries = _extract_workspace_payloads(payload)
                 if parsed_workspace is not None:
                     workspace_payload = parsed_workspace
                 if isinstance(payload, dict):
                     fixture_id = fixture_id or normalize_optional_text(payload.get("fixture_id"))
                 if entries:
-                    entries_by_file.append((path.name, entries))
+                    entries_by_file.append((candidate.path.name, entries))
 
     if not entries_by_file:
         raise OpenClawAdapterValidationError("no OpenClaw memory entries were found at the source path")
@@ -450,5 +504,8 @@ def load_openclaw_payload(source: str | Path) -> OpenClawNormalizedBatch:
 __all__ = [
     "OpenClawAdapterValidationError",
     "list_openclaw_source_files",
+    "load_openclaw_batch_from_snapshot",
     "load_openclaw_payload",
+    "select_openclaw_source_files",
+    "snapshot_openclaw_source",
 ]

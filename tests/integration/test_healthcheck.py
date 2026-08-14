@@ -36,7 +36,7 @@ def invoke_healthcheck() -> tuple[int, dict[str, object]]:
         "raw_path": b"/healthz",
         "query_string": b"",
         "headers": [],
-        "client": ("testclient", 50000),
+        "client": ("127.0.0.1", 50000),
         "server": ("testserver", 80),
         "root_path": "",
     }
