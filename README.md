@@ -203,3 +203,5 @@ MIT — see [LICENSE](https://github.com/samrusani/AliceBot/blob/main/LICENSE).
 
 `v0.15.1` is the latest published release and remains the install, checksum,
 and baseline reference.
+
+`v0.15.2` is the current release candidate. It is not published.
