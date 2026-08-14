@@ -50,7 +50,7 @@ deployment.
 ## Inspect-Before-Run Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/samrusani/AliceBot/main/scripts/install-ubuntu.sh -o install-alice.sh
+curl -fsSL https://raw.githubusercontent.com/samrusani/AliceMemory/main/scripts/install-ubuntu.sh -o install-alice.sh
 less install-alice.sh
 bash install-alice.sh --branch main --install-dir ~/alicebot
 ```
@@ -124,7 +124,7 @@ connector configuration.
 ```bash
 sudo apt-get update
 sudo apt-get install -y ca-certificates curl git build-essential python3 python3-venv python3-pip libpq-dev postgresql postgresql-contrib postgresql-16-pgvector
-git clone https://github.com/samrusani/AliceBot.git ~/alicebot
+git clone https://github.com/samrusani/AliceMemory.git ~/alicebot
 cd ~/alicebot
 git checkout main
 python3 -m venv .venv

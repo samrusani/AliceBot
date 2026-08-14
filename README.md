@@ -4,7 +4,7 @@
 
 **The continuity layer for AI agents.**
 
-[![LongMemEval](https://img.shields.io/badge/LongMemEval__s-79.4%25-6f42c1)](https://github.com/samrusani/AliceBot/blob/main/docs/benchmarks/longmemeval/README.md)
+[![LongMemEval](https://img.shields.io/badge/LongMemEval__s-79.4%25-6f42c1)](https://github.com/samrusani/AliceMemory/blob/main/docs/benchmarks/longmemeval/README.md)
 ![Local-first](https://img.shields.io/badge/local--first-core-0A7B61)
 ![MCP](https://img.shields.io/badge/MCP-supported-1f6feb)
 ![Python](https://img.shields.io/badge/python-3.12%2B-3776AB)
@@ -12,7 +12,7 @@
 
 Alice is a local-first memory service that lets AI agents resume interrupted work, track open loops, recall decisions with provenance, and improve when corrected — instead of re-reading transcripts or trusting opaque summaries.
 
-In one historical run dated 2026-07-07, it scored **79.4%** on [LongMemEval](https://github.com/samrusani/AliceBot/blob/main/docs/benchmarks/longmemeval/README.md), a long-term-memory benchmark. That is a single-run receipt, not a repeated-run estimate or a measurement of the current release; it includes one disclosed trade-off on the abstention subset (25/30 → 22/30). The full per-question evidence, methodology, and reproduction script are committed to this repo. Open source, local-first, MIT-licensed.
+In one historical run dated 2026-07-07, it scored **79.4%** on [LongMemEval](https://github.com/samrusani/AliceMemory/blob/main/docs/benchmarks/longmemeval/README.md), a long-term-memory benchmark. That is a single-run receipt, not a repeated-run estimate or a measurement of the current release; it includes one disclosed trade-off on the abstention subset (25/30 → 22/30). The full per-question evidence, methodology, and reproduction script are committed to this repo. Open source, local-first, MIT-licensed.
 
 Agents connect over MCP, HTTP API, or CLI. Humans stay in control: agent writes land as policy-checked commits or reviewable proposals, and a local review console is where memory gets approved, corrected, or forgotten. That review boundary is a feature, not a limitation — it is what makes the memory trustworthy enough to act on.
 
@@ -57,7 +57,7 @@ MCP client config (Claude Desktop, IDEs) — note there is no `DATABASE_URL`:
 }
 ```
 
-SQLite mode is the trial and single-agent path: it serves the eleven core tools for one user, and memory review happens through `alice_memory_review` / `alice_memory_correct` instead of the web console. Boundaries are listed in [known limitations](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/known-limitations.md).
+SQLite mode is the trial and single-agent path: it serves the eleven core tools for one user, and memory review happens through `alice_memory_review` / `alice_memory_correct` instead of the web console. Boundaries are listed in [known limitations](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/known-limitations.md).
 
 > **Install note:** the PyPI package is [`alice-memory`](https://pypi.org/project/alice-memory/). The name `alice-core` on PyPI belongs to an unrelated project.
 
@@ -68,8 +68,8 @@ memory scheduler workflows — run from a repo checkout. Requirements: Python
 3.12+, Node 20+, pnpm, Docker, Git.
 
 ```bash
-git clone https://github.com/samrusani/AliceBot.git
-cd AliceBot
+git clone https://github.com/samrusani/AliceMemory.git
+cd AliceMemory
 make setup
 make migrate
 make doctor
@@ -81,7 +81,7 @@ make dev
 - `make doctor` runs readiness checks and applies safe fixes.
 - `make dev` runs the API on port 8000 and the web review console on port 3000.
 
-Open the review console at `http://localhost:3000/vnext`. The detailed walkthrough — demo data, smoke checks, first memory — is in [the alpha quickstart](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/quickstart.md).
+Open the review console at `http://localhost:3000/vnext`. The detailed walkthrough — demo data, smoke checks, first memory — is in [the alpha quickstart](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/quickstart.md).
 
 ## Connect an agent
 
@@ -119,11 +119,11 @@ The core MCP surface is eleven tools:
 - `alice_memory_manage` — confirm, undo, or forget a committed memory, audit trail intact
 - `alice_explain` — provenance and trust explanation for a memory
 
-Calling directly from a human client (Claude Desktop, an IDE)? `alice_memory_commit` needs only `title` and `canonical_text` — no identity fields. Agent integrations declare `agent_id` and `agent_type`; see [agent integration](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/agent-integration.md).
+Calling directly from a human client (Claude Desktop, an IDE)? `alice_memory_commit` needs only `title` and `canonical_text` — no identity fields. Agent integrations declare `agent_id` and `agent_type`; see [agent integration](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/agent-integration.md).
 
-The write verbs follow one contract — outcomes, audit guarantees, and honest boundaries per verb are documented in the [Memory Operations Protocol](https://github.com/samrusani/AliceBot/blob/main/docs/memory-operations-protocol.md). Removed backing services no longer have MCP tools. Retained long-tail memory tools require `ALICE_MCP_LEGACY_TOOLS=1`; exactly `alice_task_brief`, `alice_task_brief_show`, and `alice_task_brief_compare` additionally require `ALICE_LEGACY_SURFACES=1`. All legacy tools require a deliberately keyless local-operator deployment; a server bound with `ALICE_AGENT_API_KEY` exposes only the policy-complete core surface.
+The write verbs follow one contract — outcomes, audit guarantees, and honest boundaries per verb are documented in the [Memory Operations Protocol](https://github.com/samrusani/AliceMemory/blob/main/docs/memory-operations-protocol.md). Removed backing services no longer have MCP tools. Retained long-tail memory tools require `ALICE_MCP_LEGACY_TOOLS=1`; exactly `alice_task_brief`, `alice_task_brief_show`, and `alice_task_brief_compare` additionally require `ALICE_LEGACY_SURFACES=1`. All legacy tools require a deliberately keyless local-operator deployment; a server bound with `ALICE_AGENT_API_KEY` exposes only the policy-complete core surface.
 
-Custom agents calling the HTTP API authenticate with per-agent API keys. See [agent integration](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/agent-integration.md).
+Custom agents calling the HTTP API authenticate with per-agent API keys. See [agent integration](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/agent-integration.md).
 
 ### Embeddings
 
@@ -169,37 +169,37 @@ What that means in practice:
 
 ## Docs
 
-- [Quickstart walkthrough](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/quickstart.md)
-- [Agent integration](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/agent-integration.md)
-- [MCP tools](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/mcp-tools.md)
-- [Custom agent guide](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/custom-agent-guide.md)
-- [Known limitations](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/known-limitations.md)
-- [Backup and restore](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/backup-and-restore.md)
-- [Disaster recovery](https://github.com/samrusani/AliceBot/blob/main/docs/runbooks/disaster-recovery.md)
-- [Health and monitoring](https://github.com/samrusani/AliceBot/blob/main/docs/runbooks/health-and-monitoring.md)
-- [Upgrade v0.12.0 to current](https://github.com/samrusani/AliceBot/blob/main/docs/runbooks/upgrade-v0.12-to-current.md)
-- [Security and privacy](https://github.com/samrusani/AliceBot/blob/main/docs/alpha/security-and-privacy.md)
-- [v0.10.4 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.10.4-release-notes.md)
-- [v0.11.0 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.11.0-release-notes.md)
-- [v0.11.1 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.11.1-release-notes.md)
-- [v0.12.0 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.12.0-release-notes.md)
-- [v0.15.2 release notes](https://github.com/samrusani/AliceBot/blob/main/docs/release/v0.15.2-release-notes.md)
-- [Release procedure](https://github.com/samrusani/AliceBot/blob/main/RELEASING.md)
-- [Architecture](https://github.com/samrusani/AliceBot/blob/main/ARCHITECTURE.md)
-- [Roadmap](https://github.com/samrusani/AliceBot/blob/main/ROADMAP.md)
-- [Changelog](https://github.com/samrusani/AliceBot/blob/main/CHANGELOG.md)
+- [Quickstart walkthrough](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/quickstart.md)
+- [Agent integration](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/agent-integration.md)
+- [MCP tools](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/mcp-tools.md)
+- [Custom agent guide](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/custom-agent-guide.md)
+- [Known limitations](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/known-limitations.md)
+- [Backup and restore](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/backup-and-restore.md)
+- [Disaster recovery](https://github.com/samrusani/AliceMemory/blob/main/docs/runbooks/disaster-recovery.md)
+- [Health and monitoring](https://github.com/samrusani/AliceMemory/blob/main/docs/runbooks/health-and-monitoring.md)
+- [Upgrade v0.12.0 to current](https://github.com/samrusani/AliceMemory/blob/main/docs/runbooks/upgrade-v0.12-to-current.md)
+- [Security and privacy](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/security-and-privacy.md)
+- [v0.10.4 release notes](https://github.com/samrusani/AliceMemory/blob/main/docs/release/v0.10.4-release-notes.md)
+- [v0.11.0 release notes](https://github.com/samrusani/AliceMemory/blob/main/docs/release/v0.11.0-release-notes.md)
+- [v0.11.1 release notes](https://github.com/samrusani/AliceMemory/blob/main/docs/release/v0.11.1-release-notes.md)
+- [v0.12.0 release notes](https://github.com/samrusani/AliceMemory/blob/main/docs/release/v0.12.0-release-notes.md)
+- [v0.15.2 release notes](https://github.com/samrusani/AliceMemory/blob/main/docs/release/v0.15.2-release-notes.md)
+- [Release procedure](https://github.com/samrusani/AliceMemory/blob/main/RELEASING.md)
+- [Architecture](https://github.com/samrusani/AliceMemory/blob/main/ARCHITECTURE.md)
+- [Roadmap](https://github.com/samrusani/AliceMemory/blob/main/ROADMAP.md)
+- [Changelog](https://github.com/samrusani/AliceMemory/blob/main/CHANGELOG.md)
 
 ## Contributing
 
-Issues, integrations, importers, and eval contributions are welcome. See [CONTRIBUTING.md](https://github.com/samrusani/AliceBot/blob/main/CONTRIBUTING.md).
+Issues, integrations, importers, and eval contributions are welcome. See [CONTRIBUTING.md](https://github.com/samrusani/AliceMemory/blob/main/CONTRIBUTING.md).
 
 ## Security
 
-If you discover a security issue, follow the process in [SECURITY.md](https://github.com/samrusani/AliceBot/blob/main/SECURITY.md).
+If you discover a security issue, follow the process in [SECURITY.md](https://github.com/samrusani/AliceMemory/blob/main/SECURITY.md).
 
 ## License
 
-MIT — see [LICENSE](https://github.com/samrusani/AliceBot/blob/main/LICENSE).
+MIT — see [LICENSE](https://github.com/samrusani/AliceMemory/blob/main/LICENSE).
 
 `v0.15.2` is the latest published release and remains the install, checksum,
 and baseline reference.

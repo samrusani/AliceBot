@@ -32,8 +32,8 @@ This is the trial and single-agent path: the eleven core MCP tools for one user,
 ## Setup
 
 ```bash
-git clone https://github.com/samrusani/AliceBot.git
-cd AliceBot
+git clone https://github.com/samrusani/AliceMemory.git
+cd AliceMemory
 make setup
 make migrate
 make doctor
