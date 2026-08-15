@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## v0.15.3 — 2026-08-15
+
+- First release published from `samrusani/AliceMemory`. Project URLs corrected;
+  documents under `docs/release/` and `docs/archive/` intentionally keep the
+  former name, since they describe artifacts signed from it.
+- setuptools 83 to 84 for the build backend. Wheel records
+  `Generator: setuptools (84.0.0)`, metadata version unchanged at 2.4.
+- twine constraint widened to `<8.0` and exercised against the release artifacts.
+- All three CodeQL action pins moved to v4.37.4 together; they cannot move
+  separately without CodeQL refusing to run.
+- pnpm setup action pin converted from a tag-object SHA to the equivalent
+  commit SHA.
+- `@testing-library/react` 16.3.2.
+- Corrected four references to systemd units that are not shipped.
+
+No functional change to the library. No migration, no schema change.
+
 - The repository was renamed from `samrusani/AliceBot` to
   `samrusani/AliceMemory` on 2026-08-14, matching the `alice-memory` package
   name and the alicememory.com domain. Documents under `docs/release/` and
