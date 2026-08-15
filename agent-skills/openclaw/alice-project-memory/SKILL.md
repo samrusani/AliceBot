@@ -1,3 +1,12 @@
+---
+name: alice-project-memory
+description: Use Alice as the project-scoped memory and continuity layer. Load before build or review work, and whenever a decision or constraint is worth keeping.
+version: 1.0.0
+author: Alice Memory
+license: MIT
+platforms: [linux, macos, windows]
+---
+
 # OpenClaw Alice Project Memory Skill
 
 Use Alice as the project-scoped memory and continuity layer.
@@ -8,8 +17,10 @@ Default loop — one first call, then act, then write back:
 2. Call `alice_context_pack` ONCE, project-scoped, before build or review work. The pack already carries decisions, procedures, open loops, sources, and contradictions — do not run raw searches first.
 3. Perform the assigned build or review task, treating `staleness` notes and `contradicting_evidence` as caution signals.
 4. Commit project-scoped memory via `alice_memory_commit` whenever you learn something worth keeping and the domain is `project`, including when the user has not asked you to remember it. It is the write verb for ordinary memory and what it records is immediately recallable. Use `alice_capture` for source documents, external evidence, raw notes and generated sprint summaries: it is review-gated, so `alice_recall` will not return it until a human reviews it.
-5. Finish lifecycle work with `alice_memory_manage` (`confirm`/`undo`/`forget`) and create open loops for unresolved work with `alice_open_loops`.
+5. Finish lifecycle work with `alice_memory_manage` (`confirm`/`undo`/`forget`). Record unresolved work with `alice_memory_commit` using `memory_type: "open_loop"`; `alice_open_loops` reads and closes loops, it does not create them.
 6. Do not access or write non-project personal domains.
+
+Your host may prefix these tool names with the server name. In OpenClaw a server configured as `alice` exposes `alice_context_pack` as `alice__alice_context_pack`. Read the names from the host's own tool list rather than assuming the bare form.
 
 Context depth (request field `context_depth`; deterministic retrieval, never model synthesis): `minimal` for quick fact checks (full-text only, max 4 memories, no sources/contradictions), `low` (default) for normal pre-task context, `medium` for reviews and status reports (contradiction check on for every query type), `high` for audits and revision history (adds supersession chain notes). Explicit `include_sources`/`include_contradictions` override the tier default. The matching MCP tool arguments arrive in the same release — follow the server's `tools/list` schema.
 

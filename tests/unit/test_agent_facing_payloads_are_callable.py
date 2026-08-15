@@ -44,13 +44,13 @@ NOT_A_TOOL_PAYLOAD = "n/a"
 # (relative path, block index) -> tool the document presents the payload as being for.
 # Block index counts ```json fences in file order, from zero.
 DOCUMENTED_PAYLOADS: dict[tuple[str, int], str] = {
-    ("agent-skills/hermes/alice-memory-skill.md", 0): "alice_memory_commit",
-    ("agent-skills/hermes/alice-memory-skill.md", 1): "alice_memory_commit",
-    ("agent-skills/hermes/alice-memory-skill.md", 2): "alice_memory_commit",
-    ("agent-skills/hermes/alice-memory-skill.md", 3): "alice_memory_commit",
-    ("agent-skills/openclaw/alice-project-memory-skill.md", 0): "alice_memory_commit",
-    ("agent-skills/openclaw/alice-project-memory-skill.md", 1): "alice_capture",
-    ("agent-skills/openclaw/alice-project-memory-skill.md", 2): "alice_memory_commit",
+    ("agent-skills/hermes/alice-memory/SKILL.md", 0): "alice_memory_commit",
+    ("agent-skills/hermes/alice-memory/SKILL.md", 1): "alice_memory_commit",
+    ("agent-skills/hermes/alice-memory/SKILL.md", 2): "alice_memory_commit",
+    ("agent-skills/hermes/alice-memory/SKILL.md", 3): "alice_memory_commit",
+    ("agent-skills/openclaw/alice-project-memory/SKILL.md", 0): "alice_memory_commit",
+    ("agent-skills/openclaw/alice-project-memory/SKILL.md", 1): "alice_capture",
+    ("agent-skills/openclaw/alice-project-memory/SKILL.md", 2): "alice_memory_commit",
     ("docs/alpha/hermes-skill.md", 0): "alice_memory_commit",
     ("docs/alpha/hermes-skill.md", 1): "alice_memory_commit",
     ("docs/alpha/hermes-skill.md", 2): "alice_memory_commit",
@@ -80,8 +80,8 @@ AGENT_FACING_FILES = sorted({path for path, _ in DOCUMENTED_PAYLOADS})
 # The identity block every skill opens with is a fragment, not a whole call. It is checked for
 # accepted properties but not for required ones, which the surrounding prose supplies.
 IDENTITY_FRAGMENTS = {
-    ("agent-skills/hermes/alice-memory-skill.md", 0),
-    ("agent-skills/openclaw/alice-project-memory-skill.md", 0),
+    ("agent-skills/hermes/alice-memory/SKILL.md", 0),
+    ("agent-skills/openclaw/alice-project-memory/SKILL.md", 0),
     ("docs/alpha/hermes-skill.md", 0),
     ("docs/alpha/openclaw-skill.md", 0),
     ("docs/alpha/agent-integration.md", 1),
