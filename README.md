@@ -57,7 +57,20 @@ MCP client config (Claude Desktop, IDEs) — note there is no `DATABASE_URL`:
 }
 ```
 
-SQLite mode is the trial and single-agent path: it serves the eleven core tools for one user, and memory review happens through `alice_memory_review` / `alice_memory_correct` instead of the web console. Boundaries are listed in [known limitations](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/known-limitations.md).
+#### Hermes
+
+Hermes reads `~/.hermes/config.yaml`. Note it is YAML under `mcp_servers`, and
+Hermes does **not** pass your shell environment, so anything Alice needs must be
+in the `env` block:
+
+```yaml
+mcp_servers:
+  alice:
+    command: "uvx"
+    args: ["alice-memory", "mcp", "--data-dir", "~/.alice"]
+```
+
+SQLite mode is the single-agent path and the one most agents should use: it serves the eleven core tools for one user, and memory review happens through `alice_memory_review` / `alice_memory_correct` instead of the web console. Boundaries are listed in [known limitations](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/known-limitations.md).
 
 > **Install note:** the PyPI package is [`alice-memory`](https://pypi.org/project/alice-memory/). The name `alice-core` on PyPI belongs to an unrelated project.
 
@@ -93,9 +106,9 @@ Point any MCP-capable agent or IDE at the Alice server. For the packaged SQLite 
 {
   "mcpServers": {
     "alice": {
-      "command": "/ABSOLUTE/PATH/TO/AliceBot/.venv/bin/python",
+      "command": "/ABSOLUTE/PATH/TO/AliceMemory/.venv/bin/python",
       "args": ["-m", "alicebot_api.mcp_server"],
-      "cwd": "/ABSOLUTE/PATH/TO/AliceBot",
+      "cwd": "/ABSOLUTE/PATH/TO/AliceMemory",
       "env": {
         "DATABASE_URL": "postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot",
         "ALICEBOT_AUTH_USER_ID": "00000000-0000-0000-0000-000000000001"
@@ -107,8 +120,8 @@ Point any MCP-capable agent or IDE at the Alice server. For the packaged SQLite 
 
 The core MCP surface is eleven tools:
 
-- `alice_capture` — submit new information as source-backed, reviewable memory
-- `alice_memory_commit` — write an explicit "remember this" memory through policy: committed, confirmation-required, review-required, or rejected
+- `alice_capture` — store a source document or raw note for later review. **Not returned by `alice_recall` until a human reviews it**; use it for transcripts, files and pasted material
+- `alice_memory_commit` — **record one fact as durable, immediately recallable memory.** This is the verb for ordinary memory, including when the user has not asked the agent to remember. Policy-checked: committed, confirmation-required, review-required, or rejected
 - `alice_recall` — search memory (full-text plus vector, fused ranking; hard-scopable by thread, task, project, person, time, and memory type)
 - `alice_resume` — resumption brief for a project or thread
 - `alice_context_pack` — project/person/time-scoped context for a task, with a bounded unique-content budget and a complete serialized-size estimate
