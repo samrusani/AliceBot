@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## v0.15.5 — 2026-08-16
+
+- A host's `PYTHONPATH` no longer shadows the dependencies Alice installed. `uvx`
+  isolates the install, but Python still honours `PYTHONPATH` from the parent
+  process, so an MCP host launched from inside a conda environment or a
+  virtualenv leaked its own site-packages in and a NumPy built for a different
+  ABI shadowed ours. Both `alice-memory --version` and `alice-memory mcp` failed
+  on startup. Alice now places its own installation ahead of injected entries. It
+  reorders and never removes, so host packages Alice does not ship still resolve,
+  and a source tree deliberately placed on `PYTHONPATH` is left alone.
+- Chunking no longer packs across a markdown heading or thematic break. Text was
+  split on blank lines and repacked to 2400 characters with headings treated as
+  ordinary prose, so a whole-vault note import collapsed many unrelated notes
+  into one chunk and the candidate memory extracted from it spanned all of them.
+  Importing a quotes library and then searching for a quote it contained returned
+  nothing. Prose without headings still packs to the full budget, the budget is
+  still enforced within a section, and a `#` mid-line is not a heading.
+
+Both defects were found by running Alice against a real MCP host and a real
+Obsidian vault, not by a test suite or a code audit.
+
+No migration, no schema change, no configuration change. Chunking affects only
+text captured from this version onward; there is no re-chunk of existing content,
+so notes imported earlier should be re-imported rather than approved from review.
+
 ## v0.15.4 — 2026-08-15
 
 - Corrected the MCP write-verb descriptions, which were steering agents into the
