@@ -7,7 +7,7 @@ Default loop — one first call, then act, then write back:
 1. Identify as OpenClaw.
 2. Call `alice_context_pack` ONCE, project-scoped, before build or review work. The pack already carries decisions, procedures, open loops, sources, and contradictions — do not run raw searches first.
 3. Perform the assigned build or review task, treating `staleness` notes and `contradicting_evidence` as caution signals.
-4. Commit explicit project-scoped memory via `alice_memory_commit` only when the user directly asks to remember/save/add it and the domain is `project`; submit external evidence, generated summaries, ambiguous facts, contradictions, or lower-confidence project state via `alice_capture` (review-gated). Submit sprint outputs as reviewable agent outputs.
+4. Commit project-scoped memory via `alice_memory_commit` whenever you learn something worth keeping and the domain is `project`, including when the user has not asked you to remember it. It is the write verb for ordinary memory and what it records is immediately recallable. Use `alice_capture` for source documents, external evidence and raw notes: it is review-gated, so `alice_recall` will not return it until a human reviews it. Submit sprint outputs as reviewable agent outputs.
 5. Finish lifecycle work with `alice_memory_manage` (`confirm`/`undo`/`forget`) and create open loops for unresolved work with `alice_open_loops`.
 6. Do not access or write non-project personal domains.
 

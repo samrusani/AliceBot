@@ -15,9 +15,11 @@
   with the resident cache, CI-smoked reference integrations, and the
   multi-session synthesis measurement (its records live in
   `docs/release/v0.13.1-release-notes.md`).
-- The historical **79.4% (397/500)** LongMemEval_s result is one run from
-  2026-07-07 on an older baseline. It is not a repeated estimate or a Phase 3
-  measurement.
+- LongMemEval_s stands at **81.2% mean over three independent full runs**
+  (80.8 / 81.0 / 81.8), measured on the published `v0.12.0` tag with
+  per-question evidence for every run committed. It is a `v0.12.0` measurement,
+  not a Phase 3 one. The earlier **79.4% (397/500)** single run from 2026-07-07
+  is superseded as the headline and retained as evidence.
 - Detailed v0.10.4 repair-batch chronology is historical evidence under
   `docs/handoff/history/`; it is not current roadmap work.
 

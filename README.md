@@ -4,7 +4,7 @@
 
 **The continuity layer for AI agents.**
 
-[![LongMemEval](https://img.shields.io/badge/LongMemEval__s-79.4%25-6f42c1)](https://github.com/samrusani/AliceMemory/blob/main/docs/benchmarks/longmemeval/README.md)
+[![LongMemEval](https://img.shields.io/badge/LongMemEval__s-81.2%25%20(3--run%20mean)-6f42c1)](https://github.com/samrusani/AliceMemory/blob/main/docs/benchmarks/longmemeval/README.md)
 ![Local-first](https://img.shields.io/badge/local--first-core-0A7B61)
 ![MCP](https://img.shields.io/badge/MCP-supported-1f6feb)
 ![Python](https://img.shields.io/badge/python-3.12%2B-3776AB)
@@ -12,7 +12,7 @@
 
 Alice is a local-first memory service that lets AI agents resume interrupted work, track open loops, recall decisions with provenance, and improve when corrected — instead of re-reading transcripts or trusting opaque summaries.
 
-In one historical run dated 2026-07-07, it scored **79.4%** on [LongMemEval](https://github.com/samrusani/AliceMemory/blob/main/docs/benchmarks/longmemeval/README.md), a long-term-memory benchmark. That is a single-run receipt, not a repeated-run estimate or a measurement of the current release; it includes one disclosed trade-off on the abstention subset (25/30 → 22/30). The full per-question evidence, methodology, and reproduction script are committed to this repo. Open source, local-first, MIT-licensed.
+Alice scores **81.2% mean over three independent full runs** (80.8 / 81.0 / 81.8; 404-409 of 500) on LongMemEval_s, measured 2026-07-18/19 on the published `v0.12.0` code from its immutable release tag, every run scoring 500/500 with zero errors. Per-question evidence for all three runs, the reader/judge/embedding configuration, and the reproduction script are committed to this repo. It is a measurement of `v0.12.0`, not of the current release. Two disclosures that matter: multi-session is the weakest category at roughly 63%, and the 30-question abstention subset is noisy across runs (76.7 / 90.0 / 83.3) and should not be quoted to one decimal. The earlier single run of 79.4% (397/500) from 2026-07-07 is superseded as the headline and retained as evidence. Open source, local-first, MIT-licensed.
 
 Agents connect over MCP, HTTP API, or CLI. Humans stay in control: agent writes land as policy-checked commits or reviewable proposals, and a local review console is where memory gets approved, corrected, or forgotten. That review boundary is a feature, not a limitation — it is what makes the memory trustworthy enough to act on.
 
@@ -57,7 +57,20 @@ MCP client config (Claude Desktop, IDEs) — note there is no `DATABASE_URL`:
 }
 ```
 
-SQLite mode is the trial and single-agent path: it serves the eleven core tools for one user, and memory review happens through `alice_memory_review` / `alice_memory_correct` instead of the web console. Boundaries are listed in [known limitations](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/known-limitations.md).
+#### Hermes
+
+Hermes reads `~/.hermes/config.yaml`. Note it is YAML under `mcp_servers`, and
+Hermes does **not** pass your shell environment, so anything Alice needs must be
+in the `env` block:
+
+```yaml
+mcp_servers:
+  alice:
+    command: "uvx"
+    args: ["alice-memory", "mcp", "--data-dir", "~/.alice"]
+```
+
+SQLite mode is the single-agent path and the one most agents should use: it serves the eleven core tools for one user, and memory review happens through `alice_memory_review` / `alice_memory_correct` instead of the web console. Boundaries are listed in [known limitations](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/known-limitations.md).
 
 > **Install note:** the PyPI package is [`alice-memory`](https://pypi.org/project/alice-memory/). The name `alice-core` on PyPI belongs to an unrelated project.
 
@@ -93,9 +106,9 @@ Point any MCP-capable agent or IDE at the Alice server. For the packaged SQLite 
 {
   "mcpServers": {
     "alice": {
-      "command": "/ABSOLUTE/PATH/TO/AliceBot/.venv/bin/python",
+      "command": "/ABSOLUTE/PATH/TO/AliceMemory/.venv/bin/python",
       "args": ["-m", "alicebot_api.mcp_server"],
-      "cwd": "/ABSOLUTE/PATH/TO/AliceBot",
+      "cwd": "/ABSOLUTE/PATH/TO/AliceMemory",
       "env": {
         "DATABASE_URL": "postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot",
         "ALICEBOT_AUTH_USER_ID": "00000000-0000-0000-0000-000000000001"
@@ -107,8 +120,8 @@ Point any MCP-capable agent or IDE at the Alice server. For the packaged SQLite 
 
 The core MCP surface is eleven tools:
 
-- `alice_capture` — submit new information as source-backed, reviewable memory
-- `alice_memory_commit` — write an explicit "remember this" memory through policy: committed, confirmation-required, review-required, or rejected
+- `alice_capture` — store a source document or raw note for later review. **Not returned by `alice_recall` until a human reviews it**; use it for transcripts, files and pasted material
+- `alice_memory_commit` — **record one fact as durable, immediately recallable memory.** This is the verb for ordinary memory, including when the user has not asked the agent to remember. Policy-checked: committed, confirmation-required, review-required, or rejected
 - `alice_recall` — search memory (full-text plus vector, fused ranking; hard-scopable by thread, task, project, person, time, and memory type)
 - `alice_resume` — resumption brief for a project or thread
 - `alice_context_pack` — project/person/time-scoped context for a task, with a bounded unique-content budget and a complete serialized-size estimate

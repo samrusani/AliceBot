@@ -58,12 +58,15 @@ For the full Postgres stack from a checkout:
 
 **Write and review**
 
-- `alice_capture` — submit new information as source-backed, reviewable
-  memory. Text is stored verbatim with provenance and becomes trusted
-  memory only after review.
-- `alice_memory_commit` — write one explicit memory on the user's
-  instruction ("remember this"). Policy-checked, never blind: the outcome
-  is `committed`, `confirmation_required`, `review_required`, or
+- `alice_capture` — store a source document or raw note for later review.
+  Text is kept verbatim with provenance and split into searchable chunks,
+  but it does **not** become recallable memory until a human reviews it, so
+  `alice_recall` will not return it.
+- `alice_memory_commit` — record one fact as durable, immediately
+  recallable memory. This is the write verb for ordinary memory, and an
+  agent should use it whenever it learns something worth keeping, including
+  when the user has not asked it to remember. Policy-checked, never blind:
+  the outcome is `committed`, `confirmation_required`, `review_required`, or
   `rejected`, always with provenance, a revision, and an audit event.
 - `alice_memory_review` — inspect the review queue, or one item in detail.
 - `alice_memory_correct` — act on a memory: approve, edit-and-approve,
@@ -230,7 +233,11 @@ full-text search alone.
 
 ## Explicit memory commits
 
-Explicit "remember this" instructions go through `alice_memory_commit`.
+Explicit "remember this" instructions go through `alice_memory_commit`, and
+so does anything else an agent decides is worth keeping. The tool is not
+restricted to instructed writes; a direct instruction is one case of using
+it, not the condition for using it.
+
 Who is calling decides what to pass:
 
 - **Human, calling directly** (Claude Desktop, an IDE): just `title` and
