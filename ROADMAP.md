@@ -87,3 +87,5 @@ restore, recorded security disposition) shipped in Phases 4 and 5.
 
 `v0.15.3` is the latest published release and remains the install, checksum,
 and baseline reference.
+
+`v0.15.4` is the current release candidate. It is not published.
