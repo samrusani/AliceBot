@@ -125,7 +125,7 @@ def test_mcp_registry_order_definitions_and_alias_identity_are_frozen() -> None:
     handlers = mcp_registry._TOOL_HANDLERS
 
     assert (len(core_definitions), len(legacy_definitions), len(handlers)) == (11, 65, 76)
-    assert _digest(core_definitions) == "99eabe36d83b8609a57631d71b91d5e9f14b23f7be0f828f6c75ce5c48888062"
+    assert _digest(core_definitions) == "32a21a33112c4283489b9cd06e73c60755598d9f7b120318c55b9d7f3c29475f"
     assert _digest(legacy_definitions) == "ca3d747e552bdece52c22d76332fc69f499878290edf3f236a8a7ea6a2e34e41"
     ordered_handler_map = [(name, handler.__name__) for name, handler in handlers.items()]
     assert _digest(ordered_handler_map) == "d864c98bb914bbc6ace464fa8020b3ed264f17f2061a6101aae677d801032ae5"
