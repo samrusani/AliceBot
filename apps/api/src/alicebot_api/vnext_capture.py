@@ -272,7 +272,31 @@ def _split_large_part(part: str, *, max_chars: int) -> list[str]:
     return chunks
 
 
+# A markdown heading or thematic break is an author-declared section boundary.
+# Packing across one merges unrelated material into a single chunk, which is how
+# a bulk note import produces candidate memories that span adjacent notes.
+_SECTION_BOUNDARY = re.compile(r"^(?:#{1,6}\s|(?:-{3,}|\*{3,}|_{3,})\s*$)")
+
+
+def _starts_new_section(paragraph: str) -> bool:
+    first_line = paragraph.lstrip().split("\n", 1)[0].rstrip()
+    return bool(_SECTION_BOUNDARY.match(first_line))
+
+
 def chunk_text(raw_text: str, *, max_chars: int = DEFAULT_CHUNK_MAX_CHARS) -> list[str]:
+    """Split text into retrieval chunks, never packing across a section boundary.
+
+    Paragraphs are packed together up to ``max_chars``, which keeps prose chunks
+    usefully large. Markdown headings and thematic breaks end the current chunk
+    first, because they are the author saying "different subject".
+
+    Without that rule a whole-vault note import collapses many short, unrelated
+    notes into one chunk: an imported quotes library produced candidate memories
+    spanning several adjacent quotes, and recalling any single quote by its exact
+    wording then returned nothing. Reported from a real Obsidian import,
+    2026-08-15.
+    """
+
     if max_chars < 200:
         raise VNextCaptureValidationError("chunk max_chars must be at least 200")
 
@@ -282,6 +306,10 @@ def chunk_text(raw_text: str, *, max_chars: int = DEFAULT_CHUNK_MAX_CHARS) -> li
     current = ""
 
     for paragraph in paragraphs:
+        if current and _starts_new_section(paragraph):
+            chunks.append(current)
+            current = ""
+
         if len(paragraph) > max_chars:
             if current:
                 chunks.append(current)
