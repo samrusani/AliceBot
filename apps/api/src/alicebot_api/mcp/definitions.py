@@ -233,9 +233,11 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
     {
         "name": "alice_capture",
         "description": (
-            "Submit new information to Alice as a source-backed, reviewable memory. The text is "
-            "stored verbatim with provenance and split into searchable chunks; it only becomes "
-            "trusted memory after review. Use this whenever you learn something worth keeping."
+            "Store a source document or raw note for later review. The text is kept verbatim "
+            "with provenance and split into searchable chunks, but it does NOT become recallable "
+            "memory until a human reviews it, so alice_recall will not return it. Use this for "
+            "transcripts, files and pasted material you want on record. To record a fact so it is "
+            "immediately recallable, use alice_memory_commit instead."
         ),
         "inputSchema": {
             "type": "object",
@@ -267,7 +269,7 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
     {
         "name": "alice_memory_commit",
         "description": (
-            "Write one explicit memory on the user's instruction ('remember this'). The write "
+            "Record one fact as durable, immediately recallable memory. Use this whenever you learn something worth keeping, including when the user has not asked you to remember it. This is the write verb for ordinary memory. The write "
             "is policy-checked, never blind: the outcome is 'committed', 'confirmation_required' "
             "(finish with alice_memory_manage action 'confirm'), 'review_required' (waits for "
             "human review), or 'rejected'. Every outcome is recorded with provenance, a "
@@ -342,6 +344,7 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
             "additionalProperties": False,
             "required": ["query"],
             "properties": {
+                **_AGENT_IDENTITY_SCHEMA_PROPERTIES,
                 "query": {
                     "type": "string",
                     "description": "What to search for, in natural language or keywords.",
@@ -429,6 +432,7 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                **_AGENT_IDENTITY_SCHEMA_PROPERTIES,
                 "query": {
                     "type": "string",
                     "description": "Free-text topic to focus the brief on.",
@@ -632,6 +636,7 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                **_AGENT_IDENTITY_SCHEMA_PROPERTIES,
                 "query": {
                     "type": "string",
                     "description": "Free-text filter for which decisions to return.",
@@ -727,6 +732,7 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
             "additionalProperties": False,
             "required": ["action"],
             "properties": {
+                **_AGENT_IDENTITY_SCHEMA_PROPERTIES,
                 "review_item_id": {
                     "type": "string",
                     "format": "uuid",
@@ -869,6 +875,7 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                **_AGENT_IDENTITY_SCHEMA_PROPERTIES,
                 "memory_id": {
                     "type": "string",
                     "description": "Id of a memory returned by alice_recall; returns its provenance links, revisions, event history, supersession_chain (each entry has id, title, status, created_at, its relation to this memory: predecessor, self, or successor, and the entities it is linked to when available), and a timeline: one chronological list of {at, kind, memory_id, summary} entries (kind is created, revised, corrected, or superseded_by) telling how this memory evolved.",
