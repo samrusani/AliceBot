@@ -45,23 +45,21 @@ Context/read domains may include `project`, `professional`, and `system` when po
 
 Restricted by default: `personal`, `family`, `health`, `spiritual`, `legal`, `financial`, `regulated`.
 
-Project context recipe:
+Project context recipe. On the core `alice_context_pack` the scope fields are flat, not nested
+under `scope` and `options`:
 
 ```json
 {
   "query": "current sprint decisions, architecture constraints, open loops",
-  "scope": {
-    "domains": ["project"],
-    "projects": ["Alice"]
-  },
-  "options": {
-    "sensitivity_allowed": ["public", "internal", "private", "unknown"],
-    "max_items": 10
-  }
+  "domains": ["project"],
+  "projects": ["Alice"],
+  "sensitivity_allowed": ["public", "internal", "private", "unknown"],
+  "max_items": 10
 }
 ```
 
-Sprint output ingestion:
+Sprint output, submitted through `alice_capture` so it lands review-gated. The field carrying
+the text is `raw_text`:
 
 ```json
 {
@@ -71,15 +69,13 @@ Sprint output ingestion:
   "task_id": "public-alpha-packaging",
   "project_scope": ["Alice"],
   "title": "OpenClaw sprint summary",
-  "content": "Decision: Public alpha agents use scoped context packs and review-only memory proposals.",
-  "output_type": "sprint_summary",
+  "raw_text": "Decision: Public alpha agents use scoped context packs and review-only memory proposals.",
   "domain": "project",
-  "sensitivity": "private",
-  "propose_memory": true
+  "sensitivity": "private"
 }
 ```
 
-Explicit project memory commit:
+Project memory commit:
 
 ```json
 {
@@ -87,7 +83,6 @@ Explicit project memory commit:
   "agent_type": "coding_agent",
   "permission_profile": "project_scoped_agent",
   "project_scope": ["Alice"],
-  "intent": "explicit_remember",
   "title": "Release gate decision",
   "canonical_text": "Alice public preview release gates require doctor, smokes, evals, and git diff checks before merge.",
   "domain": "project",
@@ -97,7 +92,15 @@ Explicit project memory commit:
 }
 ```
 
-If Alice returns `review_required`, leave the item in `/vnext`. If Alice returns `rejected`, do not retry outside the `project` domain. Use Alice's undo, correct, or forget tools for repairs; never write directly to Postgres.
+`title` and `canonical_text` are the only required fields. Every other property must appear in
+the server's `tools/list` schema for the tool you are calling; an unrecognised property is
+rejected outright rather than ignored. In particular `intent` exists only on the legacy
+`alice_vnext_commit_memory` tool and is **not** accepted by `alice_memory_commit`. A
+`project_scoped_agent` must send `domain: "project"`, or the commit is rejected.
+
+If Alice returns `review_required`, leave the item for `alice_memory_review`. If Alice returns
+`rejected`, do not retry outside the `project` domain. Use `alice_memory_manage` with an
+`action` of `undo`, `forget` or `expire` for repairs; never write directly to the database.
 
 Do propose memory for:
 

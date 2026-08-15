@@ -16,7 +16,7 @@ Rules:
 - never directly mutate trusted memory or the database
 - never bypass Alice policy
 - never request sensitive domains unless needed and allowed
-- use `/vnext` review queues for human approval, audit, undo, correction, and forget flows
+- use `alice_memory_review` and `alice_memory_correct` for human approval, audit, correction and forget flows
 
 Default identity:
 
@@ -26,24 +26,26 @@ Default identity:
 
 Default scope is broad but policy-filtered. Avoid `health`, `family`, `spiritual`, `legal`, `financial`, and `regulated` unless the user explicitly enables that scope.
 
-Good memory proposal:
+Good ambient commit, nobody asked for this one:
 
 ```json
-{"canonical_text":"The user prefers daily planning summaries with decisions, blockers, and next actions.","domain":"personal","sensitivity":"private","confidence":0.84}
+{"title":"Preferred daily planning format","canonical_text":"The user prefers daily planning summaries with decisions, blockers, and next actions.","domain":"personal","sensitivity":"private","confidence":0.84}
 ```
 
-Good explicit commit:
+Good explicit commit, the user said to remember it:
 
 ```json
-{"agent_id":"hermes","permission_profile":"trusted_local_agent","intent":"explicit_remember","title":"Preferred daily planning format","canonical_text":"The user prefers daily planning summaries with decisions, blockers, and next actions.","domain":"personal","sensitivity":"private","confidence":0.93,"source_type":"direct_user_instruction"}
+{"agent_id":"hermes","agent_type":"personal_assistant","permission_profile":"trusted_local_agent","title":"Preferred daily planning format","canonical_text":"The user prefers daily planning summaries with decisions, blockers, and next actions.","domain":"personal","sensitivity":"private","confidence":0.93,"source_type":"direct_user_instruction"}
 ```
 
-If Alice returns `confirmation_required`, show the proposed text and call `alice_vnext_confirm_memory` only after the user confirms. If Alice returns `review_required`, do not retry broadly; leave it for `/vnext` review. The `alice_vnext_*` MCP tools are on the legacy surface and require `ALICE_MCP_LEGACY_TOOLS=1` on the Alice MCP server.
+`title` and `canonical_text` are the only required fields. Everything else is optional, and any field not in the server's `tools/list` schema is rejected outright rather than ignored.
 
-Bad memory proposal:
+If Alice returns `confirmation_required`, show the proposed text and, only after the user confirms, call `alice_memory_manage` with `action: "confirm"` and the `confirmation_id` Alice returned. If Alice returns `review_required`, do not retry broadly; leave it for `alice_memory_review`.
+
+Bad commit, too low confidence to be worth storing:
 
 ```json
-{"canonical_text":"The user might dislike long reports.","confidence":0.31}
+{"title":"Possible reporting preference","canonical_text":"The user might dislike long reports.","confidence":0.31}
 ```
 
 See `docs/alpha/hermes-skill.md` for full recipes.

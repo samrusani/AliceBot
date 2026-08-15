@@ -70,7 +70,6 @@ Good explicit commit:
   "agent_id": "hermes",
   "agent_type": "personal_assistant",
   "permission_profile": "trusted_local_agent",
-  "intent": "explicit_remember",
   "title": "Preferred daily planning format",
   "canonical_text": "The user prefers daily planning summaries with decisions, blockers, and next actions.",
   "domain": "personal",
@@ -83,9 +82,15 @@ Good explicit commit:
 Expected outcomes:
 
 - `committed`: Alice stored the memory as active and auditable.
-- `confirmation_required`: show the proposed text and call `alice_vnext_confirm_memory` only after the user confirms.
-- `review_required`: leave the candidate in `/vnext` review.
+- `confirmation_required`: show the proposed text and, only after the user confirms, call
+  `alice_memory_manage` with `action: "confirm"` and the returned `confirmation_id`.
+- `review_required`: leave the candidate for `alice_memory_review`.
 - `rejected`: do not retry without narrowing scope or asking the user.
+
+`title` and `canonical_text` are the only required fields. Every other property must appear in
+the server's `tools/list` schema for the tool you are calling; an unrecognised property is
+rejected outright rather than ignored. In particular `intent` exists only on the legacy
+`alice_vnext_commit_memory` tool and is **not** accepted by `alice_memory_commit`.
 
 Good proposal:
 
@@ -104,6 +109,7 @@ Bad proposal:
 
 ```json
 {
+  "title": "Possible reporting preference",
   "canonical_text": "The user might dislike long reports.",
   "confidence": 0.31,
   "rationale": "Speculative inference from one short reply."
