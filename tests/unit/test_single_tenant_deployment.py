@@ -454,6 +454,101 @@ def test_caddy_example_requires_mtls_and_preserves_real_client_ip() -> None:
     assert 'X-Frame-Options "DENY"' in caddyfile
 
 
+_MTLS_STANZA = """\ttls {
+\t\t# Install the public certificate of the operator CA that issues one
+\t\t# client certificate per authorized browser or agent at this path.
+\t\tclient_auth {
+\t\t\tmode require_and_verify
+\t\t\ttrust_pool file /etc/alicebot/client-ca.pem
+\t\t}
+\t}
+"""
+
+_PUBLIC_LANDING_BLOCK = """
+
+alicememory.com, www.alicememory.com {
+\troot * /srv/landing
+\tfile_server
+}
+"""
+
+_DECOY_MTLS_BLOCK = """
+
+decoy.example.com {
+\ttls {
+\t\tclient_auth {
+\t\t\tmode require_and_verify
+\t\t\ttrust_pool file /etc/alicebot/client-ca.pem
+\t\t}
+\t}
+}
+"""
+
+_PUBLIC_BLOCK_PROXYING_TO_ALICE = """
+
+alicememory.com {
+\treverse_proxy 127.0.0.1:8000
+}
+"""
+
+
+def test_a_public_site_block_is_allowed_when_it_cannot_reach_alice() -> None:
+    """Adding a landing page on another hostname must not require weakening mTLS.
+
+    This is the supported way to put a public page on the same host: a separate site
+    block with no `tls` directive and, critically, no `reverse_proxy` to Alice.
+    """
+
+    caddyfile = _asset(deployment.CADDY_RELATIVE_PATH)
+
+    deployment.validate_caddyfile(caddyfile + _PUBLIC_LANDING_BLOCK)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "failure_code"),
+    (
+        pytest.param(
+            lambda text: text.replace(_MTLS_STANZA, "") + _DECOY_MTLS_BLOCK,
+            "caddy_authentication_missing",
+            id="alice-block-loses-mtls-while-another-block-still-carries-the-strings",
+        ),
+        pytest.param(
+            lambda text: text + _PUBLIC_BLOCK_PROXYING_TO_ALICE,
+            "caddy_authentication_missing",
+            id="a-second-block-proxies-to-alice-without-demanding-a-certificate",
+        ),
+    ),
+)
+def test_caddy_mtls_assertions_are_scoped_to_the_block_that_serves_alice(
+    mutation, failure_code: str
+) -> None:
+    """The file-wide checks proved "some block has mTLS", not "Alice's block has mTLS".
+
+    Reproduced 2026-08-15 against the shipped validator: stripping the whole tls stanza
+    from the Alice block and leaving those strings anywhere else in the file passed every
+    check. The hole was harmless while the example had one site block and opens the moment
+    a second one is added, which is exactly what putting a landing page on the apex does.
+    """
+
+    caddyfile = _asset(deployment.CADDY_RELATIVE_PATH)
+
+    with pytest.raises(deployment.DeploymentContractError) as excinfo:
+        deployment.validate_caddyfile(mutation(caddyfile))
+
+    assert str(excinfo.value) == failure_code
+
+
+def test_the_mtls_stanza_constant_still_matches_the_shipped_example() -> None:
+    """Keeps the mutation above from silently becoming a no-op after a reformat."""
+
+    caddyfile = _asset(deployment.CADDY_RELATIVE_PATH)
+
+    assert _MTLS_STANZA in caddyfile, (
+        "the mTLS stanza was reformatted; update _MTLS_STANZA or the block-scoping "
+        "mutation tests stop removing anything and pass vacuously"
+    )
+
+
 @pytest.mark.parametrize(
     ("mutation", "failure_code"),
     (

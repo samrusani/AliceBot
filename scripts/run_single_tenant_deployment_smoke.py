@@ -475,8 +475,71 @@ def validate_role_separated_database_contract(
     )
 
 
+ALICE_UPSTREAMS = ("127.0.0.1:8000", "127.0.0.1:3000")
+
+
+def _site_blocks(normalized: str) -> list[tuple[str, str]]:
+    """Split a normalized Caddyfile into (address line, body) site blocks.
+
+    Brace-depth scan rather than a real parser, which is enough for this file's shape and
+    keeps the check dependency-free. The global options block opens with a bare `{` and is
+    returned with an empty address so callers can skip it.
+    """
+
+    blocks: list[tuple[str, str]] = []
+    address: str | None = None
+    body: list[str] = []
+    depth = 0
+    for line in normalized.splitlines():
+        stripped = line.strip()
+        if depth == 0:
+            if not stripped:
+                continue
+            if stripped.endswith("{"):
+                address = stripped[:-1].strip()
+                body = []
+                depth = 1
+            continue
+        depth += stripped.count("{") - stripped.count("}")
+        if depth <= 0:
+            blocks.append((address or "", "\n".join(body)))
+            address, body, depth = None, [], 0
+            continue
+        body.append(line)
+    if address is not None:
+        blocks.append((address, "\n".join(body)))
+    return blocks
+
+
+def _validate_caddy_block_scoping(normalized: str) -> None:
+    """Every block that can reach Alice must itself demand a client certificate.
+
+    The rest of this validator is file-wide substring matching, which was sound only while
+    the example had exactly one site block. Once a second block exists (a public landing
+    page on the apex, say), a file-wide check proves "some block has mTLS", not "the block
+    serving Alice has mTLS". Reproduced 2026-08-15: stripping the tls/client_auth stanza
+    from the Alice block and leaving those strings in any other block passed every check,
+    so CI would go green on a configuration serving Alice to anyone.
+    """
+
+    reaches_alice = [
+        (address, body)
+        for address, body in _site_blocks(normalized)
+        if address and any(f"reverse_proxy {upstream}" in body for upstream in ALICE_UPSTREAMS)
+    ]
+    _require(bool(reaches_alice), "caddy_api_upstream_invalid")
+    for address, body in reaches_alice:
+        _require("client_auth" in body, "caddy_authentication_missing")
+        _require("mode require_and_verify" in body, "caddy_mtls_not_fail_closed")
+        _require(
+            f"trust_pool file {CLIENT_CA_PATH}" in body,
+            "caddy_mtls_trust_pool_missing",
+        )
+
+
 def validate_caddyfile(text: str) -> None:
     normalized = "\n".join(line.split("#", 1)[0].rstrip() for line in text.splitlines())
+    _validate_caddy_block_scoping(normalized)
     directives = {
         tuple(line.split())
         for line in normalized.splitlines()

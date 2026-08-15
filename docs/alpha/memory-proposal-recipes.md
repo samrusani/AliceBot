@@ -24,7 +24,10 @@ Do not propose memory for:
 - sensitive personal content without clear relevance
 - transient task state
 
-## API Shape
+## Payload shape for `alice_memory_commit`
+
+`title` and `canonical_text` are required. Every other property must appear in the
+server's `tools/list` schema for the tool; an unrecognised property is rejected outright.
 
 ```json
 {
@@ -46,42 +49,42 @@ Do not propose memory for:
 ## Good Memory Proposal
 
 ```json
-{"canonical_text":"OpenClaw should request project-scoped Alice context before coding tasks.","confidence":0.88,"domain":"project","sensitivity":"private","rationale":"Explicit integration rule."}
+{"title":"OpenClaw requests project context first","canonical_text":"OpenClaw should request project-scoped Alice context before coding tasks.","confidence":0.88,"domain":"project","sensitivity":"private","rationale":"Explicit integration rule."}
 ```
 
 ## Bad Memory Proposal
 
 ```json
-{"canonical_text":"The user is probably frustrated with dashboards.","confidence":0.22,"rationale":"Speculative tone inference."}
+{"title":"Possible dashboard frustration","canonical_text":"The user is probably frustrated with dashboards.","confidence":0.22,"rationale":"Speculative tone inference."}
 ```
 
 ## Project Update Proposal
 
 ```json
-{"proposal_type":"project_update","canonical_text":"The public preview packaging work is ready for onboarding after alpha-check passes.","domain":"project","sensitivity":"private","confidence":0.8}
+{"title":"Preview packaging ready for onboarding","memory_type":"project_state","canonical_text":"The public preview packaging work is ready for onboarding after alpha-check passes.","domain":"project","sensitivity":"private","confidence":0.8}
 ```
 
 ## Belief Update Proposal
 
 ```json
-{"proposal_type":"belief_update","canonical_text":"Agent integration is the main adoption path if alpha feedback confirms agents rely on scoped context packs.","domain":"project","sensitivity":"private","confidence":0.74}
+{"title":"Agent integration is the main adoption path","memory_type":"belief","canonical_text":"Agent integration is the main adoption path if alpha feedback confirms agents rely on scoped context packs.","domain":"project","sensitivity":"private","confidence":0.74}
 ```
 
 ## Open-loop Proposal
 
 ```json
-{"proposal_type":"open_loop","canonical_text":"Confirm who will run the first public preview install.","domain":"project","sensitivity":"private","confidence":0.76}
+{"title":"Who runs the first preview install","memory_type":"open_loop","canonical_text":"Confirm who will run the first public preview install.","domain":"project","sensitivity":"private","confidence":0.76}
 ```
 
 ## Contradiction Proposal
 
 ```json
-{"proposal_type":"contradiction","canonical_text":"Resolve whether public preview should prioritize Gmail/Calendar connectors or agent skill hardening next.","domain":"project","sensitivity":"private","confidence":0.7}
+{"title":"Connectors or skill hardening next","memory_type":"contradiction","canonical_text":"Resolve whether public preview should prioritize Gmail/Calendar connectors or agent skill hardening next.","domain":"project","sensitivity":"private","confidence":0.7}
 ```
 
 Review behavior:
 
-- proposals appear in `/vnext` Memory Review
+- proposals appear in `alice_memory_review`, and are acted on with `alice_memory_correct`
 - confidence explains how strongly the agent believes the proposal
 - provenance links proposal to source or artifact evidence
 - trusted memory changes only after human review

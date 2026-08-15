@@ -70,6 +70,48 @@ mcp_servers:
     args: ["alice-memory", "mcp", "--data-dir", "~/.alice"]
 ```
 
+#### OpenClaw
+
+OpenClaw reads `~/.openclaw/openclaw.json`, under `mcp.servers`:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "alice": {
+        "command": "uvx",
+        "args": ["alice-memory", "mcp", "--data-dir", "~/.alice"]
+      }
+    }
+  }
+}
+```
+
+Or add it from the CLI, which probes the server before saving:
+
+```bash
+openclaw mcp add alice --command uvx --arg alice-memory --arg mcp --arg --data-dir --arg ~/.alice
+```
+
+Confirm with `openclaw mcp probe`, which should report `alice: 11 tools`. OpenClaw
+prefixes MCP tool names with the server name, so `alice_recall` reaches the model as
+`alice__alice_recall`.
+
+#### Skill packs
+
+Optional, and useful once Alice is connected. [`agent-skills/`](https://github.com/samrusani/AliceMemory/tree/main/agent-skills)
+holds a ready-made instruction pack for each host, telling the agent when to reach for
+memory rather than leaving it to guess. Copy the directory, not the file:
+
+```bash
+cp -R agent-skills/openclaw/alice-project-memory ~/.openclaw/skills/
+cp -R agent-skills/hermes/alice-memory ~/.hermes/skills/
+```
+
+Both hosts load `<skill-name>/SKILL.md` and read the frontmatter `description` to decide
+when the skill applies. A skill grants no tools on its own; it tells an agent how to use
+the ones the MCP server already provides.
+
 SQLite mode is the single-agent path and the one most agents should use: it serves the eleven core tools for one user, and memory review happens through `alice_memory_review` / `alice_memory_correct` instead of the web console. Boundaries are listed in [known limitations](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/known-limitations.md).
 
 > **Install note:** the PyPI package is [`alice-memory`](https://pypi.org/project/alice-memory/). The name `alice-core` on PyPI belongs to an unrelated project.

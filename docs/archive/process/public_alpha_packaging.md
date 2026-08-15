@@ -288,7 +288,7 @@ Create a ready-to-use Hermes skill/instruction file.
 Path suggestion:
 
 docs/alpha/hermes-skill.md
-agent-skills/hermes/alice-memory-skill.md
+agent-skills/hermes/alice-memory/SKILL.md
 
 Hermes should be instructed to use Alice as the user’s durable memory and continuity layer.
 
@@ -335,7 +335,7 @@ Create a ready-to-use OpenClaw skill/instruction file.
 Path suggestion:
 
 docs/alpha/openclaw-skill.md
-agent-skills/openclaw/alice-project-memory-skill.md
+agent-skills/openclaw/alice-project-memory/SKILL.md
 
 OpenClaw should be project-scoped by default.
 

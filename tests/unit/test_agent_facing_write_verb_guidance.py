@@ -29,8 +29,8 @@ AGENT_FACING_WRITE_VERB_DOCS = (
     "docs/alpha/agent-integration.md",
     "docs/alpha/hermes-skill.md",
     "docs/alpha/openclaw-skill.md",
-    "agent-skills/hermes/alice-memory-skill.md",
-    "agent-skills/openclaw/alice-project-memory-skill.md",
+    "agent-skills/hermes/alice-memory/SKILL.md",
+    "agent-skills/openclaw/alice-project-memory/SKILL.md",
 )
 
 # Wording retired in v0.15.4. Each of these makes an explicit user instruction
@@ -86,8 +86,8 @@ def test_agent_facing_docs_do_not_gate_commits_on_being_asked(relative_path: str
         "docs/alpha/mcp-tools.md",
         "docs/alpha/hermes-skill.md",
         "docs/alpha/openclaw-skill.md",
-        "agent-skills/hermes/alice-memory-skill.md",
-        "agent-skills/openclaw/alice-project-memory-skill.md",
+        "agent-skills/hermes/alice-memory/SKILL.md",
+        "agent-skills/openclaw/alice-project-memory/SKILL.md",
     ),
 )
 def test_agent_facing_docs_permit_the_unasked_commit(relative_path: str) -> None:
@@ -101,8 +101,8 @@ def test_agent_facing_docs_permit_the_unasked_commit(relative_path: str) -> None
         "docs/alpha/mcp-tools.md",
         "docs/alpha/hermes-skill.md",
         "docs/alpha/openclaw-skill.md",
-        "agent-skills/hermes/alice-memory-skill.md",
-        "agent-skills/openclaw/alice-project-memory-skill.md",
+        "agent-skills/hermes/alice-memory/SKILL.md",
+        "agent-skills/openclaw/alice-project-memory/SKILL.md",
     ),
 )
 def test_agent_facing_docs_warn_that_capture_is_not_recallable(relative_path: str) -> None:

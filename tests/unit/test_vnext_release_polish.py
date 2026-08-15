@@ -90,8 +90,8 @@ def test_public_alpha_packaging_docs_and_commands_are_discoverable() -> None:
     troubleshooting = _read("docs/alpha/troubleshooting.md")
     release_notes = _read("docs/alpha/release-notes.md")
     cto_summary = _read("docs/archive/process/vnext-public-alpha-packaging-cto-summary.md")
-    hermes_copy = _read("agent-skills/hermes/alice-memory-skill.md")
-    openclaw_copy = _read("agent-skills/openclaw/alice-project-memory-skill.md")
+    hermes_copy = _read("agent-skills/hermes/alice-memory/SKILL.md")
+    openclaw_copy = _read("agent-skills/openclaw/alice-project-memory/SKILL.md")
     makefile = _read("Makefile")
     gitignore = _read(".gitignore")
 
