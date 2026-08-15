@@ -153,3 +153,7 @@ carried a release-gate step that could not run on a CI runner, so the gate
 could never pass from that tag, and repository rules correctly refuse both
 deletion and update of stable tags. No GitHub Release or PyPI artifact was
 ever created for it.
+
+## What `v0.15.4` Targets
+
+`v0.15.4` is the current release candidate. It is not published.

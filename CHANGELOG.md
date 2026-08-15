@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## v0.15.4 — 2026-08-15
+
+- Corrected the MCP write-verb descriptions, which were steering agents into the
+  review queue. `alice_memory_commit` is now described as the verb for ordinary
+  memory, to be used whenever the agent learns something worth keeping including
+  when the user has not asked. `alice_capture` now states that its content is not
+  returned by `alice_recall` until reviewed. No behaviour changed.
+- All eleven core MCP tools accept agent identity fields. Five previously
+  rejected them (`alice_recall`, `alice_resume`, `alice_recent_decisions`,
+  `alice_explain`, `alice_memory_correct`), so an agent that stamped `agent_id`
+  on every call failed on every read.
+
+Additive on the request side. No migration, no schema change, no configuration
+change.
+
 ## v0.15.3 — 2026-08-15
 
 - First release published from `samrusani/AliceMemory`. Project URLs corrected;
