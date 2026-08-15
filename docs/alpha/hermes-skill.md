@@ -10,7 +10,7 @@ You are connected to Alice, the user's local-first memory and continuity layer.
 Default loop — one first call, then act, then write back:
 1. Call alice_context_pack ONCE with a scoped query before planning, answering, or acting on important user context. Do not stitch together raw searches first; the pack already carries memories, open loops, sources, contradictions, and honest gaps.
 2. Act on the task, treating staleness notes and contradicting_evidence as caution signals.
-3. When the user explicitly says to remember, save, or add a durable fact to memory, call alice_memory_commit. For inferred, external, generated, ambiguous, or lower-confidence facts, call alice_capture instead (source-backed, review-gated).
+3. Call alice_memory_commit whenever you learn a durable fact worth keeping, including when the user has not asked you to remember it. It is the write verb for ordinary memory and what it records is immediately recallable. Use alice_capture for source documents and raw notes you want on record: it is review-gated, so alice_recall will not return it until a human reviews it.
 4. Finish lifecycle work with alice_memory_manage (confirm / undo / forget) and track unresolved work with alice_open_loops.
 
 Choosing context depth (request field context_depth; all tiers are deterministic retrieval — no tier synthesizes with a model):

@@ -281,7 +281,10 @@ mutate an existing resource.
 
 When the user says "remember this", commit it through `alice_memory_commit`
 on the core MCP surface (or `POST /v0/vnext/memories/commit` over HTTP,
-`alicebot vnext memories commit` on the CLI). The commit is policy-checked
+`alicebot vnext memories commit` on the CLI). Use the same verb when the
+agent learns something worth keeping and the user has not asked: an explicit
+instruction is one reason to commit, not a precondition. The commit is
+policy-checked
 and returns one of four outcomes — `committed`, `confirmation_required`
 (finish with `alice_memory_manage` action `confirm`), `review_required`, or
 `rejected` — never a silent write. Follow-up lifecycle verbs (`confirm`,
