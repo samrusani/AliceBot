@@ -15,12 +15,11 @@ Agent developers — people building or operating AI agents who need durable, ex
 - Local-first: your data stays on your machine; models and embeddings are pluggable via OpenAI-compatible endpoints.
 
 ## Current Posture
-- `v0.15.6` is the latest published release and immutable baseline (Phase 5
-  enterprise track: real-host single-tenant deployment contract and
-  least-privilege operations). `v0.13.1` is the prior published release. It
-  carries the Phase 4 core-roadmap work (replicated benchmark, SQLite
-  scale, reference integrations). Its PyPI wheel and source distribution
-  have Trusted Publishing provenance, with exact digests in
+- `v0.15.6` is the latest published release and immutable baseline. It fixes
+  `alice_capture` flattening documents before they were chunked, so imported
+  notes are searchable by their own contents. `v0.15.5` is the immediately prior
+  published release. The PyPI wheel and source distribution have Trusted
+  Publishing provenance, with exact digests in
   `docs/release/v0.15.6-checksums.txt`.
 - `v0.11.0` shipped the Phase 1 periphery cut. It removes the Telegram,
   hosted/control-plane, public chat/response, chief-of-staff, and model-pack

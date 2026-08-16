@@ -3,15 +3,15 @@
 ## Scope Boundary
 
 
-- **Published boundary:** `v0.15.6` is the latest published release,
-  carrying the Phase 4 core-roadmap work (replicated benchmark evidence,
-  SQLite vector scale, reference integrations, trace-only count
-  diagnostics); artifact digests are in
+- **Published boundary:** `v0.15.6` is the latest published release. It fixes
+  `alice_capture` flattening documents before they were chunked, which had made
+  imported notes unsearchable by their own contents; artifact digests are in
   `docs/release/v0.15.6-checksums.txt`.
-- **Prior published:** `v0.12.0` is the prior published release. It is
-  tagged and immutable, passed the exact-SHA CI, semantic, and
-  repository-control gates, and is published on PyPI with Trusted Publishing
-  provenance; artifact digests are in `docs/release/v0.12.0-checksums.txt`.
+- **Prior published:** `v0.15.5` is the immediately prior published release,
+  tagged and immutable, published on PyPI with Trusted Publishing provenance;
+  artifact digests are in `docs/release/v0.15.5-checksums.txt`. Every earlier
+  release remains published and immutable with its own records under
+  `docs/release/`.
 - **Shipped boundary:** `v0.12.0` shipped the Phase 3 structural refactor
   with **Structure only. Zero behavior change.** It relocates code behind
   stable imports and entrypoints. The default runtime is the
@@ -239,8 +239,8 @@ usage justifies a separately reviewed boundary.
   verdict is owned only by the handoff's `REVIEW_REPORT.md`. The version cut,
   exact-SHA gates, checksums, tag, GitHub Release, and PyPI readback remain
   outside the local structural freeze.
-- `v0.10.4` is the prior published release; later changes were not part of its
-  immutable artifacts.
+- Changes made after any release tag were not part of that release's immutable
+  artifacts. See the Published boundary above for what is current.
 - The default deployment is local-first and single-workspace. A future hosted
   offering is a clean-sheet roadmap decision, not dormant product code.
 - Release and review evidence for prior repair batches lives under
