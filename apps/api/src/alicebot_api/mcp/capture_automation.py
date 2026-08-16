@@ -31,6 +31,7 @@ from .shared import (
     _parse_int,
     _parse_model_generation_kwargs,
     _parse_optional_text,
+    _parse_required_document_text,
     _parse_required_text,
     _parse_string_list,
     _persist_vnext_deferred_embedding_inputs,
@@ -78,7 +79,7 @@ def _handle_alice_vnext_capture(context: MCPRuntimeContext, arguments: Mapping[s
                 policy_decision=decision.to_record(),
                 defer_embeddings=True,
             ).capture_text(
-                _parse_required_text(arguments, "raw_text"),
+                _parse_required_document_text(arguments, "raw_text"),
                 title=_parse_optional_text(arguments, "title"),
                 domain=domain,
                 sensitivity=sensitivity,
