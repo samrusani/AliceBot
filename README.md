@@ -258,3 +258,5 @@ MIT — see [LICENSE](https://github.com/samrusani/AliceMemory/blob/main/LICENSE
 
 `v0.15.4` is the latest published release and remains the install, checksum,
 and baseline reference.
+
+`v0.15.5` is the current release candidate. It is not published.
