@@ -23,9 +23,35 @@
 Both defects were found by running Alice against a real MCP host and a real
 Obsidian vault, not by a test suite or a code audit.
 
-No migration, no schema change, no configuration change. Chunking affects only
-text captured from this version onward; there is no re-chunk of existing content,
-so notes imported earlier should be re-imported rather than approved from review.
+No migration, no schema change, no configuration change.
+
+**Correction, added 2026-08-16 after publication.** The chunking entry above
+overclaims and the re-import instruction it carried was wrong. `alice_capture`
+flattened `raw_text` before chunking ever ran, so the heading rule had no
+boundaries to act on and an import through that tool behaved exactly as it did on
+0.15.4. **Do not re-import notes on 0.15.5.** `v0.15.6` fixes the real cause. The
+`PYTHONPATH` entry is unaffected and was confirmed against the published wheel.
+
+## v0.15.6 — 2026-08-16
+
+- `alice_capture` no longer flattens documents before they are chunked.
+  `mcp/arguments.py` collapsed every whitespace run in `raw_text` to a single
+  space, so a file with 17 newlines was stored with 0 and `chunk_text`, which
+  splits on blank lines, saw one paragraph. The v0.15.5 heading rule was therefore
+  inert on the exact path that produced the bug report. `raw_text` now normalises
+  line endings and trims the ends, and touches nothing inside. Only `raw_text`
+  changes; titles, ids and every other scalar still collapse.
+
+  This also restores the tool's stated contract: `alice_capture` promises text is
+  kept verbatim, and indentation, code blocks and list structure were being
+  destroyed along with the paragraph breaks.
+
+  Introduced in v0.12.0, so it survived every release since.
+
+**Re-import notes on this version**, not on 0.15.5. `content_hash` changes for
+newly captured documents because the stored bytes change, so a re-capture creates
+a new source rather than deduping against the flattened copy. Existing rows are
+untouched and there is no re-chunk migration.
 
 ## v0.15.4 — 2026-08-15
 

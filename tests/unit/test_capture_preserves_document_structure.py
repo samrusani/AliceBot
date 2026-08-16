@@ -96,6 +96,69 @@ def _capture_and_read_chunks(tmp_path: Path, raw_text: str) -> list[str]:
     return [row[0] for row in rows]
 
 
+def _dispatch_alice_capture_and_read_chunks(tmp_path: Path, raw_text: str) -> list[str]:
+    """Dispatch `alice_capture` through the registry, then read the stored rows.
+
+    This is the version that pins the wiring. The helper above proves the document
+    parser behaves; only this one proves `alice_capture` actually calls it.
+    """
+
+    from alicebot_api.mcp.registry import call_mcp_tool
+    from alicebot_api.mcp_tools import MCPRuntimeContext
+    from alicebot_api.onramp import bootstrap_database, resolve_db_path, sqlite_url_for_path
+
+    database = resolve_db_path(data_dir=str(tmp_path), db=None)
+    bootstrap_database(database, user_id=USER_ID, user_email="local@alice")
+    context = MCPRuntimeContext(database_url=sqlite_url_for_path(database), user_id=USER_ID)
+
+    call_mcp_tool(
+        context,
+        name="alice_capture",
+        arguments={
+            "raw_text": raw_text,
+            "title": "Vault",
+            "domain": "personal",
+            "sensitivity": "private",
+        },
+    )
+
+    with sqlite3.connect(database) as connection:
+        rows = connection.execute(
+            "SELECT text FROM source_chunks ORDER BY chunk_index"
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
+def test_alice_capture_dispatched_through_the_registry_preserves_structure(
+    tmp_path: Path,
+) -> None:
+    """The wiring test. Reverting the call site alone must fail something.
+
+    A review on 2026-08-16 found that every other test here passed with
+    `capture_automation` switched back to `_parse_required_text`, because they all
+    called the parser directly. That is the same sandwich that let the original
+    defect ship: proving a part works is not proving the product uses it.
+    """
+
+    chunks = _dispatch_alice_capture_and_read_chunks(tmp_path, QUOTES_VAULT)
+
+    assert len(chunks) == 3, (
+        f"alice_capture stored {len(chunks)} chunk(s) for a three-heading vault. "
+        "The handler is not using the document parser."
+    )
+    assert any("\n" in chunk for chunk in chunks), "stored chunks carry no newlines"
+
+
+def test_alice_capture_keeps_one_quote_free_of_its_neighbours(tmp_path: Path) -> None:
+    chunks = _dispatch_alice_capture_and_read_chunks(tmp_path, QUOTES_VAULT)
+    quote = "Discipline is the art of not betraying yourself"
+
+    holding = [chunk for chunk in chunks if quote in chunk]
+    assert len(holding) == 1
+    assert "Osho" not in holding[0]
+    assert "John A. Shedd" not in holding[0]
+
+
 def test_the_mcp_argument_parser_preserves_newlines(tmp_path: Path) -> None:
     """The narrowest statement of the defect, at the exact layer it lived."""
 

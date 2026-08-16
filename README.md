@@ -196,7 +196,7 @@ search degrades to full-text only and says so explicitly in the retrieval trace.
 
 ## Status
 
-`v0.15.4` is the latest published release and remains the install, checksum,
+`v0.15.5` is the latest published release and remains the install, checksum,
 and release-note baseline (the `v0.13.0` tag was never published;
 superseded). Its tag, release record, and published artifacts
 are immutable.
@@ -238,7 +238,7 @@ What that means in practice:
 - [v0.11.0 release notes](https://github.com/samrusani/AliceMemory/blob/main/docs/release/v0.11.0-release-notes.md)
 - [v0.11.1 release notes](https://github.com/samrusani/AliceMemory/blob/main/docs/release/v0.11.1-release-notes.md)
 - [v0.12.0 release notes](https://github.com/samrusani/AliceMemory/blob/main/docs/release/v0.12.0-release-notes.md)
-- [v0.15.4 release notes](https://github.com/samrusani/AliceMemory/blob/main/docs/release/v0.15.4-release-notes.md)
+- [v0.15.5 release notes](https://github.com/samrusani/AliceMemory/blob/main/docs/release/v0.15.5-release-notes.md)
 - [Release procedure](https://github.com/samrusani/AliceMemory/blob/main/RELEASING.md)
 - [Architecture](https://github.com/samrusani/AliceMemory/blob/main/ARCHITECTURE.md)
 - [Roadmap](https://github.com/samrusani/AliceMemory/blob/main/ROADMAP.md)
@@ -256,7 +256,7 @@ If you discover a security issue, follow the process in [SECURITY.md](https://gi
 
 MIT — see [LICENSE](https://github.com/samrusani/AliceMemory/blob/main/LICENSE).
 
-`v0.15.4` is the latest published release and remains the install, checksum,
+`v0.15.5` is the latest published release and remains the install, checksum,
 and baseline reference.
 
-`v0.15.5` is the current release candidate. It is not published.
+`v0.15.6` is the current release candidate. It is not published.
