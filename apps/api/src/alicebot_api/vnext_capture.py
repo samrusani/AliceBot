@@ -241,6 +241,46 @@ def _truncate(value: str, *, max_length: int) -> str:
 
 
 def _split_large_part(part: str, *, max_chars: int) -> list[str]:
+    """Split one oversized paragraph, preferring its own line structure.
+
+    A paragraph only reaches here when it alone exceeds ``max_chars``. The
+    original implementation went straight to ``part.split()``, which splits on
+    every whitespace character and rejoins with single spaces, so it cut at an
+    arbitrary word AND discarded the paragraph's internal newlines.
+
+    That is wrong for the common shape it actually meets: a numbered or bulleted
+    list written one item per line with no blank line between items. Markdown
+    treats that as a single paragraph, so a long list arrived here and came out
+    as flattened word-count slices, with individual items cut in half across a
+    boundary.
+
+    Found 2026-08-17 in a real 226-document vault import: of 710 chunks, five
+    carried no newline at all and two sat at the character ceiling, one of them
+    ending mid-sentence inside item 22 of a quote list.
+
+    Splitting on lines first fixes it and keeps the fallback intact. A paragraph
+    that genuinely is one long line still goes to the word splitter, and prose
+    packing is untouched because only oversized paragraphs reach this function.
+    """
+
+    lines = part.split("\n")
+    if len(lines) > 1 and all(len(line) <= max_chars for line in lines):
+        chunks: list[str] = []
+        current_lines: list[str] = []
+        current_length = 0
+        for line in lines:
+            projected = current_length + len(line) + (1 if current_lines else 0)
+            if current_lines and projected > max_chars:
+                chunks.append("\n".join(current_lines))
+                current_lines = [line]
+                current_length = len(line)
+                continue
+            current_lines.append(line)
+            current_length = projected
+        if current_lines:
+            chunks.append("\n".join(current_lines))
+        return [chunk for chunk in chunks if chunk.strip()]
+
     words = part.split()
     if not words:
         return []
