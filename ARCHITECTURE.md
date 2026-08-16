@@ -251,3 +251,5 @@ usage justifies a separately reviewed boundary.
 and baseline reference.
 
 `v0.15.5` is the current release candidate. It is not published.
+
+`v0.15.6` is the current release candidate. It is not published.
