@@ -2,10 +2,10 @@
 
 ## Snapshot
 
-- `v0.15.5` is the latest published release. It is available from PyPI and
+- `v0.15.6` is the latest published release. It is available from PyPI and
   its record is immutable. `v0.13.1` is the prior published release, and
   GitHub; exact artifact digests are in
-  `docs/release/v0.15.5-checksums.txt`. `v0.13.1` shipped the Phase 4
+  `docs/release/v0.15.6-checksums.txt`. `v0.13.1` shipped the Phase 4
   core-roadmap work with the exact release headline **Replicated
   benchmark, faster SQLite at scale, reference integrations.** The
   `v0.13.0` tag exists but was never published (superseded; see the
@@ -83,10 +83,10 @@ authoritative description; Phase 3 does not rewrite that history.
 
 ## Release Boundary
 
-`v0.15.5` is tagged, published, and immutable. Its authoritative records are:
+`v0.15.6` is tagged, published, and immutable. Its authoritative records are:
 
-- `docs/release/v0.15.5-release-notes.md`
-- `docs/release/v0.15.5-checksums.txt`
+- `docs/release/v0.15.6-release-notes.md`
+- `docs/release/v0.15.6-checksums.txt`
 
 `v0.13.1` remains published and immutable; its records are
 `docs/release/v0.13.1-release-notes.md` and `docs/release/v0.13.1-checksums.txt`.
@@ -143,9 +143,9 @@ the `v0.14.0` release notes.
   update graph; it does not undo accepted project state or erase shared source
   evidence, upstream systems, exports, backups, or external logs.
 
-## What `v0.15.5` Shipped
+## What `v0.15.6` Shipped
 
-`v0.15.5` is the latest published release and remains the install, checksum,
+`v0.15.6` is the latest published release and remains the install, checksum,
 and baseline reference.
 
 The `v0.15.0` tag exists but was never published. The commit it points at
@@ -154,11 +154,12 @@ could never pass from that tag, and repository rules correctly refuse both
 deletion and update of stable tags. No GitHub Release or PyPI artifact was
 ever created for it.
 
-## What `v0.15.5` Shipped
+## What `v0.15.6` Shipped
 
-`v0.15.5` is the latest published release and remains the install, checksum,
+`v0.15.6` is the latest published release and remains the install, checksum,
 and baseline reference.
 
-## What `v0.15.6` Targets
+## What `v0.15.6` Shipped
 
-`v0.15.6` is the current release candidate. It is not published.
+`v0.15.6` is the latest published release and remains the install, checksum,
+and baseline reference.
