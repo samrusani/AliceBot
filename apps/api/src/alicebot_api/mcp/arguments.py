@@ -79,6 +79,36 @@ def _parse_required_text(arguments: Mapping[str, object], key: str) -> str:
     return normalized
 
 
+def _parse_required_document_text(arguments: Mapping[str, object], key: str) -> str:
+    """Parse a field whose internal line structure is part of its meaning.
+
+    ``_parse_required_text`` collapses every run of whitespace to a single space.
+    That is right for a title, an id or an enum, and destructive for a document.
+
+    Found 2026-08-16 against the published v0.15.5 by capturing a markdown vault
+    through ``alice_capture`` and reading the rows back out of SQLite: a file with
+    17 newlines was stored with 0. ``chunk_text`` splits on blank lines, so a
+    flattened document is a single paragraph and gets cut on word count at
+    ``max_chars`` instead, straddling unrelated notes. That is what made an
+    imported quotes library unsearchable by its own quotes.
+
+    It also broke the tool's stated contract: ``alice_capture`` promises text is
+    "kept verbatim with provenance".
+
+    Line endings are normalised and the ends are trimmed, exactly as
+    ``vnext_capture.normalize_text`` does. Nothing inside is touched, so
+    indentation, code blocks and list structure survive.
+    """
+
+    value = arguments.get(key)
+    if not isinstance(value, str):
+        raise MCPToolError(f"{key} is required and must be a string")
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if normalized == "":
+        raise MCPToolError(f"{key} must not be empty")
+    return normalized
+
+
 def _parse_optional_uuid(arguments: Mapping[str, object], key: str) -> UUID | None:
     value = arguments.get(key)
     if value is None:
