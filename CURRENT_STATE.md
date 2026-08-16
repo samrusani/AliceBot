@@ -3,17 +3,16 @@
 ## Snapshot
 
 - `v0.15.6` is the latest published release. It is available from PyPI and
-  its record is immutable. `v0.13.1` is the prior published release, and
-  GitHub; exact artifact digests are in
-  `docs/release/v0.15.6-checksums.txt`. `v0.13.1` shipped the Phase 4
-  core-roadmap work with the exact release headline **Replicated
-  benchmark, faster SQLite at scale, reference integrations.** The
-  `v0.13.0` tag exists but was never published (superseded; see the
-  release notes).
-- `v0.12.0` is the prior published release; its records remain under
-  `docs/release/`.
-- `v0.12.0` shipped the Phase 3 structural refactor, with the exact release
-  headline **Structure only. Zero behavior change.**
+  GitHub, its record is immutable, and exact artifact digests are in
+  `docs/release/v0.15.6-checksums.txt`. `v0.15.5` is the immediately prior
+  published release.
+- Earlier releases whose headlines still get referenced: `v0.13.1` shipped the
+  Phase 4 core-roadmap work as **Replicated benchmark, faster SQLite at scale,
+  reference integrations**, and `v0.12.0` shipped the Phase 3 structural
+  refactor as **Structure only. Zero behavior change.** Records for both remain
+  under `docs/release/`.
+- Two tags exist that were never published: `v0.13.0`, superseded by `v0.13.1`,
+  and `v0.15.0`. Neither has a GitHub Release or a PyPI artifact.
 - Phase 3 implementation and the bounded builder matrix completed on
   `codex/v0120-phase3-structural-refactor`, based on
   `f342d45dabe127acca6231f29830ff11d98a340e`. Each code increment received an
@@ -88,19 +87,18 @@ authoritative description; Phase 3 does not rewrite that history.
 - `docs/release/v0.15.6-release-notes.md`
 - `docs/release/v0.15.6-checksums.txt`
 
-`v0.13.1` remains published and immutable; its records are
-`docs/release/v0.13.1-release-notes.md` and `docs/release/v0.13.1-checksums.txt`.
+`v0.15.5` is the immediately prior published release; its records are
+`docs/release/v0.15.5-release-notes.md` and `docs/release/v0.15.5-checksums.txt`.
 
-The `v0.13.0` tag exists but was never published; the number was
-superseded by `v0.13.1` because stable tags are immutable.
+Every earlier release remains published and immutable, with its own
+`docs/release/vX.Y.Z-release-notes.md` and `vX.Y.Z-checksums.txt`. That includes
+`v0.13.1`, `v0.12.0` and `v0.11.1`, which are referenced elsewhere in this
+document.
 
-`v0.12.0` is the prior published release; its records remain at
-`docs/release/v0.12.0-release-notes.md` and
-`docs/release/v0.12.0-checksums.txt`.
-
-`v0.11.1` is the prior published release; its records remain at
-`docs/release/v0.11.1-release-notes.md` and
-`docs/release/v0.11.1-checksums.txt`.
+Two tags exist that were never published and never will be, because stable tags
+are immutable and the numbers are retired rather than reused: `v0.13.0`,
+superseded by `v0.13.1`, and `v0.15.0`, whose commit carried a release-gate step
+that could not run on a CI runner.
 
 ## What `v0.14.0` Shipped
 
@@ -148,18 +146,24 @@ the `v0.14.0` release notes.
 `v0.15.6` is the latest published release and remains the install, checksum,
 and baseline reference.
 
-The `v0.15.0` tag exists but was never published. The commit it points at
-carried a release-gate step that could not run on a CI runner, so the gate
-could never pass from that tag, and repository rules correctly refuse both
-deletion and update of stable tags. No GitHub Release or PyPI artifact was
-ever created for it.
+It fixes one defect: `alice_capture` flattened `raw_text` before chunking, so a
+document with 17 newlines was stored with 0 and chunking, which splits on blank
+lines, saw a single paragraph. A whole-vault note import therefore produced
+memories spanning unrelated notes.
 
-## What `v0.15.6` Shipped
+**`v0.15.5` shipped a chunker fix for this same symptom and it was inert**, since
+the flattening happened upstream of the chunker and left it no boundaries to act
+on. Confirmed against the published artifacts: capturing the same vault gives
+`chunk_count` of 1 on both v0.15.4 and v0.15.5, and 3 on v0.15.6.
 
-`v0.15.6` is the latest published release and remains the install, checksum,
-and baseline reference.
+Introduced in `v0.12.0`, so it survived every release between.
 
-## What `v0.15.6` Shipped
+Re-import notes on `v0.15.6`. Candidates extracted earlier came from flattened
+text and should be deleted rather than approved.
 
-`v0.15.6` is the latest published release and remains the install, checksum,
-and baseline reference.
+## The `v0.15.0` tag was never published
+
+The commit it points at carried a release-gate step that could not run on a CI
+runner, so the gate could never pass from that tag, and repository rules
+correctly refuse both deletion and update of stable tags. No GitHub Release or
+PyPI artifact was ever created for it.
