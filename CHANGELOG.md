@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- An oversized paragraph now splits on its own lines before falling back to
+  words. `_split_large_part` only sees paragraphs that alone exceed the chunk
+  budget, and it was doing `part.split()` then rejoining with spaces, which cut
+  at an arbitrary word and discarded the paragraph's internal newlines. That is
+  the shape a numbered or bulleted list takes when it is written one item per
+  line with no blank line between items, so long lists were stored as flattened
+  word-count slices with individual items cut in half. Found in a real
+  226-document vault import on v0.15.6: of 710 chunks, five carried no newline
+  and two sat at the ceiling, one ending mid-sentence inside item 22 of a quote
+  list. An oversized single line is now word-split on its own rather than
+  disqualifying the whole paragraph, so one long item no longer flattens its
+  neighbours.
+
+  Prose, the LongMemEval speaker-turn shape, the v0.15.6 heading rule, and the
+  character-level split for a token longer than the budget are all unchanged.
+  Already-captured content is not re-chunked.
+
 ## v0.15.5 — 2026-08-16
 
 - A host's `PYTHONPATH` no longer shadows the dependencies Alice installed. `uvx`

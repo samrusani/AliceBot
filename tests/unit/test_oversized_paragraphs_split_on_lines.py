@@ -105,6 +105,44 @@ def test_bulleted_lists_behave_the_same_as_numbered_ones(bullet: str) -> None:
     assert all(item in joined for item in items), "a bullet item was cut across a boundary"
 
 
+def test_one_oversized_item_does_not_flatten_the_rest_of_the_list() -> None:
+    """The mixed case. Review caught that the first draft got this wrong.
+
+    That draft required *every* line to fit before packing by line, so a single
+    long item disqualified the whole paragraph and flattened all its neighbours
+    with it. Only the oversized line should lose its structure.
+    """
+
+    short_items = _numbered_list(30)
+    monster = "99. " + ("a very long unbroken clause about persistence " * 80)
+    assert len(monster) > DEFAULT_CHUNK_MAX_CHARS, "the fixture must contain an oversized line"
+
+    body = "\n".join([*short_items[:15], monster, *short_items[15:]])
+    chunks = chunk_text(body)
+    joined = "\n".join(chunks)
+
+    intact = [item for item in short_items if item in joined]
+    assert len(intact) == len(short_items), (
+        f"one oversized line flattened its neighbours: only {len(intact)} of "
+        f"{len(short_items)} short items survived intact"
+    )
+    assert any("\n" in chunk for chunk in chunks), "line structure was lost entirely"
+    assert all(len(chunk) <= DEFAULT_CHUNK_MAX_CHARS for chunk in chunks)
+
+
+def test_an_oversized_line_is_itself_word_split_not_dropped() -> None:
+    """The oversized line must still be stored, just without its own structure."""
+
+    monster = "one " * (DEFAULT_CHUNK_MAX_CHARS // 2)
+    body = "1. short leading item\n" + monster + "\n2. short trailing item"
+
+    joined = " ".join(chunk_text(body))
+
+    assert "short leading item" in joined
+    assert "short trailing item" in joined
+    assert joined.count("one") > 100, "the oversized line's content was dropped"
+
+
 def test_prose_and_turn_shapes_are_unchanged() -> None:
     """The narrowness of the change: only oversized paragraphs reach the splitter."""
 

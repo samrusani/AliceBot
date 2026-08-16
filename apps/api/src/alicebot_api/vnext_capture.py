@@ -240,46 +240,12 @@ def _truncate(value: str, *, max_length: int) -> str:
     return value[: max_length - 3].rstrip() + "..."
 
 
-def _split_large_part(part: str, *, max_chars: int) -> list[str]:
-    """Split one oversized paragraph, preferring its own line structure.
+def _split_on_words(part: str, *, max_chars: int) -> list[str]:
+    """Last resort for text with no usable line structure.
 
-    A paragraph only reaches here when it alone exceeds ``max_chars``. The
-    original implementation went straight to ``part.split()``, which splits on
-    every whitespace character and rejoins with single spaces, so it cut at an
-    arbitrary word AND discarded the paragraph's internal newlines.
-
-    That is wrong for the common shape it actually meets: a numbered or bulleted
-    list written one item per line with no blank line between items. Markdown
-    treats that as a single paragraph, so a long list arrived here and came out
-    as flattened word-count slices, with individual items cut in half across a
-    boundary.
-
-    Found 2026-08-17 in a real 226-document vault import: of 710 chunks, five
-    carried no newline at all and two sat at the character ceiling, one of them
-    ending mid-sentence inside item 22 of a quote list.
-
-    Splitting on lines first fixes it and keeps the fallback intact. A paragraph
-    that genuinely is one long line still goes to the word splitter, and prose
-    packing is untouched because only oversized paragraphs reach this function.
+    Cuts at word boundaries, and at character boundaries for a single token
+    longer than the whole budget.
     """
-
-    lines = part.split("\n")
-    if len(lines) > 1 and all(len(line) <= max_chars for line in lines):
-        chunks: list[str] = []
-        current_lines: list[str] = []
-        current_length = 0
-        for line in lines:
-            projected = current_length + len(line) + (1 if current_lines else 0)
-            if current_lines and projected > max_chars:
-                chunks.append("\n".join(current_lines))
-                current_lines = [line]
-                current_length = len(line)
-                continue
-            current_lines.append(line)
-            current_length = projected
-        if current_lines:
-            chunks.append("\n".join(current_lines))
-        return [chunk for chunk in chunks if chunk.strip()]
 
     words = part.split()
     if not words:
@@ -310,6 +276,62 @@ def _split_large_part(part: str, *, max_chars: int) -> list[str]:
     if current:
         chunks.append(" ".join(current))
     return chunks
+
+
+def _split_large_part(part: str, *, max_chars: int) -> list[str]:
+    """Split one oversized paragraph, preferring its own line structure.
+
+    A paragraph only reaches here when it alone exceeds ``max_chars``. The
+    original implementation went straight to ``part.split()``, which splits on
+    every whitespace character and rejoins with single spaces, so it cut at an
+    arbitrary word AND discarded the paragraph's internal newlines.
+
+    That is wrong for the shape it actually meets: a numbered or bulleted list
+    written one item per line with no blank line between items. Markdown treats
+    that as a single paragraph, so a long list arrived here and came out as
+    flattened word-count slices with individual items cut in half.
+
+    Found 2026-08-17 in a real 226-document vault import: of 710 chunks, five
+    carried no newline at all and two sat at the character ceiling, one of them
+    ending mid-sentence inside item 22 of a quote list.
+
+    Oversized lines are handled per line rather than disqualifying the whole
+    paragraph. An earlier draft required *every* line to fit before packing by
+    line, so one long item in a list flattened all the others with it. Review
+    caught that; the mixed case is now covered by tests.
+    """
+
+    lines = part.split("\n")
+    if len(lines) > 1:
+        packed: list[str] = []
+        current_lines: list[str] = []
+        current_length = 0
+        for line in lines:
+            if len(line) > max_chars:
+                # This one line cannot be kept whole. Flush what is buffered,
+                # then word-split only the offending line.
+                if current_lines:
+                    packed.append("\n".join(current_lines))
+                    current_lines = []
+                    current_length = 0
+                packed.extend(_split_on_words(line, max_chars=max_chars))
+                continue
+
+            projected = current_length + len(line) + (1 if current_lines else 0)
+            if current_lines and projected > max_chars:
+                packed.append("\n".join(current_lines))
+                current_lines = [line]
+                current_length = len(line)
+                continue
+
+            current_lines.append(line)
+            current_length = projected
+
+        if current_lines:
+            packed.append("\n".join(current_lines))
+        return [chunk for chunk in packed if chunk.strip()]
+
+    return _split_on_words(part, max_chars=max_chars)
 
 
 # A markdown heading or thematic break is an author-declared section boundary.
