@@ -39,7 +39,7 @@ Any third-party agent should follow the same Alice pattern.
 
 ## MCP Example
 
-The default MCP surface is the eleven core tools (`alice_capture`, `alice_recall`, `alice_context_pack`, and friends; see [mcp-tools.md](mcp-tools.md)). The `alice_vnext_*` examples below are keyless-local legacy compatibility only and require `ALICE_MCP_LEGACY_TOOLS=1`; a server bound with `ALICE_AGENT_API_KEY` hides and rejects them.
+The default MCP surface is three tools (`alice_memory_commit`, `alice_recall`, `alice_resume`; see [mcp-tools.md](mcp-tools.md)). Capture and the pack are on the full surface (`ALICE_MCP_FULL_TOOLS=1`). The `alice_vnext_*` examples below are keyless-local legacy compatibility only and require `ALICE_MCP_LEGACY_TOOLS=1`; a server bound with `ALICE_AGENT_API_KEY` hides and rejects them.
 
 Use `alice_vnext_context_tree` when the agent needs read-only navigation, then use `alice_vnext_context_pack` with the same identity fields before acting. Submit important output with `alice_vnext_ingest_agent_output`.
 

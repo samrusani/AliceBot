@@ -148,8 +148,10 @@ from alicebot_api.store import (
 )
 from alicebot_api.surface_flags import (
     LEGACY_SURFACES_ENV as LEGACY_SURFACES_ENV,
+    MCP_FULL_TOOLS_ENV as MCP_FULL_TOOLS_ENV,
     MCP_LEGACY_TOOLS_ENV as MCP_LEGACY_TOOLS_ENV,
     legacy_surfaces_enabled as legacy_surfaces_enabled,
+    mcp_full_tools_enabled as mcp_full_tools_enabled,
     mcp_legacy_tools_enabled as mcp_legacy_tools_enabled,
 )
 from alicebot_api.temporal_state import (
@@ -554,6 +556,7 @@ list_mcp_tools.__module__ = __name__
 redact_memory_flow.__module__ = __name__
 
 __all__ = [
+    "MCP_FULL_TOOLS_ENV",
     "MCP_LEGACY_TOOLS_ENV",
     "MCPRuntimeContext",
     "MCPToolError",

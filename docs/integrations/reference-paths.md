@@ -12,7 +12,7 @@ Start with the narrowest path that solves the integration need:
 | Need | Default path | Demo or example |
 |---|---|---|
 | Generic external agent needs continuity in one call | `POST /v1/continuity/brief`; key-bound MCP integrations use core `alice_recall` / `alice_resume` (`alice_brief` is keyless-local legacy compatibility only) | `docs/examples/reference-agent-examples.md` |
-| MCP client (Claude Desktop, Claude Code, any stdio MCP host) needs zero-setup local memory | `uvx alice-memory mcp` serving the eleven core tools over stdio | `docs/examples/mcp_quickstart.py` |
+| MCP client (Claude Desktop, Claude Code, any stdio MCP host) needs zero-setup local memory | `uvx alice-memory mcp` serving the default three tools over stdio | `docs/examples/mcp_quickstart.py` |
 | Agent-framework tooling (OpenAI Agents SDK style function tools) with per-agent API keys | HTTP function tools over `/v0/vnext` with `Authorization: Bearer alice_sk_...` | `docs/examples/openai_agents_sdk_tool.py` |
 | Hermes owns orchestration and Alice supplies continuity workflows | provider plus MCP | `./.venv/bin/python scripts/run_hermes_bridge_demo.py` |
 | Existing OpenClaw workspace data must become queryable in Alice | import, then use normal brief/recall/resume surfaces | `./scripts/use_alice_with_openclaw.sh` |

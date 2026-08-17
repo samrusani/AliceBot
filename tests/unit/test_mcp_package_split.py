@@ -39,6 +39,7 @@ EXPECTED_MODULES = {
     "types.py",
 }
 EXPECTED_PUBLIC_EXPORTS = [
+    "MCP_FULL_TOOLS_ENV",
     "MCP_LEGACY_TOOLS_ENV",
     "MCPRuntimeContext",
     "MCPToolError",
@@ -93,7 +94,7 @@ def test_mcp_monolith_is_a_thin_identity_preserving_facade() -> None:
     assert mcp_tools.redact_memory_flow is mcp_memories.redact_memory_flow
     assert mcp_tools._TOOL_HANDLERS is mcp_registry._TOOL_HANDLERS
     assert mcp_tools._TOOL_DEFINITIONS_BY_NAME is mcp_registry._TOOL_DEFINITIONS_BY_NAME
-    assert len(vars(mcp_tools)) == 437
+    assert len(vars(mcp_tools)) == 439
     assert mcp_tools.__annotations__ == EXPECTED_FACADE_ANNOTATIONS
 
 
@@ -145,11 +146,15 @@ def test_mcp_registry_order_definitions_and_alias_identity_are_frozen() -> None:
 
 def test_mcp_gates_remain_dynamic_and_agent_keys_suppress_legacy(monkeypatch) -> None:
     for name in (
+        mcp_tools.MCP_FULL_TOOLS_ENV,
         mcp_tools.MCP_LEGACY_TOOLS_ENV,
         mcp_tools.LEGACY_SURFACES_ENV,
         mcp_tools.AGENT_API_KEY_ENV,
     ):
         monkeypatch.delenv(name, raising=False)
+    assert _tool_names() == ["alice_memory_commit", "alice_recall", "alice_resume"]
+
+    monkeypatch.setenv(mcp_tools.MCP_FULL_TOOLS_ENV, "1")
     assert len(_tool_names()) == 11
 
     monkeypatch.setenv(mcp_tools.MCP_LEGACY_TOOLS_ENV, "1")
@@ -161,6 +166,9 @@ def test_mcp_gates_remain_dynamic_and_agent_keys_suppress_legacy(monkeypatch) ->
     monkeypatch.setenv(mcp_tools.MCP_LEGACY_TOOLS_ENV, "1")
     monkeypatch.setenv(mcp_tools.AGENT_API_KEY_ENV, " configured ")
     assert len(_tool_names()) == 11
+
+    monkeypatch.delenv(mcp_tools.MCP_FULL_TOOLS_ENV)
+    assert _tool_names() == ["alice_memory_commit", "alice_recall", "alice_resume"]
 
 
 def test_registry_import_does_not_pull_in_application_onramps() -> None:

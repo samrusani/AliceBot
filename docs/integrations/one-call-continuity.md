@@ -4,7 +4,7 @@ One continuity call is the default integration path for external agents:
 
 - API: `POST /v1/continuity/brief`
 - CLI: `alice brief`
-- MCP: core `alice_resume` / `alice_context_pack`; `alice_brief` is keyless-local legacy compatibility only
+- MCP: core `alice_resume`; `alice_context_pack` is full-surface; `alice_brief` is keyless-local legacy compatibility only
 
 This surface composes the shipped recall, resumption, contradiction, and trust
 systems into one response bundle so callers do not need tool choreography. The
@@ -76,7 +76,7 @@ If you are running directly from the repository Python runtime:
 
 ## MCP
 
-The default MCP surface is the eleven core tools (see [docs/integrations/mcp.md](mcp.md)); `alice_resume` and `alice_context_pack` cover most continuity lookups there. `alice_brief` requires a deliberately keyless local server with `ALICE_MCP_LEGACY_TOOLS=1`; a key-bound server hides and rejects it.
+The default MCP surface is three tools (see [docs/integrations/mcp.md](mcp.md)); `alice_resume` covers most continuity lookups there. `alice_context_pack` is full-surface. `alice_brief` requires a deliberately keyless local server with `ALICE_MCP_LEGACY_TOOLS=1`; a key-bound server hides and rejects it.
 
 Example:
 

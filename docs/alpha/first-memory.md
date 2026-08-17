@@ -4,7 +4,7 @@ Use this guide when Alice is installed correctly but a tester says, "I do not se
 
 Alice is not automatic chat-history memory. The current public preview has several memory paths, and they have different trust and review behavior.
 
-The default MCP surface is the eleven core tools (see [mcp-tools.md](mcp-tools.md)). This guide uses three of them: `alice_memory_commit` to write, `alice_recall` to read back, and `alice_explain` to prove provenance.
+The default MCP surface is three tools (see [mcp-tools.md](mcp-tools.md)): `alice_memory_commit` to write, `alice_recall` to read back, and `alice_resume` to pick work up. `alice_explain` is on the full surface (`ALICE_MCP_FULL_TOOLS=1`).
 
 ## What To Expect
 
@@ -38,8 +38,9 @@ Alice returns one of:
 
 Now prove it round-trips:
 
-1. Call `alice_recall` with `{"query": "planning summaries"}` — the memory comes back with its fused-rank score.
-2. Call `alice_explain` with the returned `memory_id` — Alice shows where the memory came from, its revisions, and why it can be trusted.
+1. Call `alice_recall` with `{"query": "planning summaries"}`. The memory comes back with its fused-rank score.
+2. Call `alice_resume`. The last decision should be the fact you just committed.
+3. On the full surface (`ALICE_MCP_FULL_TOOLS=1`), `alice_explain` with the returned `memory_id` shows where the memory came from, its revisions, and why it can be trusted.
 
 Do not write directly to Postgres or SQLite, and do not bypass Alice policy.
 

@@ -2,31 +2,24 @@
 
 Use this instruction block in OpenClaw when Alice is available.
 
-Note: the structured ingestion and memory-commit MCP payloads below target the legacy `alice_vnext_*` tool surface. They require a deliberately keyless local server with `ALICE_MCP_LEGACY_TOOLS=1`; a server bound with `ALICE_AGENT_API_KEY` hides and rejects them. New authenticated integrations should use the eleven core tools in [mcp-tools.md](mcp-tools.md).
+Note: the structured ingestion and memory-commit MCP payloads below target the legacy `alice_vnext_*` tool surface. They require a deliberately keyless local server with `ALICE_MCP_LEGACY_TOOLS=1`; a server bound with `ALICE_AGENT_API_KEY` hides and rejects them. New authenticated integrations should use the default three tools in [mcp-tools.md](mcp-tools.md): `alice_memory_commit`, `alice_recall`, `alice_resume`. Capture and the pack are on the full surface (`ALICE_MCP_FULL_TOOLS=1`).
 
 ```text
 You are OpenClaw. Use Alice as the project-scoped memory and continuity layer.
 
-Default loop — one first call, then act, then write back:
+Default loop: remember, recall, continue.
 1. Identify as OpenClaw.
-2. Call alice_context_pack ONCE, project-scoped, before build or review work. The pack already carries decisions, procedures, open loops, sources, and contradictions — do not run raw searches first.
-3. Perform the assigned task, treating staleness notes and contradicting_evidence as caution signals.
-4. Commit durable project memory via alice_memory_commit whenever you learn something worth keeping, including when the user has not asked you to remember it. It is the write verb for ordinary memory and what it records is immediately recallable. Use alice_capture for source documents, external evidence and raw notes: its passages come back from alice_recall under sources, as material to read and quote rather than as facts Alice asserts. It also proposes candidate memories, and those stay unsearchable until a reviewer promotes them, so do not tell the user their import is unusable until they clear a queue. Submit sprint outputs as reviewable agent outputs.
-5. Finish lifecycle work with alice_memory_manage (confirm / undo / forget) and create open loops for unresolved work with alice_open_loops.
+2. Call alice_memory_commit whenever you learn a durable project fact worth keeping, including when the user has not asked you to remember it. Domain must be project.
+3. Call alice_recall to search project memory and imported sources.
+4. Call alice_resume to pick work back up: last decision, next action, open loops, recent changes.
+5. alice_capture and alice_context_pack are full-surface. Use them only when the server lists them. Capture stores a source; its passages come back from alice_recall under sources. Candidates stay unsearchable as memories. Import is a source. Commit is a fact. Do not tell the user they must clear a review queue before a note is usable.
 6. Do not access or write non-project personal domains.
-
-Choosing context depth (request field context_depth; every tier is deterministic retrieval — none synthesizes with a model):
-- minimal: quick fact checks ("did we already decide X?"). Full-text only, at most 4 memories, no sources or contradictions.
-- low (default): normal pre-task context.
-- medium: code review, sprint planning, or status reporting — contradiction check forced on for every query type.
-- high: audits and revision-history questions — adds supersession chain notes for superseded/superseding memories.
-Explicit include_sources / include_contradictions flags override the tier default.
 ```
 
 `context_depth` (and `budget_strategy` for `max_tokens` packing) are
-fields on the context-pack request; the matching `alice_context_pack` MCP
-tool arguments arrive in the same release — trust the server's
-`tools/list` schema and omit them if not listed yet.
+fields on the context-pack request. The matching `alice_context_pack` MCP
+tool is full-surface. Trust the server's `tools/list` schema and omit them
+if not listed.
 
 Default identity:
 
@@ -45,7 +38,7 @@ Context/read domains may include `project`, `professional`, and `system` when po
 
 Restricted by default: `personal`, `family`, `health`, `spiritual`, `legal`, `financial`, `regulated`.
 
-Project context recipe. On the core `alice_context_pack` the scope fields are flat, not nested
+Project context recipe. On the full-surface `alice_context_pack` the scope fields are flat, not nested
 under `scope` and `options`:
 
 ```json
@@ -58,9 +51,9 @@ under `scope` and `options`:
 }
 ```
 
-Sprint output, submitted through `alice_capture`. The text itself is searchable from the next
-call onward and comes back under `sources`; only the candidate memories capture proposes are
-review-gated. The field carrying the text is `raw_text`:
+Sprint output, submitted through full-surface `alice_capture` when the server lists it. The text
+itself is searchable from the next call onward and comes back under `sources`. Candidates stay
+unsearchable as memories. The field carrying the text is `raw_text`:
 
 ```json
 {
@@ -99,9 +92,10 @@ rejected outright rather than ignored. In particular `intent` exists only on the
 `alice_vnext_commit_memory` tool and is **not** accepted by `alice_memory_commit`. A
 `project_scoped_agent` must send `domain: "project"`, or the commit is rejected.
 
-If Alice returns `review_required`, leave the item for `alice_memory_review`. If Alice returns
-`rejected`, do not retry outside the `project` domain. Use `alice_memory_manage` with an
-`action` of `undo`, `forget` or `expire` for repairs; never write directly to the database.
+If Alice returns `review_required`, leave the item. Do not tell the user to clear a review
+queue. If Alice returns `rejected`, do not retry outside the `project` domain. Use
+`alice_memory_manage` with an `action` of `undo`, `forget` or `expire` for repairs when that
+tool is listed; never write directly to the database.
 
 Do propose memory for:
 

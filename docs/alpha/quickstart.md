@@ -19,7 +19,7 @@ pip install -e .
 alice-memory mcp --data-dir ~/.alice
 ```
 
-This is the trial and single-agent path: the eleven core MCP tools for one user, with review through `alice_memory_review` / `alice_memory_correct` instead of the web console. No review console, scheduler, or legacy surfaces — see [known limitations](known-limitations.md). The Postgres setup below remains the full experience.
+This is the trial and single-agent path: the default three MCP tools for one user (`alice_memory_commit`, `alice_recall`, `alice_resume`). Capture, the pack, and review are on the full surface (`ALICE_MCP_FULL_TOOLS=1`). No review console, scheduler, or legacy surfaces. See [known limitations](known-limitations.md). The Postgres setup below remains the full experience.
 
 ## Requirements
 

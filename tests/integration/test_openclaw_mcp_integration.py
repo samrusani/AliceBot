@@ -15,19 +15,11 @@ from alicebot_api.store import ContinuityStore
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OPENCLAW_FIXTURE_PATH = REPO_ROOT / "fixtures" / "openclaw" / "workspace_v1.json"
-CORE_TOOL_NAMES = {
-    "alice_capture",
+DEFAULT_TOOL_NAMES = [
+    "alice_memory_commit",
     "alice_recall",
     "alice_resume",
-    "alice_context_pack",
-    "alice_open_loops",
-    "alice_recent_decisions",
-    "alice_memory_review",
-    "alice_memory_correct",
-    "alice_explain",
-    "alice_memory_commit",
-    "alice_memory_manage",
-}
+]
 
 
 def seed_user(database_url: str, *, email: str) -> UUID:
@@ -42,6 +34,7 @@ def build_runtime_env(*, database_url: str, user_id: UUID) -> dict[str, str]:
     env["DATABASE_URL"] = database_url
     env["ALICEBOT_AUTH_USER_ID"] = str(user_id)
     env.pop("ALICE_MCP_LEGACY_TOOLS", None)
+    env.pop("ALICE_MCP_FULL_TOOLS", None)
     env.pop("ALICE_LEGACY_SURFACES", None)
     pythonpath_entries = [str(REPO_ROOT / "apps" / "api" / "src"), str(REPO_ROOT / "workers")]
     existing_pythonpath = env.get("PYTHONPATH")
@@ -167,9 +160,7 @@ def test_openclaw_imported_data_is_usable_from_shipped_mcp_recall_and_resume_too
     client = start_mcp_client(database_url=migrated_database_urls["app"], user_id=user_id)
     try:
         listed_tools = client.request("tools/list")["result"]["tools"]
-        listed_names = {tool["name"] for tool in listed_tools}
-        assert len(listed_tools) == 11
-        assert listed_names == CORE_TOOL_NAMES
+        assert [tool["name"] for tool in listed_tools] == DEFAULT_TOOL_NAMES
 
         # The importer preserves its source archive and continuity records. A
         # user can then promote selected imported records into the canonical

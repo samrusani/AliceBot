@@ -37,7 +37,7 @@ Corrections are first-class: when a memory is corrected or superseded, future re
 
 ## Quickstart
 
-The fastest path is the packaged runtime from PyPI — Python 3.12+ and nothing else, no Docker, Node, or Postgres. It serves the eleven core MCP tools against a single local SQLite file:
+The fastest path is the packaged runtime from PyPI. Python 3.12+ and nothing else, no Docker, Node, or Postgres. It serves the default three MCP tools against a single local SQLite file:
 
 ```bash
 uvx alice-memory mcp --data-dir ~/.alice
@@ -93,7 +93,7 @@ Or add it from the CLI, which probes the server before saving:
 openclaw mcp add alice --command uvx --arg alice-memory --arg mcp --arg --data-dir --arg ~/.alice
 ```
 
-Confirm with `openclaw mcp probe`, which should report `alice: 11 tools`. OpenClaw
+Confirm with `openclaw mcp probe`, which should report `alice: 3 tools`. OpenClaw
 prefixes MCP tool names with the server name, so `alice_recall` reaches the model as
 `alice__alice_recall`.
 
@@ -112,7 +112,7 @@ Both hosts load `<skill-name>/SKILL.md` and read the frontmatter `description` t
 when the skill applies. A skill grants no tools on its own; it tells an agent how to use
 the ones the MCP server already provides.
 
-SQLite mode is the single-agent path and the one most agents should use: it serves the eleven core tools for one user, and memory review happens through `alice_memory_review` / `alice_memory_correct` instead of the web console. Boundaries are listed in [known limitations](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/known-limitations.md).
+SQLite mode is the single-agent path and the one most agents should use: it serves the default three tools for one user. Capture, the pack, and review are on the full surface (`ALICE_MCP_FULL_TOOLS=1`). Boundaries are listed in [known limitations](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/known-limitations.md).
 
 > **Install note:** the PyPI package is [`alice-memory`](https://pypi.org/project/alice-memory/). The name `alice-core` on PyPI belongs to an unrelated project.
 
@@ -160,23 +160,17 @@ Point any MCP-capable agent or IDE at the Alice server. For the packaged SQLite 
 }
 ```
 
-The core MCP surface is eleven tools:
+The default MCP surface is three tools:
 
-- `alice_capture` — store a source document or raw note. Its passages come back from `alice_recall` and `alice_context_pack` under `sources`, as material to read and quote rather than as facts Alice asserts; the candidate memories it proposes stay unsearchable until a reviewer promotes them. Use it for transcripts, files and pasted material
 - `alice_memory_commit` — **record one fact as durable, immediately recallable memory.** This is the verb for ordinary memory, including when the user has not asked the agent to remember. Policy-checked: committed, confirmation-required, review-required, or rejected
 - `alice_recall` — search memory (full-text plus vector, fused ranking; hard-scopable by thread, task, project, person, time, and memory type). Also returns matching passages from captured documents under `sources`, with an excerpt to read and quote; `results` are facts Alice asserts, `sources` are material the user imported, and the same scope fence applies to both
 - `alice_resume` — resumption brief for a project or thread
-- `alice_context_pack` — project/person/time-scoped context for a task, with a bounded unique-content budget and a complete serialized-size estimate
-- `alice_open_loops` — list and manage open loops
-- `alice_recent_decisions` — recent decision log
-- `alice_memory_review` — inspect items pending review
-- `alice_memory_correct` — propose a correction to an existing memory
-- `alice_memory_manage` — confirm, undo, or forget a committed memory, audit trail intact
-- `alice_explain` — provenance and trust explanation for a memory
+
+The other eight core tools (`alice_capture`, `alice_context_pack`, `alice_open_loops`, `alice_recent_decisions`, `alice_memory_review`, `alice_memory_correct`, `alice_memory_manage`, `alice_explain`) stay defined and become listed and callable when `ALICE_MCP_FULL_TOOLS=1`. Capture stores a source; candidates stay unsearchable as memories. Import is a source. Commit is a fact.
 
 Calling directly from a human client (Claude Desktop, an IDE)? `alice_memory_commit` needs only `title` and `canonical_text` — no identity fields. Agent integrations declare `agent_id` and `agent_type`; see [agent integration](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/agent-integration.md).
 
-The write verbs follow one contract — outcomes, audit guarantees, and honest boundaries per verb are documented in the [Memory Operations Protocol](https://github.com/samrusani/AliceMemory/blob/main/docs/memory-operations-protocol.md). Removed backing services no longer have MCP tools. Retained long-tail memory tools require `ALICE_MCP_LEGACY_TOOLS=1`; exactly `alice_task_brief`, `alice_task_brief_show`, and `alice_task_brief_compare` additionally require `ALICE_LEGACY_SURFACES=1`. All legacy tools require a deliberately keyless local-operator deployment; a server bound with `ALICE_AGENT_API_KEY` exposes only the policy-complete core surface.
+The write verbs follow one contract. Outcomes, audit guarantees, and honest boundaries per verb are documented in the [Memory Operations Protocol](https://github.com/samrusani/AliceMemory/blob/main/docs/memory-operations-protocol.md). Removed backing services no longer have MCP tools. Retained long-tail memory tools require `ALICE_MCP_LEGACY_TOOLS=1` and append to whatever core set is enabled; exactly `alice_task_brief`, `alice_task_brief_show`, and `alice_task_brief_compare` additionally require `ALICE_LEGACY_SURFACES=1`. All legacy tools require a deliberately keyless local-operator deployment; a server bound with `ALICE_AGENT_API_KEY` exposes only the enabled core set.
 
 Custom agents calling the HTTP API authenticate with per-agent API keys. See [agent integration](https://github.com/samrusani/AliceMemory/blob/main/docs/alpha/agent-integration.md).
 

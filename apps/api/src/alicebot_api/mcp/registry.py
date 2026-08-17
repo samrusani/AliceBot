@@ -35,8 +35,10 @@ from alicebot_api.memory_mutations import MemoryMutationValidationError
 from alicebot_api.store import JsonObject
 from alicebot_api.surface_flags import (
     LEGACY_SURFACES_ENV,
+    MCP_FULL_TOOLS_ENV,
     MCP_LEGACY_TOOLS_ENV,
     legacy_surfaces_enabled,
+    mcp_full_tools_enabled,
     mcp_legacy_tools_enabled,
 )
 from alicebot_api.temporal_state import TemporalStateValidationError
@@ -231,6 +233,16 @@ _TOOL_HANDLERS = {
 
 
 _CORE_TOOL_NAMES = frozenset(str(tool["name"]) for tool in _CORE_TOOL_DEFINITIONS)
+
+
+_DEFAULT_CORE_TOOL_ORDER = (
+    "alice_memory_commit",
+    "alice_recall",
+    "alice_resume",
+)
+
+
+_DEFAULT_CORE_TOOL_NAMES = frozenset(_DEFAULT_CORE_TOOL_ORDER)
 
 
 _LEGACY_TOOL_NAMES = frozenset(str(tool["name"]) for tool in _LEGACY_TOOL_DEFINITIONS)
@@ -439,15 +451,29 @@ def _legacy_tools_enabled() -> bool:
     return mcp_legacy_tools_enabled()
 
 
+def _advertised_core_definitions() -> list[dict[str, object]]:
+    if mcp_full_tools_enabled():
+        return list(_CORE_TOOL_DEFINITIONS)
+    by_name = {str(tool["name"]): tool for tool in _CORE_TOOL_DEFINITIONS}
+    return [by_name[name] for name in _DEFAULT_CORE_TOOL_ORDER]
+
+
+def _enabled_core_tool_names() -> frozenset[str]:
+    if mcp_full_tools_enabled():
+        return _CORE_TOOL_NAMES
+    return _DEFAULT_CORE_TOOL_NAMES
+
+
 def _enabled_tool_definitions() -> list[dict[str, object]]:
+    core_definitions = _advertised_core_definitions()
     if _legacy_tools_enabled():
         legacy_definitions = _LEGACY_TOOL_DEFINITIONS
         if not legacy_surfaces_enabled():
             legacy_definitions = [
                 definition for definition in legacy_definitions if str(definition["name"]) not in _TASK_BRIEF_TOOL_NAMES
             ]
-        return [*_CORE_TOOL_DEFINITIONS, *legacy_definitions]
-    return list(_CORE_TOOL_DEFINITIONS)
+        return [*core_definitions, *legacy_definitions]
+    return core_definitions
 
 
 def list_mcp_tools() -> list[dict[str, object]]:
@@ -472,6 +498,11 @@ def call_mcp_tool(
         raise MCPToolNotFoundError(
             f"tool '{name}' is part of the legacy MCP surface and is currently disabled; "
             f"set {MCP_LEGACY_TOOLS_ENV}=1 in the MCP server environment to enable legacy tools"
+        )
+    if name in _CORE_TOOL_NAMES and name not in _enabled_core_tool_names():
+        raise MCPToolNotFoundError(
+            f"tool '{name}' is part of the full MCP surface and is currently disabled; "
+            f"set {MCP_FULL_TOOLS_ENV}=1 in the MCP server environment to enable the full tool set"
         )
     if name in _TASK_BRIEF_TOOL_NAMES and not legacy_surfaces_enabled():
         raise MCPToolNotFoundError(
