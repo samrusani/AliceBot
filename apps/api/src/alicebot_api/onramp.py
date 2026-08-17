@@ -16,6 +16,8 @@ Subcommands:
   the audit trail survive the round trip.
 - ``reindex-embeddings``: rebuild missing or provider/model-incompatible
   vectors in place after an import, upgrade, or embedding-model change.
+- ``brief``: print a labelled session brief (committed facts and imported
+  sources) as markdown on stdout. Host session-start hooks call this.
 - ``--version``: print the package version.
 
 Export/import round-trip contract ("you own the memory"):
@@ -102,7 +104,7 @@ from alicebot_api.vnext_embeddings import (
 DEFAULT_DATA_DIR = "~/.alice"
 DEFAULT_DB_FILENAME = "memory.db"
 DEFAULT_USER_EMAIL = "local@alice"
-_KNOWN_COMMANDS = ("mcp", "export", "import", "reindex-embeddings")
+_KNOWN_COMMANDS = ("mcp", "export", "import", "reindex-embeddings", "brief")
 
 _EXPORT_FORMAT = "alice-memory-jsonl"
 _EXPORT_FORMAT_VERSION = 2
@@ -803,6 +805,20 @@ def build_parser() -> argparse.ArgumentParser:
             f"{MAX_EMBEDDINGS_BATCH_SIZE}."
         ),
     )
+
+    brief_parser = subparsers.add_parser(
+        "brief",
+        help="Print a labelled session brief from the local SQLite vault.",
+    )
+    _add_database_arguments(brief_parser)
+    brief_parser.add_argument(
+        "--query",
+        default=None,
+        help=(
+            "Optional excerpt query. When omitted, the brief derives one from "
+            "a recent committed fact, open loop, or imported source."
+        ),
+    )
     return parser
 
 
@@ -837,6 +853,25 @@ def _run_mcp(args: argparse.Namespace) -> int:
         output_stream=sys.stdout.buffer,
     )
     return server.run()
+
+
+def _run_brief(args: argparse.Namespace) -> int:
+    from alicebot_api.session_briefing import compile_local_session_brief
+
+    db_path = resolve_db_path(data_dir=args.data_dir, db=args.db)
+    bootstrap_database(
+        db_path,
+        user_id=args.user_id,
+        user_email=args.user_email,
+        secure_parent=args.db is None,
+    )
+    markdown = compile_local_session_brief(
+        db_path,
+        user_id=args.user_id,
+        query=args.query,
+    )
+    print(markdown)
+    return 0
 
 
 # --- export ---------------------------------------------------------------------
@@ -1996,6 +2031,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_import(args)
         if args.command == "reindex-embeddings":
             return _run_reindex_embeddings(args)
+        if args.command == "brief":
+            return _run_brief(args)
         return _run_mcp(args)
     except Exception as exc:  # pragma: no cover - boundary fail-closed backstop
         logger.debug(

@@ -73,7 +73,13 @@ def smoke_artifact(artifact: Path, *, expected_version: str) -> None:
             timeout_seconds=300,
         )
 
-        for entrypoint in ("alice", "alicebot", "alice-memory", "alicebot-mcp"):
+        for entrypoint in (
+            "alice",
+            "alicebot",
+            "alice-memory",
+            "alice-memory-session-start",
+            "alicebot-mcp",
+        ):
             _run([str(bin_dir / entrypoint), "--help"], cwd=temp_dir, env=env)
         for entrypoint, prefix in (
             ("alice", "alicebot"),

@@ -274,6 +274,7 @@ def test_cli_module_execution_and_project_entrypoints_are_unchanged() -> None:
     assert project["project"]["scripts"] == {
         "alice": "alicebot_api.cli:main",
         "alice-memory": "alicebot_api.onramp:main",
+        "alice-memory-session-start": "alicebot_api.session_start_hook:main",
         "alicebot": "alicebot_api.cli:main",
         "alicebot-mcp": "alicebot_api.mcp_server:main",
     }
