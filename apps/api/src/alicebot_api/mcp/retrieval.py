@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
+from typing import Protocol
 from alicebot_api.continuity_brief import compile_continuity_brief
 from alicebot_api.continuity_recall import (
     get_retrieval_trace,
@@ -68,7 +69,9 @@ from .retrieval_shared import (
     _memory_matches_project,
     _memory_matches_query,
     _provenance_count,
+    _resource_matches_domains,
     _resource_matches_project_scope,
+    _resource_matches_sensitivity,
     _row_in_window,
     _utc_now_iso_text,
 )
@@ -373,12 +376,18 @@ def _handle_alice_resume(context: MCPRuntimeContext, arguments: Mapping[str, obj
         context,
         arguments,
         action="context_pack.request",
-        project_scope=(requested_project,) if requested_project else (),
+        domains=_parse_string_list(arguments, "domains"),
+        sensitivity_allowed=_parse_string_list(arguments, "sensitivity_allowed")
+        or ("public", "internal", "private", "unknown"),
+        project_scope=_parse_string_list(arguments, "project_scope")
+        or ((requested_project,) if requested_project else ()),
     )
     return _vnext_resume(
         context,
         arguments,
         effective_project_scope=decision.effective_project_scope,
+        effective_domains=decision.effective_domains,
+        effective_sensitivity_allowed=decision.effective_sensitivity_allowed,
     )
 
 
@@ -606,26 +615,68 @@ def _handle_alice_open_loops(context: MCPRuntimeContext, arguments: Mapping[str,
     return _json_object({"action": action, "open_loop": loop})
 
 
+class _ResumeEventTargetStore(Protocol):
+    def get_memory(self, memory_id: str) -> Mapping[str, object] | None: ...
+
+    def get_open_loop(self, loop_id: str) -> Mapping[str, object] | None: ...
+
+
+def _resume_event_honours_policy_fence(
+    store: _ResumeEventTargetStore,
+    event: Mapping[str, object],
+    *,
+    effective_domains: tuple[str, ...],
+    effective_sensitivity_allowed: tuple[str, ...],
+) -> bool:
+    target_type = event.get("target_type")
+    target_id = event.get("target_id")
+    if not isinstance(target_id, str) or target_id == "":
+        return False
+    row = None
+    if target_type == "memory":
+        row = store.get_memory(target_id)
+    elif target_type == "open_loop":
+        row = store.get_open_loop(target_id)
+    if not isinstance(row, Mapping):
+        return False
+    return _resource_matches_domains(row, effective_domains) and _resource_matches_sensitivity(
+        row, effective_sensitivity_allowed
+    )
+
+
 def _vnext_recent_decisions(
     context: MCPRuntimeContext,
     *,
     arguments: Mapping[str, object],
     limit: int,
-    effective_project_scope: tuple[str, ...] = (),
+    effective_project_scope: tuple[str, ...],
+    effective_domains: tuple[str, ...],
+    effective_sensitivity_allowed: tuple[str, ...],
 ) -> JsonObject:
     query = _parse_optional_text(arguments, "query")
     project = _parse_optional_text(arguments, "project")
     since = _parse_optional_datetime(arguments, "since")
     until = _parse_optional_datetime(arguments, "until")
     filters_ignored = [key for key in ("thread_id", "task_id", "person") if arguments.get(key) not in (None, "")]
+    domain_filter = list(effective_domains) if effective_domains else None
+    sensitivity_filter = list(effective_sensitivity_allowed)
 
     with _vnext_store_context(context) as store:
         matched = [
             row
-            for row in store.list_memories()
-            if row.get("memory_type") == "decision"
-            and str(row.get("status")) in _SQLITE_REVIEWABLE_STATUSES
-            and _resource_matches_project_scope(row, effective_project_scope)
+            for row in store.list_memories(
+                status=None,
+                statuses=tuple(_SQLITE_REVIEWABLE_STATUSES),
+                memory_types=("decision",),
+                domains=domain_filter,
+                sensitivity_allowed=sensitivity_filter,
+                projects=effective_project_scope or None,
+                created_at_start=since,
+                created_at_end=until,
+                query=query,
+                order_by_created_at=True,
+            )
+            if _resource_matches_project_scope(row, effective_project_scope)
             and _memory_matches_query(row, query)
             and _memory_matches_project(row, project)
             and _row_in_window(row, key="created_at", since=since, until=until)
@@ -650,7 +701,9 @@ def _vnext_resume(
     context: MCPRuntimeContext,
     arguments: Mapping[str, object],
     *,
-    effective_project_scope: tuple[str, ...] = (),
+    effective_project_scope: tuple[str, ...],
+    effective_domains: tuple[str, ...],
+    effective_sensitivity_allowed: tuple[str, ...],
 ) -> JsonObject:
     max_recent_changes = _parse_int(
         arguments,
@@ -675,11 +728,16 @@ def _vnext_resume(
         if arguments.get(key) not in (None, "", False)
     ]
 
+    domain_filter = list(effective_domains) if effective_domains else None
+    sensitivity_filter = list(effective_sensitivity_allowed)
+
     with _vnext_store_context(context) as store:
         decisions = store.list_memories(
             status=None,
             statuses=tuple(_SQLITE_REVIEWABLE_STATUSES),
             memory_types=("decision",),
+            domains=domain_filter,
+            sensitivity_allowed=sensitivity_filter,
             projects=effective_project_scope or None,
             created_at_start=since,
             created_at_end=until,
@@ -698,15 +756,23 @@ def _vnext_resume(
 
         loop_rows = []
         if max_open_loops > 0:
-            loop_rows = store.list_open_loops(
-                status=None,
-                statuses=tuple(_SQLITE_OPEN_LOOP_ACTIVE_STATUSES),
-                query=query,
-                limit=max_open_loops,
-                scope_projects=effective_project_scope,
-                scope_window_start=since,
-                scope_window_end=until,
-            )
+            # list_open_loops already accepts domains and sensitivity_allowed.
+            # Apply the decision here. An empty sensitivity list is deny-all;
+            # passing it through would build `sensitivity IN ()` on SQLite.
+            if not effective_sensitivity_allowed:
+                loop_rows = []
+            else:
+                loop_rows = store.list_open_loops(
+                    status=None,
+                    statuses=tuple(_SQLITE_OPEN_LOOP_ACTIVE_STATUSES),
+                    query=query,
+                    domains=domain_filter,
+                    sensitivity_allowed=sensitivity_filter,
+                    limit=max_open_loops,
+                    scope_projects=effective_project_scope,
+                    scope_window_start=since,
+                    scope_window_end=until,
+                )
         open_loops = [_compact_vnext_open_loop(row) for row in loop_rows[:max_open_loops]]
 
         next_action: JsonObject | None = open_loops[0] if open_loops else None
@@ -715,6 +781,8 @@ def _vnext_resume(
                 status=None,
                 statuses=tuple(_SQLITE_REVIEWABLE_STATUSES),
                 memory_types=tuple(_SQLITE_NEXT_ACTION_MEMORY_TYPES),
+                domains=domain_filter,
+                sensitivity_allowed=sensitivity_filter,
                 projects=effective_project_scope or None,
                 created_at_start=since,
                 created_at_end=until,
@@ -733,50 +801,59 @@ def _vnext_resume(
 
         recent_changes: list[JsonObject] = []
         if max_recent_changes > 0:
-            if not effective_project_scope and query is None:
-                event_rows = store.list_events(
-                    occurred_at_start=since,
-                    occurred_at_end=until,
-                    limit=max_recent_changes,
+            # list_events cannot honour domain or sensitivity, so this path
+            # never uses that unscoped shortcut. A required sensitivity tuple
+            # is always a fence. Event rows do not carry authoritative
+            # project, domain, or sensitivity: query admitted memory targets
+            # and join loop events to authoritative loop scope before LIMIT.
+            # The loop join deliberately has no opened-at bound: an older
+            # active loop can have a newer event inside the requested event
+            # window. list_resume_memory_events and list_open_loop_events
+            # still omit domain/sensitivity, so targets outside those fences
+            # are dropped after the join. Events that are not a memory or
+            # open_loop target are dropped; they are not claimed as fenced.
+            event_rows = []
+            seen_event_ids: set[str] = set()
+            for event in store.list_resume_memory_events(
+                statuses=tuple(_SQLITE_REVIEWABLE_STATUSES),
+                projects=effective_project_scope,
+                query=query,
+                occurred_at_start=since,
+                occurred_at_end=until,
+                limit=max_recent_changes,
+            ):
+                event_id = str(event.get("id") or "")
+                if event_id:
+                    seen_event_ids.add(event_id)
+                event_rows.append(event)
+            for event in store.list_open_loop_events(
+                statuses=tuple(_SQLITE_OPEN_LOOP_ACTIVE_STATUSES),
+                scope_projects=effective_project_scope,
+                query=query,
+                occurred_at_start=since,
+                occurred_at_end=until,
+                limit=max_recent_changes,
+            ):
+                event_id = str(event.get("id") or "")
+                if event_id and event_id in seen_event_ids:
+                    continue
+                if event_id:
+                    seen_event_ids.add(event_id)
+                event_rows.append(event)
+            event_rows = [
+                event
+                for event in event_rows
+                if _resume_event_honours_policy_fence(
+                    store,
+                    event,
+                    effective_domains=effective_domains,
+                    effective_sensitivity_allowed=effective_sensitivity_allowed,
                 )
-            else:
-                # Event rows do not carry authoritative project scope. Query
-                # admitted memory targets and join loop events to authoritative
-                # loop scope before LIMIT. The loop join deliberately has no
-                # opened-at bound: an older active loop can have a newer event
-                # inside the requested event window.
-                event_rows = []
-                seen_event_ids: set[str] = set()
-                for event in store.list_resume_memory_events(
-                    statuses=tuple(_SQLITE_REVIEWABLE_STATUSES),
-                    projects=effective_project_scope,
-                    query=query,
-                    occurred_at_start=since,
-                    occurred_at_end=until,
-                    limit=max_recent_changes,
-                ):
-                    event_id = str(event.get("id") or "")
-                    if event_id:
-                        seen_event_ids.add(event_id)
-                    event_rows.append(event)
-                for event in store.list_open_loop_events(
-                    statuses=tuple(_SQLITE_OPEN_LOOP_ACTIVE_STATUSES),
-                    scope_projects=effective_project_scope,
-                    query=query,
-                    occurred_at_start=since,
-                    occurred_at_end=until,
-                    limit=max_recent_changes,
-                ):
-                    event_id = str(event.get("id") or "")
-                    if event_id and event_id in seen_event_ids:
-                        continue
-                    if event_id:
-                        seen_event_ids.add(event_id)
-                    event_rows.append(event)
-                event_rows.sort(
-                    key=lambda row: (str(row.get("occurred_at") or ""), str(row.get("id") or "")),
-                    reverse=True,
-                )
+            ]
+            event_rows.sort(
+                key=lambda row: (str(row.get("occurred_at") or ""), str(row.get("id") or "")),
+                reverse=True,
+            )
             recent_changes = [_compact_vnext_event(row) for row in event_rows[:max_recent_changes]]
 
     return _json_object(
@@ -802,8 +879,6 @@ def _handle_alice_recent_decisions(context: MCPRuntimeContext, arguments: Mappin
         minimum=1,
         maximum=MAX_CONTINUITY_RECALL_LIMIT,
     )
-    identity = _agent_identity_from_arguments(context, arguments)
-    requested_project = _parse_optional_text(arguments, "project")
     decision = _mcp_agent_policy_preflight(
         context,
         arguments,
@@ -811,16 +886,18 @@ def _handle_alice_recent_decisions(context: MCPRuntimeContext, arguments: Mappin
         domains=_parse_string_list(arguments, "domains"),
         sensitivity_allowed=_parse_string_list(arguments, "sensitivity_allowed")
         or ("public", "internal", "private", "unknown"),
-        project_scope=_parse_string_list(arguments, "project_scope")
-        or ((requested_project,) if requested_project else ()),
+        # `project` stays a loose row filter (_memory_matches_project can
+        # match domain). Policy project scope is the explicit project_scope
+        # argument plus whatever the identity already carries.
+        project_scope=_parse_string_list(arguments, "project_scope"),
     )
     return _vnext_recent_decisions(
         context,
         arguments=arguments,
         limit=limit,
-        effective_project_scope=(
-            decision.effective_project_scope if identity is not None and identity.project_scope else ()
-        ),
+        effective_project_scope=decision.effective_project_scope,
+        effective_domains=decision.effective_domains,
+        effective_sensitivity_allowed=decision.effective_sensitivity_allowed,
     )
 
 

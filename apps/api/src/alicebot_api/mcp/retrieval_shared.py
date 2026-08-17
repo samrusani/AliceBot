@@ -155,3 +155,25 @@ def _resource_matches_project_scope(resource: Mapping[str, object], project_scop
     if not project_scope:
         return True
     return project_scopes_overlap(resource_project_scope(resource), project_scope)
+
+
+def _resource_matches_domains(resource: Mapping[str, object], domains: tuple[str, ...]) -> bool:
+    """Same admit rule as sqlite list_memories: empty is unscoped; unknown stays visible."""
+
+    if not domains:
+        return True
+    domain = resource.get("domain")
+    return domain in domains or domain == "unknown"
+
+
+def _resource_matches_sensitivity(
+    resource: Mapping[str, object],
+    sensitivity_allowed: tuple[str, ...] | None,
+) -> bool:
+    """Same admit rule as sqlite list_memories. None is unscoped; empty admits nothing."""
+
+    if sensitivity_allowed is None:
+        return True
+    if not sensitivity_allowed:
+        return False
+    return (resource.get("sensitivity") or "unknown") in sensitivity_allowed
