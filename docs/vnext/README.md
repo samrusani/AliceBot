@@ -84,3 +84,5 @@ promotion of generated artifacts into trusted memory.
 
 `v0.15.6` is the latest published release and remains the install, checksum,
 and baseline reference.
+
+`v0.15.7` is the current release candidate. It is not published.

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## v0.15.7 — 2026-08-17
+
+- `alice_resume` and `alice_recent_decisions` now apply the policy fence they
+  already computed. Both helpers took a full policy decision and then used
+  only the project part, or less, so a public-only caller, and a request that
+  narrowed `project_scope` without a bound identity, still received a private
+  other-project decision. The three effective scopes are required kwargs with
+  no default. Resume no longer uses the unscoped `list_events` shortcut; it
+  joins through the scoped memory and open-loop helpers and drops a target
+  that fails the fence. Events that are not a memory or an open loop no
+  longer appear in `recent_changes`. That is deliberate.
+
+  Left alone on purpose, same class, not default tools:
+  `alice_recent_changes` still discards the preflight decision,
+  `alice_resume_debug` has no preflight,
+  `alice_vnext_recent_memory_commits` and `alice_project_dashboard` have the
+  same gap.
+
 - The source excerpt now always contains the line it was selected for. Window
   growth was bidirectional but truncation was head-anchored, so whenever the
   best-matching line sat near the end of a chunk the excerpt kept the padding
@@ -94,10 +112,11 @@
   `store_chunks`, is unchanged and reads every chunk directly from the store,
   which is how 81.2% and every prior published number was produced and which no
   MCP tool ever offered. `pack_excerpts` uses only what the context pack
-  returns, which is what an agent receives. Measured on 12 real questions with
-  retrieval only, the product path ranks identical sources and retains 87% of
-  the excerpts and 77.6% of the context. What that costs in accuracy is
-  unmeasured, and no claim should assume it is nothing.
+  returns, which is what an agent receives. The #380 pull request recorded a
+  retrieval-only comparison on 12 real questions: identical ranked sources,
+  87% of the excerpts and 77.6% of the context retained. That comparison is
+  not a committed eval artifact. What it costs in accuracy is unmeasured, and
+  no claim should assume it is nothing.
 
 - An oversized paragraph now splits on its own lines before falling back to
   words. `_split_large_part` only sees paragraphs that alone exceed the chunk
@@ -115,6 +134,11 @@
   Prose, the LongMemEval speaker-turn shape, the v0.15.6 heading rule, and the
   character-level split for a token longer than the budget are all unchanged.
   Already-captured content is not re-chunked.
+
+If you imported on `v0.15.6`, upgrade is enough for readability; excerpts
+are a read-path change. If you imported on `v0.15.5` or earlier, delete
+those candidates and import again. Re-capture only if you need the new
+list-splitting boundaries. There is no re-chunk migration.
 
 ## v0.15.5 — 2026-08-16
 

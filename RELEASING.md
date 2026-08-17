@@ -89,12 +89,13 @@ readback:
    `ALICE_RELEASE_EMBEDDINGS_BASE_URL` as an environment secret,
    `ALICE_RELEASE_EMBEDDINGS_MODEL` as an environment variable, and (when the
    provider requires it) `ALICE_RELEASE_EMBEDDINGS_API_KEY` as an environment
-   secret. Dispatch `semantic-release-gate.yml` on the exact candidate SHA.
-   The workflow uploads a credential-free report and attestation named with
-   that SHA. Publication fails closed unless it can resolve a successful gate
-   run, download that exact artifact, and validate its source SHA, report
-   digest, passing suite set, Postgres backend, and positive signed-vector
-   candidate count.
+   secret. Dispatch `semantic-release-gate.yml` on the exact SHA you will
+   tag. That SHA is `origin/main` after the release pull request has merged,
+   not the release-branch tip. The workflow uploads a credential-free report
+   and attestation named with that SHA. Publication fails closed unless it
+   can resolve a successful gate run, download that exact artifact, and
+   validate its source SHA, report digest, passing suite set, Postgres
+   backend, and positive signed-vector candidate count.
 
 Use this exact closed shape for the repository variable, replacing every
 placeholder with the release-specific value. `verified_at` must not be in the
@@ -271,6 +272,26 @@ release attestation.
 CI must pass on the exact candidate SHA. Do not treat a green parent commit,
 branch name, or locally rebuilt artifact as equivalent evidence.
 
+## Semantic eval attestation: one dispatch on the SHA you will tag
+
+`publish-pypi.yml` requires the check `Semantic eval attestation (exact SHA)`
+on the release commit. That check is not a pull-request check.
+`scripts/check_github_release_checks.py` records that it is dispatched
+against the accepted exact SHA after merge.
+
+This repository merges with a merge commit. A gate run on the
+release-branch tip does not attach to the tagged SHA, so it cannot
+satisfy publish.
+
+Dispatch `semantic-release-gate.yml` once from `main` after the release
+pull request is merged, on that merge SHA, then create the annotated tag
+on the same SHA. A second dispatch from the tag is only required if the
+first run was not already on that SHA.
+
+A rehearsal dispatch from the release branch, before merge, is useful
+when the workflow file itself changed. That is the `v0.15.0` failure:
+the workflow at the tag had never executed. It is not a publish input.
+
 ## Tag And Publish
 
 Before the finalization commit, move the candidate entries out of `Unreleased`
@@ -306,7 +327,9 @@ verified:
    `ALICE_RELEASE_CONTROLS_ATTESTATION` for that repository, tag, and SHA with
    fresh `verified_at` and `expires_at` values.
 6. Confirm the protected semantic gate succeeded on that exact SHA and inspect
-   its credential-free report and attestation artifact.
+   its credential-free report and attestation artifact. If the only green
+   gate run is on a different SHA (the release-branch tip, or a parent),
+   dispatch again on this SHA. Do not publish on a parent-SHA attestation.
 7. Confirm no stable GitHub Release exists for the tag. Any existing release
    must be the recoverable draft left by an earlier attempt. Then dispatch the
    transactional workflow from the tag itself:
@@ -407,3 +430,5 @@ macOS with `shasum -a 256 -c SHA256SUMS`.
 
 `v0.15.6` is the latest published release and remains the install, checksum,
 and baseline reference.
+
+`v0.15.7` is the current release candidate. It is not published.

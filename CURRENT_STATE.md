@@ -161,6 +161,28 @@ Introduced in `v0.12.0`, so it survived every release between.
 Re-import notes on `v0.15.6`. Candidates extracted earlier came from flattened
 text and should be deleted rather than approved.
 
+## What `v0.15.7` Targets
+
+`v0.15.7` is the current release candidate. It is not published.
+
+It takes the three changes already on `main` and not on PyPI. Imported
+documents become readable as sources: `alice_context_pack` and
+`alice_recall` return excerpts labelled
+`excerpt_kind: imported_source_material`. Candidates stay unsearchable
+as memories. `count=0` after capture is still the design.
+
+An oversized paragraph splits on its own lines before falling back to
+words, so a long list is not stored as flattened word-count slices.
+Already-captured content is not re-chunked.
+
+`alice_resume` and `alice_recent_decisions` apply the policy fence they
+already computed. Four other read paths of the same class are left
+alone and are not default tools.
+
+If you imported on `v0.15.6`, upgrade is enough for readability. If you
+imported on `v0.15.5` or earlier, delete those candidates and import
+again.
+
 ## The `v0.15.0` tag was never published
 
 The commit it points at carried a release-gate step that could not run on a CI
