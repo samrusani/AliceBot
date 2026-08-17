@@ -178,15 +178,83 @@ def test_scope_is_a_required_argument_so_it_cannot_be_forgotten(tmp_path: Path) 
     assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
 
 
-class _RecordingService:
-    """Captures what the handler forwarded, without a store."""
+def test_search_source_excerpts_exposes_no_untested_surface() -> None:
+    """A parameter nothing passes is a feature nobody tested.
 
-    def __init__(self) -> None:
-        self.scope = "not called"
+    An ``anchor`` argument was added here for symmetry with the pack and no
+    caller ever passed it. It read as supported and was not. Recall's
+    ``since``/``until`` become part of ``scope``, which fences; a temporal
+    anchor is a rank boost and belongs to the pack's own sequence.
+    """
 
-    def search_source_excerpts(self, **kwargs):
-        self.scope = kwargs.get("scope")
-        return [], {}
+    import inspect
+
+    from alicebot_api.vnext_retrieval import VNextRetrievalService
+
+    parameters = set(inspect.signature(VNextRetrievalService.search_source_excerpts).parameters)
+
+    assert parameters == {
+        "self",
+        "query",
+        "domains",
+        "sensitivity_allowed",
+        "limit",
+        "scope",
+        "winning_memories",
+    }, f"unexpected surface on search_source_excerpts: {sorted(parameters)}"
+
+
+def test_a_reused_service_does_not_leak_one_querys_excerpt_into_the_next(
+    tmp_path: Path,
+) -> None:
+    """`_winning_chunk_text` is per-instance state, and that is a latent hazard.
+
+    It is written by `_source_stage_lists` and read later by `_packable_source`.
+    Both current call orders reset it first, and services are built per request,
+    so no stale winner is reachable today. This pins that, because the day
+    someone caches a service the failure would be a quotation attributed to the
+    wrong query, which is the least detectable kind of wrong answer.
+    """
+
+    context = _context(tmp_path)
+    _seed(context)
+
+    from alicebot_api.onramp import resolve_db_path
+    from alicebot_api.sqlite_store import SQLiteVNextStore, sqlite_user_connection
+    from alicebot_api.vnext_retrieval import VNextRetrievalService
+
+    planted = "POISON: text from a query that is not this one."
+
+    database = resolve_db_path(data_dir=str(tmp_path), db=None)
+    with sqlite_user_connection(database, USER_ID) as connection:
+        service = VNextRetrievalService(SQLiteVNextStore(connection, USER_ID))
+
+        # Learn the real source ids, then poison the winner map for all of them.
+        baseline, _ = service.search_source_excerpts(
+            query="weekly deployment",
+            domains=[],
+            sensitivity_allowed=["public", "private", "internal", "unknown"],
+            limit=10,
+            scope=None,
+        )
+        assert baseline, "the fixture retrieved nothing, so nothing below is tested"
+        for source in baseline:
+            service._winning_chunk_text[str(source.get("id"))] = planted
+
+        after, _ = service.search_source_excerpts(
+            query="weekly deployment",
+            domains=[],
+            sensitivity_allowed=["public", "private", "internal", "unknown"],
+            limit=10,
+            scope=None,
+        )
+
+    leaked = [source for source in after if planted in (source.get("excerpt") or "")]
+    assert not leaked, (
+        f"{len(leaked)} excerpt(s) carried text planted before the call. The "
+        "per-compile reset of _winning_chunk_text is gone, so an excerpt can be "
+        "attributed to the wrong query."
+    )
 
 
 def test_the_fence_is_read_after_policy_not_from_raw_arguments() -> None:

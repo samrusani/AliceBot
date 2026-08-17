@@ -2689,7 +2689,6 @@ class VNextRetrievalService:
         limit: int,
         scope: _ResolvedRetrievalScope | None,
         winning_memories: Sequence[JsonObject] = (),
-        anchor: TemporalAnchor | None = None,
     ) -> tuple[list[JsonObject], JsonObject]:
         """Ranked imported source material for a query, with readable excerpts.
 
@@ -2720,6 +2719,13 @@ class VNextRetrievalService:
         was never true. Saying so plainly matters, because it is the reason both
         paths have to be fenced and tested separately: they share the stage
         builder and the compaction, not the call sequence.
+
+        No ``anchor`` parameter, on purpose. One was added here for symmetry
+        with the pack and no caller ever passed it, which is untested surface
+        that reads as a supported feature. Recall's ``since``/``until`` become
+        part of ``scope``, which fences; a temporal anchor is a rank boost and
+        is the pack's own concern. Add it back when something needs it, with a
+        test.
         """
 
         source_lists, stage_record = self._source_stage_lists(
@@ -2729,7 +2735,6 @@ class VNextRetrievalService:
             limit=limit,
             winning_memories=winning_memories,
             scope=scope,
-            anchor=anchor,
         )
         candidates = _fused_candidates(
             source_lists,
