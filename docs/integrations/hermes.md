@@ -93,7 +93,7 @@ mode with `ALICE_AGENT_API_KEY`. The core review path is:
 
 - `alice_recall` (core) for ranked facts only
 - `alice_resume` (core) for a structured resumption brief
-- `alice_memory_review` and `alice_memory_correct` (core) for explicit review and correction
+- `alice_memory_review` and `alice_memory_correct` (core, `ALICE_MCP_FULL_TOOLS=1`) for explicit review and correction
 
 ## Provider Guidance
 

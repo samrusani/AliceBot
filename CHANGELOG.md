@@ -27,7 +27,9 @@
   core tools raise `MCPToolNotFoundError` and name that flag. Legacy
   still appends to whatever core set is enabled; a key-bound server still
   hides and rejects the long tail. Tool JSON schemas are unchanged.
-  Import is a source. Commit is a fact.
+  Import is a source. Commit is a fact. Hermes snippets that include a
+  full-surface core tool now set `ALICE_MCP_FULL_TOOLS=1` in the same env
+  map.
 
 ## v0.15.7 — 2026-08-17
 
