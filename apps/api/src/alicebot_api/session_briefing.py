@@ -392,7 +392,8 @@ def _resolve_excerpt_query(
         text = _loop_text(row)
         if _is_useful_query(text):
             return text
-    for event in store.list_events(target_type="source", limit=SOURCE_LIMIT):
+    fenced = 0
+    for event in store.list_events(target_type="source"):
         target_id = event.get("target_id")
         if not isinstance(target_id, str) or target_id == "":
             continue
@@ -407,6 +408,9 @@ def _resolve_excerpt_query(
         hint = _source_query_hint(store, source)
         if hint is not None and _is_useful_query(hint):
             return hint
+        fenced += 1
+        if fenced >= SOURCE_LIMIT:
+            break
     return None
 
 

@@ -6,8 +6,10 @@ this process. Stdout is JSON with ``additional_context`` (Cursor) and
 run the same command with ``--format markdown``, or call
 ``alice-memory brief`` and read the markdown on stdout.
 
-Fail open: any error writes ``{}`` and exits 0. Never failClosed. Never
-print MCP protocol on stdout.
+Fail open: JSON writes ``{}`` and exits 0. After ``--format markdown``
+is known, fail-open is a single blank line and exit 0. If argparse
+fails before format is known, ``{}`` is still correct for the default
+JSON host. Never failClosed. Never print MCP protocol on stdout.
 """
 
 from __future__ import annotations
@@ -24,7 +26,11 @@ DEFAULT_DATA_DIR = "~/.alice"
 _BRIEF_TIMEOUT_SECONDS = 30
 
 
-def _fail_open() -> None:
+def _fail_open(output_format: str | None = None) -> None:
+    if output_format == "markdown":
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        return
     sys.stdout.write("{}\n")
     sys.stdout.flush()
 
@@ -52,24 +58,29 @@ def _looks_like_mcp(text: str) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw = sys.argv[1:] if argv is None else argv
+    output_format: str | None = None
     try:
-        return _run(sys.argv[1:] if argv is None else argv)
+        args = _parse_args(raw)
+        output_format = args.format
+        return _run(args)
     except SystemExit as exc:
         if exc.code in (0, None):
             raise
-        _fail_open()
+        _fail_open(output_format)
         return 0
     except Exception:
-        _fail_open()
+        _fail_open(output_format)
         return 0
 
 
-def _run(argv: list[str]) -> int:
+def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="alice-memory-session-start",
         description=(
             "Read a host session-start payload on stdin and print a session "
-            "brief for injection. Failures write {} and exit 0."
+            "brief for injection. JSON failures write {} and exit 0. "
+            "Markdown failures write a blank line and exit 0."
         ),
     )
     parser.add_argument(
@@ -86,7 +97,10 @@ def _run(argv: list[str]) -> int:
         default="json",
         help="json for Cursor/Claude Code; markdown for hosts that want the brief text.",
     )
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
+
+
+def _run(args: argparse.Namespace) -> int:
     try:
         sys.stdin.read()
     except Exception:
@@ -95,7 +109,7 @@ def _run(argv: list[str]) -> int:
     data_dir = args.data_dir or os.environ.get(ALICE_MEMORY_DATA_DIR_ENV) or DEFAULT_DATA_DIR
     command = shutil.which("alice-memory")
     if command is None:
-        _fail_open()
+        _fail_open(args.format)
         return 0
     completed = subprocess.run(
         [command, "brief", "--data-dir", data_dir],
@@ -106,7 +120,7 @@ def _run(argv: list[str]) -> int:
         stdin=subprocess.DEVNULL,
     )
     if completed.returncode != 0 or _looks_like_mcp(completed.stdout):
-        _fail_open()
+        _fail_open(args.format)
         return 0
     _emit_context(completed.stdout.rstrip("\n"), output_format=args.format)
     return 0

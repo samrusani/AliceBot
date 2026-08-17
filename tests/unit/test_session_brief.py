@@ -17,6 +17,7 @@ from alicebot_api.mcp_tools import AGENT_API_KEY_ENV, MCPRuntimeContext
 from alicebot_api.onramp import bootstrap_database, main as onramp_main, resolve_db_path, sqlite_url_for_path
 from alicebot_api.session_briefing import (
     EMPTY_SESSION_BRIEF,
+    SOURCE_LIMIT,
     compile_session_brief,
     source_scope_from_project_scope,
 )
@@ -40,6 +41,8 @@ ALLOWED_TEXT = "We will ship the public acme launch checklist on Thursday."
 RESTRICTED_TEXT = "The other-project salary band stays private and must not leak."
 ALLOWED_SOURCE = "Public acme launch record: ship the checklist on Thursday."
 RESTRICTED_SOURCE = "Private other-project salary record: the band stays private and must not leak."
+NO_QUERY_ACME_SENTENCE = "The acme-brief-canary-91 stays on the launch pad."
+NO_QUERY_SALARY_TEXT = "The other-project salary band stays private and must not leak."
 SHARED_SOURCE_QUERY = "record"
 
 FORBIDDEN_EMPTY_WORDS = ("review", "candidate", "queue", "console")
@@ -197,10 +200,10 @@ def test_empty_store_is_one_quiet_line(tmp_path: Path, monkeypatch) -> None:
 def test_a_narrowed_brief_cannot_see_the_salary_row(tmp_path: Path, monkeypatch) -> None:
     """D7 fixture: public acme vs private other-project salary.
 
-    The failing edit is: omit ``effective_project_scope`` or
-    ``effective_sensitivity_allowed`` on the ``search_source_excerpts``
-    call, or stop passing it to ``list_memories``. Either one puts the
-    salary line back into a narrowed brief as fact or as source.
+    The failing edit is: call ``search_source_excerpts(..., scope=None)``.
+    That puts the salary source back into a project-locked brief.
+    Omitting ``effective_project_scope`` on ``list_memories`` does not:
+    ``_memory_honours_fence`` still drops the salary fact.
 
     The unscoped compile below is the vacuous-test guard. If it stops
     seeing the salary line, the scoped asserts prove nothing.
@@ -263,6 +266,44 @@ def test_a_narrowed_brief_cannot_see_the_salary_row(tmp_path: Path, monkeypatch)
     assert RESTRICTED_SOURCE not in public_only
     assert ALLOWED_TEXT in public_only
     assert ALLOWED_SOURCE in public_only
+
+
+def test_a_no_query_brief_still_sees_an_older_in_fence_source(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Eight newer other-project sources must not hide an older acme source.
+
+    Fails if ``_resolve_excerpt_query`` puts ``limit=SOURCE_LIMIT`` back
+    on the unfenced ``list_events`` call. Those eight salary events fill
+    the newest-first window and the acme source is never seen, so
+    ``query=None`` returns Nothing stored yet.
+    """
+
+    context = _context(tmp_path, monkeypatch)
+    _capture(
+        context,
+        NO_QUERY_ACME_SENTENCE,
+        title="Acme no-query canary",
+        domain="project",
+        sensitivity="public",
+        project_scope=["acme"],
+    )
+    for index in range(SOURCE_LIMIT):
+        _capture(
+            context,
+            f"{NO_QUERY_SALARY_TEXT} #{index}",
+            title=f"Other salary record {index}",
+            domain="personal",
+            sensitivity="private",
+            project_scope=["other"],
+        )
+
+    brief = _compile(tmp_path, query=None, effective_project_scope=("acme",))
+    assert brief != EMPTY_SESSION_BRIEF
+    assert any(
+        NO_QUERY_ACME_SENTENCE in line for line in _labelled_lines(brief, "source")
+    ), brief
+    assert NO_QUERY_SALARY_TEXT not in brief
 
 
 def test_excerpt_call_writes_scope_at_the_call_site(tmp_path: Path, monkeypatch) -> None:
@@ -455,6 +496,44 @@ def test_hook_fails_open_when_brief_fails(tmp_path: Path) -> None:
     )
     assert completed.returncode == 0
     assert completed.stdout.strip() == "{}"
+    assert "Traceback" not in completed.stdout
+
+
+def test_hook_fails_open_markdown_without_json(tmp_path: Path) -> None:
+    """Markdown fail-open must not print JSON.
+
+    Fails if ``_fail_open`` always writes ``{}`` after ``--format
+    markdown`` is known.
+    """
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "alice-memory"
+    fake.write_text(
+        "#!/bin/sh\necho 'Traceback (most recent call last):' >&1\nexit 1\n",
+        encoding="utf-8",
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    env = _onramp_env()
+    env["PATH"] = f"{bindir}{os.pathsep}{env.get('PATH', '')}"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alicebot_api.session_start_hook",
+            "--format",
+            "markdown",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        input="{}",
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0
+    assert "{" not in completed.stdout
     assert "Traceback" not in completed.stdout
 
 

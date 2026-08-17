@@ -21,8 +21,11 @@ prints JSON:
 `hookSpecificOutput.additionalContext` is the Claude Code `SessionStart`
 field. One command covers both.
 
-On any error the wrapper prints `{}` and exits 0. It never failCloses and
-never prints MCP protocol on stdout.
+On any error the JSON wrapper prints `{}` and exits 0. After
+`--format markdown` is known, fail-open is a single blank line and
+exit 0. If argparse fails before format is known, `{}` is still
+correct for the default JSON host. It never failCloses and never
+prints MCP protocol on stdout.
 
 ## Cursor
 
