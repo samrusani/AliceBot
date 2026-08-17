@@ -164,7 +164,7 @@ The core MCP surface is eleven tools:
 
 - `alice_capture` — store a source document or raw note. Its passages come back from `alice_recall` and `alice_context_pack` under `sources`, as material to read and quote rather than as facts Alice asserts; the candidate memories it proposes stay unsearchable until a reviewer promotes them. Use it for transcripts, files and pasted material
 - `alice_memory_commit` — **record one fact as durable, immediately recallable memory.** This is the verb for ordinary memory, including when the user has not asked the agent to remember. Policy-checked: committed, confirmation-required, review-required, or rejected
-- `alice_recall` — search memory (full-text plus vector, fused ranking; hard-scopable by thread, task, project, person, time, and memory type)
+- `alice_recall` — search memory (full-text plus vector, fused ranking; hard-scopable by thread, task, project, person, time, and memory type). Also returns matching passages from captured documents under `sources`, with an excerpt to read and quote; `results` are facts Alice asserts, `sources` are material the user imported, and the same scope fence applies to both
 - `alice_resume` — resumption brief for a project or thread
 - `alice_context_pack` — project/person/time-scoped context for a task, with a bounded unique-content budget and a complete serialized-size estimate
 - `alice_open_loops` — list and manage open loops

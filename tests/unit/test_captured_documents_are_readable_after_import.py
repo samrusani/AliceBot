@@ -126,6 +126,53 @@ def test_recall_returns_the_imported_document_it_just_captured(tmp_path: Path) -
     )
 
 
+def test_include_sources_false_returns_the_pre_change_payload(tmp_path: Path) -> None:
+    """The opt-out has to work, or it is a lie in the schema.
+
+    An agent that only wants asserted facts must be able to say so and get a
+    payload identical in shape to what v0.15.6 returned. Untested until review
+    pointed it out: the flag was written, documented, and never exercised.
+    """
+
+    context = _fresh_context(tmp_path)
+    _capture(context, QUOTE_NOTE)
+
+    payload = _recall(context, QUOTE)
+    assert payload.get("sources"), "the fixture must retrieve sources for the opt-out to mean anything"
+
+    from alicebot_api.mcp.registry import call_mcp_tool
+
+    opted_out = call_mcp_tool(
+        context,
+        name="alice_recall",
+        arguments={"query": QUOTE, "include_sources": False},
+    )
+
+    assert "sources" not in opted_out
+    assert "source_count" not in opted_out
+    assert set(opted_out) == {"query", "results", "count"}
+
+
+def test_include_sources_is_declared_in_the_schema(tmp_path: Path) -> None:
+    """`additionalProperties: false` means an undeclared argument is rejected.
+
+    So the flag working in the handler is only half of it. If the schema does
+    not declare it, an agent passing it gets an error instead of the documented
+    behaviour, and a schema-driven client never learns the option exists.
+    """
+
+    from alicebot_api.mcp.definitions import _CORE_TOOL_DEFINITIONS
+
+    recall = next(tool for tool in _CORE_TOOL_DEFINITIONS if tool["name"] == "alice_recall")
+    schema = recall["inputSchema"]
+
+    assert schema["additionalProperties"] is False, (
+        "this test's premise changed; an undeclared argument is no longer rejected"
+    )
+    assert "include_sources" in schema["properties"]
+    assert schema["properties"]["include_sources"]["type"] == "boolean"
+
+
 def test_recall_keeps_asserted_facts_and_read_only_material_apart(tmp_path: Path) -> None:
     """The labelling is the safety property, not decoration.
 
@@ -238,23 +285,65 @@ def test_a_packed_source_never_carries_the_whole_document(tmp_path: Path) -> Non
             assert len(excerpt) <= SOURCE_EXCERPT_MAX_CHARS
 
 
-def test_imported_sources_still_get_their_event_time_stamped(tmp_path: Path) -> None:
-    """The regression review caught: metadata_json must survive, minus the document."""
+def test_an_imported_source_keeps_its_own_date_instead_of_todays(tmp_path: Path) -> None:
+    """The regression review caught: metadata_json must survive, minus the document.
 
-    from alicebot_api.vnext_retrieval import _source_event_time
+    Rewritten 2026-08-17 after review showed the first version could not fail.
+    That version asserted ``_source_event_time(...) is not None`` on an
+    MCP-compacted source. Compaction keeps ``captured_at`` and drops
+    ``metadata_json`` regardless, and ``_source_event_time`` falls back to
+    ``captured_at`` last, which capture always sets. So it returned a datetime
+    even with the whole blob stripped: the second vacuous test in this file, and
+    the same sandwich as the first.
 
-    context = _fresh_context(tmp_path)
-    _capture(context, QUOTE_NOTE)
+    The property is not "has a date". It is "keeps its OWN date". Losing
+    ``metadata_json`` dates every imported historical document as today, which
+    silently corrupts the derived timeline, and that is invisible to any
+    not-None check. So this asserts below compaction, on a source whose only
+    honest date lives in metadata, and pins the value rather than its presence.
+    """
 
-    pack = _pack(context, QUOTE)
-    sources = pack.get("sources") or []
-    assert sources
-
-    # The compaction must not have stripped what temporal precompute reads. A
-    # source with no derivable time is exactly the silent breakage review found.
-    assert any(_source_event_time(source) is not None for source in sources), (
-        "no packed source has a derivable event time; metadata_json was stripped too far"
+    from alicebot_api.vnext_retrieval import (
+        SOURCE_EVENT_METADATA_KEYS,
+        VNextRetrievalService,
+        _source_event_time,
     )
+
+    metadata_date_key = SOURCE_EVENT_METADATA_KEYS[0]
+    imported = {
+        "id": "source-1",
+        "title": "A note written years ago",
+        # The whole document, duplicated into metadata as capture does. This is
+        # the field that must go, and the only one.
+        "metadata_json": {
+            "raw_text": QUOTE_NOTE * 200,
+            metadata_date_key: "2019-03-04T00:00:00+00:00",
+        },
+        # Ingest write time. Present, parseable, and the wrong answer.
+        "captured_at": "2026-08-17T12:00:00+00:00",
+        "source_created_at": None,
+    }
+
+    service = VNextRetrievalService.__new__(VNextRetrievalService)
+    service._winning_chunk_text = {}
+
+    class _NoChunkListing:
+        """No chunk capability, so the no-winner fallback stays out of the way.
+        This test is about the date, not about the excerpt."""
+
+    service.store = _NoChunkListing()  # type: ignore[assignment]
+    packed = service._packable_source(imported, query=QUOTE)
+
+    stamped = _source_event_time(packed)
+
+    assert stamped is not None, "the packed source lost its date entirely"
+    assert stamped.year == 2019, (
+        f"the imported source was dated {stamped.isoformat()} instead of 2019. "
+        "metadata_json was stripped past raw_text, so every imported document "
+        "now claims it was written on the day it was imported."
+    )
+    # And the document itself is still gone, which is the other half.
+    assert "raw_text" not in packed.get("metadata_json", {})
 
 
 # --------------------------------------------------------------------------
@@ -381,6 +470,125 @@ def test_the_fallback_still_scores_lines_not_substrings(tmp_path: Path) -> None:
     assert winner is not None
     assert QUOTE in winner, (
         f"the fallback picked the Related links block over the sentence: {winner!r}"
+    )
+
+
+POINTER_LINES = (
+    "- [[discipline-is-the-art-of-not-betraying-yourself]]",
+    "* [[discipline-is-the-art-of-not-betraying-yourself]]",
+    "+ [[discipline-is-the-art-of-not-betraying-yourself]]",
+    "1. [[discipline-is-the-art-of-not-betraying-yourself]]",
+    "12) [[discipline-is-the-art-of-not-betraying-yourself]]",
+    "1.[[discipline-is-the-art-of-not-betraying-yourself]]",
+    "- [ ] [[discipline-is-the-art-of-not-betraying-yourself]]",
+    "- [x] [[discipline-is-the-art-of-not-betraying-yourself]]",
+    "![[discipline-is-the-art-of-not-betraying-yourself]]",
+    "- [[discipline-is-the-art]] [[of-not-betraying-yourself]]",
+    "- [[discipline-is-the-art]], [[of-not-betraying-yourself]]",
+    "- [Discipline is the art of not betraying yourself](notes/discipline.md)",
+    "- [Discipline][discipline-is-the-art-of-not-betraying-yourself]",
+    "[discipline]: https://example.com/discipline-is-the-art",
+    "- [D](notes/discipline_(draft).md)",
+    "• [[discipline-is-the-art-of-not-betraying-yourself]]",
+    "  - [[discipline-is-the-art-of-not-betraying-yourself]]",
+    "> - [[discipline-is-the-art-of-not-betraying-yourself]]",
+    "![alt text](images/discipline.png)",
+    "https://example.com/discipline-is-the-art-of-not-betraying-yourself",
+)
+
+READABLE_LINES = (
+    "> Discipline is the art of not betraying yourself.",
+    "Discipline is the art of not betraying yourself. See [[discipline]].",
+    "- [[discipline]] is the art of not betraying yourself.",
+    "1. Discipline is the art of not betraying yourself.",
+    "2. The capacity to be alone is the capacity to love.",
+    "- [ ] Ship the retrieval fix before Friday.",
+    "See https://example.com/x for the full argument about discipline.",
+    "I read [the note](notes/d.md) yesterday and it changed how I work.",
+    "## Related",
+    "---",
+)
+
+
+@pytest.mark.parametrize("line", POINTER_LINES)
+def test_a_line_that_is_only_a_pointer_scores_zero(line: str) -> None:
+    """Every list shape a real vault writes, not just the one I first tested.
+
+    The first version of this guard used a character class for the marker
+    prefix, which cannot express "1." or "- [ ]" as a unit. So an ORDERED
+    "## Related" list still beat the quote it linked to, in exactly the way the
+    unordered one used to. Obsidian writes ordered lists, "![[embed]]"
+    transclusions and several links per row, and this branch exists to make an
+    Obsidian vault readable.
+    """
+
+    from alicebot_api.vnext_retrieval import _line_overlap_score, _tokens
+
+    query_tokens = _tokens(QUOTE)
+
+    assert _line_overlap_score(line, query_tokens) == 0, (
+        f"{line!r} is a pointer, not readable content, but it scored. It can "
+        "out-rank the sentence it points at, because a wikilink slug tokenises "
+        "to the same words as the sentence."
+    )
+
+
+@pytest.mark.parametrize("line", READABLE_LINES)
+def test_readable_lines_are_never_silenced(line: str) -> None:
+    """The other half. Over-zealous matching would hide real content.
+
+    A marker with no link after it ("- [ ] Ship the fix") is prose. A sentence
+    that merely mentions a link is prose. Zeroing those would be a worse bug
+    than the one being fixed, because it removes text rather than reordering it.
+    """
+
+    from alicebot_api.vnext_retrieval import _LINK_ONLY_LINE
+
+    assert not _LINK_ONLY_LINE.match(line), f"{line!r} is readable and was treated as a pointer"
+
+
+@pytest.mark.parametrize(
+    "marker", ("-", "*", "+", "1.", "2)", "- [ ]", "!", "•")
+)
+def test_a_related_block_never_wins_whatever_marker_it_uses(
+    tmp_path: Path, marker: str
+) -> None:
+    """The end-to-end version, parametrised over marker shapes.
+
+    Review noted the original fixture hardcoded "- [[", so it proved the fix for
+    exactly one of the forms a vault writes.
+    """
+
+    from alicebot_api.onramp import bootstrap_database, resolve_db_path
+    from alicebot_api.sqlite_store import SQLiteVNextStore, sqlite_user_connection
+    from alicebot_api.vnext_retrieval import VNextRetrievalService
+
+    database = resolve_db_path(data_dir=str(tmp_path), db=None)
+    bootstrap_database(database, user_id=USER_ID, user_email="local@alice")
+
+    slug = "discipline-is-the-art-of-not-betraying-yourself"
+    prefix = "" if marker == "!" else f"{marker} "
+
+    class _ChunkStore:
+        def list_source_chunks(self, source_id: str) -> list[dict[str, object]]:
+            return [
+                {
+                    "text": "## Related\n"
+                    f"{prefix}{'!' if marker == '!' else ''}[[{slug}]]\n"
+                    f"{prefix}{'!' if marker == '!' else ''}[[the-art-of-{slug}]]\n",
+                    "chunk_index": 0,
+                },
+                {"text": f"> {QUOTE}\n", "chunk_index": 1},
+            ]
+
+    with sqlite_user_connection(database, USER_ID) as connection:
+        service = VNextRetrievalService(SQLiteVNextStore(connection, USER_ID))
+        service.store = _ChunkStore()  # type: ignore[assignment]
+        winner = service._best_chunk_without_a_winner("source-1", query=QUOTE)
+
+    assert winner is not None
+    assert QUOTE in winner, (
+        f"with marker {marker!r} the Related block beat the sentence: {winner!r}"
     )
 
 

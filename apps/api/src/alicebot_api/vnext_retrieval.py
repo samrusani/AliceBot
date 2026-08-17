@@ -1213,9 +1213,37 @@ def _tokens(text: str) -> set[str]:
 
 
 # A line that is nothing but list markers and link syntax: "- [[a-b-c]]",
-# "* [text](url)". Stripping those leaves no prose behind.
+# "1. [text](url)", "![[embed]]", "- [[a]] [[b]]". Stripping those leaves no
+# prose behind, so the line is a pointer and must not out-score the sentence it
+# points at.
+#
+# The marker prefix is a group of ALTERNATIVES, not one character class. The
+# first version used the class [\s>*+\-]*, which cannot express "1." or a task
+# checkbox as a unit, so an ordered "## Related" list scored full token overlap
+# and won exactly the way an unordered one used to. Obsidian vaults, which is
+# what this branch exists to make readable, write both forms, plus "![[embed]]"
+# transclusions and several links on one row.
+#
+# Alternatives rather than a class also keeps the guard narrow: "- [ ] Ship the
+# fix" has a marker and no link, so it is still readable prose and still scores.
 _LINK_ONLY_LINE = re.compile(
-    r"^[\s>*+\-]*(?:\[\[[^\]]*\]\]|\[[^\]]*\]\([^)]*\)|<?https?://\S+>?)[\s,.;]*$"
+    r"""^
+    (?:\s | > | [*+\-\u2022\u2013\u2014] | \d+[.)] | \[[ xX]\])*
+    (?:
+        !?\[\[[^\]]*\]\]
+      | !?\[[^\]]*\]\((?:[^()]|\([^()]*\))*\)
+      | !?\[[^\]]*\]\[[^\]]*\]
+      | \[[^\]]*\]:\s*\S+
+      | <?https?://\S+>?
+    )
+    (?:[\s,.;|]+(?:
+        !?\[\[[^\]]*\]\]
+      | !?\[[^\]]*\]\((?:[^()]|\([^()]*\))*\)
+      | !?\[[^\]]*\]\[[^\]]*\]
+      | <?https?://\S+>?
+    ))*
+    [\s,.;!?]*$""",
+    re.VERBOSE,
 )
 
 
@@ -2551,18 +2579,39 @@ class VNextRetrievalService:
         domains: list[str],
         sensitivity_allowed: list[str],
         limit: int,
+        scope: _ResolvedRetrievalScope | None,
         winning_memories: Sequence[JsonObject] = (),
+        anchor: TemporalAnchor | None = None,
     ) -> tuple[list[JsonObject], JsonObject]:
         """Ranked imported source material for a query, with readable excerpts.
-
-        The one place any caller should get source excerpts from. The context
-        pack, ``alice_recall`` and the evaluation harness all route here, so a
-        query cannot rank one way for the benchmark and another way for a user.
 
         What comes back is material the agent can read and quote, NOT facts it
         should assert: every entry carries ``excerpt_kind`` saying so. Committed
         memories remain the only channel for facts, and nothing here promotes a
         candidate or makes one searchable as a memory.
+
+        ``scope`` is REQUIRED and has no default, deliberately. This method is a
+        read path over stored documents, and ``_source_stage_lists`` treats scope
+        as an exclusion filter, not a ranking hint: ``_resolve_sources`` drops
+        every row that fails ``_row_matches_scope``. The first version of this
+        method took no scope at all, so ``alice_recall`` returned excerpts from
+        sources a project-scoped agent was never allowed to read, while
+        ``alice_context_pack`` filtered the same rows correctly.
+
+        Making the parameter required rather than optional is the point. An
+        optional scope defaults to "no fence" and reintroduces that leak the
+        moment someone adds a caller and forgets. ``None`` is still accepted,
+        because an unscoped owner query is legitimate, but it has to be written
+        down at the call site.
+
+        NOT the only source reader. ``compile_context_pack`` runs its own
+        ``_source_stage_lists`` -> ``_fused_candidates`` -> ``_packable_source``
+        sequence, because it interleaves stages this method has no business
+        carrying: the coverage/aggregation gate and the instance-diversity pass.
+        An earlier version of this docstring claimed the pack routed here, which
+        was never true. Saying so plainly matters, because it is the reason both
+        paths have to be fenced and tested separately: they share the stage
+        builder and the compaction, not the call sequence.
         """
 
         source_lists, stage_record = self._source_stage_lists(
@@ -2571,6 +2620,8 @@ class VNextRetrievalService:
             sensitivity_allowed=sensitivity_allowed,
             limit=limit,
             winning_memories=winning_memories,
+            scope=scope,
+            anchor=anchor,
         )
         candidates = _fused_candidates(
             source_lists,

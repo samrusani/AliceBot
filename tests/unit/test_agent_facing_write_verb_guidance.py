@@ -114,16 +114,7 @@ def test_agent_facing_docs_permit_the_unasked_commit(relative_path: str) -> None
     assert "has not asked" in body, f"{relative_path} never tells an agent it may commit unasked"
 
 
-@pytest.mark.parametrize(
-    "relative_path",
-    (
-        "docs/alpha/mcp-tools.md",
-        "docs/alpha/hermes-skill.md",
-        "docs/alpha/openclaw-skill.md",
-        "agent-skills/hermes/alice-memory/SKILL.md",
-        "agent-skills/openclaw/alice-project-memory/SKILL.md",
-    ),
-)
+@pytest.mark.parametrize("relative_path", AGENT_FACING_WRITE_VERB_DOCS)
 def test_agent_facing_docs_say_what_capture_does_and_does_not_make_searchable(
     relative_path: str,
 ) -> None:

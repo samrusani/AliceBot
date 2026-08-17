@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 from alicebot_api.continuity_brief import compile_continuity_brief
 from alicebot_api.continuity_recall import (
     get_retrieval_trace,
@@ -38,6 +39,7 @@ from alicebot_api.vnext_agent_control import (
     PolicyDecision,
     resource_project_scope,
 )
+from alicebot_api.vnext_project_scope import project_scope_identity
 from alicebot_api.vnext_projects import VNextProjectService
 from alicebot_api.vnext_repositories import JsonObject as VNextJsonObject
 from alicebot_api.vnext_retrieval import (
@@ -49,6 +51,7 @@ from alicebot_api.vnext_retrieval import (
     VECTOR_STAGE_ENABLED,
     VNextRetrievalService,
     _order_memories_for_strategy,
+    _ResolvedRetrievalScope,
     reciprocal_rank_fusion,
 )
 
@@ -112,6 +115,41 @@ def _compact_recall_result(item: Mapping[str, object], *, score: float, provenan
             "confidence": item.get("confidence"),
             "provenance_count": provenance_count,
         }
+    )
+
+
+def _recall_source_scope(retrieval_filters: Mapping[str, object]) -> _ResolvedRetrievalScope | None:
+    """The project/people/time fence recall applies, in the shape sources need.
+
+    ``alice_recall`` hands its filters to the memory stages as store predicate
+    kwargs; the source stage takes a resolved scope object instead. Translating
+    here, from the SAME dict the memory stages were given and after the policy
+    decision has replaced ``projects`` with ``effective_project_scope``, is what
+    keeps the two channels fenced identically. Deriving the scope from the raw
+    arguments instead would reopen the gap, because that is the pre-policy view.
+
+    ``None`` when nothing is scoped, which is the honest unfenced owner query.
+    """
+
+    raw_projects = retrieval_filters.get("projects")
+    projects = frozenset(
+        project_scope_identity(tuple(raw_projects)) if isinstance(raw_projects, tuple | list) else ()
+    )
+    raw_people = retrieval_filters.get("scope_people")
+    people = frozenset(
+        person.strip().casefold()
+        for person in (raw_people if isinstance(raw_people, tuple | list) else ())
+        if isinstance(person, str) and person.strip()
+    )
+    window_start = retrieval_filters.get("scope_window_start")
+    window_end = retrieval_filters.get("scope_window_end")
+    if not projects and not people and window_start is None and window_end is None:
+        return None
+    return _ResolvedRetrievalScope(
+        projects=projects,
+        people=people,
+        window_start=window_start if isinstance(window_start, datetime) else None,
+        window_end=window_end if isinstance(window_end, datetime) else None,
     )
 
 
@@ -221,6 +259,14 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
                 domains=domains,
                 sensitivity_allowed=sensitivity_allowed,
                 limit=limit,
+                # The same fence the memories above were retrieved under.
+                # Built from retrieval_filters AFTER the policy decision has
+                # overwritten "projects" with effective_project_scope, so a
+                # project-scoped agent cannot read a source outside its
+                # projects. Source scope is an exclusion filter, not a ranking
+                # hint: without this the excerpt path is a way around a control
+                # the pack enforces.
+                scope=_recall_source_scope(retrieval_filters),
                 winning_memories=ordered_rows,
             )
             source_excerpts = _compact_items(raw_sources, _COMPACT_SOURCE_FIELDS)

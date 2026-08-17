@@ -58,8 +58,9 @@ under `scope` and `options`:
 }
 ```
 
-Sprint output, submitted through `alice_capture` so it lands review-gated. The field carrying
-the text is `raw_text`:
+Sprint output, submitted through `alice_capture`. The text itself is searchable from the next
+call onward and comes back under `sources`; only the candidate memories capture proposes are
+review-gated. The field carrying the text is `raw_text`:
 
 ```json
 {

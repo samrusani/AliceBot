@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- `alice_recall`'s source excerpts now apply the same project, people and time
+  fence as `alice_context_pack`. Found by review before merge, on the branch
+  that added excerpts. Source scope is an exclusion filter, not a ranking hint:
+  `_source_stage_lists` drops rows failing `_row_matches_scope`. The first
+  `search_source_excerpts` took no scope parameter, so a project-locked recall
+  returned excerpts from documents the pack would have withheld. Reproduced at
+  `source_count=2` with a personal note present and closed at `1`. The parameter
+  is now required with no default, because a defaulted scope means "no fence"
+  for whoever forgets it next.
+
+- Excerpt line scoring recognises every list shape a real vault writes. The
+  first version matched only `-`, `*` and `+` markers, so an ordered
+  `## Related` block, an `![[embed]]` transclusion, a task-list row, or two
+  wikilinks on one line still out-scored the sentence they pointed at. Obsidian
+  writes all of those, and Obsidian import is what this work exists to serve.
+  Readable lines are unaffected: a marker with no link after it is still prose.
+
 - Captured documents are readable again. Importing a vault stored it and then
   returned none of it: `alice_context_pack` packed sources as bibliography
   entries with no text, and `alice_recall` searched memories only, so the
