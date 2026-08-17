@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+- Captured documents are readable again. Importing a vault stored it and then
+  returned none of it: `alice_context_pack` packed sources as bibliography
+  entries with no text, and `alice_recall` searched memories only, so the
+  natural agent sequence (import, then recall) answered `count=0` for content
+  the store held. Three independent causes, each sufficient on its own. The
+  packed source carried `metadata_json`, which capture fills with the entire
+  document, and `estimate_item_tokens` JSON-dumps the item to price it, so one
+  235KB source was charged roughly 59k tokens against a 50k ceiling, was
+  rejected, and latched the truncation flag so every later section was dropped
+  too. The MCP compaction emitted six fields, none of them text. And recall
+  never looked at sources at all.
+
+  Packed sources now carry an excerpt of the chunk retrieval already ranked
+  best, windowed around its best-matching line and labelled
+  `excerpt_kind: imported_source_material`. `alice_recall` returns the same
+  under a separate `sources` key with its own `source_count`: `results` are
+  facts Alice asserts, `sources` are material the user imported and the agent
+  may read and quote. Nothing here promotes a candidate or makes one searchable
+  as a memory, and the promotion gate is unchanged.
+
+  Sources that reached the pack through the provenance or title/recency lists
+  had no ranked chunk and so arrived empty; on 55 ranked sources from real
+  LongMemEval questions that was 56% of them. They now get a fallback excerpt,
+  bounded to the first 24 chunks, and stores without chunk listing degrade to no
+  excerpt rather than failing. Coverage went from 44% to 100%.
+
+  Excerpt line scoring now ignores link-only lines. A wikilink is usually the
+  slug of the sentence it points at, so `- [[a-quote-slugified]]` tokenises to
+  exactly the same words as the quote and tied with it, and the tie handed a
+  `## Related` block the win over the sentence it linked to.
+
+- `alice_capture`'s tool description no longer claims `alice_recall` will not
+  return captured text, because it now does. The capture result also reports
+  which of its two counts is searchable now and which is awaiting review;
+  `chunk_count` beside `candidate_memory_count` read as two counts of the same
+  stored thing, and that wording is what had agents sending users to a review
+  queue they did not need to clear. The same correction lands in the README, the
+  MCP tool reference, and all four Hermes and OpenClaw skill documents.
+
+- The LongMemEval harness takes `ALICE_LME_EXCERPT_SOURCE`. The default,
+  `store_chunks`, is unchanged and reads every chunk directly from the store,
+  which is how 81.2% and every prior published number was produced and which no
+  MCP tool ever offered. `pack_excerpts` uses only what the context pack
+  returns, which is what an agent receives. Measured on 12 real questions with
+  retrieval only, the product path ranks identical sources and retains 87% of
+  the excerpts and 77.6% of the context. What that costs in accuracy is
+  unmeasured, and no claim should assume it is nothing.
+
 - An oversized paragraph now splits on its own lines before falling back to
   words. `_split_large_part` only sees paragraphs that alone exceed the chunk
   budget, and it was doing `part.split()` then rejoining with spaces, which cut

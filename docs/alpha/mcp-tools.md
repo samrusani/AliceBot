@@ -58,10 +58,12 @@ For the full Postgres stack from a checkout:
 
 **Write and review**
 
-- `alice_capture` — store a source document or raw note for later review.
-  Text is kept verbatim with provenance and split into searchable chunks,
-  but it does **not** become recallable memory until a human reviews it, so
-  `alice_recall` will not return it.
+- `alice_capture` — store a source document or raw note. Text is kept verbatim
+  with provenance and split into searchable chunks. Its matching passages come
+  back from `alice_recall` and `alice_context_pack` under `sources`, carrying an
+  excerpt and labelled `excerpt_kind: imported_source_material`: material to read
+  and quote, rather than as facts Alice asserts. Capture also proposes candidate
+  memories, and those stay unsearchable until a reviewer promotes them.
 - `alice_memory_commit` — record one fact as durable, immediately
   recallable memory. This is the write verb for ordinary memory, and an
   agent should use it whenever it learns something worth keeping, including

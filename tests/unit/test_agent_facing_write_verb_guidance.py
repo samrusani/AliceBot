@@ -124,8 +124,33 @@ def test_agent_facing_docs_permit_the_unasked_commit(relative_path: str) -> None
         "agent-skills/openclaw/alice-project-memory/SKILL.md",
     ),
 )
-def test_agent_facing_docs_warn_that_capture_is_not_recallable(relative_path: str) -> None:
+def test_agent_facing_docs_say_what_capture_does_and_does_not_make_searchable(
+    relative_path: str,
+) -> None:
+    """Both halves, because either one alone misleads.
+
+    Until 2026-08-17 this pinned "alice_recall will not return it", which was
+    true when written and became false when captured documents started coming
+    back under ``sources``. Pinning the sentence would have held the docs to a
+    claim the code had stopped honouring.
+
+    Both halves still have to be stated. Saying only that capture is searchable
+    invites an agent to treat imported text as fact; saying only that it is
+    review-gated sends the user to a queue they do not need to clear.
+    """
+
     body = _read(relative_path)
-    assert "alice_recall will not return it" in body, (
-        f"{relative_path} describes alice_capture without warning that recall skips it"
+
+    assert "alice_recall will not return it" not in body, (
+        f"{relative_path} has regained a claim the source-excerpt path made false"
+    )
+    assert "sources" in body, (
+        f"{relative_path} describes alice_capture without saying its passages come "
+        "back under sources"
+    )
+    assert "rather than as facts" in body, (
+        f"{relative_path} does not distinguish returned source material from asserted fact"
+    )
+    assert "unsearchable until" in body, (
+        f"{relative_path} no longer says candidate memories wait for review"
     )
