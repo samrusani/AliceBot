@@ -754,7 +754,7 @@ def _vnext_resume(
                 ),
             }
 
-        loop_rows = []
+        loop_rows: list[JsonObject] = []
         if max_open_loops > 0:
             # list_open_loops already accepts domains and sensitivity_allowed.
             # Apply the decision here. An empty sensitivity list is deny-all;

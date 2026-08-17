@@ -125,11 +125,13 @@ def test_mcp_registry_order_definitions_and_alias_identity_are_frozen() -> None:
     handlers = mcp_registry._TOOL_HANDLERS
 
     assert (len(core_definitions), len(legacy_definitions), len(handlers)) == (11, 65, 76)
-    # Moved 2026-08-17. The tool COUNT is unchanged and asserted above; what
-    # moved is alice_capture's description (it no longer claims alice_recall
-    # skips captured documents, because it no longer does) and alice_recall's
-    # description plus its new include_sources property.
-    assert _digest(core_definitions) == "a4ec30dbc5412bf52e2c32c02a46261a9acee6303144331d0c0d50932272def1"
+    # Moved 2026-08-17 (D7). The tool COUNT is unchanged and asserted above.
+    # What moved is two optional properties, domains and sensitivity_allowed,
+    # on alice_resume and alice_recent_decisions. Those arguments already
+    # existed on the handlers; additionalProperties is false, so the schema
+    # had to name them before a caller could pass the fence. No tool added,
+    # removed, or renamed.
+    assert _digest(core_definitions) == "d1a28b67f55c634518699b6c72ec23a90040ac678b23ff4f587ee69a64579cc1"
     assert _digest(legacy_definitions) == "ca3d747e552bdece52c22d76332fc69f499878290edf3f236a8a7ea6a2e34e41"
     ordered_handler_map = [(name, handler.__name__) for name, handler in handlers.items()]
     assert _digest(ordered_handler_map) == "d864c98bb914bbc6ace464fa8020b3ed264f17f2061a6101aae677d801032ae5"
