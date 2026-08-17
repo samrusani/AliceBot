@@ -4183,8 +4183,13 @@ def test_ungated_query_takes_the_byte_identical_coverage_free_path(monkeypatch) 
         separators=(",", ":"),
         default=str,
     ).encode()
+    # Moved 2026-08-17: packed sources now carry an excerpt of their
+    # best-matching chunk, so the canonical pack bytes changed by design.
+    # The property this test exists for is the assertion ABOVE, that the
+    # dormant and hard-disabled compiles are byte-identical to each other;
+    # that still holds. Only the snapshot moved.
     assert sha256(canonical_pack).hexdigest() == (
-        "4b046a9dccd4b58d0970f8957e65c769619338f29ba547fe3f39eecd5d6b7b32"
+        "c892c97ab531f6e955e17c5d65b6ffc810e3b3382cdebf52a2cb16b769f9ea5e"
     )
     assert "coverage" not in json.dumps(dormant_pack, default=str)
     assert "aggregation" not in dormant_pack

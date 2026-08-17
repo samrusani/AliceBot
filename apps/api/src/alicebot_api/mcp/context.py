@@ -73,7 +73,23 @@ _COMPACT_OPEN_LOOP_FIELDS = (
 )
 
 
-_COMPACT_SOURCE_FIELDS = ("id", "source_type", "title", "captured_at", "domain", "sensitivity")
+# "excerpt" is the payload an agent actually needs: the best-matching chunk of an
+# imported document. Without it this list is a bibliography, and the agent can see
+# that a relevant document exists while never reading a word of it.
+#
+# "excerpt_kind" labels it as imported source material rather than as an
+# established fact, which is the distinction that lets captured text be useful
+# without being believed. Committed memories remain the only channel for facts.
+_COMPACT_SOURCE_FIELDS = (
+    "id",
+    "source_type",
+    "title",
+    "captured_at",
+    "domain",
+    "sensitivity",
+    "excerpt",
+    "excerpt_kind",
+)
 
 
 def _compact_fields(item: object, fields: tuple[str, ...]) -> JsonObject:

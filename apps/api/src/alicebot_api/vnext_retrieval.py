@@ -1180,6 +1180,72 @@ def _compact_item(item: JsonObject) -> JsonObject:
     return {key: value for key, value in item.items() if key != "deleted_at"}
 
 
+# A packed source carries an excerpt of its best-matching chunk, and never the
+# whole document.
+#
+# Before 2026-08-17 the pack emitted the source row as-is. Two consequences, both
+# measured on a real 226-document vault import:
+#
+# 1. ``metadata_json`` holds the entire captured document (``vnext_capture``
+#    writes ``raw_text`` there for evidence). ``estimate_item_tokens`` JSON-dumps
+#    the item, so one 235KB source was charged ~59k tokens against a 50k ceiling,
+#    was rejected, and latched the truncation flag so every later section was
+#    dropped too. Sources vanished from the pack entirely above ~30k characters.
+#
+# 2. Even under the ceiling, the MCP layer emitted only id/type/title/date, so an
+#    agent received a bibliography entry and never the text. Retrieval ranked the
+#    right chunks and then threw them away.
+#
+# The chunk text is what the agent actually needs, and it is what the LongMemEval
+# harness has always rendered for itself by reading ``list_source_chunks``
+# directly. That is why the benchmark scored a capability the shipped tool did
+# not offer.
+SOURCE_EXCERPT_MAX_CHARS = 1_200
+
+
+def _tokens(text: str) -> set[str]:
+    return {token for token in re.findall(r"\w+", text.lower()) if len(token) > 2}
+
+
+def _query_anchored_window(chunk: str, *, query: str, max_chars: int) -> str:
+    """Window a chunk around the line with the most query-token overlap.
+
+    Scoring is per LINE and by token-set overlap, not ``term in chunk``. The
+    substring form scored a whole "## Related" block full of wikilink paths
+    above the line actually containing the sentence, because the query terms all
+    appear inside the URLs. Overlap on tokenised lines picks the sentence.
+    """
+
+    chunk = chunk.strip()
+    if len(chunk) <= max_chars:
+        return chunk
+
+    query_tokens = _tokens(query)
+    lines = chunk.split("\n")
+    best_index, best_score = 0, -1
+    for index, line in enumerate(lines):
+        score = len(query_tokens & _tokens(line))
+        if score > best_score:
+            best_score, best_index = score, index
+
+    # Grow outward from the best line until the budget is spent.
+    lo = hi = best_index
+    size = len(lines[best_index])
+    while size < max_chars and (lo > 0 or hi < len(lines) - 1):
+        if lo > 0 and (hi == len(lines) - 1 or len(lines[lo - 1]) <= len(lines[hi + 1])):
+            lo -= 1
+            size += len(lines[lo]) + 1
+        elif hi < len(lines) - 1:
+            hi += 1
+            size += len(lines[hi]) + 1
+        else:
+            break
+    window = "\n".join(lines[lo : hi + 1]).strip()
+    if len(window) > max_chars:
+        window = window[:max_chars].rsplit(" ", 1)[0] + "\u2026"
+    return window
+
+
 def estimate_item_tokens(item: JsonObject) -> int:
     """Estimate the token cost of one pack item (chars/4 heuristic)."""
     try:
@@ -1512,6 +1578,7 @@ class VNextRetrievalService:
         reranker_provider: RerankProvider | None = None,
     ) -> None:
         self.store = store
+        self._winning_chunk_text: dict[str, str] = {}
         self.embedding_provider = embedding_provider if embedding_provider is not None else get_embedding_provider()
         # ---- reranker (disclosed precision stage) begin -------------------
         # None (no env config, no injected provider) keeps the rerank stage
@@ -2175,6 +2242,9 @@ class VNextRetrievalService:
         failing, so minimal stores and test fakes keep working. The stage
         record reports each list's candidate count under its stage key.
         """
+        # source id -> the chunk this stage ranked best, for the packed
+        # excerpt. Reset per run so a previous query's winner is never reused.
+        self._winning_chunk_text = {}
         scope = scope or _ResolvedRetrievalScope(
             projects=frozenset(), people=frozenset(), window_start=None, window_end=None
         )
@@ -2223,6 +2293,14 @@ class VNextRetrievalService:
                         continue
                     seen_source_ids.add(str(source_id))
                     ordered_source_ids.append(str(source_id))
+                    # Remember the FTS-winning chunk for this source. Rows
+                    # arrive best-first, so the first one seen for a source IS
+                    # the winner. Re-deriving it later by listing every chunk
+                    # and substring-matching promotes link-heavy sections such
+                    # as "## Related" over the sentence the user asked for.
+                    text = row.get("text")
+                    if isinstance(text, str) and text.strip():
+                        self._winning_chunk_text.setdefault(str(source_id), text)
                 return _resolve_sources(ordered_source_ids)
 
             def _fetch_chunk_sources(
@@ -2355,6 +2433,34 @@ class VNextRetrievalService:
         if anchor is not None:
             stage_record[SOURCE_STAGE_TEMPORAL] = len(temporal_sources)
         return ranked_lists, stage_record
+
+    def _packable_source(self, item: JsonObject, *, query: str) -> JsonObject:
+        """Compact a ranked source for packing: drop the document, add an excerpt.
+
+        The excerpt is the chunk the FTS stage already ranked highest for this
+        source, windowed around its best-matching line. Re-deriving a "best"
+        chunk here would discard the ranking that retrieval just did.
+        """
+
+        compacted = _compact_item(item)
+
+        # Drop ONLY the duplicated document, never the whole blob. Temporal
+        # precompute reads session_date and friends out of metadata_json via
+        # _source_event_time, so stripping it wholesale silently un-dates every
+        # imported source and breaks the derived timeline.
+        metadata = compacted.get("metadata_json")
+        if isinstance(metadata, Mapping):
+            compacted["metadata_json"] = {
+                key: value for key, value in metadata.items() if key != "raw_text"
+            }
+
+        winner = self._winning_chunk_text.get(str(item.get("id")))
+        if winner:
+            compacted["excerpt"] = _query_anchored_window(
+                winner, query=query, max_chars=SOURCE_EXCERPT_MAX_CHARS
+            )
+            compacted["excerpt_kind"] = "imported_source_material"
+        return compacted
 
     def compile_context_pack(self, request: VNextRetrievalRequest) -> JsonObject:
         if isinstance(request.max_items, bool) or not isinstance(request.max_items, int):
@@ -2907,7 +3013,11 @@ class VNextRetrievalService:
         # pair leaks into the same pack, the replacement packs directly
         # above its superseded ancestor; every other item keeps its order.
         ordered_memories, supersession_reorders = _prefer_current_versions(ordered_memories)
-        ranked_sources = [_compact_item(candidate.item) for candidate in source_candidates if candidate.selected]
+        ranked_sources = [
+            self._packable_source(candidate.item, query=request.query)
+            for candidate in source_candidates
+            if candidate.selected
+        ]
         ranked_open_loops = [_compact_item(candidate.item) for candidate in open_loop_candidates if candidate.selected]
 
         # Greedy token-budget packing, section by section in the strategy's
@@ -3431,6 +3541,9 @@ class VNextRetrievalService:
         Stores without ``list_beliefs`` (e.g. the SQLite on-ramp) degrade
         to an empty section with an honest stage status.
         """
+        # Per-compile map of source id -> the chunk the FTS stage ranked best.
+        # Reset each call: a stale entry would attach a previous query's excerpt.
+        self._winning_chunk_text: dict[str, str] = {}
         if not requested:
             return [], not_requested_status
         list_beliefs = getattr(self.store, "list_beliefs", None)
