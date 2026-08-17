@@ -84,6 +84,25 @@ SOURCE_SENSITIVITY = "internal"
 
 CONTEXT_CHAR_BUDGET_ENV = "ALICE_LME_CONTEXT_CHAR_BUDGET"
 MAX_ITEMS_ENV = "ALICE_LME_MAX_ITEMS"
+# Where excerpt text comes from. This decides whether a run measures the
+# product or measures the harness.
+#
+#   "store_chunks"  reads every chunk of every retrieved source straight out of
+#                   the store, then runs the harness's own budgeted two-pass
+#                   selection over them. Privileged: no MCP tool ever offered
+#                   this. Every published Alice benchmark number, 81.2%
+#                   included, was produced this way.
+#   "pack_excerpts" uses only the excerpt the context pack itself returns, which
+#                   is exactly what an agent receives. One windowed excerpt per
+#                   source instead of unlimited chunks.
+#
+# The default stays "store_chunks" so existing numbers remain comparable and are
+# not silently restated. Switching to "pack_excerpts" measures a different and
+# more honest thing, and the two must never be quoted as the same metric.
+EXCERPT_SOURCE_ENV = "ALICE_LME_EXCERPT_SOURCE"
+EXCERPT_SOURCE_STORE_CHUNKS = "store_chunks"
+EXCERPT_SOURCE_PACK_EXCERPTS = "pack_excerpts"
+DEFAULT_EXCERPT_SOURCE = EXCERPT_SOURCE_STORE_CHUNKS
 DEFAULT_CONTEXT_CHAR_BUDGET = 12_000
 DEFAULT_MAX_ITEMS = 8
 
@@ -266,6 +285,18 @@ def context_char_budget_from_env() -> int:
 def max_items_from_env() -> int:
     raw = os.environ.get(MAX_ITEMS_ENV, "").strip()
     return int(raw) if raw else DEFAULT_MAX_ITEMS
+
+
+def excerpt_source_from_env() -> str:
+    raw = os.environ.get(EXCERPT_SOURCE_ENV, "").strip() or DEFAULT_EXCERPT_SOURCE
+    if raw not in (EXCERPT_SOURCE_STORE_CHUNKS, EXCERPT_SOURCE_PACK_EXCERPTS):
+        # Fail loudly. A typo silently falling back to the privileged reader
+        # would report a product-path number that was never measured.
+        raise ValueError(
+            f"{EXCERPT_SOURCE_ENV}={raw!r} is not one of "
+            f"{EXCERPT_SOURCE_STORE_CHUNKS!r} / {EXCERPT_SOURCE_PACK_EXCERPTS!r}"
+        )
+    return raw
 
 
 def _chunk_overlap_score(chunk_text: str, terms: frozenset[str]) -> int:
@@ -575,9 +606,18 @@ def _query_anchored_excerpt(
 class QuestionRun:
     """One LongMemEval question against one isolated Alice store."""
 
-    def __init__(self, question: LongMemEvalQuestion, store: SQLiteVNextStore) -> None:
+    def __init__(
+        self,
+        question: LongMemEvalQuestion,
+        store: SQLiteVNextStore,
+        *,
+        excerpt_source: str | None = None,
+    ) -> None:
         self.question = question
         self.store = store
+        # Resolved once per run, not per call, so a single run cannot mix the
+        # two readers and report a number that describes neither.
+        self.excerpt_source = excerpt_source or excerpt_source_from_env()
         self._source_sessions: dict[str, tuple[str, str]] = {}  # source_id -> (session_id, date)
 
     # -- ingest ------------------------------------------------------------
@@ -949,6 +989,27 @@ class QuestionRun:
 
         return "\n".join(lines).strip(), excerpt_count
 
+    def _source_chunks_for(
+        self, source: dict[str, object], *, source_id: str
+    ) -> list[dict[str, object]]:
+        """The chunks this run is allowed to read for one retrieved source.
+
+        The single place the harness's privilege is exercised, so it can be
+        removed by configuration rather than by editing selection logic.
+
+        Under ``pack_excerpts`` the harness sees exactly what an agent sees: the
+        one windowed excerpt the pack returned. Under ``store_chunks`` it reads
+        the whole document out of the store, which no MCP tool exposes. Keeping
+        both behind one call means a run cannot half-switch.
+        """
+
+        if self.excerpt_source == EXCERPT_SOURCE_PACK_EXCERPTS:
+            excerpt = source.get("excerpt")
+            if not isinstance(excerpt, str) or not excerpt.strip():
+                return []
+            return [{"text": excerpt, "chunk_index": 0}]
+        return list(self.store.list_source_chunks(source_id))
+
     def _select_excerpts(
         self,
         pack: dict[str, object],
@@ -980,7 +1041,7 @@ class QuestionRun:
             session_id, date = self._session_label(source_id)
             source_chunks: list[tuple[int, int, int, str, str, str]] = []
             ordered_chunks: list[tuple[int, str]] = []
-            for chunk in self.store.list_source_chunks(source_id):
+            for chunk in self._source_chunks_for(source, source_id=source_id):
                 chunk_text = str(chunk.get("text") or "")
                 if chunk_text.strip() == "":
                     continue

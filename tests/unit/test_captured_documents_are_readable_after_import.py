@@ -313,6 +313,99 @@ def test_the_excerpt_shows_the_quote_not_the_related_links_block(tmp_path: Path)
     )
 
 
+def test_every_ranked_source_reaches_the_agent_carrying_text(tmp_path: Path) -> None:
+    """A source good enough to rank must not arrive as a bare citation.
+
+    Only the chunk-FTS stage records a winning chunk. Sources that enter through
+    the provenance or title/recency lists have none, and measured on 55 ranked
+    sources from real LongMemEval questions that was 56% of them: ranked,
+    packed, and empty. Coverage went 44% -> 100% when the fallback landed.
+    """
+
+    context = _fresh_context(tmp_path)
+    # Several documents, so the pack fills from more than the one lexical hit.
+    _capture(context, QUOTE_NOTE, title="Discipline")
+    for index in range(6):
+        _capture(
+            context,
+            f"# Note {index}\n\nA separate note about habits and standards, number {index}.\n",
+            title=f"Note {index}",
+        )
+
+    pack = _pack(context, QUOTE)
+    sources = pack.get("sources") or []
+    assert sources, "no sources ranked at all"
+
+    without_text = [source for source in sources if not source.get("excerpt")]
+    assert not without_text, (
+        f"{len(without_text)} of {len(sources)} ranked sources reached the agent "
+        "with no text. The fallback for sources the chunk-FTS stage never ranked is gone."
+    )
+
+
+def test_the_fallback_still_scores_lines_not_substrings(tmp_path: Path) -> None:
+    """The fallback must not reintroduce the scorer review rejected.
+
+    Re-deriving a best chunk is only safe here because there is no ranking to
+    discard. It is still only safe if it scores token overlap over lines. The
+    substring form picks the wikilink block every time.
+    """
+
+    from alicebot_api.onramp import bootstrap_database, resolve_db_path
+    from alicebot_api.sqlite_store import SQLiteVNextStore, sqlite_user_connection
+    from alicebot_api.vnext_retrieval import VNextRetrievalService
+
+    database = resolve_db_path(data_dir=str(tmp_path), db=None)
+    bootstrap_database(database, user_id=USER_ID, user_email="local@alice")
+
+    class _ChunkStore:
+        """Two chunks: one is the sentence, one is the link block that beats it
+        on substring matching and loses on token overlap."""
+
+        def list_source_chunks(self, source_id: str) -> list[dict[str, object]]:
+            return [
+                {
+                    "text": "## Related\n"
+                    "- [[discipline-is-the-art-of-not-betraying-yourself]]\n"
+                    "- [[the-art-of-discipline-and-not-betraying-yourself]]\n",
+                    "chunk_index": 0,
+                },
+                {"text": f"> {QUOTE}\n", "chunk_index": 1},
+            ]
+
+    with sqlite_user_connection(database, USER_ID) as connection:
+        service = VNextRetrievalService(SQLiteVNextStore(connection, USER_ID))
+        service.store = _ChunkStore()  # type: ignore[assignment]
+        winner = service._best_chunk_without_a_winner("source-1", query=QUOTE)
+
+    assert winner is not None
+    assert QUOTE in winner, (
+        f"the fallback picked the Related links block over the sentence: {winner!r}"
+    )
+
+
+def test_the_fallback_degrades_quietly_on_a_store_that_cannot_list_chunks(
+    tmp_path: Path,
+) -> None:
+    """Minimal stores and fakes must keep working, without an excerpt."""
+
+    from alicebot_api.onramp import bootstrap_database, resolve_db_path
+    from alicebot_api.sqlite_store import SQLiteVNextStore, sqlite_user_connection
+    from alicebot_api.vnext_retrieval import VNextRetrievalService
+
+    database = resolve_db_path(data_dir=str(tmp_path), db=None)
+    bootstrap_database(database, user_id=USER_ID, user_email="local@alice")
+
+    class _NoChunkListing:
+        pass
+
+    with sqlite_user_connection(database, USER_ID) as connection:
+        service = VNextRetrievalService(SQLiteVNextStore(connection, USER_ID))
+        service.store = _NoChunkListing()  # type: ignore[assignment]
+
+        assert service._best_chunk_without_a_winner("source-1", query=QUOTE) is None
+
+
 @pytest.mark.parametrize(
     "query",
     (

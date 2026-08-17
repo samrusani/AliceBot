@@ -1201,10 +1201,42 @@ def _compact_item(item: JsonObject) -> JsonObject:
 # directly. That is why the benchmark scored a capability the shipped tool did
 # not offer.
 SOURCE_EXCERPT_MAX_CHARS = 1_200
+# How many chunks of one source the fallback reader will scan when the chunk-FTS
+# stage ranked no winner for it. Bounded so a pathological 5,000-chunk document
+# cannot turn a pack compile into a full table scan; the head of a document is
+# where its summary and title live, so the cap costs little.
+SOURCE_FALLBACK_CHUNK_SCAN_LIMIT = 24
 
 
 def _tokens(text: str) -> set[str]:
     return {token for token in re.findall(r"\w+", text.lower()) if len(token) > 2}
+
+
+# A line that is nothing but list markers and link syntax: "- [[a-b-c]]",
+# "* [text](url)". Stripping those leaves no prose behind.
+_LINK_ONLY_LINE = re.compile(
+    r"^[\s>*+\-]*(?:\[\[[^\]]*\]\]|\[[^\]]*\]\([^)]*\)|<?https?://\S+>?)[\s,.;]*$"
+)
+
+
+def _line_overlap_score(line: str, query_tokens: set[str]) -> int:
+    """How well one line answers the query, for excerpt windowing.
+
+    Link-only lines score zero even when they match every query token. A
+    wikilink is usually the slug of the sentence it points at, so
+    "- [[discipline-is-the-art-of-not-betraying-yourself]]" tokenises to exactly
+    the same words as the sentence itself and ties with it. Ties went to the
+    earlier chunk, so a "## Related" block beat the quote it linked to and the
+    agent received a list of paths instead of the text it asked for.
+
+    Token overlap alone cannot separate those two lines, because at token level
+    they are the same. What separates them is that one is readable and the other
+    is a pointer.
+    """
+
+    if not line.strip() or _LINK_ONLY_LINE.match(line):
+        return 0
+    return len(query_tokens & _tokens(line))
 
 
 def _query_anchored_window(chunk: str, *, query: str, max_chars: int) -> str:
@@ -1224,7 +1256,7 @@ def _query_anchored_window(chunk: str, *, query: str, max_chars: int) -> str:
     lines = chunk.split("\n")
     best_index, best_score = 0, -1
     for index, line in enumerate(lines):
-        score = len(query_tokens & _tokens(line))
+        score = _line_overlap_score(line, query_tokens)
         if score > best_score:
             best_score, best_index = score, index
 
@@ -2434,6 +2466,54 @@ class VNextRetrievalService:
             stage_record[SOURCE_STAGE_TEMPORAL] = len(temporal_sources)
         return ranked_lists, stage_record
 
+    def _best_chunk_without_a_winner(self, source_id: str, *, query: str) -> str | None:
+        """An excerpt for a source the chunk-FTS stage never ranked.
+
+        Only ``chunk_fts`` records a winning chunk. Sources that entered the
+        pack through the provenance or title/recency lists have none, and
+        measured on 55 ranked sources from real LongMemEval questions that was
+        56% of them: retrieval judged them relevant and they reached the agent
+        as bare citations with no text. That is the same defect as packing no
+        sources at all, just narrower.
+
+        Re-deriving here discards nothing, because there is no ranking to
+        discard. It still must not repeat the mistake review caught: scoring is
+        token overlap over lines, never ``term in text``, which promoted a
+        wikilink block over the sentence being searched for.
+
+        Stores without chunk listing degrade to no excerpt rather than failing,
+        matching how every other optional stage capability is handled.
+        """
+
+        list_chunks = getattr(self.store, "list_source_chunks", None)
+        if not callable(list_chunks):
+            return None
+        try:
+            rows = list_chunks(source_id)
+        except Exception:  # pragma: no cover - store capability probe
+            return None
+
+        query_tokens = _tokens(query)
+        best_text: str | None = None
+        best_score = -1
+        for index, row in enumerate(rows or ()):
+            if not isinstance(row, Mapping):
+                continue
+            text = row.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            score = max(
+                (_line_overlap_score(line, query_tokens) for line in text.split("\n")),
+                default=0,
+            )
+            # Ties keep the earlier chunk, so a source with no lexical overlap
+            # at all yields its opening rather than an arbitrary interior slice.
+            if score > best_score:
+                best_score, best_text = score, text
+            if index >= SOURCE_FALLBACK_CHUNK_SCAN_LIMIT:
+                break
+        return best_text
+
     def _packable_source(self, item: JsonObject, *, query: str) -> JsonObject:
         """Compact a ranked source for packing: drop the document, add an excerpt.
 
@@ -2454,7 +2534,9 @@ class VNextRetrievalService:
                 key: value for key, value in metadata.items() if key != "raw_text"
             }
 
-        winner = self._winning_chunk_text.get(str(item.get("id")))
+        winner = self._winning_chunk_text.get(str(item.get("id"))) or self._best_chunk_without_a_winner(
+            str(item.get("id")), query=query
+        )
         if winner:
             compacted["excerpt"] = _query_anchored_window(
                 winner, query=query, max_chars=SOURCE_EXCERPT_MAX_CHARS
