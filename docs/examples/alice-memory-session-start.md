@@ -3,9 +3,9 @@
 Copy these examples into a host config. Do not drop them into this
 repository's `.cursor/hooks.json`; that would fire against the live vault.
 
-The wrapper reads the host payload on stdin, runs `alice-memory brief`
-against `ALICE_MEMORY_DATA_DIR` or `--data-dir` (default `~/.alice`), and
-prints JSON:
+The wrapper reads the host payload on stdin, compiles the same brief as
+`alice-memory brief` against `ALICE_MEMORY_DATA_DIR` or `--data-dir`
+(default `~/.alice`), and prints JSON:
 
 ```json
 {

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import UUID
 
 from alicebot_api.sqlite_store import SQLiteVNextStore, sqlite_user_connection
@@ -32,6 +32,7 @@ from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_retrieval import (
     MEMORY_SEARCHABLE_STATUSES,
     VNextRetrievalService,
+    VNextRetrievalStore,
     _ResolvedRetrievalScope,
     estimate_item_tokens,
 )
@@ -195,7 +196,7 @@ def compile_session_brief(
     )
     sources: list[JsonObject] = []
     if excerpt_query is not None:
-        service = VNextRetrievalService(store)
+        service = VNextRetrievalService(cast(VNextRetrievalStore, store))
         sources, _stage = service.search_source_excerpts(
             query=excerpt_query,
             domains=list(effective_domains),

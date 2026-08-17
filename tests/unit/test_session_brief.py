@@ -8,7 +8,6 @@ from __future__ import annotations
 import inspect
 import json
 import os
-import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -439,23 +438,26 @@ def test_cli_empty_data_dir_prints_empty_state_and_exits_zero(tmp_path: Path, ca
 
 
 def test_hook_emits_additional_context_json(tmp_path: Path, monkeypatch) -> None:
-    """A fake alice-memory on PATH must become valid additional_context JSON.
+    """A captured store must become valid additional_context JSON.
 
-    Fails if the wrapper prints the brief as raw text, or if it requires
-    a real vault.
+    Fails if the wrapper prints the brief as raw text.
     """
 
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    fake = bindir / "alice-memory"
-    fake.write_text("#!/bin/sh\necho '**source**: hook-canary-sentence'\n", encoding="utf-8")
-    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
-    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}")
+    context = _context(tmp_path, monkeypatch)
+    _capture(context, SOURCE_NOTE)
 
     completed = subprocess.run(
-        [sys.executable, "-m", "alicebot_api.session_start_hook"],
+        [
+            sys.executable,
+            "-m",
+            "alicebot_api.session_start_hook",
+            "--data-dir",
+            str(tmp_path),
+            "--user-id",
+            USER_ID,
+        ],
         cwd=REPO_ROOT,
-        env=_onramp_env() | {"PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"},
+        env=_onramp_env(),
         input="{}",
         check=False,
         capture_output=True,
@@ -463,78 +465,52 @@ def test_hook_emits_additional_context_json(tmp_path: Path, monkeypatch) -> None
     )
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)
-    assert payload["additional_context"] == "**source**: hook-canary-sentence"
-    assert payload["hookSpecificOutput"]["additionalContext"] == "**source**: hook-canary-sentence"
+    assert SOURCE_SENTENCE in payload["additional_context"]
+    assert SOURCE_SENTENCE in payload["hookSpecificOutput"]["additionalContext"]
     assert "Traceback" not in completed.stdout
 
 
-def test_hook_fails_open_when_brief_fails(tmp_path: Path) -> None:
+def test_hook_fails_open_when_brief_fails(tmp_path: Path, monkeypatch, capsys) -> None:
     """A failing brief still exits 0 and does not leak a traceback on stdout.
 
-    Fails if the wrapper failCloses, or if it forwards the child traceback.
+    Fails if the wrapper failCloses, or if it forwards the exception.
     """
 
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    fake = bindir / "alice-memory"
-    fake.write_text(
-        "#!/bin/sh\necho 'Traceback (most recent call last):' >&1\nexit 1\n",
-        encoding="utf-8",
-    )
-    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
-    env = _onramp_env()
-    env["PATH"] = f"{bindir}{os.pathsep}{env.get('PATH', '')}"
+    import io
 
-    completed = subprocess.run(
-        [sys.executable, "-m", "alicebot_api.session_start_hook"],
-        cwd=REPO_ROOT,
-        env=env,
-        input="{}",
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert completed.returncode == 0
-    assert completed.stdout.strip() == "{}"
-    assert "Traceback" not in completed.stdout
+    import alicebot_api.session_start_hook as hook_module
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("brief exploded")
+
+    monkeypatch.setattr(hook_module, "compile_local_session_brief", boom)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
+    assert hook_module.main(["--data-dir", str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "{}"
+    assert "Traceback" not in captured.out
 
 
-def test_hook_fails_open_markdown_without_json(tmp_path: Path) -> None:
+def test_hook_fails_open_markdown_without_json(tmp_path: Path, monkeypatch, capsys) -> None:
     """Markdown fail-open must not print JSON.
 
     Fails if ``_fail_open`` always writes ``{}`` after ``--format
     markdown`` is known.
     """
 
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    fake = bindir / "alice-memory"
-    fake.write_text(
-        "#!/bin/sh\necho 'Traceback (most recent call last):' >&1\nexit 1\n",
-        encoding="utf-8",
-    )
-    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
-    env = _onramp_env()
-    env["PATH"] = f"{bindir}{os.pathsep}{env.get('PATH', '')}"
+    import io
 
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "alicebot_api.session_start_hook",
-            "--format",
-            "markdown",
-        ],
-        cwd=REPO_ROOT,
-        env=env,
-        input="{}",
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert completed.returncode == 0
-    assert "{" not in completed.stdout
-    assert "Traceback" not in completed.stdout
+    import alicebot_api.session_start_hook as hook_module
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("brief exploded")
+
+    monkeypatch.setattr(hook_module, "compile_local_session_brief", boom)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
+    assert hook_module.main(["--data-dir", str(tmp_path), "--format", "markdown"]) == 0
+    captured = capsys.readouterr()
+    assert "{" not in captured.out
+    assert "Traceback" not in captured.out
 
 
 def test_capture_does_not_auto_promote(tmp_path: Path, monkeypatch) -> None:
