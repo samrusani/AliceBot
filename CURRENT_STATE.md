@@ -2,9 +2,9 @@
 
 ## Snapshot
 
-- `v0.15.6` is the latest published release. It is available from PyPI and
+- `v0.15.7` is the latest published release. It is available from PyPI and
   GitHub, its record is immutable, and exact artifact digests are in
-  `docs/release/v0.15.6-checksums.txt`. `v0.15.5` is the immediately prior
+  `docs/release/v0.15.7-checksums.txt`. `v0.15.6` is the immediately prior
   published release.
 - Earlier releases whose headlines still get referenced: `v0.13.1` shipped the
   Phase 4 core-roadmap work as **Replicated benchmark, faster SQLite at scale,
@@ -82,13 +82,13 @@ authoritative description; Phase 3 does not rewrite that history.
 
 ## Release Boundary
 
-`v0.15.6` is tagged, published, and immutable. Its authoritative records are:
+`v0.15.7` is tagged, published, and immutable. Its authoritative records are:
 
-- `docs/release/v0.15.6-release-notes.md`
-- `docs/release/v0.15.6-checksums.txt`
+- `docs/release/v0.15.7-release-notes.md`
+- `docs/release/v0.15.7-checksums.txt`
 
-`v0.15.5` is the immediately prior published release; its records are
-`docs/release/v0.15.5-release-notes.md` and `docs/release/v0.15.5-checksums.txt`.
+`v0.15.6` is the immediately prior published release; its records are
+`docs/release/v0.15.6-release-notes.md` and `docs/release/v0.15.6-checksums.txt`.
 
 Every earlier release remains published and immutable, with its own
 `docs/release/vX.Y.Z-release-notes.md` and `vX.Y.Z-checksums.txt`. That includes
@@ -143,9 +143,6 @@ the `v0.14.0` release notes.
 
 ## What `v0.15.6` Shipped
 
-`v0.15.6` is the latest published release and remains the install, checksum,
-and baseline reference.
-
 It fixes one defect: `alice_capture` flattened `raw_text` before chunking, so a
 document with 17 newlines was stored with 0 and chunking, which splits on blank
 lines, saw a single paragraph. A whole-vault note import therefore produced
@@ -161,12 +158,12 @@ Introduced in `v0.12.0`, so it survived every release between.
 Re-import notes on `v0.15.6`. Candidates extracted earlier came from flattened
 text and should be deleted rather than approved.
 
-## What `v0.15.7` Targets
+## What `v0.15.7` Shipped
 
-`v0.15.7` is the current release candidate. It is not published.
+`v0.15.7` is the latest published release and remains the install, checksum,
+and baseline reference.
 
-It takes the three changes already on `main` and not on PyPI. Imported
-documents become readable as sources: `alice_context_pack` and
+Imported documents are readable as sources: `alice_context_pack` and
 `alice_recall` return excerpts labelled
 `excerpt_kind: imported_source_material`. Candidates stay unsearchable
 as memories. `count=0` after capture is still the design.
