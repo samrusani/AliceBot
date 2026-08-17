@@ -239,6 +239,7 @@ What that means in practice:
 - [v0.11.1 release notes](https://github.com/samrusani/AliceMemory/blob/main/docs/release/v0.11.1-release-notes.md)
 - [v0.12.0 release notes](https://github.com/samrusani/AliceMemory/blob/main/docs/release/v0.12.0-release-notes.md)
 - [v0.15.6 release notes](https://github.com/samrusani/AliceMemory/blob/main/docs/release/v0.15.6-release-notes.md)
+- [v0.15.7 release notes](https://github.com/samrusani/AliceMemory/blob/main/docs/release/v0.15.7-release-notes.md)
 - [Release procedure](https://github.com/samrusani/AliceMemory/blob/main/RELEASING.md)
 - [Architecture](https://github.com/samrusani/AliceMemory/blob/main/ARCHITECTURE.md)
 - [Roadmap](https://github.com/samrusani/AliceMemory/blob/main/ROADMAP.md)
