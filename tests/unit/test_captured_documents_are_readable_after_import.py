@@ -592,6 +592,176 @@ def test_a_related_block_never_wins_whatever_marker_it_uses(
     )
 
 
+_FILLER = [f"Some unrelated prose line number {index} padding out the chunk." for index in range(40)]
+_ANCHOR = f"{QUOTE} Said plainly, and at some length, right here."
+
+
+@pytest.mark.parametrize("position", (0, 1, 20, 39, 40))
+def test_the_excerpt_always_contains_the_line_it_was_selected_for(position: int) -> None:
+    """The window used to drop its own anchor.
+
+    Growth is bidirectional but truncation was head-anchored: join lines lo..hi,
+    then cut with ``window[:max_chars]``. Whenever the best-matching line sat
+    near the END of the chunk, the excerpt kept the padding above it and cut the
+    anchor out. Reproduced on a 2,783-character chunk at a 300-character budget,
+    where the excerpt was entirely filler.
+
+    An excerpt that drops the line it was chosen for is worse than no excerpt,
+    because it reads like an answer.
+    """
+
+    from alicebot_api.vnext_retrieval import _query_anchored_window
+
+    lines = [*_FILLER[:position], _ANCHOR, *_FILLER[position:]]
+    chunk = "\n".join(lines)
+    assert len(chunk) > 300, "the fixture must exceed the budget or nothing is windowed"
+
+    excerpt = _query_anchored_window(chunk, query=QUOTE, max_chars=300)
+
+    assert _ANCHOR in excerpt, (
+        f"anchor at line {position} was cut out of its own excerpt. Got: {excerpt[:120]!r}"
+    )
+    assert len(excerpt) <= 300 + 1, "the window overshot its budget"
+
+
+def test_a_single_line_longer_than_the_budget_is_still_trimmed_to_it() -> None:
+    from alicebot_api.vnext_retrieval import _query_anchored_window
+
+    one_line = f"{QUOTE} " + ("padding words that go on and on " * 60)
+
+    excerpt = _query_anchored_window(one_line, query=QUOTE, max_chars=300)
+
+    assert len(excerpt) <= 301
+    assert excerpt.startswith("Discipline")
+
+
+@pytest.mark.parametrize(
+    ("label", "text"),
+    (
+        ("japanese", "これは日本語の非常に長い行です。" * 60),
+        ("url", "see https://example.com/" + ("a" * 2000)),
+        ("no-space", "x" * 2000),
+    ),
+)
+def test_text_without_spaces_still_yields_a_usable_excerpt(label: str, text: str) -> None:
+    """The word-boundary trim needed a floor.
+
+    ``rsplit(" ", 1)`` keeps only what precedes the LAST space in the slice.
+    Japanese and Chinese lines have no spaces at all, and a line opening with a
+    short word before a long unbroken token has its last space near the start.
+    Both collapsed the excerpt to a handful of characters while reporting a
+    1,200-character budget.
+    """
+
+    from alicebot_api.vnext_retrieval import _query_anchored_window
+
+    excerpt = _query_anchored_window(text + "\nz", query="日本語 example", max_chars=300)
+
+    assert len(excerpt) > 300 * 0.5, (
+        f"{label}: the excerpt collapsed to {len(excerpt)} characters of a 300 budget"
+    )
+    assert len(excerpt) <= 301
+
+
+def test_the_fallback_scan_cap_survives_malformed_rows() -> None:
+    """The cap check sat below two `continue`s, so rows that skipped never hit it.
+
+    A source whose rows are mostly empty or malformed therefore scanned however
+    many the store returned, which on SQLite is all of them.
+    """
+
+    from alicebot_api.vnext_retrieval import (
+        SOURCE_FALLBACK_CHUNK_SCAN_LIMIT,
+        VNextRetrievalService,
+    )
+
+    from collections.abc import Mapping as MappingABC
+
+    examined: list[int] = []
+
+    class _CountingRow(MappingABC):
+        """Records that the loop body actually reached this row.
+
+        Counting rows the store BUILT would prove nothing: the loop is what the
+        cap bounds, and asserting on the return value proves nothing either,
+        since a document of blank chunks returns None whether the cap fires or
+        not. That was the first version of this test, and it passed with the
+        cap moved back below the `continue`s.
+        """
+
+        def __init__(self, index: int) -> None:
+            self._index = index
+            self._data = {"text": "   ", "chunk_index": index}
+
+        def __getitem__(self, key: str) -> object:
+            examined.append(self._index)
+            return self._data[key]
+
+        def get(self, key: str, default: object = None) -> object:
+            examined.append(self._index)
+            return self._data.get(key, default)
+
+        def __iter__(self):
+            return iter(self._data)
+
+        def __len__(self) -> int:
+            return len(self._data)
+
+    class _MostlyEmptyStore:
+        def list_source_chunks(self, source_id: str) -> list[_CountingRow]:
+            return [_CountingRow(index) for index in range(500)]
+
+    service = VNextRetrievalService.__new__(VNextRetrievalService)
+    service._winning_chunk_text = {}
+    service.store = _MostlyEmptyStore()  # type: ignore[assignment]
+
+    assert service._best_chunk_without_a_winner("source-1", query=QUOTE) is None
+    assert len(set(examined)) <= SOURCE_FALLBACK_CHUNK_SCAN_LIMIT, (
+        f"the loop examined {len(set(examined))} rows against a cap of "
+        f"{SOURCE_FALLBACK_CHUNK_SCAN_LIMIT}. Rows that hit a `continue` are "
+        "skipping the cap check again."
+    )
+
+
+def test_the_scan_bound_is_pushed_into_stores_that_accept_one() -> None:
+    """Capping the Python loop does not stop the store materialising every row."""
+
+    from alicebot_api.vnext_retrieval import (
+        SOURCE_FALLBACK_CHUNK_SCAN_LIMIT,
+        VNextRetrievalService,
+    )
+
+    received: dict[str, object] = {}
+
+    class _LimitAwareStore:
+        def list_source_chunks(self, source_id: str, *, limit: int = 500) -> list[dict]:
+            received["limit"] = limit
+            return [{"text": f"> {QUOTE}", "chunk_index": 0}]
+
+    service = VNextRetrievalService.__new__(VNextRetrievalService)
+    service._winning_chunk_text = {}
+    service.store = _LimitAwareStore()  # type: ignore[assignment]
+    service._best_chunk_without_a_winner("source-1", query=QUOTE)
+
+    assert received["limit"] == SOURCE_FALLBACK_CHUNK_SCAN_LIMIT
+
+
+def test_a_store_without_a_limit_parameter_still_works() -> None:
+    """SQLite's reader takes no limit. Probing must not break it."""
+
+    from alicebot_api.vnext_retrieval import VNextRetrievalService
+
+    class _NoLimitStore:
+        def list_source_chunks(self, source_id: str) -> list[dict]:
+            return [{"text": f"> {QUOTE}", "chunk_index": 0}]
+
+    service = VNextRetrievalService.__new__(VNextRetrievalService)
+    service._winning_chunk_text = {}
+    service.store = _NoLimitStore()  # type: ignore[assignment]
+
+    assert service._best_chunk_without_a_winner("source-1", query=QUOTE) is not None
+
+
 def _service_with_chunks(tmp_path: Path, chunks: list[dict], *, winner: str | None = None):
     from alicebot_api.onramp import bootstrap_database, resolve_db_path
     from alicebot_api.sqlite_store import SQLiteVNextStore, sqlite_user_connection

@@ -1201,11 +1201,14 @@ def _compact_item(item: JsonObject) -> JsonObject:
 # directly. That is why the benchmark scored a capability the shipped tool did
 # not offer.
 SOURCE_EXCERPT_MAX_CHARS = 1_200
-# How many chunks of one source the fallback reader will scan when the chunk-FTS
-# stage ranked no winner for it. Bounded so a pathological 5,000-chunk document
-# cannot turn a pack compile into a full table scan; the head of a document is
-# where its summary and title live, so the cap costs little.
+# How many chunks of one source the fallback reader considers when the chunk-FTS
+# stage ranked no winner for it. Pushed into the store as a LIMIT where the
+# backend accepts one, and enforced in the loop either way. The head of a
+# document is where its title and summary live, so the cap costs little.
 SOURCE_FALLBACK_CHUNK_SCAN_LIMIT = 24
+# Least fraction of the budget a word-boundary trim may leave before the blunt
+# character cut is preferred instead.
+_WORD_TRIM_FLOOR = 0.6
 
 
 def _tokens(text: str) -> set[str]:
@@ -1295,6 +1298,46 @@ def _line_overlap_score(line: str, query_tokens: set[str]) -> int:
     return len(query_tokens & _tokens(line))
 
 
+def _call_with_optional_limit(
+    method: Callable[..., object], *args: object, limit: int
+) -> Sequence[object]:
+    """Call a store method with ``limit=`` only when its signature accepts it.
+
+    Store backends differ: the Postgres reader takes a limit, the SQLite one
+    does not, and test fakes take whatever they were written with. Probing
+    beats a try/except on TypeError, which would also swallow a real TypeError
+    raised inside the method.
+    """
+
+    try:
+        accepts = "limit" in inspect.signature(method).parameters
+    except (TypeError, ValueError):  # pragma: no cover - builtins/C callables
+        accepts = False
+    rows = method(*args, limit=limit) if accepts else method(*args)
+    return rows if isinstance(rows, Sequence) else ()
+
+
+def _trimmed_to_budget(text: str, max_chars: int) -> str:
+    """Cut one over-long line to budget, preferring a word boundary.
+
+    The word-boundary preference has a floor. ``rsplit(" ", 1)`` keeps only what
+    precedes the LAST space in the slice, which is fine for spaced prose and
+    destructive for anything else: a Japanese or Chinese line has no spaces at
+    all, and a line that opens with a short word followed by a long unbroken
+    token (a URL, a base64 blob) has its last space near the start. Both
+    collapse the excerpt to a few characters. When the tidy cut would throw away
+    most of the budget, take the blunt one instead.
+    """
+
+    if len(text) <= max_chars:
+        return text
+    sliced = text[:max_chars]
+    tidy = sliced.rsplit(" ", 1)[0]
+    if len(tidy) >= max_chars * _WORD_TRIM_FLOOR:
+        return tidy + "\u2026"
+    return sliced + "\u2026"
+
+
 def _query_anchored_window(chunk: str, *, query: str, max_chars: int) -> str:
     """Window a chunk around the line with the most query-token overlap.
 
@@ -1316,22 +1359,39 @@ def _query_anchored_window(chunk: str, *, query: str, max_chars: int) -> str:
         if score > best_score:
             best_score, best_index = score, index
 
-    # Grow outward from the best line until the budget is spent.
+    # The anchor line goes in FIRST and is never trimmed away by growth.
+    #
+    # This used to grow outward, join lo..hi, then cut with window[:max_chars].
+    # Growth is bidirectional and truncation was head-anchored, so whenever the
+    # anchor sat near the end of the chunk the excerpt kept the padding above it
+    # and cut the anchor itself out. Reproduced on a 2,783-character chunk at a
+    # 300-character budget: the excerpt was entirely filler and did not contain
+    # the line it had been selected for. An excerpt that drops its own reason
+    # for existing is worse than no excerpt, because it looks like an answer.
+    anchor = lines[best_index]
+    if len(anchor) >= max_chars:
+        return _trimmed_to_budget(anchor, max_chars)
+
     lo = hi = best_index
-    size = len(lines[best_index])
-    while size < max_chars and (lo > 0 or hi < len(lines) - 1):
-        if lo > 0 and (hi == len(lines) - 1 or len(lines[lo - 1]) <= len(lines[hi + 1])):
-            lo -= 1
-            size += len(lines[lo]) + 1
-        elif hi < len(lines) - 1:
-            hi += 1
-            size += len(lines[hi]) + 1
-        else:
+    size = len(anchor)
+    while lo > 0 or hi < len(lines) - 1:
+        grow_up = lo > 0 and (
+            hi == len(lines) - 1 or len(lines[lo - 1]) <= len(lines[hi + 1])
+        )
+        candidate = lines[lo - 1] if grow_up else lines[hi + 1] if hi < len(lines) - 1 else None
+        if candidate is None:
             break
-    window = "\n".join(lines[lo : hi + 1]).strip()
-    if len(window) > max_chars:
-        window = window[:max_chars].rsplit(" ", 1)[0] + "\u2026"
-    return window
+        # Only take the neighbour if it FITS. Stopping short of the budget is
+        # correct; overshooting and cutting afterwards is what lost the anchor.
+        if size + len(candidate) + 1 > max_chars:
+            break
+        if grow_up:
+            lo -= 1
+        else:
+            hi += 1
+        size += len(candidate) + 1
+
+    return "\n".join(lines[lo : hi + 1]).strip()
 
 
 def estimate_item_tokens(item: JsonObject) -> int:
@@ -2545,7 +2605,15 @@ class VNextRetrievalService:
         if not callable(list_chunks):
             return None
         try:
-            rows = list_chunks(source_id)
+            # Push the bound into the store when it accepts one. Without this
+            # the cap below bounds only the Python loop: SQLite's
+            # list_source_chunks has no LIMIT clause, so a 5,000-chunk document
+            # is fully materialised before the first comparison. Postgres
+            # defaults to 500. An earlier comment here claimed the cap prevented
+            # a table scan; it never did, and saying so was worse than the cost.
+            rows = _call_with_optional_limit(
+                list_chunks, source_id, limit=SOURCE_FALLBACK_CHUNK_SCAN_LIMIT
+            )
         except Exception:  # pragma: no cover - store capability probe
             return None
 
@@ -2553,6 +2621,11 @@ class VNextRetrievalService:
         best_text: str | None = None
         best_score = -1
         for index, row in enumerate(rows or ()):
+            # Checked FIRST. At the bottom of the body it sat after two
+            # `continue`s, so a source whose rows were mostly empty or malformed
+            # never reached it and the scan ran to whatever the store returned.
+            if index >= SOURCE_FALLBACK_CHUNK_SCAN_LIMIT:
+                break
             if not isinstance(row, Mapping):
                 continue
             text = row.get("text")
@@ -2566,8 +2639,6 @@ class VNextRetrievalService:
             # at all yields its opening rather than an arbitrary interior slice.
             if score > best_score:
                 best_score, best_text = score, text
-            if index >= SOURCE_FALLBACK_CHUNK_SCAN_LIMIT:
-                break
         return best_text
 
     def _packable_source(self, item: JsonObject, *, query: str) -> JsonObject:

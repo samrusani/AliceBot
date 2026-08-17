@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- The source excerpt now always contains the line it was selected for. Window
+  growth was bidirectional but truncation was head-anchored, so whenever the
+  best-matching line sat near the end of a chunk the excerpt kept the padding
+  above it and cut the anchor out. Reproduced on a 2,783-character chunk at a
+  300-character budget, where the excerpt was entirely filler. The window now
+  places the anchor first and only takes neighbours that fit, so nothing is cut
+  after the fact.
+
+- Excerpt trimming no longer collapses on text without spaces. The word-boundary
+  cut kept only what preceded the last space in the slice, which is fine for
+  spaced prose and destructive for Japanese, Chinese or a line opening with a
+  short word before a long unbroken token: those returned a handful of
+  characters against a 1,200-character budget. The tidy cut is now taken only
+  when it retains most of the budget.
+
+- The fallback chunk scan is bounded where it claimed to be. The cap check sat
+  below two `continue` statements, so a source of mostly blank or malformed rows
+  never reached it, and the limit was never passed to the store at all: SQLite's
+  reader has no LIMIT clause, so a 5,000-chunk document was fully materialised
+  before the first comparison. The bound is now checked first and pushed into
+  the store where the backend accepts one. The comment claiming it prevented a
+  table scan was wrong and is corrected.
+
 - A source whose best-ranked chunk is pure navigation now packs a readable one
   instead. `_query_anchored_window` returns a chunk verbatim when it already
   fits the budget, and that short-circuit skips line scoring entirely, so a
