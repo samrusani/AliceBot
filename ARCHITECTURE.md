@@ -3,13 +3,12 @@
 ## Scope Boundary
 
 
-- **Published boundary:** `v0.15.6` is the latest published release. It fixes
-  `alice_capture` flattening documents before they were chunked. Artifact
-  digests are in `docs/release/v0.15.6-checksums.txt`. Returning imported
-  text on the agent path is the `v0.15.7` candidate, not this release.
-- **Prior published:** `v0.15.5` is the immediately prior published release,
+- **Published boundary:** `v0.15.7` is the latest published release. Imported
+  documents are readable as sources. Artifact digests are in
+  `docs/release/v0.15.7-checksums.txt`.
+- **Prior published:** `v0.15.6` is the immediately prior published release,
   tagged and immutable, published on PyPI with Trusted Publishing provenance;
-  artifact digests are in `docs/release/v0.15.5-checksums.txt`. Every earlier
+  artifact digests are in `docs/release/v0.15.6-checksums.txt`. Every earlier
   release remains published and immutable with its own records under
   `docs/release/`.
 - **Shipped boundary:** `v0.12.0` shipped the Phase 3 structural refactor
@@ -223,7 +222,7 @@ usage justifies a separately reviewed boundary.
 
 ## Current Architectural Posture
 
-- `v0.15.6` is the latest published release and reconciles runtime and product
+- `v0.15.7` is the latest published release and reconciles runtime and product
   identity around the agent interface, retrieval/memory quality, and a
   real-host-proven single-tenant deployment contract.
 - Phase 3 reduces `main.py` to app assembly and shared middleware,
@@ -247,7 +246,5 @@ usage justifies a separately reviewed boundary.
   `docs/handoff/`; it does not constrain legitimate future production trees or
   approve them automatically.
 
-`v0.15.6` is the latest published release and remains the install, checksum,
+`v0.15.7` is the latest published release and remains the install, checksum,
 and baseline reference.
-
-`v0.15.7` is the current release candidate. It is not published.
