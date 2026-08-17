@@ -101,6 +101,23 @@ class CaptureResult:
             "candidate_memory_count": self.candidate_memory_count,
             "duplicate": self.duplicate,
             "errors": list(self.errors),
+            # Side by side, chunk_count and candidate_memory_count read as two
+            # counts of the same stored thing. They are not: the chunks answer
+            # a query on the next call, the candidates answer nothing until a
+            # reviewer promotes them. Saying which is which is the difference
+            # between an agent reporting "saved and findable" and an agent
+            # sending its user to a review queue it does not need to visit.
+            "retrieval": {
+                "searchable_now": "source_material" if self.chunk_count else "nothing",
+                "searchable_chunks": self.chunk_count,
+                "awaiting_review": self.candidate_memory_count,
+                "how": (
+                    "alice_recall and alice_context_pack return this document's "
+                    "matching passages now, as sources rather than as facts"
+                )
+                if self.chunk_count
+                else "nothing was indexed from this capture",
+            },
         }
 
 

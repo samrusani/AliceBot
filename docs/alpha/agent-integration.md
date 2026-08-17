@@ -48,9 +48,15 @@ One first call, then act, then write back:
 2. **Act** — perform the task with the pack as ground truth. Treat
    `staleness` notes and `contradicting_evidence` as caution signals.
 3. **Write back through Alice** — `alice_memory_commit` for explicit
-   "remember/save/add to memory" instructions; `alice_capture` for
-   inferred, external, generated, ambiguous, or lower-confidence facts
-   (source-backed, review-gated).
+   "remember/save/add to memory" instructions, and for any durable fact
+   worth keeping, including when the user has not asked. Use
+   `alice_capture` for documents, transcripts, external evidence and
+   generated output. Captured text is searchable immediately: its
+   matching passages come back from `alice_recall` and
+   `alice_context_pack` under `sources`, as material to read and quote
+   rather than as facts Alice asserts. The candidate memories capture
+   proposes stay unsearchable until a reviewer promotes them, so do not
+   tell the user an import is unusable until they clear a queue.
 4. **Close the loop** — `alice_memory_manage` for `confirm`/`undo`/`forget`
    follow-ups, and `alice_open_loops` to create or close open loops for
    unresolved work.

@@ -2,6 +2,103 @@
 
 ## Unreleased
 
+- The source excerpt now always contains the line it was selected for. Window
+  growth was bidirectional but truncation was head-anchored, so whenever the
+  best-matching line sat near the end of a chunk the excerpt kept the padding
+  above it and cut the anchor out. Reproduced on a 2,783-character chunk at a
+  300-character budget, where the excerpt was entirely filler. The window now
+  places the anchor first and only takes neighbours that fit, so nothing is cut
+  after the fact.
+
+- Excerpt trimming no longer collapses on text without spaces. The word-boundary
+  cut kept only what preceded the last space in the slice, which is fine for
+  spaced prose and destructive for Japanese, Chinese or a line opening with a
+  short word before a long unbroken token: those returned a handful of
+  characters against a 1,200-character budget. The tidy cut is now taken only
+  when it retains most of the budget.
+
+- The fallback chunk scan is bounded where it claimed to be. The cap check sat
+  below two `continue` statements, so a source of mostly blank or malformed rows
+  never reached it, and the limit was never passed to the store at all: SQLite's
+  reader has no LIMIT clause, so a 5,000-chunk document was fully materialised
+  before the first comparison. The bound is now checked first and pushed into
+  the store where the backend accepts one. The comment claiming it prevented a
+  table scan was wrong and is corrected.
+
+- A source whose best-ranked chunk is pure navigation now packs a readable one
+  instead. `_query_anchored_window` returns a chunk verbatim when it already
+  fits the budget, and that short-circuit skips line scoring entirely, so a
+  short "## Related" block reached the agent intact as a list of wikilink paths
+  for a query whose answer sat one chunk away. Fixing the line scorer never
+  touched this path, because the scorer is not called on it. A document that
+  genuinely is an index page keeps its links, since then the links are the
+  document.
+
+- `alice_recall`'s source excerpts now apply the same project, people and time
+  fence as `alice_context_pack`. Found by review before merge, on the branch
+  that added excerpts. Source scope is an exclusion filter, not a ranking hint:
+  `_source_stage_lists` drops rows failing `_row_matches_scope`. The first
+  `search_source_excerpts` took no scope parameter, so a project-locked recall
+  returned excerpts from documents the pack would have withheld. Reproduced at
+  `source_count=2` with a personal note present and closed at `1`. The parameter
+  is now required with no default, because a defaulted scope means "no fence"
+  for whoever forgets it next.
+
+- Excerpt line scoring recognises every list shape a real vault writes. The
+  first version matched only `-`, `*` and `+` markers, so an ordered
+  `## Related` block, an `![[embed]]` transclusion, a task-list row, or two
+  wikilinks on one line still out-scored the sentence they pointed at. Obsidian
+  writes all of those, and Obsidian import is what this work exists to serve.
+  Readable lines are unaffected: a marker with no link after it is still prose.
+
+- Captured documents are readable again. Importing a vault stored it and then
+  returned none of it: `alice_context_pack` packed sources as bibliography
+  entries with no text, and `alice_recall` searched memories only, so the
+  natural agent sequence (import, then recall) answered `count=0` for content
+  the store held. Three independent causes, each sufficient on its own. The
+  packed source carried `metadata_json`, which capture fills with the entire
+  document, and `estimate_item_tokens` JSON-dumps the item to price it, so one
+  235KB source was charged roughly 59k tokens against a 50k ceiling, was
+  rejected, and latched the truncation flag so every later section was dropped
+  too. The MCP compaction emitted six fields, none of them text. And recall
+  never looked at sources at all.
+
+  Packed sources now carry an excerpt of the chunk retrieval already ranked
+  best, windowed around its best-matching line and labelled
+  `excerpt_kind: imported_source_material`. `alice_recall` returns the same
+  under a separate `sources` key with its own `source_count`: `results` are
+  facts Alice asserts, `sources` are material the user imported and the agent
+  may read and quote. Nothing here promotes a candidate or makes one searchable
+  as a memory, and the promotion gate is unchanged.
+
+  Sources that reached the pack through the provenance or title/recency lists
+  had no ranked chunk and so arrived empty; on 55 ranked sources from real
+  LongMemEval questions that was 56% of them. They now get a fallback excerpt,
+  bounded to the first 24 chunks, and stores without chunk listing degrade to no
+  excerpt rather than failing. Coverage went from 44% to 100%.
+
+  Excerpt line scoring now ignores link-only lines. A wikilink is usually the
+  slug of the sentence it points at, so `- [[a-quote-slugified]]` tokenises to
+  exactly the same words as the quote and tied with it, and the tie handed a
+  `## Related` block the win over the sentence it linked to.
+
+- `alice_capture`'s tool description no longer claims `alice_recall` will not
+  return captured text, because it now does. The capture result also reports
+  which of its two counts is searchable now and which is awaiting review;
+  `chunk_count` beside `candidate_memory_count` read as two counts of the same
+  stored thing, and that wording is what had agents sending users to a review
+  queue they did not need to clear. The same correction lands in the README, the
+  MCP tool reference, and all four Hermes and OpenClaw skill documents.
+
+- The LongMemEval harness takes `ALICE_LME_EXCERPT_SOURCE`. The default,
+  `store_chunks`, is unchanged and reads every chunk directly from the store,
+  which is how 81.2% and every prior published number was produced and which no
+  MCP tool ever offered. `pack_excerpts` uses only what the context pack
+  returns, which is what an agent receives. Measured on 12 real questions with
+  retrieval only, the product path ranks identical sources and retains 87% of
+  the excerpts and 77.6% of the context. What that costs in accuracy is
+  unmeasured, and no claim should assume it is nothing.
+
 - An oversized paragraph now splits on its own lines before falling back to
   words. `_split_large_part` only sees paragraphs that alone exceed the chunk
   budget, and it was doing `part.split()` then rejoining with spaces, which cut

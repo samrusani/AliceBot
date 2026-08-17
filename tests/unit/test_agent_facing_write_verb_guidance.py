@@ -70,7 +70,26 @@ def test_shipped_descriptions_still_carry_the_v0154_correction() -> None:
     assert "immediately recallable" in commit
 
     capture = _description("alice_capture").lower()
-    assert "alice_recall will not return it" in capture, "alice_capture no longer warns that recall skips it"
+    # Until 2026-08-17 this asserted the literal sentence "alice_recall will not
+    # return it". That sentence was true when it was written and is false now:
+    # captured documents are returned by alice_recall under "sources". Pinning
+    # the sentence would have forced the copy to keep a claim the code had
+    # stopped honouring, which is the failure mode this file exists to catch.
+    #
+    # The property being protected was never that sentence. It is that capture
+    # and commit stay distinguishable, so an agent does not reach for capture
+    # when it means to assert a fact. That is what is pinned now.
+    assert "alice_memory_commit" in capture, "alice_capture no longer points at the commit verb"
+    assert "candidate" in capture, "alice_capture no longer says its proposed memories are candidates"
+    assert "unsearchable until" in capture, (
+        "alice_capture no longer says candidate memories stay unsearchable pending review"
+    )
+    assert "rather than as facts" in capture, (
+        "alice_capture no longer distinguishes returned source material from asserted fact"
+    )
+    assert "alice_recall will not return it" not in capture, (
+        "alice_capture has regained a claim that the source-excerpt path made false"
+    )
 
 
 @pytest.mark.parametrize("relative_path", AGENT_FACING_WRITE_VERB_DOCS)
@@ -95,18 +114,34 @@ def test_agent_facing_docs_permit_the_unasked_commit(relative_path: str) -> None
     assert "has not asked" in body, f"{relative_path} never tells an agent it may commit unasked"
 
 
-@pytest.mark.parametrize(
-    "relative_path",
-    (
-        "docs/alpha/mcp-tools.md",
-        "docs/alpha/hermes-skill.md",
-        "docs/alpha/openclaw-skill.md",
-        "agent-skills/hermes/alice-memory/SKILL.md",
-        "agent-skills/openclaw/alice-project-memory/SKILL.md",
-    ),
-)
-def test_agent_facing_docs_warn_that_capture_is_not_recallable(relative_path: str) -> None:
+@pytest.mark.parametrize("relative_path", AGENT_FACING_WRITE_VERB_DOCS)
+def test_agent_facing_docs_say_what_capture_does_and_does_not_make_searchable(
+    relative_path: str,
+) -> None:
+    """Both halves, because either one alone misleads.
+
+    Until 2026-08-17 this pinned "alice_recall will not return it", which was
+    true when written and became false when captured documents started coming
+    back under ``sources``. Pinning the sentence would have held the docs to a
+    claim the code had stopped honouring.
+
+    Both halves still have to be stated. Saying only that capture is searchable
+    invites an agent to treat imported text as fact; saying only that it is
+    review-gated sends the user to a queue they do not need to clear.
+    """
+
     body = _read(relative_path)
-    assert "alice_recall will not return it" in body, (
-        f"{relative_path} describes alice_capture without warning that recall skips it"
+
+    assert "alice_recall will not return it" not in body, (
+        f"{relative_path} has regained a claim the source-excerpt path made false"
+    )
+    assert "sources" in body, (
+        f"{relative_path} describes alice_capture without saying its passages come "
+        "back under sources"
+    )
+    assert "rather than as facts" in body, (
+        f"{relative_path} does not distinguish returned source material from asserted fact"
+    )
+    assert "unsearchable until" in body, (
+        f"{relative_path} no longer says candidate memories wait for review"
     )

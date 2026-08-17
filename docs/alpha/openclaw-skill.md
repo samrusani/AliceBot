@@ -11,7 +11,7 @@ Default loop — one first call, then act, then write back:
 1. Identify as OpenClaw.
 2. Call alice_context_pack ONCE, project-scoped, before build or review work. The pack already carries decisions, procedures, open loops, sources, and contradictions — do not run raw searches first.
 3. Perform the assigned task, treating staleness notes and contradicting_evidence as caution signals.
-4. Commit durable project memory via alice_memory_commit whenever you learn something worth keeping, including when the user has not asked you to remember it. It is the write verb for ordinary memory and what it records is immediately recallable. Use alice_capture for source documents, external evidence and raw notes: it is review-gated, so alice_recall will not return it until a human reviews it. Submit sprint outputs as reviewable agent outputs.
+4. Commit durable project memory via alice_memory_commit whenever you learn something worth keeping, including when the user has not asked you to remember it. It is the write verb for ordinary memory and what it records is immediately recallable. Use alice_capture for source documents, external evidence and raw notes: its passages come back from alice_recall under sources, as material to read and quote rather than as facts Alice asserts. It also proposes candidate memories, and those stay unsearchable until a reviewer promotes them, so do not tell the user their import is unusable until they clear a queue. Submit sprint outputs as reviewable agent outputs.
 5. Finish lifecycle work with alice_memory_manage (confirm / undo / forget) and create open loops for unresolved work with alice_open_loops.
 6. Do not access or write non-project personal domains.
 
@@ -58,8 +58,9 @@ under `scope` and `options`:
 }
 ```
 
-Sprint output, submitted through `alice_capture` so it lands review-gated. The field carrying
-the text is `raw_text`:
+Sprint output, submitted through `alice_capture`. The text itself is searchable from the next
+call onward and comes back under `sources`; only the candidate memories capture proposes are
+review-gated. The field carrying the text is `raw_text`:
 
 ```json
 {

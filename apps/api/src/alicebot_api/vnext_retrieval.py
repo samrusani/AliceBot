@@ -1180,6 +1180,220 @@ def _compact_item(item: JsonObject) -> JsonObject:
     return {key: value for key, value in item.items() if key != "deleted_at"}
 
 
+# A packed source carries an excerpt of its best-matching chunk, and never the
+# whole document.
+#
+# Before 2026-08-17 the pack emitted the source row as-is. Two consequences, both
+# measured on a real 226-document vault import:
+#
+# 1. ``metadata_json`` holds the entire captured document (``vnext_capture``
+#    writes ``raw_text`` there for evidence). ``estimate_item_tokens`` JSON-dumps
+#    the item, so one 235KB source was charged ~59k tokens against a 50k ceiling,
+#    was rejected, and latched the truncation flag so every later section was
+#    dropped too. Sources vanished from the pack entirely above ~30k characters.
+#
+# 2. Even under the ceiling, the MCP layer emitted only id/type/title/date, so an
+#    agent received a bibliography entry and never the text. Retrieval ranked the
+#    right chunks and then threw them away.
+#
+# The chunk text is what the agent actually needs, and it is what the LongMemEval
+# harness has always rendered for itself by reading ``list_source_chunks``
+# directly. That is why the benchmark scored a capability the shipped tool did
+# not offer.
+SOURCE_EXCERPT_MAX_CHARS = 1_200
+# How many chunks of one source the fallback reader considers when the chunk-FTS
+# stage ranked no winner for it. Pushed into the store as a LIMIT where the
+# backend accepts one, and enforced in the loop either way. The head of a
+# document is where its title and summary live, so the cap costs little.
+SOURCE_FALLBACK_CHUNK_SCAN_LIMIT = 24
+# Least fraction of the budget a word-boundary trim may leave before the blunt
+# character cut is preferred instead.
+_WORD_TRIM_FLOOR = 0.6
+
+
+def _tokens(text: str) -> set[str]:
+    return {token for token in re.findall(r"\w+", text.lower()) if len(token) > 2}
+
+
+# A line that is nothing but list markers and link syntax: "- [[a-b-c]]",
+# "1. [text](url)", "![[embed]]", "- [[a]] [[b]]". Stripping those leaves no
+# prose behind, so the line is a pointer and must not out-score the sentence it
+# points at.
+#
+# The marker prefix is a group of ALTERNATIVES, not one character class. The
+# first version used the class [\s>*+\-]*, which cannot express "1." or a task
+# checkbox as a unit, so an ordered "## Related" list scored full token overlap
+# and won exactly the way an unordered one used to. Obsidian vaults, which is
+# what this branch exists to make readable, write both forms, plus "![[embed]]"
+# transclusions and several links on one row.
+#
+# Alternatives rather than a class also keeps the guard narrow: "- [ ] Ship the
+# fix" has a marker and no link, so it is still readable prose and still scores.
+_LINK_ONLY_LINE = re.compile(
+    r"""^
+    (?:\s | > | [*+\-\u2022\u2013\u2014] | \d+[.)] | \[[ xX]\])*
+    (?:
+        !?\[\[[^\]]*\]\]
+      | !?\[[^\]]*\]\((?:[^()]|\([^()]*\))*\)
+      | !?\[[^\]]*\]\[[^\]]*\]
+      | \[[^\]]*\]:\s*\S+
+      | <?https?://\S+>?
+    )
+    (?:[\s,.;|]+(?:
+        !?\[\[[^\]]*\]\]
+      | !?\[[^\]]*\]\((?:[^()]|\([^()]*\))*\)
+      | !?\[[^\]]*\]\[[^\]]*\]
+      | <?https?://\S+>?
+    ))*
+    [\s,.;!?]*$""",
+    re.VERBOSE,
+)
+
+
+# A line carrying no content of its own: a markdown heading, a horizontal
+# rule, or a table separator.
+_LABEL_ONLY_LINE = re.compile(r"^(?:#{1,6}\s.*|[-*_=]{3,}|\|?[\s:|-]+\|?)$")
+
+
+def _has_readable_line(text: str) -> bool:
+    """Does this chunk contain anything a person could read, or only pointers?
+
+    ``_query_anchored_window`` returns a chunk verbatim when it already fits the
+    budget, which skips line scoring entirely. So a SHORT chunk of nothing but
+    wikilinks reached the agent intact, as a list of paths, even though every
+    one of its lines scores zero. That is the Related-block defect surviving in
+    the one case the line scorer never gets to see.
+    """
+
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped or _LINK_ONLY_LINE.match(line):
+            continue
+        # A bare heading or rule is a label for content, not the content. A
+        # "## Related" block is exactly a label plus pointers, and counting the
+        # label as readable is what let that block through the first time.
+        if _LABEL_ONLY_LINE.match(stripped):
+            continue
+        return True
+    return False
+
+
+def _line_overlap_score(line: str, query_tokens: set[str]) -> int:
+    """How well one line answers the query, for excerpt windowing.
+
+    Link-only lines score zero even when they match every query token. A
+    wikilink is usually the slug of the sentence it points at, so
+    "- [[discipline-is-the-art-of-not-betraying-yourself]]" tokenises to exactly
+    the same words as the sentence itself and ties with it. Ties went to the
+    earlier chunk, so a "## Related" block beat the quote it linked to and the
+    agent received a list of paths instead of the text it asked for.
+
+    Token overlap alone cannot separate those two lines, because at token level
+    they are the same. What separates them is that one is readable and the other
+    is a pointer.
+    """
+
+    if not line.strip() or _LINK_ONLY_LINE.match(line):
+        return 0
+    return len(query_tokens & _tokens(line))
+
+
+def _call_with_optional_limit(
+    method: Callable[..., object], *args: object, limit: int
+) -> Sequence[object]:
+    """Call a store method with ``limit=`` only when its signature accepts it.
+
+    Store backends differ: the Postgres reader takes a limit, the SQLite one
+    does not, and test fakes take whatever they were written with. Probing
+    beats a try/except on TypeError, which would also swallow a real TypeError
+    raised inside the method.
+    """
+
+    try:
+        accepts = "limit" in inspect.signature(method).parameters
+    except (TypeError, ValueError):  # pragma: no cover - builtins/C callables
+        accepts = False
+    rows = method(*args, limit=limit) if accepts else method(*args)
+    return rows if isinstance(rows, Sequence) else ()
+
+
+def _trimmed_to_budget(text: str, max_chars: int) -> str:
+    """Cut one over-long line to budget, preferring a word boundary.
+
+    The word-boundary preference has a floor. ``rsplit(" ", 1)`` keeps only what
+    precedes the LAST space in the slice, which is fine for spaced prose and
+    destructive for anything else: a Japanese or Chinese line has no spaces at
+    all, and a line that opens with a short word followed by a long unbroken
+    token (a URL, a base64 blob) has its last space near the start. Both
+    collapse the excerpt to a few characters. When the tidy cut would throw away
+    most of the budget, take the blunt one instead.
+    """
+
+    if len(text) <= max_chars:
+        return text
+    sliced = text[:max_chars]
+    tidy = sliced.rsplit(" ", 1)[0]
+    if len(tidy) >= max_chars * _WORD_TRIM_FLOOR:
+        return tidy + "\u2026"
+    return sliced + "\u2026"
+
+
+def _query_anchored_window(chunk: str, *, query: str, max_chars: int) -> str:
+    """Window a chunk around the line with the most query-token overlap.
+
+    Scoring is per LINE and by token-set overlap, not ``term in chunk``. The
+    substring form scored a whole "## Related" block full of wikilink paths
+    above the line actually containing the sentence, because the query terms all
+    appear inside the URLs. Overlap on tokenised lines picks the sentence.
+    """
+
+    chunk = chunk.strip()
+    if len(chunk) <= max_chars:
+        return chunk
+
+    query_tokens = _tokens(query)
+    lines = chunk.split("\n")
+    best_index, best_score = 0, -1
+    for index, line in enumerate(lines):
+        score = _line_overlap_score(line, query_tokens)
+        if score > best_score:
+            best_score, best_index = score, index
+
+    # The anchor line goes in FIRST and is never trimmed away by growth.
+    #
+    # This used to grow outward, join lo..hi, then cut with window[:max_chars].
+    # Growth is bidirectional and truncation was head-anchored, so whenever the
+    # anchor sat near the end of the chunk the excerpt kept the padding above it
+    # and cut the anchor itself out. Reproduced on a 2,783-character chunk at a
+    # 300-character budget: the excerpt was entirely filler and did not contain
+    # the line it had been selected for. An excerpt that drops its own reason
+    # for existing is worse than no excerpt, because it looks like an answer.
+    anchor = lines[best_index]
+    if len(anchor) >= max_chars:
+        return _trimmed_to_budget(anchor, max_chars)
+
+    lo = hi = best_index
+    size = len(anchor)
+    while lo > 0 or hi < len(lines) - 1:
+        grow_up = lo > 0 and (
+            hi == len(lines) - 1 or len(lines[lo - 1]) <= len(lines[hi + 1])
+        )
+        candidate = lines[lo - 1] if grow_up else lines[hi + 1] if hi < len(lines) - 1 else None
+        if candidate is None:
+            break
+        # Only take the neighbour if it FITS. Stopping short of the budget is
+        # correct; overshooting and cutting afterwards is what lost the anchor.
+        if size + len(candidate) + 1 > max_chars:
+            break
+        if grow_up:
+            lo -= 1
+        else:
+            hi += 1
+        size += len(candidate) + 1
+
+    return "\n".join(lines[lo : hi + 1]).strip()
+
+
 def estimate_item_tokens(item: JsonObject) -> int:
     """Estimate the token cost of one pack item (chars/4 heuristic)."""
     try:
@@ -1512,6 +1726,7 @@ class VNextRetrievalService:
         reranker_provider: RerankProvider | None = None,
     ) -> None:
         self.store = store
+        self._winning_chunk_text: dict[str, str] = {}
         self.embedding_provider = embedding_provider if embedding_provider is not None else get_embedding_provider()
         # ---- reranker (disclosed precision stage) begin -------------------
         # None (no env config, no injected provider) keeps the rerank stage
@@ -2175,6 +2390,9 @@ class VNextRetrievalService:
         failing, so minimal stores and test fakes keep working. The stage
         record reports each list's candidate count under its stage key.
         """
+        # source id -> the chunk this stage ranked best, for the packed
+        # excerpt. Reset per run so a previous query's winner is never reused.
+        self._winning_chunk_text = {}
         scope = scope or _ResolvedRetrievalScope(
             projects=frozenset(), people=frozenset(), window_start=None, window_end=None
         )
@@ -2223,6 +2441,14 @@ class VNextRetrievalService:
                         continue
                     seen_source_ids.add(str(source_id))
                     ordered_source_ids.append(str(source_id))
+                    # Remember the FTS-winning chunk for this source. Rows
+                    # arrive best-first, so the first one seen for a source IS
+                    # the winner. Re-deriving it later by listing every chunk
+                    # and substring-matching promotes link-heavy sections such
+                    # as "## Related" over the sentence the user asked for.
+                    text = row.get("text")
+                    if isinstance(text, str) and text.strip():
+                        self._winning_chunk_text.setdefault(str(source_id), text)
                 return _resolve_sources(ordered_source_ids)
 
             def _fetch_chunk_sources(
@@ -2355,6 +2581,174 @@ class VNextRetrievalService:
         if anchor is not None:
             stage_record[SOURCE_STAGE_TEMPORAL] = len(temporal_sources)
         return ranked_lists, stage_record
+
+    def _best_chunk_without_a_winner(self, source_id: str, *, query: str) -> str | None:
+        """An excerpt for a source the chunk-FTS stage never ranked.
+
+        Only ``chunk_fts`` records a winning chunk. Sources that entered the
+        pack through the provenance or title/recency lists have none, and
+        measured on 55 ranked sources from real LongMemEval questions that was
+        56% of them: retrieval judged them relevant and they reached the agent
+        as bare citations with no text. That is the same defect as packing no
+        sources at all, just narrower.
+
+        Re-deriving here discards nothing, because there is no ranking to
+        discard. It still must not repeat the mistake review caught: scoring is
+        token overlap over lines, never ``term in text``, which promoted a
+        wikilink block over the sentence being searched for.
+
+        Stores without chunk listing degrade to no excerpt rather than failing,
+        matching how every other optional stage capability is handled.
+        """
+
+        list_chunks = getattr(self.store, "list_source_chunks", None)
+        if not callable(list_chunks):
+            return None
+        try:
+            # Push the bound into the store when it accepts one. Without this
+            # the cap below bounds only the Python loop: SQLite's
+            # list_source_chunks has no LIMIT clause, so a 5,000-chunk document
+            # is fully materialised before the first comparison. Postgres
+            # defaults to 500. An earlier comment here claimed the cap prevented
+            # a table scan; it never did, and saying so was worse than the cost.
+            rows = _call_with_optional_limit(
+                list_chunks, source_id, limit=SOURCE_FALLBACK_CHUNK_SCAN_LIMIT
+            )
+        except Exception:  # pragma: no cover - store capability probe
+            return None
+
+        query_tokens = _tokens(query)
+        best_text: str | None = None
+        best_score = -1
+        for index, row in enumerate(rows or ()):
+            # Checked FIRST. At the bottom of the body it sat after two
+            # `continue`s, so a source whose rows were mostly empty or malformed
+            # never reached it and the scan ran to whatever the store returned.
+            if index >= SOURCE_FALLBACK_CHUNK_SCAN_LIMIT:
+                break
+            if not isinstance(row, Mapping):
+                continue
+            text = row.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            score = max(
+                (_line_overlap_score(line, query_tokens) for line in text.split("\n")),
+                default=0,
+            )
+            # Ties keep the earlier chunk, so a source with no lexical overlap
+            # at all yields its opening rather than an arbitrary interior slice.
+            if score > best_score:
+                best_score, best_text = score, text
+        return best_text
+
+    def _packable_source(self, item: JsonObject, *, query: str) -> JsonObject:
+        """Compact a ranked source for packing: drop the document, add an excerpt.
+
+        The excerpt is the chunk the FTS stage already ranked highest for this
+        source, windowed around its best-matching line. Re-deriving a "best"
+        chunk here would discard the ranking that retrieval just did.
+        """
+
+        compacted = _compact_item(item)
+
+        # Drop ONLY the duplicated document, never the whole blob. Temporal
+        # precompute reads session_date and friends out of metadata_json via
+        # _source_event_time, so stripping it wholesale silently un-dates every
+        # imported source and breaks the derived timeline.
+        metadata = compacted.get("metadata_json")
+        if isinstance(metadata, Mapping):
+            compacted["metadata_json"] = {
+                key: value for key, value in metadata.items() if key != "raw_text"
+            }
+
+        source_id = str(item.get("id"))
+        winner = self._winning_chunk_text.get(source_id)
+        if winner is not None and not _has_readable_line(winner):
+            # The stage ranked a chunk that is pure navigation. Prefer any chunk
+            # of this source with real prose in it; an excerpt of link paths
+            # tells the agent nothing it can quote. If the whole document is
+            # links, keep the winner, because then that IS the document.
+            readable = self._best_chunk_without_a_winner(source_id, query=query)
+            if readable is not None and _has_readable_line(readable):
+                winner = readable
+        if winner is None:
+            winner = self._best_chunk_without_a_winner(source_id, query=query)
+        if winner:
+            compacted["excerpt"] = _query_anchored_window(
+                winner, query=query, max_chars=SOURCE_EXCERPT_MAX_CHARS
+            )
+            compacted["excerpt_kind"] = "imported_source_material"
+        return compacted
+
+    def search_source_excerpts(
+        self,
+        *,
+        query: str,
+        domains: list[str],
+        sensitivity_allowed: list[str],
+        limit: int,
+        scope: _ResolvedRetrievalScope | None,
+        winning_memories: Sequence[JsonObject] = (),
+    ) -> tuple[list[JsonObject], JsonObject]:
+        """Ranked imported source material for a query, with readable excerpts.
+
+        What comes back is material the agent can read and quote, NOT facts it
+        should assert: every entry carries ``excerpt_kind`` saying so. Committed
+        memories remain the only channel for facts, and nothing here promotes a
+        candidate or makes one searchable as a memory.
+
+        ``scope`` is REQUIRED and has no default, deliberately. This method is a
+        read path over stored documents, and ``_source_stage_lists`` treats scope
+        as an exclusion filter, not a ranking hint: ``_resolve_sources`` drops
+        every row that fails ``_row_matches_scope``. The first version of this
+        method took no scope at all, so ``alice_recall`` returned excerpts from
+        sources a project-scoped agent was never allowed to read, while
+        ``alice_context_pack`` filtered the same rows correctly.
+
+        Making the parameter required rather than optional is the point. An
+        optional scope defaults to "no fence" and reintroduces that leak the
+        moment someone adds a caller and forgets. ``None`` is still accepted,
+        because an unscoped owner query is legitimate, but it has to be written
+        down at the call site.
+
+        NOT the only source reader. ``compile_context_pack`` runs its own
+        ``_source_stage_lists`` -> ``_fused_candidates`` -> ``_packable_source``
+        sequence, because it interleaves stages this method has no business
+        carrying: the coverage/aggregation gate and the instance-diversity pass.
+        An earlier version of this docstring claimed the pack routed here, which
+        was never true. Saying so plainly matters, because it is the reason both
+        paths have to be fenced and tested separately: they share the stage
+        builder and the compaction, not the call sequence.
+
+        No ``anchor`` parameter, on purpose. One was added here for symmetry
+        with the pack and no caller ever passed it, which is untested surface
+        that reads as a supported feature. Recall's ``since``/``until`` become
+        part of ``scope``, which fences; a temporal anchor is a rank boost and
+        is the pack's own concern. Add it back when something needs it, with a
+        test.
+        """
+
+        source_lists, stage_record = self._source_stage_lists(
+            query=query,
+            domains=domains,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=limit,
+            winning_memories=winning_memories,
+            scope=scope,
+        )
+        candidates = _fused_candidates(
+            source_lists,
+            target_type="source",
+            domains=domains,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=limit,
+        )
+        excerpts = [
+            self._packable_source(candidate.item, query=query)
+            for candidate in candidates
+            if candidate.selected
+        ]
+        return excerpts, stage_record
 
     def compile_context_pack(self, request: VNextRetrievalRequest) -> JsonObject:
         if isinstance(request.max_items, bool) or not isinstance(request.max_items, int):
@@ -2907,7 +3301,11 @@ class VNextRetrievalService:
         # pair leaks into the same pack, the replacement packs directly
         # above its superseded ancestor; every other item keeps its order.
         ordered_memories, supersession_reorders = _prefer_current_versions(ordered_memories)
-        ranked_sources = [_compact_item(candidate.item) for candidate in source_candidates if candidate.selected]
+        ranked_sources = [
+            self._packable_source(candidate.item, query=request.query)
+            for candidate in source_candidates
+            if candidate.selected
+        ]
         ranked_open_loops = [_compact_item(candidate.item) for candidate in open_loop_candidates if candidate.selected]
 
         # Greedy token-budget packing, section by section in the strategy's
