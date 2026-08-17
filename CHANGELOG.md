@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- A new session can read labelled facts and imported sources without the
+  agent calling a tool. `alice-memory brief` prints markdown from the
+  vnext store (`**fact**`, `**source**`, `**open loop**`).
+  `alice-memory-session-start` wraps that for Cursor `sessionStart` and
+  Claude Code `SessionStart`, and fails open. The brief is compiled
+  in-process so the host does not need `alice-memory` on PATH.
+
+  Import stays a source. Commit stays a fact. Capture does not
+  auto-promote, and candidates stay unsearchable as memories. The three
+  `effective_*` fences are required kwargs with no default.
+  `search_source_excerpts` receives the post-policy project scope at the
+  call site. A project-locked no-query brief no longer prints the
+  empty-state line when eight newer other-project sources fill the event
+  window; the fence is applied before the scan cap.
+
+  Not in this cut: the eleven-tool MCP surface, `alice-memory doctor`,
+  and `demo --vault`. `alice_recent_changes` is still the unfenced
+  legacy path left alone after D7.
+
 ## v0.15.7 — 2026-08-17
 
 - `alice_resume` and `alice_recent_decisions` now apply the policy fence they
