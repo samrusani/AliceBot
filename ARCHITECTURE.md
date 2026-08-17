@@ -4,9 +4,9 @@
 
 
 - **Published boundary:** `v0.15.6` is the latest published release. It fixes
-  `alice_capture` flattening documents before they were chunked, which had made
-  imported notes unsearchable by their own contents; artifact digests are in
-  `docs/release/v0.15.6-checksums.txt`.
+  `alice_capture` flattening documents before they were chunked. Artifact
+  digests are in `docs/release/v0.15.6-checksums.txt`. Returning imported
+  text on the agent path is the `v0.15.7` candidate, not this release.
 - **Prior published:** `v0.15.5` is the immediately prior published release,
   tagged and immutable, published on PyPI with Trusted Publishing provenance;
   artifact digests are in `docs/release/v0.15.5-checksums.txt`. Every earlier
@@ -249,3 +249,5 @@ usage justifies a separately reviewed boundary.
 
 `v0.15.6` is the latest published release and remains the install, checksum,
 and baseline reference.
+
+`v0.15.7` is the current release candidate. It is not published.

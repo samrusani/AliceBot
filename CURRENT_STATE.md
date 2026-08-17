@@ -161,6 +161,10 @@ Introduced in `v0.12.0`, so it survived every release between.
 Re-import notes on `v0.15.6`. Candidates extracted earlier came from flattened
 text and should be deleted rather than approved.
 
+## What `v0.15.7` Targets
+
+`v0.15.7` is the current release candidate. It is not published.
+
 ## The `v0.15.0` tag was never published
 
 The commit it points at carried a release-gate step that could not run on a CI

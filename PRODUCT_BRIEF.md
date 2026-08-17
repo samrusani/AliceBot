@@ -16,8 +16,9 @@ Agent developers — people building or operating AI agents who need durable, ex
 
 ## Current Posture
 - `v0.15.6` is the latest published release and immutable baseline. It fixes
-  `alice_capture` flattening documents before they were chunked, so imported
-  notes are searchable by their own contents. `v0.15.5` is the immediately prior
+  `alice_capture` flattening documents before they were chunked. Imported
+  notes keep their structure on that release; they become readable as
+  sources in the `v0.15.7` candidate. `v0.15.5` is the immediately prior
   published release. The PyPI wheel and source distribution have Trusted
   Publishing provenance, with exact digests in
   `docs/release/v0.15.6-checksums.txt`.
@@ -66,3 +67,5 @@ Agent developers — people building or operating AI agents who need durable, ex
 
 `v0.15.6` is the latest published release and remains the install, checksum,
 and baseline reference.
+
+`v0.15.7` is the current release candidate. It is not published.
