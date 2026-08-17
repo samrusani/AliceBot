@@ -52,6 +52,7 @@ from alicebot_api.vnext_retrieval import (
     reciprocal_rank_fusion,
 )
 
+from .context import _COMPACT_SOURCE_FIELDS, _compact_items
 from .projects import _handle_alice_vnext_open_loops
 from .retrieval_shared import (
     _SQLITE_NEXT_ACTION_MEMORY_TYPES,
@@ -124,6 +125,9 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
         maximum=_RECALL_MAX_LIMIT,
     )
     debug = _parse_bool(arguments, key="debug", default=False)
+    # Defaults on. An agent that imported a vault and then recalls from it
+    # should not have to know a flag exists to see its own documents.
+    include_sources = _parse_bool(arguments, key="include_sources", default=True)
     context_depth, budget_strategy = _parse_context_pack_tuning(arguments)
     if context_depth == CONTEXT_DEPTH_MINIMAL:
         # Same tier semantics as the context-pack compiler: the cheapest
@@ -205,11 +209,33 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
                 _compact_recall_result(item, score=scores[str(item.get("id"))], provenance_count=provenance_count)
             )
 
+        # Imported source material, alongside the memories rather than mixed
+        # into them. Without this, the natural agent sequence — import a vault,
+        # then recall from it — answers count=0 for content the store holds and
+        # retrieval can already rank, because captured documents land as
+        # unsearchable candidates and recall only ever searched memories.
+        source_excerpts: list[JsonObject] = []
+        if include_sources:
+            raw_sources, _sources_stage = service.search_source_excerpts(
+                query=query,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                limit=limit,
+                winning_memories=ordered_rows,
+            )
+            source_excerpts = _compact_items(raw_sources, _COMPACT_SOURCE_FIELDS)
+
     payload: dict[str, object] = {
         "query": query,
         "results": results,
         "count": len(results),
     }
+    if source_excerpts:
+        # Deliberately a separate key with its own count. These are documents
+        # the user imported, quotable but not asserted; results[] stays the
+        # channel for facts the system stands behind.
+        payload["sources"] = source_excerpts
+        payload["source_count"] = len(source_excerpts)
     if matched_entities:
         # WHO the results are about: entities the query resolved to via the
         # graph stage. Only present when the query matched entities.

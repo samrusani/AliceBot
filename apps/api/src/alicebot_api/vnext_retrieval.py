@@ -2462,6 +2462,48 @@ class VNextRetrievalService:
             compacted["excerpt_kind"] = "imported_source_material"
         return compacted
 
+    def search_source_excerpts(
+        self,
+        *,
+        query: str,
+        domains: list[str],
+        sensitivity_allowed: list[str],
+        limit: int,
+        winning_memories: Sequence[JsonObject] = (),
+    ) -> tuple[list[JsonObject], JsonObject]:
+        """Ranked imported source material for a query, with readable excerpts.
+
+        The one place any caller should get source excerpts from. The context
+        pack, ``alice_recall`` and the evaluation harness all route here, so a
+        query cannot rank one way for the benchmark and another way for a user.
+
+        What comes back is material the agent can read and quote, NOT facts it
+        should assert: every entry carries ``excerpt_kind`` saying so. Committed
+        memories remain the only channel for facts, and nothing here promotes a
+        candidate or makes one searchable as a memory.
+        """
+
+        source_lists, stage_record = self._source_stage_lists(
+            query=query,
+            domains=domains,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=limit,
+            winning_memories=winning_memories,
+        )
+        candidates = _fused_candidates(
+            source_lists,
+            target_type="source",
+            domains=domains,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=limit,
+        )
+        excerpts = [
+            self._packable_source(candidate.item, query=query)
+            for candidate in candidates
+            if candidate.selected
+        ]
+        return excerpts, stage_record
+
     def compile_context_pack(self, request: VNextRetrievalRequest) -> JsonObject:
         if isinstance(request.max_items, bool) or not isinstance(request.max_items, int):
             raise VNextRetrievalValidationError("max_items must be an integer")
@@ -3541,9 +3583,6 @@ class VNextRetrievalService:
         Stores without ``list_beliefs`` (e.g. the SQLite on-ramp) degrade
         to an empty section with an honest stage status.
         """
-        # Per-compile map of source id -> the chunk the FTS stage ranked best.
-        # Reset each call: a stale entry would attach a previous query's excerpt.
-        self._winning_chunk_text: dict[str, str] = {}
         if not requested:
             return [], not_requested_status
         list_beliefs = getattr(self.store, "list_beliefs", None)

@@ -70,7 +70,26 @@ def test_shipped_descriptions_still_carry_the_v0154_correction() -> None:
     assert "immediately recallable" in commit
 
     capture = _description("alice_capture").lower()
-    assert "alice_recall will not return it" in capture, "alice_capture no longer warns that recall skips it"
+    # Until 2026-08-17 this asserted the literal sentence "alice_recall will not
+    # return it". That sentence was true when it was written and is false now:
+    # captured documents are returned by alice_recall under "sources". Pinning
+    # the sentence would have forced the copy to keep a claim the code had
+    # stopped honouring, which is the failure mode this file exists to catch.
+    #
+    # The property being protected was never that sentence. It is that capture
+    # and commit stay distinguishable, so an agent does not reach for capture
+    # when it means to assert a fact. That is what is pinned now.
+    assert "alice_memory_commit" in capture, "alice_capture no longer points at the commit verb"
+    assert "candidate" in capture, "alice_capture no longer says its proposed memories are candidates"
+    assert "unsearchable until" in capture, (
+        "alice_capture no longer says candidate memories stay unsearchable pending review"
+    )
+    assert "rather than as facts" in capture, (
+        "alice_capture no longer distinguishes returned source material from asserted fact"
+    )
+    assert "alice_recall will not return it" not in capture, (
+        "alice_capture has regained a claim that the source-excerpt path made false"
+    )
 
 
 @pytest.mark.parametrize("relative_path", AGENT_FACING_WRITE_VERB_DOCS)

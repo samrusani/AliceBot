@@ -233,11 +233,15 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
     {
         "name": "alice_capture",
         "description": (
-            "Store a source document or raw note for later review. The text is kept verbatim "
-            "with provenance and split into searchable chunks, but it does NOT become recallable "
-            "memory until a human reviews it, so alice_recall will not return it. Use this for "
-            "transcripts, files and pasted material you want on record. To record a fact so it is "
-            "immediately recallable, use alice_memory_commit instead."
+            "Store a source document or raw note. The text is kept verbatim with provenance and "
+            "split into searchable chunks, and alice_recall and alice_context_pack return its "
+            "matching passages from the next call onward, under 'sources' and labelled as "
+            "material to read and quote rather than as facts Alice asserts. Capture also proposes "
+            "candidate memories; those stay unsearchable until a reviewer promotes them, so do "
+            "not tell the user their import is unusable until they clear a queue, and do not "
+            "re-capture the same document because recall returned no memories for it. Use this "
+            "for transcripts, files, notes and pasted material. To assert a fact Alice should "
+            "state in its own voice, use alice_memory_commit instead."
         ),
         "inputSchema": {
             "type": "object",
@@ -337,7 +341,11 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
             "Search Alice's memory. Runs full-text and semantic vector search over stored "
             "memories and merges both rankings (reciprocal-rank fusion); falls back to "
             "full-text only when no embedding endpoint is configured. Returns compact matches "
-            "with relevance scores and provenance counts."
+            "with relevance scores and provenance counts under 'results'. Also searches "
+            "captured documents and returns their matching passages under 'sources', with "
+            "an excerpt you can read and quote. The two are separate on purpose: 'results' "
+            "are facts Alice asserts, 'sources' are material the user imported. An empty "
+            "'results' with a non-empty 'sources' is a normal, useful answer, not a miss."
         ),
         "inputSchema": {
             "type": "object",
@@ -348,6 +356,14 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
                 "query": {
                     "type": "string",
                     "description": "What to search for, in natural language or keywords.",
+                },
+                "include_sources": {
+                    "type": "boolean",
+                    "description": (
+                        "Include matching passages from captured documents under "
+                        "'sources'. Defaults to true; set false only to search "
+                        "asserted memories alone."
+                    ),
                 },
                 "domains": _DOMAINS_FILTER_SCHEMA,
                 "memory_types": _MEMORY_TYPES_FILTER_SCHEMA,

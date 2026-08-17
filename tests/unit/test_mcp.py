@@ -4268,7 +4268,32 @@ def test_alice_recall_results_are_compact_and_trace_is_debug_only(
     )
 
     assert "retrieval" not in payload
-    assert set(payload) == {"query", "results", "count"}
+    # "sources"/"source_count" joined this payload on 2026-08-17. They appear
+    # only when captured documents matched, so a store holding no imported
+    # material costs the agent nothing to read. This fixture does hold one,
+    # which is what makes it worth asserting the shape here.
+    assert set(payload) == {"query", "results", "count", "sources", "source_count"}
+    assert payload["source_count"] == len(payload["sources"])
+    # Compactness is the property this test is named for, and it has to hold for
+    # the new section too. A source entry carries an excerpt, never the whole
+    # document it came from, and never the metadata blob that holds a second
+    # copy of that document.
+    for source in payload["sources"]:
+        assert set(source) <= {
+            "id",
+            "source_type",
+            "title",
+            "captured_at",
+            "domain",
+            "sensitivity",
+            "excerpt",
+            "excerpt_kind",
+        }, f"alice_recall leaked an uncompacted source field: {sorted(source)}"
+        assert "metadata_json" not in source
+        assert "raw_text" not in source
+        if "excerpt" in source:
+            # Labelled, so the agent can tell readable material from asserted fact.
+            assert source["excerpt_kind"] == "imported_source_material"
     result = payload["results"][0]
     assert set(result) == {
         "id",
