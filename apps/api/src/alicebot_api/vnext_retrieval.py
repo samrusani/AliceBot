@@ -1247,6 +1247,34 @@ _LINK_ONLY_LINE = re.compile(
 )
 
 
+# A line carrying no content of its own: a markdown heading, a horizontal
+# rule, or a table separator.
+_LABEL_ONLY_LINE = re.compile(r"^(?:#{1,6}\s.*|[-*_=]{3,}|\|?[\s:|-]+\|?)$")
+
+
+def _has_readable_line(text: str) -> bool:
+    """Does this chunk contain anything a person could read, or only pointers?
+
+    ``_query_anchored_window`` returns a chunk verbatim when it already fits the
+    budget, which skips line scoring entirely. So a SHORT chunk of nothing but
+    wikilinks reached the agent intact, as a list of paths, even though every
+    one of its lines scores zero. That is the Related-block defect surviving in
+    the one case the line scorer never gets to see.
+    """
+
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped or _LINK_ONLY_LINE.match(line):
+            continue
+        # A bare heading or rule is a label for content, not the content. A
+        # "## Related" block is exactly a label plus pointers, and counting the
+        # label as readable is what let that block through the first time.
+        if _LABEL_ONLY_LINE.match(stripped):
+            continue
+        return True
+    return False
+
+
 def _line_overlap_score(line: str, query_tokens: set[str]) -> int:
     """How well one line answers the query, for excerpt windowing.
 
@@ -2562,9 +2590,18 @@ class VNextRetrievalService:
                 key: value for key, value in metadata.items() if key != "raw_text"
             }
 
-        winner = self._winning_chunk_text.get(str(item.get("id"))) or self._best_chunk_without_a_winner(
-            str(item.get("id")), query=query
-        )
+        source_id = str(item.get("id"))
+        winner = self._winning_chunk_text.get(source_id)
+        if winner is not None and not _has_readable_line(winner):
+            # The stage ranked a chunk that is pure navigation. Prefer any chunk
+            # of this source with real prose in it; an excerpt of link paths
+            # tells the agent nothing it can quote. If the whole document is
+            # links, keep the winner, because then that IS the document.
+            readable = self._best_chunk_without_a_winner(source_id, query=query)
+            if readable is not None and _has_readable_line(readable):
+                winner = readable
+        if winner is None:
+            winner = self._best_chunk_without_a_winner(source_id, query=query)
         if winner:
             compacted["excerpt"] = _query_anchored_window(
                 winner, query=query, max_chars=SOURCE_EXCERPT_MAX_CHARS

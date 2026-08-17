@@ -592,6 +592,78 @@ def test_a_related_block_never_wins_whatever_marker_it_uses(
     )
 
 
+def _service_with_chunks(tmp_path: Path, chunks: list[dict], *, winner: str | None = None):
+    from alicebot_api.onramp import bootstrap_database, resolve_db_path
+    from alicebot_api.sqlite_store import SQLiteVNextStore, sqlite_user_connection
+    from alicebot_api.vnext_retrieval import VNextRetrievalService
+
+    database = resolve_db_path(data_dir=str(tmp_path), db=None)
+    bootstrap_database(database, user_id=USER_ID, user_email="local@alice")
+
+    class _ChunkStore:
+        def list_source_chunks(self, source_id: str) -> list[dict]:
+            return chunks
+
+    with sqlite_user_connection(database, USER_ID) as connection:
+        service = VNextRetrievalService(SQLiteVNextStore(connection, USER_ID))
+        service.store = _ChunkStore()  # type: ignore[assignment]
+        if winner is not None:
+            service._winning_chunk_text["source-1"] = winner
+        return service._packable_source({"id": "source-1"}, query=QUOTE)
+
+
+def test_a_winning_chunk_of_pure_links_does_not_become_the_excerpt(
+    tmp_path: Path,
+) -> None:
+    """The fourth door, and the last one I could find.
+
+    ``_query_anchored_window`` returns a chunk verbatim when it already fits the
+    budget. That short-circuit skips line scoring entirely, so a SHORT chunk of
+    nothing but wikilinks reached the agent intact even though every line in it
+    scores zero. Fixing the scorer never touched this path, because the scorer
+    is not called.
+
+    Reproduced: a 93-character "## Related" chunk came back verbatim as a list
+    of paths, for a query whose answer was one chunk away.
+    """
+
+    packed = _service_with_chunks(
+        tmp_path,
+        [
+            {"text": "## Related\n- [[discipline-is-the-art]]\n", "chunk_index": 0},
+            {"text": f"> {QUOTE}\n", "chunk_index": 1},
+        ],
+        winner="## Related\n- [[discipline-is-the-art-of-not-betraying-yourself]]\n",
+    )
+
+    excerpt = packed.get("excerpt") or ""
+    assert QUOTE in excerpt, (
+        f"the agent received navigation instead of text: {excerpt!r}. A chunk "
+        "short enough to skip windowing bypassed the link rule entirely."
+    )
+
+
+def test_a_document_that_is_genuinely_all_links_still_yields_its_text(
+    tmp_path: Path,
+) -> None:
+    """The honest limit of the rule above.
+
+    Preferring readable chunks must not mean returning nothing when a document
+    really is an index page. Then the links ARE the document, and withholding
+    them helps no one.
+    """
+
+    only_links = "## Related\n- [[discipline-is-the-art]]\n- [[solitude]]\n"
+
+    packed = _service_with_chunks(
+        tmp_path,
+        [{"text": only_links, "chunk_index": 0}],
+        winner=only_links,
+    )
+
+    assert packed.get("excerpt"), "an index-only document lost its excerpt entirely"
+
+
 def test_the_fallback_degrades_quietly_on_a_store_that_cannot_list_chunks(
     tmp_path: Path,
 ) -> None:

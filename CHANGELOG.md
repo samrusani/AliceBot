@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A source whose best-ranked chunk is pure navigation now packs a readable one
+  instead. `_query_anchored_window` returns a chunk verbatim when it already
+  fits the budget, and that short-circuit skips line scoring entirely, so a
+  short "## Related" block reached the agent intact as a list of wikilink paths
+  for a query whose answer sat one chunk away. Fixing the line scorer never
+  touched this path, because the scorer is not called on it. A document that
+  genuinely is an index page keeps its links, since then the links are the
+  document.
+
 - `alice_recall`'s source excerpts now apply the same project, people and time
   fence as `alice_context_pack`. Found by review before merge, on the branch
   that added excerpts. Source scope is an exclusion filter, not a ranking hint:
