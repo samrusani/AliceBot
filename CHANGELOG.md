@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- `compile_context_pack` picks a loops / facts / sources view from the
+  query when `budget_strategy` is left at default. `classify_pack_view`
+  reads the word-bounded loop cues in `PACK_VIEW_LOOP_CUES` (`what's
+  open`, `what is open`, `still open`, plus `open loop` / `open loops`
+  / `todo` / `todos` / `waiting` / `blocked` / `unresolved`) and the source cues in
+  `PACK_VIEW_SOURCE_CUES` (`what did I write`, `wrote about`, `written
+  about`, plus `write` / `draft` / `compose` and `quote` / `source` /
+  `evidence`). A curly apostrophe folds to ASCII `'` before matching.
+  Bare `open` is not a loops cue. "What's open?" spends
+  the budget on open loops. "What did I write about X?" spends it on
+  excerpts. An explicit `budget_strategy` other than `balanced` still
+  wins. `pack_view` is disclosed when the query picks loops or sources,
+  not on the default facts envelope. The session brief uses the same
+  picker when `query` is set. `query=None` stays today's dump. Import
+  stays a source. Commit stays a fact.
+
 - After the first FTS hit, `alice_recall` follows one provenance hop
   from the shared source to linked committed facts, and admits extras
   only up to `PROVENANCE_EXPAND_ONCE_MAX_TOKENS`. A session-2 query that
