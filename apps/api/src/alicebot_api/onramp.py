@@ -156,7 +156,7 @@ _ERROR_CONTRACTS: dict[str, str] = {
     "embedding_batch_failed": "An embedding batch failed",
     "alice_memory_failed": "The alice-memory command could not be completed",
     "demo_vault_invalid": (
-        "The demo vault is missing, is not a directory, or has no markdown files"
+        "The demo vault is missing, is not a directory, or has no quotable markdown"
     ),
     "demo_failed": "The demo could not complete after import",
 }

@@ -37,7 +37,7 @@ FORBIDDEN_PHRASES = ("review console", "/vnext", "clear the queue")
 DEMO_VAULT_INVALID = {
     "error": {
         "code": "demo_vault_invalid",
-        "message": "The demo vault is missing, is not a directory, or has no markdown files",
+        "message": "The demo vault is missing, is not a directory, or has no quotable markdown",
     }
 }
 
@@ -103,8 +103,8 @@ def test_successful_demo_prints_doctor_brief_and_quote(
 ) -> None:
     """After a successful demo: sources and chunks, a source brief, and a quote.
 
-    Mutation: skip the brief, skip the quote, or print a review-console
-    sentence. This test fails.
+    Mutation: skip the brief, skip the quote, auto-promote, or print a
+    review-console sentence. This test fails.
     """
 
     _clear_env(monkeypatch)
@@ -131,6 +131,7 @@ def test_successful_demo_prints_doctor_brief_and_quote(
     assert _int_value(report, "failed") == 0
     assert _int_value(report, "sources") >= 1
     assert _int_value(report, "searchable chunks") >= 1
+    assert _int_value(report, "committed facts") == 0
     assert SOURCE_LINE_PREFIX in report
     assert SOURCE_SENTENCE in _quote_line(report)
     assert report.index("imported:") < report.index("sources:")
@@ -205,6 +206,7 @@ def test_second_user_and_live_home_are_not_written(
     before_counts = (
         _int_value(before, "sources"),
         _int_value(before, "searchable chunks"),
+        _int_value(before, "committed facts"),
     )
 
     database = resolve_db_path(data_dir=str(data_dir), db=None)
@@ -233,10 +235,12 @@ def test_second_user_and_live_home_are_not_written(
     after_counts = (
         _int_value(after, "sources"),
         _int_value(after, "searchable chunks"),
+        _int_value(after, "committed facts"),
     )
     assert after_counts == before_counts
     assert before_counts[0] >= 1
     assert before_counts[1] >= 1
+    assert before_counts[2] == 0
     assert "Other user chunk" not in after
     assert not (fake_home / ".alice").exists()
     assert not (fake_home / ".alice-demo").exists()
@@ -277,10 +281,10 @@ def test_demo_stdout_does_not_send_anyone_to_review(
 def test_empty_folder_or_missing_vault_exits_nonzero(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    """Empty folder or missing --vault: non-zero exit, no empty success.
+    """Empty folder, blank markdown, or missing --vault: no empty success.
 
-    Mutation: treat an empty folder as success, make --vault optional, or
-    print the caught exception to stderr. This test fails.
+    Mutation: treat an empty folder or whitespace-only *.md as success,
+    make --vault optional, or print the caught exception. This test fails.
     """
 
     _clear_env(monkeypatch)
@@ -296,6 +300,18 @@ def test_empty_folder_or_missing_vault_exits_nonzero(
     assert _error_records(empty_err) == [DEMO_VAULT_INVALID]
     assert str(empty) not in empty_err
     assert "Traceback" not in empty_err
+    assert not (data_dir / "memory.db").exists()
+
+    blank = tmp_path / "blank"
+    blank.mkdir()
+    (blank / "empty.md").write_text("\n\n  \n", encoding="utf-8")
+    blank_code = onramp_main(
+        ["demo", "--vault", str(blank), "--data-dir", str(data_dir), "--user-id", USER_ID]
+    )
+    blank_err = capsys.readouterr().err
+    assert blank_code != 0
+    assert _error_records(blank_err) == [DEMO_VAULT_INVALID]
+    assert str(blank) not in blank_err
     assert not (data_dir / "memory.db").exists()
 
     missing_code = onramp_main(["demo", "--data-dir", str(data_dir), "--user-id", USER_ID])

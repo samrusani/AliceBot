@@ -13,7 +13,12 @@ from uuid import UUID
 from alicebot_api.session_briefing import compile_local_session_brief
 from alicebot_api.sqlite_store import SQLiteVNextStore, sqlite_user_connection
 from alicebot_api.vault_doctor import compile_local_vault_doctor
-from alicebot_api.vnext_capture import CaptureResult, VNextCaptureService
+from alicebot_api.vnext_capture import (
+    CaptureResult,
+    VNextCaptureService,
+    VNextCaptureValidationError,
+    normalize_text,
+)
 
 SOURCE_LINE_PREFIX = "**source**:"
 QUOTE_LABEL = "will quote"
@@ -30,16 +35,29 @@ def markdown_files_in_vault(vault: Path) -> list[Path]:
     return sorted(path for path in vault.rglob("*.md") if path.is_file())
 
 
+def markdown_file_has_importable_text(path: Path) -> bool:
+    """True when capture would accept this file's text (not empty after normalize)."""
+
+    try:
+        normalize_text(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, VNextCaptureValidationError):
+        return False
+    return True
+
+
 def validate_demo_vault(vault: str | Path) -> Path:
-    """Resolve a vault folder that exists, is a directory, and has ``*.md`` files."""
+    """Resolve a vault folder that exists, is a directory, and has quotable ``*.md``."""
 
     resolved = Path(vault).expanduser().resolve()
     if not resolved.exists():
         raise DemoVaultError(f"vault does not exist: {resolved}")
     if not resolved.is_dir():
         raise DemoVaultError(f"vault is not a directory: {resolved}")
-    if not markdown_files_in_vault(resolved):
+    files = markdown_files_in_vault(resolved)
+    if not files:
         raise DemoVaultError(f"vault has no *.md files: {resolved}")
+    if not any(markdown_file_has_importable_text(path) for path in files):
+        raise DemoVaultError(f"vault has no quotable markdown: {resolved}")
     return resolved
 
 
@@ -126,6 +144,7 @@ __all__ = [
     "SOURCE_LINE_PREFIX",
     "first_source_excerpt",
     "format_import_summary",
+    "markdown_file_has_importable_text",
     "markdown_files_in_vault",
     "receipt_for_imported_source",
     "run_local_vault_demo",
