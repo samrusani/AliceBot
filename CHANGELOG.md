@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- README no longer leads with 81.2% as a product-path number. The figure
+  remains a `v0.12.0` `store_chunks` receipt. `pack_excerpts` is named
+  and not scored. Import stays a source. Commit stays a fact.
+
 - `alice-memory sleep` writes a capped sidecar of source proposals next
   to the local SQLite db. It lists imported sources for the acting
   user, skips a source that already has an `active` / `accepted` fact,

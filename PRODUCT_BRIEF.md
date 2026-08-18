@@ -25,14 +25,15 @@ Agent developers — people building or operating AI agents who need durable, ex
   periphery so the default runtime matches the product described here. The
   low-level response job machinery remains internal to retained provider
   invocation.
-- The product baseline includes hybrid retrieval, the eleven-tool core MCP
+- The product baseline includes hybrid retrieval, the default three-tool MCP
   surface, the Memory Operations Protocol, per-agent API keys, Context API v2,
   temporal graph memory/entity resolution, and six live eval suites.
-- LongMemEval_s stands at **81.2% mean over three independent full runs**
-  (80.8 / 81.0 / 81.8) with per-question evidence for each committed. It is a
-  measurement of the published `v0.12.0` tag, not of the current release. The
-  **79.4% (397/500)** single run from 2026-07-07 is superseded as the headline
-  and retained as evidence.
+- LongMemEval_s has a `v0.12.0` `store_chunks` receipt of 81.2% mean over
+  three independent full runs (80.8 / 81.0 / 81.8), measured 2026-07-18/19,
+  with per-question evidence for each committed. That harness reads chunks
+  straight from the store. It is not the product path. `pack_excerpts` is
+  the product-path mode and is not yet a published score. The **79.4%
+  (397/500)** single run from 2026-07-07 is retained as evidence.
 - The fourth-audit remediation shipped in `v0.10.3` after exact-SHA gates
   and independent review passed.
 - Alice is public-alpha, pre-1.0, single-user, and self-hosted. `alice-memory`
