@@ -21,6 +21,10 @@ Subcommands:
 - ``doctor``: print a local SQLite vault census on stdout: sources,
   searchable chunks, committed facts, last brief token estimate,
   then candidates waiting. Not ``alicebot vnext doctor``.
+- ``demo``: import a markdown folder into a SQLite vault, then print
+  the import summary, doctor, session brief, and the one source
+  snippet a new session will quote. Defaults to ``~/.alice-demo``,
+  not ``~/.alice``.
 - ``--version``: print the package version.
 
 Export/import round-trip contract ("you own the memory"):
@@ -105,9 +109,10 @@ from alicebot_api.vnext_embeddings import (
 )
 
 DEFAULT_DATA_DIR = "~/.alice"
+DEFAULT_DEMO_DATA_DIR = "~/.alice-demo"
 DEFAULT_DB_FILENAME = "memory.db"
 DEFAULT_USER_EMAIL = "local@alice"
-_KNOWN_COMMANDS = ("mcp", "export", "import", "reindex-embeddings", "brief", "doctor")
+_KNOWN_COMMANDS = ("mcp", "export", "import", "reindex-embeddings", "brief", "doctor", "demo")
 
 _EXPORT_FORMAT = "alice-memory-jsonl"
 _EXPORT_FORMAT_VERSION = 2
@@ -150,6 +155,10 @@ _ERROR_CONTRACTS: dict[str, str] = {
     "embedding_batch_size_invalid": "The embedding batch size is outside the supported range",
     "embedding_batch_failed": "An embedding batch failed",
     "alice_memory_failed": "The alice-memory command could not be completed",
+    "demo_vault_invalid": (
+        "The demo vault is missing, is not a directory, or has no quotable markdown"
+    ),
+    "demo_failed": "The demo could not complete after import",
 }
 
 
@@ -720,6 +729,32 @@ def _add_database_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_demo_database_arguments(parser: argparse.ArgumentParser) -> None:
+    """Database flags for ``demo``. Default data dir is the demo vault, not live."""
+
+    parser.add_argument(
+        "--data-dir",
+        default=DEFAULT_DEMO_DATA_DIR,
+        help=f"Directory holding {DEFAULT_DB_FILENAME}. Defaults to {DEFAULT_DEMO_DATA_DIR}.",
+    )
+    parser.add_argument(
+        "--db",
+        default=None,
+        help="Explicit SQLite database file path. Overrides --data-dir.",
+    )
+    parser.add_argument(
+        "--user-id",
+        type=_parse_uuid,
+        default=UUID(_DEFAULT_MCP_USER_ID),
+        help=f"Acting local user UUID. Defaults to {_DEFAULT_MCP_USER_ID}.",
+    )
+    parser.add_argument(
+        "--user-email",
+        default=DEFAULT_USER_EMAIL,
+        help=f"Email recorded for the local user row. Defaults to {DEFAULT_USER_EMAIL}.",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="alice-memory",
@@ -828,6 +863,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print a local SQLite vault census: sources, chunks, facts, then candidates.",
     )
     _add_database_arguments(doctor_parser)
+
+    demo_parser = subparsers.add_parser(
+        "demo",
+        help=(
+            "Import a markdown folder into a demo SQLite vault, then print "
+            "doctor, the session brief, and the quote."
+        ),
+    )
+    demo_parser.add_argument(
+        "--vault",
+        required=True,
+        help="Folder of *.md files to import as sources. Required.",
+    )
+    _add_demo_database_arguments(demo_parser)
     return parser
 
 
@@ -894,6 +943,41 @@ def _run_doctor(args: argparse.Namespace) -> int:
         secure_parent=args.db is None,
     )
     print(compile_local_vault_doctor(db_path, user_id=args.user_id))
+    return 0
+
+
+def _run_demo(args: argparse.Namespace) -> int:
+    from alicebot_api.vault_demo import (
+        DemoVaultError,
+        run_local_vault_demo,
+        validate_demo_vault,
+    )
+    from alicebot_api.vnext_capture import VNextCaptureValidationError
+
+    try:
+        vault = validate_demo_vault(args.vault)
+    except DemoVaultError:
+        _emit_error("demo_vault_invalid")
+        return 1
+
+    db_path = resolve_db_path(data_dir=args.data_dir, db=args.db)
+    bootstrap_database(
+        db_path,
+        user_id=args.user_id,
+        user_email=args.user_email,
+        secure_parent=args.db is None,
+    )
+    try:
+        print(
+            run_local_vault_demo(
+                db_path,
+                user_id=args.user_id,
+                vault=vault,
+            )
+        )
+    except (DemoVaultError, VNextCaptureValidationError):
+        _emit_error("demo_failed")
+        return 1
     return 0
 
 
@@ -2058,6 +2142,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_brief(args)
         if args.command == "doctor":
             return _run_doctor(args)
+        if args.command == "demo":
+            return _run_demo(args)
         return _run_mcp(args)
     except Exception as exc:  # pragma: no cover - boundary fail-closed backstop
         logger.debug(
@@ -2069,6 +2155,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 __all__ = [
+    "DEFAULT_DATA_DIR",
+    "DEFAULT_DEMO_DATA_DIR",
     "bootstrap_database",
     "build_parser",
     "main",

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `alice-memory demo --vault PATH` imports a markdown folder into a
+  local SQLite vault, then prints the import counts, a capture receipt
+  when a new source was saved, the doctor census, the session brief,
+  and the one `**source**` snippet a new session will quote. `--data-dir`
+  defaults to `~/.alice-demo`, not `~/.alice`. Import stays a source.
+  Commit stays a fact. The command does not auto-promote and does not
+  open a review UI.
+
 - `alice-memory doctor` prints what is already in the local SQLite vault:
   the db path, source count, searchable chunk count, committed fact
   count (`active` / `accepted`), the last brief token estimate against
@@ -9,7 +17,7 @@
   prints zeros. The empty brief still has a token cost. Every COUNT
   binds `user_id`. The command does not wrap `alicebot vnext doctor`
   and does not send anyone to a review UI. Import is a source. Commit
-  is a fact. Not in this cut: `demo --vault`.
+  is a fact.
 
 - A new session can read labelled facts and imported sources without the
   agent calling a tool. `alice-memory brief` prints markdown from the
@@ -26,7 +34,6 @@
   empty-state line when eight newer other-project sources fill the event
   window; the fence is applied before the scan cap.
 
-  Not in this cut: `demo --vault`.
   `alice_recent_changes` is still the unfenced legacy path left alone
   after D7.
 
@@ -47,8 +54,7 @@
   say the text is searchable now. A committed fact says
   `saved as a fact.` Confirmation, review, and rejection receipts do
   not. Skills tell the agent to print the field. Import is a source.
-  Commit is a fact. Candidates stay unsearchable as memories. Not in
-  this cut: `demo --vault`.
+  Commit is a fact. Candidates stay unsearchable as memories.
 
 ## v0.15.7 — 2026-08-17
 
