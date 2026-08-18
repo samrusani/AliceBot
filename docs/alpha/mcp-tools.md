@@ -66,7 +66,9 @@ Remember, recall, continue. These are the only tools in a default
   agent should use it whenever it learns something worth keeping, including
   when the user has not asked it to remember. Policy-checked, never blind:
   the outcome is `committed`, `confirmation_required`, `review_required`, or
-  `rejected`, always with provenance, a revision, and an audit event.
+  `rejected`, always with provenance, a revision, and an audit event. Print
+  the `receipt` field after a capture or commit so the user sees what was
+  stored.
 - `alice_recall` — search memory. Full-text plus semantic vector search,
   merged with reciprocal-rank fusion. Falls back to full-text only (and
   says so) when no embedding endpoint is configured. Accepts optional
@@ -114,8 +116,9 @@ is a CLI verb, not a fourth always-on agent tool.
   excerpt and labelled `excerpt_kind: imported_source_material`: material to read
   and quote, rather than as facts Alice asserts. Capture also proposes candidate
   memories, and those stay unsearchable until a reviewer promotes them. Import is a source. Commit
-  is a fact. Do not tell the user they must clear a review queue before a note
-  is usable.
+  is a fact. Print the `receipt` field after a capture or commit so the user
+  sees what was stored. Do not tell the user they must clear a review queue
+  before a note is usable.
 - `alice_memory_review` — inspect the review queue, or one item in detail.
 - `alice_memory_correct` — act on a memory: approve, edit-and-approve,
   reject, or supersede with a replacement. Every change is audited.

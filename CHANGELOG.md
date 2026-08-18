@@ -31,6 +31,16 @@
   full-surface core tool now set `ALICE_MCP_FULL_TOOLS=1` in the same env
   map.
 
+- Capture and commit now return a one-line `receipt` the host can print.
+  A successful capture says `saved as source, N chunks searchable now`,
+  and adds `M candidates waiting in review` only when any exist. A
+  duplicate or a failed capture does not claim a new save and does not
+  say the text is searchable now. A committed fact says
+  `saved as a fact.` Confirmation, review, and rejection receipts do
+  not. Skills tell the agent to print the field. Import is a source.
+  Commit is a fact. Candidates stay unsearchable as memories. Not in
+  this cut: `alice-memory doctor` and `demo --vault`.
+
 ## v0.15.7 — 2026-08-17
 
 - `alice_resume` and `alice_recent_decisions` now apply the policy fence they

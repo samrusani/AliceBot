@@ -92,6 +92,20 @@ class CaptureResult:
     # enabling deferred persistence does not change the public capture API.
     deferred_embedding_inputs: tuple[DeferredMemoryEmbedding, ...] = ()
 
+    def _receipt_line(self) -> str:
+        """One line a host can print. Import is a source, not a fact."""
+
+        if self.status == "duplicate" and not self.errors:
+            return "duplicate source"
+        if self.status != "imported" or self.errors:
+            return "capture failed"
+        if self.chunk_count <= 0:
+            return "saved as source"
+        receipt = f"saved as source, {self.chunk_count} chunks searchable now"
+        if self.candidate_memory_count > 0:
+            receipt += f", {self.candidate_memory_count} candidates waiting in review"
+        return receipt
+
     def to_record(self) -> JsonObject:
         return {
             "status": self.status,
@@ -101,6 +115,7 @@ class CaptureResult:
             "candidate_memory_count": self.candidate_memory_count,
             "duplicate": self.duplicate,
             "errors": list(self.errors),
+            "receipt": self._receipt_line(),
             # Side by side, chunk_count and candidate_memory_count read as two
             # counts of the same stored thing. They are not: the chunks answer
             # a query on the next call, the candidates answer nothing until a

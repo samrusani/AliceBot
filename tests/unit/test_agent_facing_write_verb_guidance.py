@@ -145,3 +145,14 @@ def test_agent_facing_docs_say_what_capture_does_and_does_not_make_searchable(
     assert "unsearchable until" in body, (
         f"{relative_path} no longer says candidate memories wait for review"
     )
+
+
+@pytest.mark.parametrize("relative_path", AGENT_FACING_WRITE_VERB_DOCS)
+def test_agent_facing_docs_tell_the_agent_to_print_the_receipt(relative_path: str) -> None:
+    """A write is only visible if the host prints the one-line receipt.
+
+    Fails if this sentence is dropped from a skill or write-verb page.
+    """
+
+    body = _read(relative_path)
+    assert "print the receipt field" in body, f"{relative_path} never tells an agent to print the receipt field"

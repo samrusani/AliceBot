@@ -882,6 +882,27 @@ def evaluate_memory_commit_policy(
     )
 
 
+COMMITTED_FACT_RECEIPT = "saved as a fact."
+
+
+def memory_commit_receipt(status: str) -> str:
+    """One line a host can print. Only a committed row is a fact."""
+
+    if status == "committed":
+        return COMMITTED_FACT_RECEIPT
+    if status == "confirmation_required":
+        return "needs confirmation."
+    if status == "review_required":
+        return "waiting in review."
+    if status == "rejected":
+        return "rejected."
+    return "not recorded as a fact."
+
+
+def _with_commit_receipt(payload: JsonObject) -> JsonObject:
+    return {**payload, "receipt": memory_commit_receipt(str(payload.get("status") or ""))}
+
+
 class VNextMemoryCommitService:
     def __init__(
         self,
@@ -1073,34 +1094,44 @@ class VNextMemoryCommitService:
     ) -> JsonObject:
         existing = self._idempotent_memory(request.idempotency_key)
         if existing is not None:
-            return self._idempotent_replay(memory=existing, request=request, identity=identity)
+            return _with_commit_receipt(self._idempotent_replay(memory=existing, request=request, identity=identity))
 
         decision = self.evaluate_policy(identity=identity, request=request)
         if decision.write_mode == "reject":
             self._append_decision_event(identity=identity, request=request, decision=decision, target_id=None)
-            return {
-                "status": "rejected",
-                "write_mode": "reject",
-                "reason": decision.reason,
-                "reasons": list(decision.reasons),
-                "policy_decision": decision.to_record(),
-            }
+            return _with_commit_receipt(
+                {
+                    "status": "rejected",
+                    "write_mode": "reject",
+                    "reason": decision.reason,
+                    "reasons": list(decision.reasons),
+                    "policy_decision": decision.to_record(),
+                }
+            )
         try:
             if decision.write_mode == "confirm_inline":
-                return self._create_confirmation(identity=identity, request=request, decision=decision)
+                return _with_commit_receipt(
+                    self._create_confirmation(identity=identity, request=request, decision=decision)
+                )
             if decision.write_mode == "propose_review":
-                return self._create_review_candidate(identity=identity, request=request, decision=decision)
-            return self._create_committed_memory(
-                identity=identity,
-                request=request,
-                decision=decision,
-                confirmed_inline=False,
+                return _with_commit_receipt(
+                    self._create_review_candidate(identity=identity, request=request, decision=decision)
+                )
+            return _with_commit_receipt(
+                self._create_committed_memory(
+                    identity=identity,
+                    request=request,
+                    decision=decision,
+                    confirmed_inline=False,
+                )
             )
         except _IdempotentReplaySignal as replay:
-            return self._idempotent_replay(
-                memory=replay.memory,
-                request=request,
-                identity=identity,
+            return _with_commit_receipt(
+                self._idempotent_replay(
+                    memory=replay.memory,
+                    request=request,
+                    identity=identity,
+                )
             )
 
     def confirm(
