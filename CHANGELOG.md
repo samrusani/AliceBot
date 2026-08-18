@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `alice-memory sleep` writes a capped sidecar of source proposals next
+  to the local SQLite db. It lists imported sources for the acting
+  user, skips a source that already has an `active` / `accepted` fact,
+  and stops at `SLEEP_PROPOSAL_CAP` (8). Rows stay `proposed` and bind
+  `user_id`. The pass does not rewrite imported notes or committed
+  facts, does not change search, and does not open the capture inbox.
+  Import stays a source. Commit stays a fact.
+
 - `compile_context_pack` picks a loops / facts / sources view from the
   query when `budget_strategy` is left at default. `classify_pack_view`
   reads the word-bounded loop cues in `PACK_VIEW_LOOP_CUES` (`what's

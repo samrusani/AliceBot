@@ -25,6 +25,10 @@ Subcommands:
   the import summary, doctor, session brief, and the one source
   snippet a new session will quote. Defaults to ``~/.alice-demo``,
   not ``~/.alice``.
+- ``sleep``: write a capped sidecar of source commit proposals next
+  to the db. Imported notes and committed facts are not rewritten.
+  Search is unchanged. Accept is a later commit. Defaults to
+  ``~/.alice``, like doctor.
 - ``--version``: print the package version.
 
 Export/import round-trip contract ("you own the memory"):
@@ -112,7 +116,16 @@ DEFAULT_DATA_DIR = "~/.alice"
 DEFAULT_DEMO_DATA_DIR = "~/.alice-demo"
 DEFAULT_DB_FILENAME = "memory.db"
 DEFAULT_USER_EMAIL = "local@alice"
-_KNOWN_COMMANDS = ("mcp", "export", "import", "reindex-embeddings", "brief", "doctor", "demo")
+_KNOWN_COMMANDS = (
+    "mcp",
+    "export",
+    "import",
+    "reindex-embeddings",
+    "brief",
+    "doctor",
+    "demo",
+    "sleep",
+)
 
 _EXPORT_FORMAT = "alice-memory-jsonl"
 _EXPORT_FORMAT_VERSION = 2
@@ -159,6 +172,7 @@ _ERROR_CONTRACTS: dict[str, str] = {
         "The demo vault is missing, is not a directory, or has no quotable markdown"
     ),
     "demo_failed": "The demo could not complete after import",
+    "sleep_failed": "The sleep pass could not complete",
 }
 
 
@@ -877,6 +891,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Folder of *.md files to import as sources. Required.",
     )
     _add_demo_database_arguments(demo_parser)
+
+    sleep_parser = subparsers.add_parser(
+        "sleep",
+        help=(
+            "Write a capped sidecar of source commit proposals. Does not "
+            "rewrite notes or facts, and does not open the capture inbox."
+        ),
+    )
+    _add_database_arguments(sleep_parser)
     return parser
 
 
@@ -977,6 +1000,24 @@ def _run_demo(args: argparse.Namespace) -> int:
         )
     except (DemoVaultError, VNextCaptureValidationError):
         _emit_error("demo_failed")
+        return 1
+    return 0
+
+
+def _run_sleep(args: argparse.Namespace) -> int:
+    from alicebot_api.vault_sleep import SleepError, run_local_vault_sleep
+
+    db_path = resolve_db_path(data_dir=args.data_dir, db=args.db)
+    bootstrap_database(
+        db_path,
+        user_id=args.user_id,
+        user_email=args.user_email,
+        secure_parent=args.db is None,
+    )
+    try:
+        print(run_local_vault_sleep(db_path, user_id=args.user_id))
+    except SleepError:
+        _emit_error("sleep_failed")
         return 1
     return 0
 
@@ -2144,6 +2185,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_doctor(args)
         if args.command == "demo":
             return _run_demo(args)
+        if args.command == "sleep":
+            return _run_sleep(args)
         return _run_mcp(args)
     except Exception as exc:  # pragma: no cover - boundary fail-closed backstop
         logger.debug(
