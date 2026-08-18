@@ -311,22 +311,22 @@ def _parse_yaml_mapping(
             break
         if current_indent > indent or content.startswith("- "):
             raise InstallError("host config is not valid YAML")
-        key, sep, rest = content.partition(":")
-        if not sep or not key or key.startswith("- ") or key[0] in " \t":
+        raw_key, sep, rest = content.partition(":")
+        if not sep or not raw_key or raw_key.startswith("- ") or raw_key[0] in " \t":
             raise InstallError("host config is not valid YAML")
-        key = _parse_yaml_scalar(key.strip())
-        if not isinstance(key, str):
+        parsed_key = _parse_yaml_scalar(raw_key.strip())
+        if not isinstance(parsed_key, str):
             raise InstallError("host config is not valid YAML")
         rest = rest.strip()
         index += 1
         if rest:
-            doc[key] = _parse_yaml_scalar(rest)
+            doc[parsed_key] = _parse_yaml_scalar(rest)
             continue
         if index >= len(rows) or rows[index][0] <= indent:
-            doc[key] = {}
+            doc[parsed_key] = {}
             continue
         nested, index = _parse_yaml_block(rows, index, rows[index][0])
-        doc[key] = nested
+        doc[parsed_key] = nested
     return doc, index
 
 
@@ -359,6 +359,8 @@ def _parse_yaml_scalar(text: str) -> object:
         return {}
     if text == "[]":
         return []
+    if text.startswith("{") or text.startswith("["):
+        raise InstallError("host config is not valid YAML")
     if text in {"null", "~"}:
         return None
     if text in {"true", "True"}:

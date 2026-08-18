@@ -235,6 +235,40 @@ def test_host_hermes_writes_yaml_env_map(
     assert "session_start: none" in out
 
 
+def test_hermes_flow_style_foreign_server_is_not_stringified(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A flow-style Hermes ``other`` server is not written back as a string.
+
+    Hard-fail or keep ``other`` as a mapping. Mutation: stringify ``other``.
+    This test fails.
+    """
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    home = tmp_path / "home"
+    vault = tmp_path / "vault"
+    files = host_file_map(home.resolve())
+    hermes_mcp = files["hermes"]["mcp"]
+    hermes_mcp.parent.mkdir(parents=True)
+    flow = "mcp_servers:\n  other: {command: node, args: [other.js]}\n"
+    hermes_mcp.write_text(flow, encoding="utf-8")
+
+    code, _out, err = _install(_base_argv(home, vault, "--host", "hermes"), capsys)
+    raw = hermes_mcp.read_text(encoding="utf-8")
+    if code == 0:
+        loaded = load_simple_yaml(raw)
+        assert isinstance(loaded, dict)
+        other = loaded["mcp_servers"]["other"]
+        assert isinstance(other, dict), raw
+        assert other.get("command") == "node"
+        _assert_alice_payload(loaded["mcp_servers"]["alice"], vault, with_env=True)
+    else:
+        assert _error_records(err) == [INSTALL_FAILED]
+        assert "{command: node, args: [other.js]}" in raw
+        assert '"{command: node, args: [other.js]}"' not in raw
+        assert "alice:" not in raw
+
+
 def test_existing_foreign_server_stays_and_second_run_does_not_duplicate_alice(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
