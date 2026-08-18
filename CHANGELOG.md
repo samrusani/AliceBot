@@ -26,7 +26,7 @@
   empty-state line when eight newer other-project sources fill the event
   window; the fence is applied before the scan cap.
 
-  Not in this cut: `alice-memory doctor` and `demo --vault`.
+  Not in this cut: `demo --vault`.
   `alice_recent_changes` is still the unfenced legacy path left alone
   after D7.
 
@@ -48,7 +48,7 @@
   `saved as a fact.` Confirmation, review, and rejection receipts do
   not. Skills tell the agent to print the field. Import is a source.
   Commit is a fact. Candidates stay unsearchable as memories. Not in
-  this cut: `alice-memory doctor` and `demo --vault`.
+  this cut: `demo --vault`.
 
 ## v0.15.7 — 2026-08-17
 
