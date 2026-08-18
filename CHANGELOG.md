@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- CI runs a continuity-task eval on a fixture vault through capture,
+  commit, session brief, `alice_recall`, and `alice_resume`. The run
+  fails if the imported quote, last decision, or open loop is missing.
+  Import stays a source. Commit stays a fact. The receipt is per-task
+  pass/fail plus a count (`3/3`). This is not a LongMemEval score and
+  does not invent a percentage.
+
 - README no longer leads with 81.2% as a product-path number. The figure
   remains a `v0.12.0` `store_chunks` receipt. `pack_excerpts` is named
   and not scored. Import stays a source. Commit stays a fact.
