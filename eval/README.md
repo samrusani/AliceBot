@@ -4,6 +4,25 @@ This page documents what each eval in this repository actually measures, what
 requires a live database, and which historical numbers should *not* be read
 as benchmarks.
 
+## Continuity-task eval
+
+CI runs a tiny fixture vault through capture, commit, session brief,
+`alice_recall`, and `alice_resume`. Three named tasks must pass:
+
+- `quote_imported_line`: the next session can quote the imported line
+  as a source
+- `resume_last_decision`: `alice_resume` surfaces the last committed
+  decision
+- `list_open_loop`: the session brief and `alice_resume` list the open
+  loop
+
+The receipt is per-task pass/fail and a count (`3/3`). This is not a
+LongMemEval score. Import stays a source. Commit stays a fact.
+
+Module: `alicebot_api.continuity_task_eval`. Tests live in
+`tests/unit/test_continuity_task_eval.py` and run with the unit suite.
+This gate is not part of `VNEXT_EVAL_SUITE_ORDER`.
+
 ## vNext eval harness (`alicebot eval ...`)
 
 Implemented in `apps/api/src/alicebot_api/vnext_evals.py`. The harness was
