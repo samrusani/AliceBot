@@ -29,6 +29,8 @@ Subcommands:
   to the db. Imported notes and committed facts are not rewritten.
   Search is unchanged. Accept is a later commit. Defaults to
   ``~/.alice``, like doctor.
+- ``install``: write host MCP config (and optional SessionStart hooks)
+  under ``--home``. Does not import a vault. Hermes is opt-in.
 - ``--version``: print the package version.
 
 Export/import round-trip contract ("you own the memory"):
@@ -125,6 +127,7 @@ _KNOWN_COMMANDS = (
     "doctor",
     "demo",
     "sleep",
+    "install",
 )
 
 _EXPORT_FORMAT = "alice-memory-jsonl"
@@ -173,6 +176,7 @@ _ERROR_CONTRACTS: dict[str, str] = {
     ),
     "demo_failed": "The demo could not complete after import",
     "sleep_failed": "The sleep pass could not complete",
+    "install_failed": "The host install could not complete",
 }
 
 
@@ -900,6 +904,46 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_database_arguments(sleep_parser)
+
+    install_parser = subparsers.add_parser(
+        "install",
+        help=(
+            "Write host MCP config for Claude Desktop, Claude Code, Cursor, "
+            "and OpenClaw. Hermes is --host hermes. Does not import a vault."
+        ),
+    )
+    _add_database_arguments(install_parser)
+    install_parser.add_argument(
+        "--host",
+        action="append",
+        choices=(
+            "claude-desktop",
+            "claude-code",
+            "cursor",
+            "openclaw",
+            "hermes",
+        ),
+        dest="hosts",
+        help=(
+            "Host to configure. Repeatable. Default: claude-desktop, "
+            "claude-code, cursor, openclaw. Hermes is opt-in."
+        ),
+    )
+    install_parser.add_argument(
+        "--home",
+        default=None,
+        help="Override Path.home() when resolving host config files.",
+    )
+    install_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print planned paths and snippets. Write nothing.",
+    )
+    install_parser.add_argument(
+        "--write-mcpb",
+        default=None,
+        help="Write a Claude Desktop .mcpb zip that launches uvx alice-memory mcp.",
+    )
     return parser
 
 
@@ -1018,6 +1062,25 @@ def _run_sleep(args: argparse.Namespace) -> int:
         print(run_local_vault_sleep(db_path, user_id=args.user_id))
     except SleepError:
         _emit_error("sleep_failed")
+        return 1
+    return 0
+
+
+def _run_install(args: argparse.Namespace) -> int:
+    from alicebot_api.host_install import InstallError, run_host_install
+
+    try:
+        print(
+            run_host_install(
+                home=args.home,
+                data_dir=args.data_dir,
+                hosts=args.hosts,
+                dry_run=args.dry_run,
+                write_mcpb=args.write_mcpb,
+            )
+        )
+    except InstallError:
+        _emit_error("install_failed")
         return 1
     return 0
 
@@ -2187,6 +2250,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_demo(args)
         if args.command == "sleep":
             return _run_sleep(args)
+        if args.command == "install":
+            return _run_install(args)
         return _run_mcp(args)
     except Exception as exc:  # pragma: no cover - boundary fail-closed backstop
         logger.debug(
