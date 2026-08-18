@@ -13,9 +13,10 @@
   Bare `open` is not a loops cue. "What's open?" spends
   the budget on open loops. "What did I write about X?" spends it on
   excerpts. An explicit `budget_strategy` other than `balanced` still
-  wins. The session brief uses the same picker when `query` is set.
-  `query=None` stays today's dump. Import stays a source. Commit stays
-  a fact.
+  wins. `pack_view` is disclosed when the query picks loops or sources,
+  not on the default facts envelope. The session brief uses the same
+  picker when `query` is set. `query=None` stays today's dump. Import
+  stays a source. Commit stays a fact.
 
 - After the first FTS hit, `alice_recall` follows one provenance hop
   from the shared source to linked committed facts, and admits extras

@@ -45,7 +45,7 @@ import inspect
 import json
 import logging
 import re
-from typing import Callable, Mapping, Protocol, Sequence, TypeVar, TypedDict, cast
+from typing import Callable, Mapping, NotRequired, Protocol, Sequence, TypeVar, TypedDict, cast
 from uuid import uuid4
 
 # Read-only reuse of the contradiction-detection machinery that backs
@@ -116,7 +116,7 @@ logger = logging.getLogger(__name__)
 class QueryInterpretation(TypedDict):
     query: str
     query_type: str
-    pack_view: str
+    pack_view: NotRequired[str]
     terms: list[str]
     domains: list[str]
     inferred_domains: list[str]
@@ -699,10 +699,10 @@ def classify_query(request: VNextRetrievalRequest) -> QueryInterpretation:
     inferred_domains = _infer_domains(lowered)
     sensitivity_allowed = list(request.sensitivity_allowed) or list(DEFAULT_SENSITIVITY_ALLOWED)
     requires_sources, requires_contradictions = _resolve_section_flags(request, query_type=query_type)
-    return {
+    pack_view = classify_pack_view(query)
+    interpretation: QueryInterpretation = {
         "query": query,
         "query_type": query_type,
-        "pack_view": classify_pack_view(query),
         "terms": query_terms(query),
         "domains": domains,
         "inferred_domains": inferred_domains,
@@ -715,6 +715,11 @@ def classify_query(request: VNextRetrievalRequest) -> QueryInterpretation:
         "requires_contradictions": requires_contradictions,
         "requires_raw_evidence": _contains_any(lowered, ("quote", "source", "evidence", "prove", "where did")),
     }
+    # Absent on the default facts envelope so ordinary packs stay
+    # byte-identical. Disclose only when the query picked loops or sources.
+    if pack_view != PACK_VIEW_FACTS:
+        interpretation["pack_view"] = pack_view
+    return interpretation
 
 
 def _infer_domains(lowered_query: str) -> list[str]:
@@ -3506,7 +3511,7 @@ class VNextRetrievalService:
         )
         section_order = budget_section_order(
             budget_strategy=strategy,
-            pack_view=str(interpretation["pack_view"]),
+            pack_view=str(interpretation.get("pack_view") or PACK_VIEW_FACTS),
         )
         budget = _TokenBudget(token_budget=request.max_tokens, strategy=strategy)
         selected_memories: list[JsonObject] = []
