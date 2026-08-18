@@ -1,5 +1,9 @@
 # Alice on LongMemEval
 
+**Product path.** 81.2% is the privileged `store_chunks` harness on
+`v0.12.0`, measured 2026-07-18/19. `pack_excerpts` is the product-path
+mode and is not yet scored. The receipt below is unchanged.
+
 **Replicated accuracy: 81.2% mean over three independent full runs
 (80.8% / 81.0% / 81.8%; 404–409 of 500) on LongMemEval_s** — measured
 2026-07-18/19 on the published v0.12.0 code from the immutable release tag,

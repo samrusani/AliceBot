@@ -4,7 +4,7 @@
 
 **The continuity layer for AI agents.**
 
-[![LongMemEval](https://img.shields.io/badge/LongMemEval__s-81.2%25%20(3--run%20mean)-6f42c1)](https://github.com/samrusani/AliceMemory/blob/main/docs/benchmarks/longmemeval/README.md)
+[![LongMemEval](https://img.shields.io/badge/LongMemEval-v0.12.0%20store__chunks%20receipt-6f42c1)](https://github.com/samrusani/AliceMemory/blob/main/docs/benchmarks/longmemeval/README.md)
 ![Local-first](https://img.shields.io/badge/local--first-core-0A7B61)
 ![MCP](https://img.shields.io/badge/MCP-supported-1f6feb)
 ![Python](https://img.shields.io/badge/python-3.12%2B-3776AB)
@@ -12,7 +12,7 @@
 
 Alice is a local-first memory service that lets AI agents resume interrupted work, track open loops, recall decisions with provenance, and improve when corrected — instead of re-reading transcripts or trusting opaque summaries.
 
-Alice scores **81.2% mean over three independent full runs** (80.8 / 81.0 / 81.8; 404-409 of 500) on LongMemEval_s, measured 2026-07-18/19 on the published `v0.12.0` code from its immutable release tag, every run scoring 500/500 with zero errors. Per-question evidence for all three runs, the reader/judge/embedding configuration, and the reproduction script are committed to this repo. It is a measurement of `v0.12.0`, not of the current release. Two disclosures that matter: multi-session is the weakest category at roughly 63%, and the 30-question abstention subset is noisy across runs (76.7 / 90.0 / 83.3) and should not be quoted to one decimal. The earlier single run of 79.4% (397/500) from 2026-07-07 is superseded as the headline and retained as evidence. Open source, local-first, MIT-licensed.
+A LongMemEval_s receipt of 81.2% mean over three independent full runs (80.8 / 81.0 / 81.8; 404-409 of 500) was measured 2026-07-18/19 on the published `v0.12.0` tag with the privileged `store_chunks` harness. That path reads chunks straight from the store. No MCP tool offers it, and it is not the product path. `pack_excerpts` is the product-path mode and is not yet a published score. Per-question evidence for all three runs, the reader/judge/embedding configuration, and the reproduction script are committed to this repo. Multi-session is the weakest category at roughly 63%. The 30-question abstention subset is noisy across runs (76.7 / 90.0 / 83.3) and should not be quoted to one decimal. The earlier single run of 79.4% (397/500) from 2026-07-07 is retained as evidence.
 
 Agents connect over MCP, HTTP API, or CLI. Humans stay in control: agent writes land as policy-checked commits or reviewable proposals, and a local review console is where memory gets approved, corrected, or forgotten. That review boundary is a feature, not a limitation — it is what makes the memory trustworthy enough to act on.
 
