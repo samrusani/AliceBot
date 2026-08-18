@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- The SessionStart hook is `uvx --from alice-memory
+  alice-memory-session-start` and carries `--data-dir`.
+
+- `alice-memory install` writes Claude Desktop, Claude Code, Cursor, and
+  OpenClaw host config and prints the OpenClaw add line. Claude Code and
+  Cursor get a SessionStart hook. Hermes is `--host hermes`. A `.mcpb`
+  manifest is generated on request. Import stays a source. Commit stays
+  a fact.
+
 - CI runs a continuity-task eval on a fixture vault through capture,
   commit, session brief, `alice_recall`, and `alice_resume`. The run
   fails if the imported quote, last decision, or open loop is missing.

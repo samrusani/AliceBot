@@ -37,14 +37,21 @@ Corrections are first-class: when a memory is corrected or superseded, future re
 
 ## Quickstart
 
-The fastest path is the packaged runtime from PyPI. Python 3.12+ and nothing else, no Docker, Node, or Postgres. It serves the default three MCP tools against a single local SQLite file:
+The fastest path is the packaged runtime from PyPI. Python 3.12+ and nothing else, no Docker, Node, or Postgres.
 
 ```bash
-uvx alice-memory mcp --data-dir ~/.alice
-# or: pip install alice-memory && alice-memory mcp --data-dir ~/.alice
+uvx alice-memory install --data-dir ~/.alice
 ```
 
-MCP client config (Claude Desktop, IDEs) — note there is no `DATABASE_URL`:
+That writes Claude Desktop, Claude Code, Cursor, and OpenClaw MCP config. Claude Code and Cursor also get a SessionStart hook so the next session can inject the brief. Hermes is opt-in: add `--host hermes`. The command writes host config. It does not import a vault.
+
+OpenClaw can also add the server in one line, which probes before saving:
+
+```bash
+openclaw mcp add alice --command uvx --arg alice-memory --arg mcp --arg --data-dir --arg ~/.alice
+```
+
+Or paste this into a host that still wants a file. There is no `DATABASE_URL`:
 
 ```json
 {
@@ -57,45 +64,14 @@ MCP client config (Claude Desktop, IDEs) — note there is no `DATABASE_URL`:
 }
 ```
 
-#### Hermes
-
-Hermes reads `~/.hermes/config.yaml`. Note it is YAML under `mcp_servers`, and
-Hermes does **not** pass your shell environment, so anything Alice needs must be
-in the `env` block:
-
-```yaml
-mcp_servers:
-  alice:
-    command: "uvx"
-    args: ["alice-memory", "mcp", "--data-dir", "~/.alice"]
-```
-
-#### OpenClaw
-
-OpenClaw reads `~/.openclaw/openclaw.json`, under `mcp.servers`:
-
-```json
-{
-  "mcp": {
-    "servers": {
-      "alice": {
-        "command": "uvx",
-        "args": ["alice-memory", "mcp", "--data-dir", "~/.alice"]
-      }
-    }
-  }
-}
-```
-
-Or add it from the CLI, which probes the server before saving:
+To serve MCP yourself after install:
 
 ```bash
-openclaw mcp add alice --command uvx --arg alice-memory --arg mcp --arg --data-dir --arg ~/.alice
+uvx alice-memory mcp --data-dir ~/.alice
+# or: pip install alice-memory && alice-memory mcp --data-dir ~/.alice
 ```
 
-Confirm with `openclaw mcp probe`, which should report `alice: 3 tools`. OpenClaw
-prefixes MCP tool names with the server name, so `alice_recall` reaches the model as
-`alice__alice_recall`.
+OpenClaw prefixes MCP tool names with the server name, so `alice_recall` reaches the model as `alice__alice_recall`.
 
 #### Skill packs
 
