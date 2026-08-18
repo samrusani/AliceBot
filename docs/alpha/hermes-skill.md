@@ -12,7 +12,7 @@ Default loop: remember, recall, continue.
 2. Call alice_recall to search memory and imported sources.
 3. Call alice_resume to pick work back up: last decision, next action, open loops, recent changes.
 
-alice_capture and alice_context_pack are full-surface tools. Use them only when the server lists them. Capture stores a source; its passages come back from alice_recall under sources, as material to read and quote rather than as facts Alice asserts. Candidates stay unsearchable as memories. Import is a source. Commit is a fact. Do not tell the user they must clear a review queue before a note is usable.
+alice_capture and alice_context_pack are full-surface tools. Use them only when the server lists them. Capture stores a source; its passages come back from alice_recall under sources, as material to read and quote rather than as facts Alice asserts. Candidates stay unsearchable until a reviewer promotes them. Import is a source. Commit is a fact. Do not tell the user they must clear a review queue before a note is usable.
 
 Never directly mutate trusted memory.
 Never write directly to Postgres.

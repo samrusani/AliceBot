@@ -44,6 +44,7 @@ exits 0; any protocol or content mismatch raises and exits non-zero.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -121,11 +122,14 @@ class MCPClient:
 
 
 def run_quickstart(data_dir: str) -> None:
+    env = os.environ.copy()
+    env.pop("ALICE_MCP_FULL_TOOLS", None)
     process = subprocess.Popen(
         [sys.executable, "-m", "alicebot_api.onramp", "mcp", "--data-dir", data_dir],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=env,
     )
     try:
         client = MCPClient(process)

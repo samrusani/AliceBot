@@ -12,7 +12,7 @@ Default loop: remember, recall, continue.
 2. Call alice_memory_commit whenever you learn a durable project fact worth keeping, including when the user has not asked you to remember it. Domain must be project.
 3. Call alice_recall to search project memory and imported sources.
 4. Call alice_resume to pick work back up: last decision, next action, open loops, recent changes.
-5. alice_capture and alice_context_pack are full-surface. Use them only when the server lists them. Capture stores a source; its passages come back from alice_recall under sources. Candidates stay unsearchable as memories. Import is a source. Commit is a fact. Do not tell the user they must clear a review queue before a note is usable.
+5. alice_capture and alice_context_pack are full-surface. Use them only when the server lists them. Capture stores a source; its passages come back from alice_recall under sources, as material to read and quote rather than as facts Alice asserts. Candidates stay unsearchable until a reviewer promotes them. Import is a source. Commit is a fact. Do not tell the user they must clear a review queue before a note is usable.
 6. Do not access or write non-project personal domains.
 ```
 
@@ -52,8 +52,9 @@ under `scope` and `options`:
 ```
 
 Sprint output, submitted through full-surface `alice_capture` when the server lists it. The text
-itself is searchable from the next call onward and comes back under `sources`. Candidates stay
-unsearchable as memories. The field carrying the text is `raw_text`:
+itself is searchable from the next call onward and comes back under `sources`, as material to
+read and quote rather than as facts Alice asserts. Candidates stay unsearchable until a
+reviewer promotes them. The field carrying the text is `raw_text`:
 
 ```json
 {

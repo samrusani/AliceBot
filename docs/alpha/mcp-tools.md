@@ -113,7 +113,7 @@ is a CLI verb, not a fourth always-on agent tool.
   back from `alice_recall` and `alice_context_pack` under `sources`, carrying an
   excerpt and labelled `excerpt_kind: imported_source_material`: material to read
   and quote, rather than as facts Alice asserts. Capture also proposes candidate
-  memories, and those stay unsearchable as memories. Import is a source. Commit
+  memories, and those stay unsearchable until a reviewer promotes them. Import is a source. Commit
   is a fact. Do not tell the user they must clear a review queue before a note
   is usable.
 - `alice_memory_review` — inspect the review queue, or one item in detail.
