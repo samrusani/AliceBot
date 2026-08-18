@@ -18,6 +18,9 @@ Subcommands:
   vectors in place after an import, upgrade, or embedding-model change.
 - ``brief``: print a labelled session brief (committed facts and imported
   sources) as markdown on stdout. Host session-start hooks call this.
+- ``doctor``: print a local SQLite vault census on stdout: sources,
+  searchable chunks, committed facts, last brief token estimate,
+  then candidates waiting. Not ``alicebot vnext doctor``.
 - ``--version``: print the package version.
 
 Export/import round-trip contract ("you own the memory"):
@@ -104,7 +107,7 @@ from alicebot_api.vnext_embeddings import (
 DEFAULT_DATA_DIR = "~/.alice"
 DEFAULT_DB_FILENAME = "memory.db"
 DEFAULT_USER_EMAIL = "local@alice"
-_KNOWN_COMMANDS = ("mcp", "export", "import", "reindex-embeddings", "brief")
+_KNOWN_COMMANDS = ("mcp", "export", "import", "reindex-embeddings", "brief", "doctor")
 
 _EXPORT_FORMAT = "alice-memory-jsonl"
 _EXPORT_FORMAT_VERSION = 2
@@ -819,6 +822,12 @@ def build_parser() -> argparse.ArgumentParser:
             "a recent committed fact, open loop, or imported source."
         ),
     )
+
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Print a local SQLite vault census: sources, chunks, facts, then candidates.",
+    )
+    _add_database_arguments(doctor_parser)
     return parser
 
 
@@ -871,6 +880,20 @@ def _run_brief(args: argparse.Namespace) -> int:
         query=args.query,
     )
     print(markdown)
+    return 0
+
+
+def _run_doctor(args: argparse.Namespace) -> int:
+    from alicebot_api.vault_doctor import compile_local_vault_doctor
+
+    db_path = resolve_db_path(data_dir=args.data_dir, db=args.db)
+    bootstrap_database(
+        db_path,
+        user_id=args.user_id,
+        user_email=args.user_email,
+        secure_parent=args.db is None,
+    )
+    print(compile_local_vault_doctor(db_path, user_id=args.user_id))
     return 0
 
 
@@ -2033,6 +2056,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_reindex_embeddings(args)
         if args.command == "brief":
             return _run_brief(args)
+        if args.command == "doctor":
+            return _run_doctor(args)
         return _run_mcp(args)
     except Exception as exc:  # pragma: no cover - boundary fail-closed backstop
         logger.debug(
