@@ -220,9 +220,13 @@ def _score_tasks(
 
 
 def _runtime_context(data_dir: Path, user_id: str) -> MCPRuntimeContext:
+    acting_user = UUID(str(user_id))
     database = resolve_db_path(data_dir=str(data_dir), db=None)
-    bootstrap_database(database, user_id=user_id, user_email=DEFAULT_USER_EMAIL)
-    return MCPRuntimeContext(database_url=sqlite_url_for_path(database), user_id=user_id)
+    bootstrap_database(database, user_id=acting_user, user_email=DEFAULT_USER_EMAIL)
+    return MCPRuntimeContext(
+        database_url=sqlite_url_for_path(database),
+        user_id=acting_user,
+    )
 
 
 def _compile_brief(
