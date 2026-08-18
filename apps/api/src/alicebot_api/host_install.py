@@ -122,8 +122,14 @@ def openclaw_add_line(data_dir: str) -> str:
     )
 
 
-def session_start_hook_entry() -> dict[str, str]:
-    return {"command": SESSION_START_COMMAND}
+def session_start_hook_command(data_dir: str) -> str:
+    """SessionStart argv that still works after ``uvx alice-memory install`` exits."""
+
+    return f"uvx --from alice-memory {SESSION_START_COMMAND} --data-dir {data_dir}"
+
+
+def session_start_hook_entry(data_dir: str) -> dict[str, str]:
+    return {"command": session_start_hook_command(data_dir)}
 
 
 def _is_session_start_command(command: str) -> bool:
@@ -234,32 +240,63 @@ def _write_text(path: Path, text: str) -> None:
         raise
 
 
-def _merge_session_start(doc: dict[str, Any], host: str) -> bool:
-    """Return True when a SessionStart hook was added."""
+def _hook_item_command(item: object) -> str | None:
+    if isinstance(item, Mapping):
+        command = item.get("command")
+        if isinstance(command, str):
+            return command
+    return None
+
+
+def _merge_session_start(doc: dict[str, Any], host: str, data_dir: str) -> bool:
+    """Return True when a SessionStart hook was added or replaced."""
 
     hooks = _require_mapping(doc.get("hooks"), "hooks")
     doc["hooks"] = hooks
     key = "SessionStart" if host == "claude-code" else "sessionStart"
     existing = hooks.get(key)
-    if _contains_session_start(existing):
-        return False
-    entry = session_start_hook_entry()
+    entry = session_start_hook_entry(data_dir)
+    desired = entry["command"]
     if existing is None:
         hooks[key] = [entry]
         return True
-    if isinstance(existing, list):
+    if not isinstance(existing, list):
+        raise InstallError("session start hook is not a list")
+
+    alice_indexes = [
+        index
+        for index, item in enumerate(existing)
+        if _contains_session_start(item)
+    ]
+    if not alice_indexes:
         existing.append(entry)
         return True
-    raise InstallError("session start hook is not a list")
+    if (
+        len(alice_indexes) == 1
+        and _hook_item_command(existing[alice_indexes[0]]) == desired
+    ):
+        return False
+
+    kept: list[object] = []
+    replaced = False
+    for index, item in enumerate(existing):
+        if index in alice_indexes:
+            if not replaced:
+                kept.append(entry)
+                replaced = True
+            continue
+        kept.append(item)
+    hooks[key] = kept
+    return True
 
 
-def _new_hooks_document(host: str) -> dict[str, Any]:
+def _new_hooks_document(host: str, data_dir: str) -> dict[str, Any]:
     if host == "cursor":
         return {
             "version": 1,
-            "hooks": {"sessionStart": [session_start_hook_entry()]},
+            "hooks": {"sessionStart": [session_start_hook_entry(data_dir)]},
         }
-    return {"hooks": {"SessionStart": [session_start_hook_entry()]}}
+    return {"hooks": {"SessionStart": [session_start_hook_entry(data_dir)]}}
 
 
 def _merge_mcp_document(doc: dict[str, Any], host: str, data_dir: str) -> dict[str, Any]:
@@ -637,10 +674,10 @@ def _write_host(
     if host in _SESSION_START_HOSTS and hooks_path is not None:
         hooks_doc = _load_json_document(hooks_path)
         if not hooks_doc:
-            hooks_doc = _new_hooks_document(host)
+            hooks_doc = _new_hooks_document(host, data_dir)
             added = True
         else:
-            added = _merge_session_start(hooks_doc, host)
+            added = _merge_session_start(hooks_doc, host, data_dir)
         session_start = "planned" if dry_run else ("added" if added else "already-present")
         hooks_text = _dump_json(hooks_doc)
 
@@ -712,5 +749,7 @@ __all__ = [
     "resolve_home",
     "resolve_user_path",
     "run_host_install",
+    "session_start_hook_command",
+    "session_start_hook_entry",
     "write_mcpb_bundle",
 ]

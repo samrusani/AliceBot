@@ -74,6 +74,20 @@ def _alice_payload(doc: dict, host: str) -> dict:
     return doc["mcpServers"]["alice"]
 
 
+def _flag_value(parts: list[str], flag: str) -> str:
+    return parts[parts.index(flag) + 1]
+
+
+def _expected_session_start_hook(data_dir: Path) -> dict[str, str]:
+    resolved = str(data_dir.resolve())
+    return {
+        "command": (
+            "uvx --from alice-memory alice-memory-session-start "
+            f"--data-dir {resolved}"
+        )
+    }
+
+
 def _assert_alice_payload(payload: dict, data_dir: Path, *, with_env: bool) -> None:
     assert payload["command"] == "uvx"
     assert payload["args"] == [
@@ -117,7 +131,8 @@ def test_host_cursor_writes_mcp_and_session_start_hook(
 ) -> None:
     """--home tmp --host cursor writes mcp.json and a SessionStart hook.
 
-    Mutation: skip the hook write. This test fails.
+    Mutation: skip the hook write, or write the bare
+    ``alice-memory-session-start``. This test fails.
     """
 
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -132,7 +147,7 @@ def test_host_cursor_writes_mcp_and_session_start_hook(
     mcp = _load_json(files["cursor"]["mcp"])
     hooks = _load_json(files["cursor"]["hooks"])
     _assert_alice_payload(mcp["mcpServers"]["alice"], vault, with_env=False)
-    assert hooks["hooks"]["sessionStart"] == [{"command": SESSION_START_COMMAND}]
+    assert hooks["hooks"]["sessionStart"] == [_expected_session_start_hook(vault)]
     assert "session_start: added" in out
     assert not vault.exists()
 
@@ -142,7 +157,8 @@ def test_host_claude_code_writes_mcp_and_session_start(
 ) -> None:
     """--host claude-code writes MCP plus hooks.SessionStart.
 
-    Mutation: write MCP only. This test fails.
+    Mutation: write MCP only, or write the bare
+    ``alice-memory-session-start``. This test fails.
     """
 
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -157,8 +173,116 @@ def test_host_claude_code_writes_mcp_and_session_start(
     mcp = _load_json(files["claude-code"]["mcp"])
     hooks = _load_json(files["claude-code"]["hooks"])
     _assert_alice_payload(mcp["mcpServers"]["alice"], vault, with_env=False)
-    assert hooks["hooks"]["SessionStart"] == [{"command": SESSION_START_COMMAND}]
+    assert hooks["hooks"]["SessionStart"] == [_expected_session_start_hook(vault)]
     assert "session_start: added" in out
+
+
+def test_session_start_hook_data_dir_matches_mcp(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Hook --data-dir is the same resolved vault MCP uses.
+
+    Mutation: omit --data-dir on the hook while MCP has a custom vault.
+    This test fails.
+    """
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    home = tmp_path / "home"
+    vault = tmp_path / "custom-vault"
+    code, _out, err = _install(
+        _base_argv(home, vault, "--host", "cursor"),
+        capsys,
+    )
+    assert code == 0, err
+    files = host_file_map(home.resolve())
+    mcp = _load_json(files["cursor"]["mcp"])
+    hooks = _load_json(files["cursor"]["hooks"])
+    hook_command = hooks["hooks"]["sessionStart"][0]["command"]
+    hook_dir = _flag_value(hook_command.split(), "--data-dir")
+    mcp_dir = _flag_value(mcp["mcpServers"]["alice"]["args"], "--data-dir")
+    assert hook_dir == mcp_dir
+    assert hook_dir == str(vault.resolve())
+
+
+def test_second_install_replaces_bare_session_start_hook(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A second install replaces a bare SessionStart hook. One hook remains.
+
+    Mutation: leave the bare command in place. This test fails.
+    """
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    home = tmp_path / "home"
+    vault = tmp_path / "vault"
+    files = host_file_map(home.resolve())
+    hooks_path = files["cursor"]["hooks"]
+    hooks_path.parent.mkdir(parents=True)
+    hooks_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "hooks": {"sessionStart": [{"command": SESSION_START_COMMAND}]},
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    argv = _base_argv(home, vault, "--host", "cursor")
+    assert _install(argv, capsys)[0] == 0
+    hooks = _load_json(hooks_path)
+    assert hooks["hooks"]["sessionStart"] == [_expected_session_start_hook(vault)]
+    assert _install(argv, capsys)[0] == 0
+    hooks = _load_json(hooks_path)
+    assert hooks["hooks"]["sessionStart"] == [_expected_session_start_hook(vault)]
+
+
+def test_install_replaces_session_start_hook_missing_or_wrong_data_dir(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A hook that omits --data-dir or points at another vault is replaced.
+
+    Mutation: leave the stale hook in place. This test fails.
+    """
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    home = tmp_path / "home"
+    vault = tmp_path / "vault"
+    files = host_file_map(home.resolve())
+    hooks_path = files["cursor"]["hooks"]
+    hooks_path.parent.mkdir(parents=True)
+    hooks_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "hooks": {
+                    "sessionStart": [
+                        {
+                            "command": (
+                                "uvx --from alice-memory "
+                                "alice-memory-session-start"
+                            )
+                        },
+                        {
+                            "command": (
+                                "uvx --from alice-memory "
+                                "alice-memory-session-start "
+                                "--data-dir /other/vault"
+                            )
+                        },
+                    ]
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    code, _out, err = _install(_base_argv(home, vault, "--host", "cursor"), capsys)
+    assert code == 0, err
+    hooks = _load_json(hooks_path)
+    assert hooks["hooks"]["sessionStart"] == [_expected_session_start_hook(vault)]
 
 
 def test_host_claude_desktop_writes_mcp_servers_alice(
@@ -350,7 +474,7 @@ def test_existing_foreign_server_stays_and_second_run_does_not_duplicate_alice(
     _assert_alice_payload(hermes["mcp_servers"]["alice"], vault, with_env=True)
 
     hooks = _load_json(files["cursor"]["hooks"])
-    assert hooks["hooks"]["sessionStart"] == [{"command": SESSION_START_COMMAND}]
+    assert hooks["hooks"]["sessionStart"] == [_expected_session_start_hook(vault)]
 
 
 def test_dry_run_writes_no_files(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -491,8 +615,9 @@ def test_default_hosts_write_session_start_and_openclaw_line(
     assert not files["hermes"]["mcp"].exists()
     cursor_hooks = _load_json(files["cursor"]["hooks"])
     claude_hooks = _load_json(files["claude-code"]["hooks"])
-    assert cursor_hooks["hooks"]["sessionStart"][0]["command"] == SESSION_START_COMMAND
-    assert claude_hooks["hooks"]["SessionStart"][0]["command"] == SESSION_START_COMMAND
+    expected_hook = _expected_session_start_hook(vault)
+    assert cursor_hooks["hooks"]["sessionStart"][0] == expected_hook
+    assert claude_hooks["hooks"]["SessionStart"][0] == expected_hook
     assert openclaw_add_line(str(vault.resolve())) in out
     assert not vault.exists()
 

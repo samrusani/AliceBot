@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The SessionStart hook is `uvx --from alice-memory
+  alice-memory-session-start` and carries `--data-dir`.
+
 - `alice-memory install` writes Claude Desktop, Claude Code, Cursor, and
   OpenClaw host config and prints the OpenClaw add line. Claude Code and
   Cursor get a SessionStart hook. Hermes is `--host hermes`. A `.mcpb`
