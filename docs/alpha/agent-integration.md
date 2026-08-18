@@ -52,8 +52,9 @@ Remember, recall, continue:
 (`ALICE_MCP_FULL_TOOLS=1`). Capture stores a source; its passages come
 back from `alice_recall` under `sources`, as material to read and quote
 rather than as facts Alice asserts. Candidates stay unsearchable until a
-reviewer promotes them. Import is a source. Commit is a fact. Do not tell the user they
-must clear a review queue before a note is usable.
+reviewer promotes them. Import is a source. Commit is a fact. Print the
+`receipt` field after a capture or commit so the user sees what was stored.
+Do not tell the user they must clear a review queue before a note is usable.
 
 Lifecycle tools (`alice_memory_manage`, review, correct) are also
 full-surface.
