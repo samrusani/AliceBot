@@ -277,6 +277,7 @@ PACK_VIEW_LOOP_CUES = (
     "what is open",
     "still open",
     "open loop",
+    "open loops",
     "todo",
     "waiting",
     "blocked",
@@ -636,11 +637,12 @@ def classify_pack_view(query: str) -> str:
     """Pick loops / facts / sources from word-bounded query cues.
 
     Reads ``PACK_VIEW_LOOP_CUES`` first, then ``PACK_VIEW_SOURCE_CUES``.
+    A curly apostrophe (U+2019) folds to ASCII ``'`` before matching.
     Bare ``open`` is not a loops cue. When neither list hits, the view is
     facts, which keeps today's balanced section order.
     """
 
-    lowered = normalize_query(query).casefold()
+    lowered = normalize_query(query).casefold().replace("\u2019", "'")
     if any(_contains_domain_cue(lowered, cue) for cue in PACK_VIEW_LOOP_CUES):
         return PACK_VIEW_LOOPS
     if any(_contains_domain_cue(lowered, cue) for cue in PACK_VIEW_SOURCE_CUES):

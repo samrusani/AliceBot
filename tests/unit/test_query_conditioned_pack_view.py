@@ -36,6 +36,8 @@ from tests.unit.test_vnext_retrieval import InMemoryVNextRetrievalStore, _memory
 USER_ID = "00000000-0000-0000-0000-000000000001"
 CANARY = "indigo-lighthouse-42"
 OPEN_QUERY = "what's open?"
+OPEN_LOOPS_QUERY = "what are the open loops?"
+CURLY_OPEN_QUERY = "what\u2019s open?"
 WRITE_QUERY = f"what did I write about {CANARY}?"
 CANDIDATE_TEXT = "Do not trust the unreviewed harbour rumour."
 FAT_PADDING = "harbour-board-padding " * 50
@@ -148,10 +150,13 @@ def test_classify_pack_view_reads_the_named_word_bounded_cues() -> None:
     assert "what's open" in PACK_VIEW_LOOP_CUES
     assert "what is open" in PACK_VIEW_LOOP_CUES
     assert "still open" in PACK_VIEW_LOOP_CUES
+    assert "open loops" in PACK_VIEW_LOOP_CUES
     assert "what did i write" in PACK_VIEW_SOURCE_CUES
     assert "wrote about" in PACK_VIEW_SOURCE_CUES
     assert "written about" in PACK_VIEW_SOURCE_CUES
     assert classify_pack_view(OPEN_QUERY) == PACK_VIEW_LOOPS
+    assert classify_pack_view(OPEN_LOOPS_QUERY) == PACK_VIEW_LOOPS
+    assert classify_pack_view(CURLY_OPEN_QUERY) == PACK_VIEW_LOOPS
     assert classify_pack_view("what is open") == PACK_VIEW_LOOPS
     assert classify_pack_view("still open") == PACK_VIEW_LOOPS
     assert classify_pack_view("waiting on legal") == PACK_VIEW_LOOPS
@@ -174,6 +179,42 @@ def test_whats_open_packs_the_loop_under_a_tight_budget() -> None:
     tight = _tight_one_section_budget(probe)
 
     pack = _compile_view_pack(OPEN_QUERY, max_tokens=tight)
+
+    assert pack["query_interpretation"]["pack_view"] == PACK_VIEW_LOOPS
+    assert pack["trace"]["budget_strategy"] == "balanced"
+    assert [row["id"] for row in pack["open_loops"]] == ["loop-fat"]
+    assert pack["relevant_memories"] == []
+
+
+def test_what_are_the_open_loops_packs_the_loop_under_a_tight_budget() -> None:
+    """Same fixture: ``what are the open loops?`` keeps the loop.
+
+    Mutation: drop ``open loops`` from ``PACK_VIEW_LOOP_CUES``. This test
+    fails. Singular ``open loop`` does not match the plural phrase.
+    """
+
+    probe = _compile_view_pack(CANARY)
+    tight = _tight_one_section_budget(probe)
+
+    pack = _compile_view_pack(OPEN_LOOPS_QUERY, max_tokens=tight)
+
+    assert pack["query_interpretation"]["pack_view"] == PACK_VIEW_LOOPS
+    assert pack["trace"]["budget_strategy"] == "balanced"
+    assert [row["id"] for row in pack["open_loops"]] == ["loop-fat"]
+    assert pack["relevant_memories"] == []
+
+
+def test_curly_apostrophe_whats_open_packs_the_loop_under_a_tight_budget() -> None:
+    """A U+2019 apostrophe in ``what’s open?`` still keeps the loop.
+
+    Fails if ``classify_pack_view`` matches the ASCII cue without folding
+    the curly mark first.
+    """
+
+    probe = _compile_view_pack(CANARY)
+    tight = _tight_one_section_budget(probe)
+
+    pack = _compile_view_pack(CURLY_OPEN_QUERY, max_tokens=tight)
 
     assert pack["query_interpretation"]["pack_view"] == PACK_VIEW_LOOPS
     assert pack["trace"]["budget_strategy"] == "balanced"
