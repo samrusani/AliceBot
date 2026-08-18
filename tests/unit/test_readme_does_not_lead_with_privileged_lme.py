@@ -27,7 +27,7 @@ def _lme_badge_lines(text: str) -> list[str]:
     return [
         line
         for line in text.splitlines()
-        if "LongMemEval" in line and "img.shields.io" in line
+        if "LongMemEval" in line and line.lstrip().startswith("[![")
     ]
 
 
@@ -36,9 +36,7 @@ def _first_lme_paragraph(text: str) -> str | None:
         if "LongMemEval" not in block:
             continue
         lines = [line.strip() for line in block.splitlines() if line.strip()]
-        if lines and all(
-            "img.shields.io" in line or line.startswith("![") for line in lines
-        ):
+        if lines and all(line.startswith("![") or line.startswith("[![") for line in lines):
             continue
         return block
     return None
