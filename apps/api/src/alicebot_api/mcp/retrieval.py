@@ -52,6 +52,7 @@ from alicebot_api.vnext_retrieval import (
     VECTOR_STAGE_ENABLED,
     VNextRetrievalService,
     _order_memories_for_strategy,
+    _prefer_current_versions,
     _ResolvedRetrievalScope,
     reciprocal_rank_fusion,
 )
@@ -243,6 +244,10 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
         # it never changes what was retrieved or ranked.
         scores = {str(item.get("id")): score for item, score in fused}
         ordered_rows = _order_memories_for_strategy([item for item, _score in fused], budget_strategy)
+        # Current-version preference (demote-not-drop): same helper the
+        # context pack already runs after the budget-strategy reorder.
+        # Replacement sits above its superseded ancestor; nothing is dropped.
+        ordered_rows, _supersession_reorders = _prefer_current_versions(ordered_rows)
         results: list[JsonObject] = []
         for item in ordered_rows:
             provenance_count = len(store.list_provenance_links(target_type="memory", target_id=str(item.get("id"))))

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Present-tense recall and the session brief put the current committed
+  fact above a historical version of the same fact. `alice_recall` and
+  the brief now run the same demote-not-drop helper the context pack
+  already used (`valid_from` / `valid_to` / `supersedes` /
+  `superseded_by`). A superseded ancestor stays in the list unless the
+  store already excluded it. Import stays a source. Commit stays a fact.
+
 - `alice-memory demo --vault PATH` imports a markdown folder into a
   local SQLite vault, then prints the import counts, a capture receipt
   when a new source was saved, the doctor census, the session brief,

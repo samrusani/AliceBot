@@ -34,6 +34,7 @@ from alicebot_api.vnext_retrieval import (
     VNextRetrievalService,
     VNextRetrievalStore,
     _ResolvedRetrievalScope,
+    _prefer_current_versions,
     estimate_item_tokens,
 )
 from alicebot_api.vnext_store import fts_fallback_tokens
@@ -184,6 +185,9 @@ def compile_session_brief(
             effective_sensitivity_allowed=effective_sensitivity_allowed,
             effective_project_scope=effective_project_scope,
         )
+        # list_memories is created_at DESC, so a later-written ancestor can
+        # lead. Same demote-not-drop helper the pack and recall already use.
+        facts, _supersession_reorders = _prefer_current_versions(facts)
 
     excerpt_query = _resolve_excerpt_query(
         store,
