@@ -130,6 +130,10 @@ StageSourceT = TypeVar("StageSourceT")
 DEFAULT_CONTEXT_PACK_LIMIT = 8
 MAX_CONTEXT_PACK_ITEMS = 50
 MAX_CONTEXT_PACK_TOKENS = 50_000
+# One provenance hop after the first FTS hit. A handful of extra committed
+# facts, priced with estimate_item_tokens. Do not raise the pack ceiling to
+# make room for this hop.
+PROVENANCE_EXPAND_ONCE_MAX_TOKENS = 640
 MAX_CONTEXT_SCOPE_VALUES = 50
 MAX_TIME_WINDOW_DAYS = 3_650
 DEFAULT_SOURCE_LIMIT = 8
@@ -1622,6 +1626,107 @@ def _prefer_current_versions(memories: list[JsonObject]) -> tuple[list[JsonObjec
         # be a superseded ancestor of a later pack-mate (chains reorder
         # newest-first in one pass).
     return items, reorders
+
+
+def _first_fts_named_source_id(
+    store: object,
+    *,
+    fts_memories: Sequence[JsonObject],
+    source_excerpts: Sequence[JsonObject],
+) -> str | None:
+    """First FTS hit that names a source: memory provenance, else excerpt id."""
+
+    list_links = getattr(store, "list_provenance_links", None)
+    if callable(list_links):
+        for memory in fts_memories:
+            memory_id = memory.get("id")
+            if memory_id is None or str(memory_id) == "":
+                continue
+            for link in list_links(target_type="memory", target_id=str(memory_id)):
+                source_id = link.get("source_id") if isinstance(link, Mapping) else None
+                if source_id is not None and str(source_id) != "":
+                    return str(source_id)
+    for excerpt in source_excerpts:
+        source_id = excerpt.get("id") or excerpt.get("source_id")
+        if source_id is not None and str(source_id) != "":
+            return str(source_id)
+    return None
+
+
+def expand_provenance_once(
+    store: object,
+    *,
+    fts_memories: Sequence[JsonObject],
+    source_excerpts: Sequence[JsonObject],
+    already_selected_ids: set[str],
+    effective_domains: list[str],
+    effective_sensitivity_allowed: list[str],
+    effective_project_scope: tuple[str, ...],
+    memory_types: tuple[str, ...] = (),
+    created_by_agent_ids: tuple[str, ...] = (),
+    run_id: str | None = None,
+    scope_thread_id: str | None = None,
+    scope_task_id: str | None = None,
+    scope_people: tuple[str, ...] = (),
+    scope_person_memory_ids: tuple[str, ...] = (),
+    scope_window_start: datetime | None = None,
+    scope_window_end: datetime | None = None,
+) -> list[JsonObject]:
+    """One source-to-fact hop after the first FTS hit that names a source.
+
+    Calls ``list_memories_referencing_source`` for that one source, keeps
+    only ``active`` / ``accepted`` rows that pass the same hop-row filter
+    ``_memory_graph_rows`` applies, and admits extras until
+    ``PROVENANCE_EXPAND_ONCE_MAX_TOKENS``. Does not walk the siblings'
+    sources. Candidates stay out.
+    """
+
+    list_refs = getattr(store, "list_memories_referencing_source", None)
+    if not callable(list_refs):
+        return []
+    source_id = _first_fts_named_source_id(
+        store,
+        fts_memories=fts_memories,
+        source_excerpts=source_excerpts,
+    )
+    if source_id is None:
+        return []
+    token_cap = PROVENANCE_EXPAND_ONCE_MAX_TOKENS
+    now = datetime.now(UTC)
+    selected = set(already_selected_ids)
+    admitted: list[JsonObject] = []
+    used_tokens = 0
+    for row in list_refs(source_id=source_id):
+        if not isinstance(row, Mapping):
+            continue
+        row_id = str(row.get("id") or "")
+        if not row_id or row_id in selected:
+            continue
+        if not _graph_memory_admissible(
+            dict(row),
+            now=now,
+            domains=effective_domains,
+            sensitivity_allowed=effective_sensitivity_allowed,
+            memory_types=memory_types,
+            projects=effective_project_scope,
+            created_by_agent_ids=created_by_agent_ids,
+            run_id=run_id,
+            scope_thread_id=scope_thread_id,
+            scope_task_id=scope_task_id,
+            scope_people=scope_people,
+            scope_person_memory_ids=scope_person_memory_ids,
+            scope_window_start=scope_window_start,
+            scope_window_end=scope_window_end,
+        ):
+            continue
+        item = dict(row)
+        cost = estimate_item_tokens(item)
+        if used_tokens + cost > token_cap:
+            break
+        used_tokens += cost
+        selected.add(row_id)
+        admitted.append(item)
+    return admitted
 
 
 def _memory_title(memory: JsonObject) -> str:
@@ -4220,6 +4325,7 @@ __all__ = [
     "LEGACY_SCOPED_SCAN_MAX_ROWS",
     "MAX_CONTEXT_PACK_ITEMS",
     "MAX_CONTEXT_PACK_TOKENS",
+    "PROVENANCE_EXPAND_ONCE_MAX_TOKENS",
     "MAX_CONTEXT_SCOPE_VALUES",
     "MAX_TIME_WINDOW_DAYS",
     "MEMORY_ENTITY_EDGE_TYPES",
@@ -4260,6 +4366,7 @@ __all__ = [
     "content_stable_tiebreak",
     "entity_name_candidates",
     "estimate_item_tokens",
+    "expand_provenance_once",
     "normalize_query",
     "query_terms",
     "reciprocal_rank_fusion",
