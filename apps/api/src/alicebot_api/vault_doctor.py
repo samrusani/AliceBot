@@ -39,14 +39,14 @@ WHERE c.user_id = ?
   AND s.deleted_at IS NULL
 """
 
-_COMMITTED_STATUS_PLACEHOLDERS = ", ".join("?" for _status in COMMITTED_MEMORY_STATUSES)
-
-COMMITTED_FACT_COUNT_SQL = f"""
+# Static placeholders. Bandit B608 fires on an f-string here even when
+# the only interpolated text is ``?, ?``. The statuses stay bound.
+COMMITTED_FACT_COUNT_SQL = """
 SELECT COUNT(*) AS n
 FROM memories
 WHERE user_id = ?
   AND deleted_at IS NULL
-  AND status IN ({_COMMITTED_STATUS_PLACEHOLDERS})
+  AND status IN (?, ?)
 """
 
 CANDIDATE_COUNT_SQL = """
@@ -71,6 +71,11 @@ def compile_local_vault_doctor(
     user_id: UUID | str,
 ) -> str:
     """Render the vault census for the acting local user."""
+
+    if COMMITTED_MEMORY_STATUSES != ("active", "accepted"):
+        raise RuntimeError(
+            "committed-fact COUNT SQL is written for active and accepted only"
+        )
 
     resolved = Path(db_path).expanduser().resolve()
     with sqlite_user_connection(resolved, user_id) as connection:

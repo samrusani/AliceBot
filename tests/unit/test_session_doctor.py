@@ -16,9 +16,13 @@ from alicebot_api.onramp import (
     resolve_db_path,
     sqlite_url_for_path,
 )
-from alicebot_api.session_briefing import EMPTY_SESSION_BRIEF, SESSION_BRIEF_TOKEN_BUDGET
+from alicebot_api.session_briefing import (
+    COMMITTED_MEMORY_STATUSES,
+    EMPTY_SESSION_BRIEF,
+    SESSION_BRIEF_TOKEN_BUDGET,
+)
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user, sqlite_user_connection
-from alicebot_api.vault_doctor import COUNT_SQL_TEXTS
+from alicebot_api.vault_doctor import COMMITTED_FACT_COUNT_SQL, COUNT_SQL_TEXTS
 from alicebot_api.vnext_embeddings import (
     EMBEDDINGS_API_KEY_ENV,
     EMBEDDINGS_BASE_URL_ENV,
@@ -205,9 +209,12 @@ def test_counts_bind_user_id_and_ignore_a_second_user(
     Mutation: delete ``user_id`` from a doctor COUNT. This test fails.
     """
 
+    assert COMMITTED_MEMORY_STATUSES == ("active", "accepted")
+    assert "status IN (?, ?)" in COMMITTED_FACT_COUNT_SQL
     for sql in COUNT_SQL_TEXTS:
         assert "user_id" in sql
         assert "?" in sql
+        assert "IN ({" not in sql
 
     context = _context(tmp_path, monkeypatch)
     _capture(context, SOURCE_NOTE)
