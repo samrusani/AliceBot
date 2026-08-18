@@ -1857,6 +1857,7 @@ def test_normalized_argv_defaults_to_mcp_subcommand() -> None:
     ]
     assert _normalized_argv(["brief", "--data-dir", "/tmp/x"]) == ["brief", "--data-dir", "/tmp/x"]
     assert _normalized_argv(["doctor", "--data-dir", "/tmp/x"]) == ["doctor", "--data-dir", "/tmp/x"]
+    assert _normalized_argv(["demo", "--vault", "/tmp/notes"]) == ["demo", "--vault", "/tmp/notes"]
     assert _normalized_argv(["--version"]) == ["--version"]
 
 
