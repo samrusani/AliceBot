@@ -37,6 +37,7 @@ USER_ID = "00000000-0000-0000-0000-000000000001"
 CANARY = "indigo-lighthouse-42"
 OPEN_QUERY = "what's open?"
 OPEN_LOOPS_QUERY = "what are the open loops?"
+TODOS_QUERY = "what are my todos?"
 CURLY_OPEN_QUERY = "what\u2019s open?"
 WRITE_QUERY = f"what did I write about {CANARY}?"
 CANDIDATE_TEXT = "Do not trust the unreviewed harbour rumour."
@@ -151,11 +152,13 @@ def test_classify_pack_view_reads_the_named_word_bounded_cues() -> None:
     assert "what is open" in PACK_VIEW_LOOP_CUES
     assert "still open" in PACK_VIEW_LOOP_CUES
     assert "open loops" in PACK_VIEW_LOOP_CUES
+    assert "todos" in PACK_VIEW_LOOP_CUES
     assert "what did i write" in PACK_VIEW_SOURCE_CUES
     assert "wrote about" in PACK_VIEW_SOURCE_CUES
     assert "written about" in PACK_VIEW_SOURCE_CUES
     assert classify_pack_view(OPEN_QUERY) == PACK_VIEW_LOOPS
     assert classify_pack_view(OPEN_LOOPS_QUERY) == PACK_VIEW_LOOPS
+    assert classify_pack_view(TODOS_QUERY) == PACK_VIEW_LOOPS
     assert classify_pack_view(CURLY_OPEN_QUERY) == PACK_VIEW_LOOPS
     assert classify_pack_view("what is open") == PACK_VIEW_LOOPS
     assert classify_pack_view("still open") == PACK_VIEW_LOOPS
@@ -164,6 +167,7 @@ def test_classify_pack_view_reads_the_named_word_bounded_cues() -> None:
     assert classify_pack_view("wrote about the harbour") == PACK_VIEW_SOURCES
     assert classify_pack_view("the hangar is open") == PACK_VIEW_FACTS
     assert classify_pack_view("open source") != PACK_VIEW_LOOPS
+    assert classify_pack_view("todoist inbox") != PACK_VIEW_LOOPS
     assert classify_pack_view("where do I live") == PACK_VIEW_FACTS
 
 
@@ -197,6 +201,24 @@ def test_what_are_the_open_loops_packs_the_loop_under_a_tight_budget() -> None:
     tight = _tight_one_section_budget(probe)
 
     pack = _compile_view_pack(OPEN_LOOPS_QUERY, max_tokens=tight)
+
+    assert pack["query_interpretation"]["pack_view"] == PACK_VIEW_LOOPS
+    assert pack["trace"]["budget_strategy"] == "balanced"
+    assert [row["id"] for row in pack["open_loops"]] == ["loop-fat"]
+    assert pack["relevant_memories"] == []
+
+
+def test_what_are_my_todos_packs_the_loop_under_a_tight_budget() -> None:
+    """Same fixture: ``what are my todos?`` keeps the loop.
+
+    Mutation: drop ``todos`` from ``PACK_VIEW_LOOP_CUES``. This test
+    fails. Word-bounded ``todo`` does not match ``todos``.
+    """
+
+    probe = _compile_view_pack(CANARY)
+    tight = _tight_one_section_budget(probe)
+
+    pack = _compile_view_pack(TODOS_QUERY, max_tokens=tight)
 
     assert pack["query_interpretation"]["pack_view"] == PACK_VIEW_LOOPS
     assert pack["trace"]["budget_strategy"] == "balanced"

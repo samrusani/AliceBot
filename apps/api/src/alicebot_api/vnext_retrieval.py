@@ -279,6 +279,7 @@ PACK_VIEW_LOOP_CUES = (
     "open loop",
     "open loops",
     "todo",
+    "todos",
     "waiting",
     "blocked",
     "unresolved",

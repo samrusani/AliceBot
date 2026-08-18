@@ -6,7 +6,7 @@
   query when `budget_strategy` is left at default. `classify_pack_view`
   reads the word-bounded loop cues in `PACK_VIEW_LOOP_CUES` (`what's
   open`, `what is open`, `still open`, plus `open loop` / `open loops`
-  / `todo` / `waiting` / `blocked` / `unresolved`) and the source cues in
+  / `todo` / `todos` / `waiting` / `blocked` / `unresolved`) and the source cues in
   `PACK_VIEW_SOURCE_CUES` (`what did I write`, `wrote about`, `written
   about`, plus `write` / `draft` / `compose` and `quote` / `source` /
   `evidence`). A curly apostrophe folds to ASCII `'` before matching.
