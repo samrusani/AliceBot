@@ -31,10 +31,13 @@ from alicebot_api.vnext_project_scope import (
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_retrieval import (
     MEMORY_SEARCHABLE_STATUSES,
+    PACK_VIEW_LOOPS,
+    PACK_VIEW_SOURCES,
     VNextRetrievalService,
     VNextRetrievalStore,
     _ResolvedRetrievalScope,
     _prefer_current_versions,
+    classify_pack_view,
     estimate_item_tokens,
 )
 from alicebot_api.vnext_store import fts_fallback_tokens
@@ -211,7 +214,16 @@ def compile_session_brief(
             winning_memories=facts,
         )
 
-    return _render_brief(facts=facts, open_loops=open_loops, sources=sources)
+    pack_view: str | None = None
+    if query is not None and query.strip():
+        pack_view = classify_pack_view(query)
+
+    return _render_brief(
+        facts=facts,
+        open_loops=open_loops,
+        sources=sources,
+        pack_view=pack_view,
+    )
 
 
 def compile_local_session_brief(
@@ -465,6 +477,7 @@ def _render_brief(
     facts: Sequence[Mapping[str, object]],
     open_loops: Sequence[Mapping[str, object]],
     sources: Sequence[Mapping[str, object]],
+    pack_view: str | None,
 ) -> str:
     lines: list[str] = []
     used_tokens = 0
@@ -483,18 +496,34 @@ def _render_brief(
         seen.add(flattened)
         used_tokens += cost
 
+    fact_items: list[tuple[str, str]] = []
     for row in facts:
         text = _memory_text(row)
         if text:
-            admit(_LABEL_FACT, text)
+            fact_items.append((_LABEL_FACT, text))
+    loop_items: list[tuple[str, str]] = []
     for row in open_loops:
         text = _loop_text(row)
         if text:
-            admit(_LABEL_OPEN_LOOP, text)
+            loop_items.append((_LABEL_OPEN_LOOP, text))
+    source_items: list[tuple[str, str]] = []
     for source in sources:
         excerpt = source.get("excerpt")
         if isinstance(excerpt, str) and excerpt.strip():
-            admit(_LABEL_SOURCE, excerpt)
+            source_items.append((_LABEL_SOURCE, excerpt))
+
+    # query=None keeps today's dump: facts, then loops, then sources.
+    # A labelled view admits that section first so a tight budget shrinks
+    # to loops or excerpts the same way the pack does.
+    if pack_view == PACK_VIEW_LOOPS:
+        ordered_items = (*loop_items, *fact_items, *source_items)
+    elif pack_view == PACK_VIEW_SOURCES:
+        ordered_items = (*source_items, *fact_items, *loop_items)
+    else:
+        ordered_items = (*fact_items, *loop_items, *source_items)
+
+    for label, text in ordered_items:
+        admit(label, text)
 
     if not lines:
         return EMPTY_SESSION_BRIEF

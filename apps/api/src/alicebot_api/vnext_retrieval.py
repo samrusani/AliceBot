@@ -22,7 +22,12 @@ disclosed in the trace under ``stages.reranker`` whenever configured.
 
 Budget strategies (``VNextRetrievalRequest.budget_strategy``) change the
 greedy packer's section order; ``recent_first`` and ``facts_first``
-additionally reorder the memories list before packing. Depth tiers
+additionally reorder the memories list before packing. When
+``budget_strategy`` is the default ``balanced``, ``classify_pack_view``
+picks a loops / facts / sources view from the query and packs that
+section first. An explicit strategy other than ``balanced`` still wins.
+Loops-first order is internal; it is not a public ``BUDGET_STRATEGIES``
+value. Depth tiers
 (``VNextRetrievalRequest.context_depth``) trade cost for coverage:
 ``minimal`` (FTS only, no sources/contradictions/typed sections/recent
 changes, max_items capped), ``low`` (today's default hybrid behavior),
@@ -111,6 +116,7 @@ logger = logging.getLogger(__name__)
 class QueryInterpretation(TypedDict):
     query: str
     query_type: str
+    pack_view: str
     terms: list[str]
     domains: list[str]
     inferred_domains: list[str]
@@ -258,6 +264,42 @@ BUDGET_STRATEGY_SECTION_ORDERS: dict[str, tuple[str, ...]] = {
         SECTION_CONTRADICTING_EVIDENCE,
     ),
 }
+# Query-conditioned views used when budget_strategy stays at default
+# balanced. Not a public MCP enum; do not add these to BUDGET_STRATEGIES.
+PACK_VIEW_LOOPS = "loops"
+PACK_VIEW_FACTS = "facts"
+PACK_VIEW_SOURCES = "sources"
+PACK_VIEWS = (PACK_VIEW_LOOPS, PACK_VIEW_FACTS, PACK_VIEW_SOURCES)
+# classify_pack_view reads these word-bounded phrases. Bare "open" is not
+# a loops cue, so "open source" is not that view.
+PACK_VIEW_LOOP_CUES = (
+    "what's open",
+    "what is open",
+    "still open",
+    "open loop",
+    "todo",
+    "waiting",
+    "blocked",
+    "unresolved",
+)
+PACK_VIEW_SOURCE_CUES = (
+    "what did i write",
+    "wrote about",
+    "written about",
+    "write",
+    "draft",
+    "compose",
+    "quote",
+    "source",
+    "evidence",
+)
+_LOOPS_FIRST_SECTION_ORDER = (
+    SECTION_OPEN_LOOPS,
+    SECTION_RELEVANT_MEMORIES,
+    SECTION_SOURCES,
+    SECTION_SUPPORTING_EVIDENCE,
+    SECTION_CONTRADICTING_EVIDENCE,
+)
 # facts_first boosts these memory_types to the front of the memories list
 # (stable within each partition, so fused rank still breaks ties).
 FACTS_FIRST_MEMORY_TYPES = frozenset({"semantic", "decision", "preference"})
@@ -590,6 +632,39 @@ def _resolve_section_flags(request: VNextRetrievalRequest, *, query_type: str) -
     return requires_sources, requires_contradictions
 
 
+def classify_pack_view(query: str) -> str:
+    """Pick loops / facts / sources from word-bounded query cues.
+
+    Reads ``PACK_VIEW_LOOP_CUES`` first, then ``PACK_VIEW_SOURCE_CUES``.
+    Bare ``open`` is not a loops cue. When neither list hits, the view is
+    facts, which keeps today's balanced section order.
+    """
+
+    lowered = normalize_query(query).casefold()
+    if any(_contains_domain_cue(lowered, cue) for cue in PACK_VIEW_LOOP_CUES):
+        return PACK_VIEW_LOOPS
+    if any(_contains_domain_cue(lowered, cue) for cue in PACK_VIEW_SOURCE_CUES):
+        return PACK_VIEW_SOURCES
+    return PACK_VIEW_FACTS
+
+
+def budget_section_order(*, budget_strategy: str, pack_view: str) -> tuple[str, ...]:
+    """Section offer order for the greedy packer.
+
+    An explicit ``budget_strategy`` other than ``balanced`` still wins.
+    Default ``balanced`` follows ``pack_view``. Loops-first order is
+    internal; it is not a ``BUDGET_STRATEGIES`` value.
+    """
+
+    if budget_strategy != BUDGET_STRATEGY_BALANCED:
+        return BUDGET_STRATEGY_SECTION_ORDERS[budget_strategy]
+    if pack_view == PACK_VIEW_LOOPS:
+        return _LOOPS_FIRST_SECTION_ORDER
+    if pack_view == PACK_VIEW_SOURCES:
+        return BUDGET_STRATEGY_SECTION_ORDERS[BUDGET_STRATEGY_SOURCES_FIRST]
+    return _BALANCED_SECTION_ORDER
+
+
 def classify_query(request: VNextRetrievalRequest) -> QueryInterpretation:
     _validate_choice(request.context_depth, field_name="context_depth", choices=CONTEXT_DEPTHS)
     query = normalize_query(request.query)
@@ -624,6 +699,7 @@ def classify_query(request: VNextRetrievalRequest) -> QueryInterpretation:
     return {
         "query": query,
         "query_type": query_type,
+        "pack_view": classify_pack_view(query),
         "terms": query_terms(query),
         "domains": domains,
         "inferred_domains": inferred_domains,
@@ -3413,16 +3489,21 @@ class VNextRetrievalService:
         ]
         ranked_open_loops = [_compact_item(candidate.item) for candidate in open_loop_candidates if candidate.selected]
 
-        # Greedy token-budget packing, section by section in the strategy's
-        # order (balanced: memories, open loops, sources, provenance quotes,
-        # contradictions). Derived sections (supporting/contradicting
-        # evidence) come from the memories packed so far; when a strategy
-        # packs contradictions before memories, they derive from the
-        # ranking-selected (pre-budget) memories instead.
+        # Greedy token-budget packing, section by section. Default
+        # balanced follows classify_pack_view (loops / facts / sources).
+        # An explicit budget_strategy other than balanced still wins.
+        # Derived sections (supporting/contradicting evidence) come from
+        # the memories packed so far; when a strategy packs contradictions
+        # before memories, they derive from the ranking-selected
+        # (pre-budget) memories instead.
         contradictions_not_requested_status = (
             STAGE_DISABLED_MINIMAL
             if depth == CONTEXT_DEPTH_MINIMAL and request.include_contradictions is None
             else CONTRADICTIONS_STAGE_NOT_REQUESTED
+        )
+        section_order = budget_section_order(
+            budget_strategy=strategy,
+            pack_view=str(interpretation["pack_view"]),
         )
         budget = _TokenBudget(token_budget=request.max_tokens, strategy=strategy)
         selected_memories: list[JsonObject] = []
@@ -3432,7 +3513,7 @@ class VNextRetrievalService:
         contradicting_evidence: list[JsonObject] = []
         contradictions_stage = contradictions_not_requested_status
         memories_packed = False
-        for section in BUDGET_STRATEGY_SECTION_ORDERS[strategy]:
+        for section in section_order:
             budget.open_section(section)
             if section == SECTION_RELEVANT_MEMORIES:
                 # Wrap before admitting. Admitting the bare row and emitting
@@ -4302,6 +4383,12 @@ __all__ = [
     "BUDGET_STRATEGY_RECENT_FIRST",
     "BUDGET_STRATEGY_SECTION_ORDERS",
     "BUDGET_STRATEGY_SOURCES_FIRST",
+    "PACK_VIEWS",
+    "PACK_VIEW_FACTS",
+    "PACK_VIEW_LOOP_CUES",
+    "PACK_VIEW_LOOPS",
+    "PACK_VIEW_SOURCE_CUES",
+    "PACK_VIEW_SOURCES",
     "CONTEXT_DEPTHS",
     "CONTEXT_DEPTH_HIGH",
     "CONTEXT_DEPTH_LOW",
@@ -4362,6 +4449,8 @@ __all__ = [
     "VNextRetrievalService",
     "VNextRetrievalStore",
     "VNextRetrievalValidationError",
+    "budget_section_order",
+    "classify_pack_view",
     "classify_query",
     "content_stable_tiebreak",
     "entity_name_candidates",
