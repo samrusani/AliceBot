@@ -71,6 +71,25 @@ def _run(tmp_path: Path, **kwargs):
     )
 
 
+def _compact_recall_contains_quote(recall: dict, needle: str = QUOTE_CANARY) -> bool:
+    """True when compact alice_recall results[] expose the imported quote.
+
+    Compact recall uses ``text`` (and ``status`` when present), not
+    ``canonical_text`` / ``title``. Named mutation: promote the import
+    to ``active``; this must become True.
+    """
+
+    for row in recall.get("results") or []:
+        if not isinstance(row, dict):
+            continue
+        if needle not in str(row.get("text") or ""):
+            continue
+        status = row.get("status")
+        if status is None or status in {"active", "accepted"}:
+            return True
+    return False
+
+
 def test_full_run_on_the_fixture_vault_is_three_of_three(tmp_path: Path, monkeypatch) -> None:
     """A seeded vault must score 3/3 with each task named.
 
@@ -154,12 +173,14 @@ def test_list_open_loop_fails_when_create_open_loop_is_skipped(
 def test_imported_quote_is_still_not_a_searchable_memory(tmp_path: Path, monkeypatch) -> None:
     """After a passing run the imported quote stays a source.
 
-    ``alice_recall`` memory count stays 0. The brief has no ``**fact**``
-    hit. A source row exists.
+    ``alice_recall`` of the quote canary has memory ``count=1`` because
+    FTS ranks the committed decision on shared cobalt-pier tokens. That
+    is allowed. The quote itself is not a ``**fact**`` and must not
+    appear as compact recall ``text``. A source row exists.
 
-    Named mutations: ``create_memory(..., status="candidate")`` instead of
-    capture (no source), or promote the import to ``active`` so recall
-    returns it as a memory.
+    Named mutation: promote the import to ``active``. The recall-results
+    ``text`` assert goes red on its own. ``create_memory(...,
+    status="candidate")`` instead of capture leaves no source.
     """
 
     _prepare(tmp_path, monkeypatch)
@@ -169,13 +190,9 @@ def test_imported_quote_is_still_not_a_searchable_memory(tmp_path: Path, monkeyp
     database = resolve_db_path(data_dir=str(tmp_path), db=None)
     context = MCPRuntimeContext(database_url=sqlite_url_for_path(database), user_id=USER_ID)
     recall = call_mcp_tool(context, name="alice_recall", arguments={"query": QUOTE_CANARY})
-    # FTS may still rank the decision on shared "cobalt pier" tokens. The
-    # imported line itself must not appear as a memory result or **fact**.
-    assert not any(
-        QUOTE_CANARY in str((row or {}).get("canonical_text") or "")
-        or QUOTE_CANARY in str((row or {}).get("title") or "")
-        for row in (recall.get("results") or [])
-    ), recall
+    # count may be 1 (the decision). The imported line must not appear as
+    # compact recall text or as a **fact**.
+    assert not _compact_recall_contains_quote(recall), recall
     assert any(
         QUOTE_CANARY in str((source or {}).get("excerpt") or "")
         for source in (recall.get("sources") or [])
