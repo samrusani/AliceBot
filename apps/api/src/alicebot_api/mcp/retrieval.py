@@ -54,6 +54,7 @@ from alicebot_api.vnext_retrieval import (
     _order_memories_for_strategy,
     _prefer_current_versions,
     _ResolvedRetrievalScope,
+    expand_provenance_once,
     reciprocal_rank_fusion,
 )
 
@@ -244,6 +245,59 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
         # it never changes what was retrieved or ranked.
         scores = {str(item.get("id")): score for item, score in fused}
         ordered_rows = _order_memories_for_strategy([item for item, _score in fused], budget_strategy)
+        # Source excerpts are fetched before the hop so a query that hits
+        # the note, not the decision text, still names a source. The hop
+        # writes into results[], not sources[]. include_sources only gates
+        # whether those excerpts are returned.
+        raw_sources, _sources_stage = service.search_source_excerpts(
+            query=query,
+            domains=domains,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=limit,
+            # The same fence the memories above were retrieved under.
+            # Built from retrieval_filters AFTER the policy decision has
+            # overwritten "projects" with effective_project_scope, so a
+            # project-scoped agent cannot read a source outside its
+            # projects. Source scope is an exclusion filter, not a ranking
+            # hint: without this the excerpt path is a way around a control
+            # the pack enforces.
+            scope=_recall_source_scope(retrieval_filters),
+            winning_memories=ordered_rows,
+        )
+        window_start = retrieval_filters.get("scope_window_start")
+        window_end = retrieval_filters.get("scope_window_end")
+        extras = expand_provenance_once(
+            store,
+            fts_memories=fts_rows,
+            source_excerpts=raw_sources,
+            already_selected_ids={
+                str(item.get("id")) for item in ordered_rows if item.get("id") is not None
+            },
+            effective_domains=domains,
+            effective_sensitivity_allowed=sensitivity_allowed,
+            effective_project_scope=tuple(retrieval_filters.get("projects") or ()),
+            memory_types=tuple(retrieval_filters.get("memory_types") or ()),
+            created_by_agent_ids=tuple(retrieval_filters.get("created_by_agent_ids") or ()),
+            scope_thread_id=(
+                str(retrieval_filters["scope_thread_id"])
+                if retrieval_filters.get("scope_thread_id")
+                else None
+            ),
+            scope_task_id=(
+                str(retrieval_filters["scope_task_id"])
+                if retrieval_filters.get("scope_task_id")
+                else None
+            ),
+            scope_people=tuple(retrieval_filters.get("scope_people") or ()),
+            scope_window_start=window_start if isinstance(window_start, datetime) else None,
+            scope_window_end=window_end if isinstance(window_end, datetime) else None,
+        )
+        for extra in extras:
+            extra_id = str(extra.get("id") or "")
+            if not extra_id or extra_id in scores:
+                continue
+            ordered_rows.append(extra)
+            scores[extra_id] = 0.0
         # Current-version preference (demote-not-drop): same helper the
         # context pack already runs after the budget-strategy reorder.
         # Replacement sits above its superseded ancestor; nothing is dropped.
@@ -255,28 +309,8 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
                 _compact_recall_result(item, score=scores[str(item.get("id"))], provenance_count=provenance_count)
             )
 
-        # Imported source material, alongside the memories rather than mixed
-        # into them. Without this, the natural agent sequence — import a vault,
-        # then recall from it — answers count=0 for content the store holds and
-        # retrieval can already rank, because captured documents land as
-        # unsearchable candidates and recall only ever searched memories.
         source_excerpts: list[JsonObject] = []
         if include_sources:
-            raw_sources, _sources_stage = service.search_source_excerpts(
-                query=query,
-                domains=domains,
-                sensitivity_allowed=sensitivity_allowed,
-                limit=limit,
-                # The same fence the memories above were retrieved under.
-                # Built from retrieval_filters AFTER the policy decision has
-                # overwritten "projects" with effective_project_scope, so a
-                # project-scoped agent cannot read a source outside its
-                # projects. Source scope is an exclusion filter, not a ranking
-                # hint: without this the excerpt path is a way around a control
-                # the pack enforces.
-                scope=_recall_source_scope(retrieval_filters),
-                winning_memories=ordered_rows,
-            )
             source_excerpts = _compact_items(raw_sources, _COMPACT_SOURCE_FIELDS)
 
     payload: dict[str, object] = {

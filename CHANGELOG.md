@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- After the first FTS hit, `alice_recall` follows one provenance hop
+  from the shared source to linked committed facts, and admits extras
+  only up to `PROVENANCE_EXPAND_ONCE_MAX_TOKENS`. A session-2 query that
+  matches the note can retrieve the session-1 decision linked to that
+  note even when the decision text is not in the query. The hop writes
+  into `results[]`, not `sources[]`. Import stays a source. Commit stays
+  a fact.
+
 - Present-tense recall and the session brief put the current committed
   fact above a superseded ancestor of the same fact. `alice_recall` and
   the brief now run the same demote-not-drop helper the context pack
