@@ -155,6 +155,10 @@ _ERROR_CONTRACTS: dict[str, str] = {
     "embedding_batch_size_invalid": "The embedding batch size is outside the supported range",
     "embedding_batch_failed": "An embedding batch failed",
     "alice_memory_failed": "The alice-memory command could not be completed",
+    "demo_vault_invalid": (
+        "The demo vault is missing, is not a directory, or has no markdown files"
+    ),
+    "demo_failed": "The demo could not complete after import",
 }
 
 
@@ -952,8 +956,8 @@ def _run_demo(args: argparse.Namespace) -> int:
 
     try:
         vault = validate_demo_vault(args.vault)
-    except DemoVaultError as exc:
-        print(f"alice-memory: {exc}", file=sys.stderr, flush=True)
+    except DemoVaultError:
+        _emit_error("demo_vault_invalid")
         return 1
 
     db_path = resolve_db_path(data_dir=args.data_dir, db=args.db)
@@ -971,8 +975,8 @@ def _run_demo(args: argparse.Namespace) -> int:
                 vault=vault,
             )
         )
-    except (DemoVaultError, VNextCaptureValidationError) as exc:
-        print(f"alice-memory: {exc}", file=sys.stderr, flush=True)
+    except (DemoVaultError, VNextCaptureValidationError):
+        _emit_error("demo_failed")
         return 1
     return 0
 

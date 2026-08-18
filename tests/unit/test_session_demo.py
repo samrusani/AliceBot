@@ -5,6 +5,7 @@ Put next to the session-doctor tests. Each test names the edit that makes it fai
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from alicebot_api.mcp_tools import AGENT_API_KEY_ENV
@@ -33,6 +34,12 @@ SOURCE_NOTE = f"# Vault canary\n\n{SOURCE_SENTENCE}\n"
 VAULT_FILENAME = "indigo-lighthouse-42.md"
 
 FORBIDDEN_PHRASES = ("review console", "/vnext", "clear the queue")
+DEMO_VAULT_INVALID = {
+    "error": {
+        "code": "demo_vault_invalid",
+        "message": "The demo vault is missing, is not a directory, or has no markdown files",
+    }
+}
 
 
 def _clear_env(monkeypatch) -> None:
@@ -62,6 +69,10 @@ def _line_value(report: str, label: str) -> str:
 
 def _int_value(report: str, label: str) -> int:
     return int(_line_value(report, label).split()[0])
+
+
+def _error_records(stderr: str) -> list[object]:
+    return [json.loads(line) for line in stderr.splitlines() if line.startswith("{")]
 
 
 def _quote_line(report: str) -> str:
@@ -268,8 +279,8 @@ def test_empty_folder_or_missing_vault_exits_nonzero(
 ) -> None:
     """Empty folder or missing --vault: non-zero exit, no empty success.
 
-    Mutation: treat an empty folder as success, or make --vault optional.
-    This test fails.
+    Mutation: treat an empty folder as success, make --vault optional, or
+    print the caught exception to stderr. This test fails.
     """
 
     _clear_env(monkeypatch)
@@ -282,13 +293,22 @@ def test_empty_folder_or_missing_vault_exits_nonzero(
     )
     empty_err = capsys.readouterr().err
     assert empty_code != 0
-    assert "no *.md files" in empty_err
+    assert _error_records(empty_err) == [DEMO_VAULT_INVALID]
+    assert str(empty) not in empty_err
+    assert "Traceback" not in empty_err
     assert not (data_dir / "memory.db").exists()
 
     missing_code = onramp_main(["demo", "--data-dir", str(data_dir), "--user-id", USER_ID])
     missing_err = capsys.readouterr().err
     assert missing_code != 0
-    assert missing_err.strip() != ""
+    assert _error_records(missing_err) == [
+        {
+            "error": {
+                "code": "invalid_request",
+                "message": "The command request is invalid",
+            }
+        }
+    ]
 
     missing_path = tmp_path / "does-not-exist"
     missing_path_code = onramp_main(
@@ -304,7 +324,8 @@ def test_empty_folder_or_missing_vault_exits_nonzero(
     )
     missing_path_err = capsys.readouterr().err
     assert missing_path_code != 0
-    assert "does not exist" in missing_path_err
+    assert _error_records(missing_path_err) == [DEMO_VAULT_INVALID]
+    assert str(missing_path) not in missing_path_err
 
     note = tmp_path / "note.md"
     note.write_text(SOURCE_NOTE, encoding="utf-8")
@@ -313,5 +334,6 @@ def test_empty_folder_or_missing_vault_exits_nonzero(
     )
     file_err = capsys.readouterr().err
     assert file_code != 0
-    assert "not a directory" in file_err
+    assert _error_records(file_err) == [DEMO_VAULT_INVALID]
+    assert str(note) not in file_err
     assert not (data_dir / "memory.db").exists()
