@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- README leads with `alice-memory install` and `demo --vault`, then a
+  GIF recorded from that demo on the committed harbour-watch fixture.
+  The quote is imported source text. Import stays a source. Commit
+  stays a fact.
+
 - The SessionStart hook is `uvx --from alice-memory
   alice-memory-session-start` and carries `--data-dir`.
 
