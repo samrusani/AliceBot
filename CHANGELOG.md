@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `alice-memory doctor` prints what is already in the local SQLite vault:
+  the db path, source count, searchable chunk count, committed fact
+  count (`active` / `accepted`), the last brief token estimate against
+  the session-brief budget, and candidates waiting last. An empty vault
+  prints zeros. The empty brief still has a token cost. Every COUNT
+  binds `user_id`. The command does not wrap `alicebot vnext doctor`
+  and does not send anyone to a review UI. Import is a source. Commit
+  is a fact. Not in this cut: `demo --vault`.
+
 - A new session can read labelled facts and imported sources without the
   agent calling a tool. `alice-memory brief` prints markdown from the
   vnext store (`**fact**`, `**source**`, `**open loop**`).
