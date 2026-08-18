@@ -173,9 +173,11 @@ def _build_local_mcp_compat_runtime():
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
-    # This smoke exercises the legacy capture/review flows alongside the core
-    # surface, so the long-tail tools must be registered.
+    # This smoke exercises the legacy capture/review flows alongside a
+    # full-surface core tool (alice_open_loops). LEGACY does not imply the
+    # eight extra core tools, so both flags must be set for in-process listing.
     os.environ.setdefault("ALICE_MCP_LEGACY_TOOLS", "1")
+    os.environ.setdefault("ALICE_MCP_FULL_TOOLS", "1")
 
     # Import Hermes MCP runtime lazily so the script can print a clear error
     # when Hermes dependencies are not installed in this Python environment.
@@ -237,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
                 "PYTHONPATH": pythonpath,
                 # Legacy capture/review flows plus the debug recall view.
                 "ALICE_MCP_LEGACY_TOOLS": "1",
+                # alice_open_loops is full-surface; LEGACY does not imply it.
+                "ALICE_MCP_FULL_TOOLS": "1",
             },
             "tools": {
                 "include": [

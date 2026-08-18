@@ -1,7 +1,9 @@
 # MCP Integration
 
-Alice's MCP server exposes eleven core tools by default, with the legacy
-long-tail surface available behind an environment flag.
+Alice's MCP server exposes three tools by default (`alice_memory_commit`,
+`alice_recall`, `alice_resume`). The other eight core tools become listed
+and callable when `ALICE_MCP_FULL_TOOLS=1`. The legacy long-tail surface
+is available behind a separate environment flag.
 
 ## Entrypoints
 
@@ -30,8 +32,11 @@ Optional:
 - `ALICE_EMBEDDINGS_BASE_URL`, `ALICE_EMBEDDINGS_MODEL`,
   `ALICE_EMBEDDINGS_API_KEY` — enable semantic vector search in
   `alice_recall` and `alice_context_pack` (full-text-only without them)
-- `ALICE_MCP_LEGACY_TOOLS=1` — expose 62 retained long-tail memory tools only
-  for an unbound local-operator server; ignored when `ALICE_AGENT_API_KEY` is set
+- `ALICE_MCP_FULL_TOOLS=1` — advertise all eleven core tools and accept
+  calls to the eight that are hidden by default
+- `ALICE_MCP_LEGACY_TOOLS=1` — append 62 retained long-tail memory tools to
+  whatever core set is enabled, only for an unbound local-operator server;
+  ignored when `ALICE_AGENT_API_KEY` is set
 - `ALICE_LEGACY_SURFACES=1` — additionally expose the three task-brief tools.
   Both flags are read at process start (routes are mounted at import time), so
   changing them requires restarting the server
@@ -40,19 +45,15 @@ Optional:
 
 ## Default Tool Surface
 
-- `alice_capture` — submit information as source-backed reviewable memory
 - `alice_memory_commit` — explicit policy-checked memory write with commit / confirmation / review / reject outcomes
 - `alice_recall` — hybrid full-text + vector search with fused ranking; hard
   pre-limit scopes support `thread_id`, `task_id`, `project`/`projects`,
   `person`/`people`, and absolute `since`/`until` bounds
 - `alice_resume` — resumption brief for a project, person, or thread
-- `alice_context_pack` — scoped context bundle for a task
-- `alice_open_loops` — list or manage open loops
-- `alice_recent_decisions` — recent decision log
-- `alice_memory_review` — review queue inspection
-- `alice_memory_correct` — approve, edit, reject, or supersede a memory
-- `alice_memory_manage` — lifecycle verbs for committed memories: confirm, undo, forget, expire, redact
-- `alice_explain` — provenance and trust explanation
+
+`ALICE_MCP_FULL_TOOLS=1` also advertises `alice_capture`, `alice_context_pack`,
+`alice_open_loops`, `alice_recent_decisions`, `alice_memory_review`,
+`alice_memory_correct`, `alice_memory_manage`, and `alice_explain`.
 
 Full schemas with per-parameter descriptions come from `tools/list`.
 Details and examples: [docs/alpha/mcp-tools.md](../alpha/mcp-tools.md).
@@ -60,11 +61,11 @@ Details and examples: [docs/alpha/mcp-tools.md](../alpha/mcp-tools.md).
 ## Legacy Tool Surface
 
 With `ALICE_MCP_LEGACY_TOOLS=1`, 62 retained legacy memory tools are listed
-alongside the eleven core tools (73 total). With both flags, the three task-
-brief tools are added (76 total). The legacy surface requires Postgres —
-on the SQLite backend the legacy tools are listed but their calls fail.
-It also requires `ALICE_AGENT_API_KEY` to be unset. Key-bound servers list
-and accept only the policy-complete core tools.
+alongside whatever core set is enabled (65 with the default three, 73 with
+the full eleven). With the task-brief flag as well, the counts are 68 and
+76. The legacy surface requires Postgres: on the SQLite backend the legacy
+tools are listed but their calls fail. It also requires `ALICE_AGENT_API_KEY`
+to be unset. Key-bound servers list and accept only the enabled core set.
 The long tail covers briefs, timeline, state-at-time, capture pipelines,
 queue/graph/belief/scheduler controls, provider runtime tools, and the
 `alice_vnext_*` agentic control-plane contract, including
@@ -74,7 +75,7 @@ writes with commit / confirmation / review / reject outcomes).
 
 Permanently deleted hosted, Telegram-channel, chat, chief-of-staff, and model-
 pack tools are absent under every flag combination. The retained legacy surface
-is frozen: new capabilities land on the core eleven.
+is frozen: new capabilities land on the core tools.
 
 For first-run memory expectations and a deterministic way to prove memory
 is working, see [../alpha/first-memory.md](../alpha/first-memory.md).

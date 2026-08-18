@@ -14,6 +14,8 @@ mcp_servers:
       PYTHONPATH: "/path/to/alicebot/apps/api/src:/path/to/alicebot/workers"
       # Recommended for agent-bound runs. Issue with `alicebot agent keys create`.
       ALICE_AGENT_API_KEY: "alice_sk_replace_with_issued_key"
+      # Include list names full-surface core tools. LEGACY does not imply them.
+      ALICE_MCP_FULL_TOOLS: "1"
     tools:
       include:
         - alice_recall

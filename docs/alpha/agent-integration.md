@@ -23,7 +23,7 @@ Agents should use Alice as a durable, private, provenance-aware, reviewable memo
 ```
 
    No Postgres yet? `alice-memory mcp --data-dir ~/.alice` serves the same
-   eleven core tools against a local SQLite file — no `DATABASE_URL` needed.
+   default three tools against a local SQLite file. No `DATABASE_URL` needed.
 
 2. (Recommended on Postgres) Bind the server to an agent identity: create
    a key with `alicebot agent keys create` and set `ALICE_AGENT_API_KEY`
@@ -34,39 +34,37 @@ Agents should use Alice as a durable, private, provenance-aware, reviewable memo
 3. Drop one of the skill blocks into your agent's instructions:
    [hermes-skill.md](hermes-skill.md) for personal assistants,
    [openclaw-skill.md](openclaw-skill.md) for coding agents.
-4. Ask the agent something it should need memory for. Its first tool call
-   should be `alice_context_pack`.
+4. Ask the agent something it should need memory for. Its write verb is
+   `alice_memory_commit`. Its read verbs are `alice_recall` and
+   `alice_resume`.
 
 ## The default loop
 
-One first call, then act, then write back:
+Remember, recall, continue:
 
-1. **`alice_context_pack`** — ONE scoped call before planning or acting.
-   The pack carries relevant memories, open loops, sources, supporting
-   evidence, contradictions, and honest gaps (`missing_information`,
-   `warnings`) — do not stitch together raw searches first.
-2. **Act** — perform the task with the pack as ground truth. Treat
-   `staleness` notes and `contradicting_evidence` as caution signals.
-3. **Write back through Alice** — `alice_memory_commit` for explicit
-   "remember/save/add to memory" instructions, and for any durable fact
-   worth keeping, including when the user has not asked. Use
-   `alice_capture` for documents, transcripts, external evidence and
-   generated output. Captured text is searchable immediately: its
-   matching passages come back from `alice_recall` and
-   `alice_context_pack` under `sources`, as material to read and quote
-   rather than as facts Alice asserts. The candidate memories capture
-   proposes stay unsearchable until a reviewer promotes them, so do not
-   tell the user an import is unusable until they clear a queue.
-4. **Close the loop** — `alice_memory_manage` for `confirm`/`undo`/`forget`
-   follow-ups, and `alice_open_loops` to create or close open loops for
-   unresolved work.
+1. **`alice_memory_commit`** — record a fact as durable, immediately
+   recallable memory, including when the user has not asked.
+2. **`alice_recall`** — search memory and imported sources.
+3. **`alice_resume`** — pick work back up: last decision, next action,
+   open loops, recent changes.
+
+`alice_capture` and `alice_context_pack` are on the full surface
+(`ALICE_MCP_FULL_TOOLS=1`). Capture stores a source; its passages come
+back from `alice_recall` under `sources`, as material to read and quote
+rather than as facts Alice asserts. Candidates stay unsearchable until a
+reviewer promotes them. Import is a source. Commit is a fact. Do not tell the user they
+must clear a review queue before a note is usable.
+
+Lifecycle tools (`alice_memory_manage`, review, correct) are also
+full-surface.
 
 Respect domain and sensitivity policy on every call, and use `/vnext` for
 review, audit, undo, correction, forget, and troubleshooting.
 
 ### Which context depth to request
 
-The context-pack request accepts `context_depth` (default `low`). Every
+`alice_context_pack` is full-surface (`ALICE_MCP_FULL_TOOLS=1`). The
+context-pack request accepts `context_depth` (default `low`). Every
 tier is deterministic retrieval and packing — no tier performs LLM
 synthesis or summarization. Pick the cheapest tier that answers the
 question class:
@@ -213,7 +211,7 @@ Rules:
 - Fresh local installs keep working without keys: while a user has no active keys, keyless local human and agent calls remain available; self-asserted agents are audited with `auth: "unauthenticated_local"`.
 - The moment at least one active key exists, every protected `/v0/vnext` request requires `Authorization: Bearer alice_sk_...`, including requests that omit agent identity fields. Bare keys are rejected.
 - Manage keys with `alicebot agent keys list` (prefixes only, never hashes) and `alicebot agent keys revoke <key-prefix-or-id>`.
-- MCP servers bind a key by setting `ALICE_AGENT_API_KEY` in the server env. Key-bound MCP runs fail closed to the eleven core tools: legacy tools are neither listed nor callable, even if `ALICE_MCP_LEGACY_TOOLS=1` is also set.
+- MCP servers bind a key by setting `ALICE_AGENT_API_KEY` in the server env. Key-bound MCP runs fail closed to the enabled core set (three by default, eleven with `ALICE_MCP_FULL_TOOLS=1`): legacy tools are neither listed nor callable, even if `ALICE_MCP_LEGACY_TOOLS=1` is also set.
 
 ### HTTP error contract
 

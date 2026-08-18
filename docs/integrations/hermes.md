@@ -5,7 +5,9 @@ Hermes is the reference path when another agent runtime owns orchestration and A
 Recommended deployment shape: `provider_plus_mcp`.
 
 - Provider gives Hermes always-on prefetch plus post-turn capture hooks.
-- MCP gives Hermes the eleven policy-complete core tools. The deeper legacy
+- MCP gives Hermes the default three tools (`alice_memory_commit`,
+  `alice_recall`, `alice_resume`). The other eight core tools are behind
+  `ALICE_MCP_FULL_TOOLS=1`. The deeper legacy
   surface is limited to deliberately keyless, same-host operator compatibility;
   a server bound with `ALICE_AGENT_API_KEY` hides and rejects every legacy tool.
 - MCP-only remains available when provider install is blocked.
@@ -91,7 +93,7 @@ mode with `ALICE_AGENT_API_KEY`. The core review path is:
 
 - `alice_recall` (core) for ranked facts only
 - `alice_resume` (core) for a structured resumption brief
-- `alice_memory_review` and `alice_memory_correct` (core) for explicit review and correction
+- `alice_memory_review` and `alice_memory_correct` (core, `ALICE_MCP_FULL_TOOLS=1`) for explicit review and correction
 
 ## Provider Guidance
 

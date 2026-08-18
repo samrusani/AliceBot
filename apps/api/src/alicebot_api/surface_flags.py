@@ -6,6 +6,7 @@ from collections.abc import Mapping
 
 LEGACY_SURFACES_ENV = "ALICE_LEGACY_SURFACES"
 MCP_LEGACY_TOOLS_ENV = "ALICE_MCP_LEGACY_TOOLS"
+MCP_FULL_TOOLS_ENV = "ALICE_MCP_FULL_TOOLS"
 
 
 def env_flag_enabled(name: str, *, environ: Mapping[str, str] | None = None) -> bool:
@@ -24,10 +25,17 @@ def mcp_legacy_tools_enabled(*, environ: Mapping[str, str] | None = None) -> boo
     return source.get(MCP_LEGACY_TOOLS_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def mcp_full_tools_enabled(*, environ: Mapping[str, str] | None = None) -> bool:
+    source = os.environ if environ is None else environ
+    return source.get(MCP_FULL_TOOLS_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 __all__ = [
     "LEGACY_SURFACES_ENV",
+    "MCP_FULL_TOOLS_ENV",
     "MCP_LEGACY_TOOLS_ENV",
     "env_flag_enabled",
     "legacy_surfaces_enabled",
+    "mcp_full_tools_enabled",
     "mcp_legacy_tools_enabled",
 ]

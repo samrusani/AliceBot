@@ -20,7 +20,7 @@ def test_mcp_quickstart_runs_against_packaged_sqlite_server() -> None:
     )
 
     assert "MCP QUICKSTART OK" in completed.stdout
-    assert "tools: 11 (core surface verified)" in completed.stdout
+    assert "tools: 3 (default surface verified)" in completed.stdout
     assert "results contain the canary phrase" in completed.stdout
 
 

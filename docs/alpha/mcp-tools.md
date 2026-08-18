@@ -1,9 +1,11 @@
 # MCP Tools
 
-Alice exposes eleven core MCP tools by default. Every parameter carries a
+Alice advertises three MCP tools by default: `alice_memory_commit`,
+`alice_recall`, and `alice_resume`. The other eight core tools stay defined
+and become callable when `ALICE_MCP_FULL_TOOLS=1`. Every parameter carries a
 description, so MCP-capable agents can use the surface without reading this
-page — this page exists for humans wiring things up. For the full verb
-contract — outcomes, audit guarantees, and honest boundaries — see the
+page. This page exists for humans wiring things up. For the full verb
+contract (outcomes, audit guarantees, and honest boundaries) see the
 [Memory Operations Protocol](../memory-operations-protocol.md).
 
 ## Start the server
@@ -49,12 +51,60 @@ For the full Postgres stack from a checkout:
 }
 ```
 
-> **No Postgres?** The packaged runtime above serves the same eleven core
-> tools against a local SQLite file — no `DATABASE_URL` needed. Install it
+> **No Postgres?** The packaged runtime above serves the same default three
+> tools against a local SQLite file. No `DATABASE_URL` needed. Install it
 > with `uvx alice-memory` or `pip install alice-memory`. SQLite-mode
 > boundaries are listed in [known limitations](known-limitations.md).
 
-## The eleven core tools
+## The default three tools
+
+Remember, recall, continue. These are the only tools in a default
+`tools/list`.
+
+- `alice_memory_commit` — record one fact as durable, immediately
+  recallable memory. This is the write verb for ordinary memory, and an
+  agent should use it whenever it learns something worth keeping, including
+  when the user has not asked it to remember. Policy-checked, never blind:
+  the outcome is `committed`, `confirmation_required`, `review_required`, or
+  `rejected`, always with provenance, a revision, and an audit event.
+- `alice_recall` — search memory. Full-text plus semantic vector search,
+  merged with reciprocal-rank fusion. Falls back to full-text only (and
+  says so) when no embedding endpoint is configured. Accepts optional
+  `memory_types` (typed filter, e.g. only `decision` or `procedure`
+  memories), `projects`/`project`, `people`/`person`, `thread_id`, `task_id`,
+  and absolute `since`/`until` bounds. These are hard predicates applied by
+  every ranked memory stage before its result limit; the singular forms are
+  compatibility aliases for the distributed Hermes contract. Also accepts
+  `context_depth` (`minimal` runs full-text only and caps results at 4;
+  `low` is the default hybrid behavior) and `budget_strategy`
+  (`facts_first` / `recent_first` reorder results; `balanced` is the
+  default).
+- `alice_resume` — a pick-work-back-up brief: last decision, suggested next
+  action, open loops, and recent changes. The policy-resolved project scope is
+  applied before limits. An optional `query` searches decision/next-action
+  memory, open-loop title/description/next-action metadata, and recursive
+  string leaf values in relevant loop-event payloads before limits in both
+  stores. Within open-loop row search, title and description participate as
+  strings; root or nested `next_action` metadata participates only when its
+  JSON value is a string. Loop-event payload keys, non-string values, and JSON
+  serialization structure do not match, and each event string leaf is
+  evaluated independently rather than concatenated with neighboring leaves.
+  Memory title/canonical-text/summary fields selected by
+  `list_memories(query=...)` and `list_resume_memory_events(query=...)`,
+  open-loop row fields, and loop-event string leaves all use the same ASCII
+  case-insensitive literal substring contract: non-ASCII code points are exact
+  and receive no Unicode normalization, while `%`, `_`, and `\\` are literal
+  characters rather than SQL wildcards. This scoped resume/recent-decision
+  filtering does not redefine `alice_recall`; generic `search_memories` keeps
+  its separate FTS/websearch retrieval semantics. Legacy person/
+  thread inputs are accepted for compatibility and reported in
+  `filters_ignored`; they do not narrow the brief.
+
+## The full core surface
+
+`ALICE_MCP_FULL_TOOLS=1` advertises all eleven core tools, in the current
+definition order. Capture and the pack are on this surface. Vault import
+is a CLI verb, not a fourth always-on agent tool.
 
 **Write and review**
 
@@ -63,13 +113,9 @@ For the full Postgres stack from a checkout:
   back from `alice_recall` and `alice_context_pack` under `sources`, carrying an
   excerpt and labelled `excerpt_kind: imported_source_material`: material to read
   and quote, rather than as facts Alice asserts. Capture also proposes candidate
-  memories, and those stay unsearchable until a reviewer promotes them.
-- `alice_memory_commit` — record one fact as durable, immediately
-  recallable memory. This is the write verb for ordinary memory, and an
-  agent should use it whenever it learns something worth keeping, including
-  when the user has not asked it to remember. Policy-checked, never blind:
-  the outcome is `committed`, `confirmation_required`, `review_required`, or
-  `rejected`, always with provenance, a revision, and an audit event.
+  memories, and those stay unsearchable until a reviewer promotes them. Import is a source. Commit
+  is a fact. Do not tell the user they must clear a review queue before a note
+  is usable.
 - `alice_memory_review` — inspect the review queue, or one item in detail.
 - `alice_memory_correct` — act on a memory: approve, edit-and-approve,
   reject, or supersede with a replacement. Every change is audited.
@@ -94,18 +140,6 @@ For the full Postgres stack from a checkout:
 
 **Read**
 
-- `alice_recall` — search memory. Full-text plus semantic vector search,
-  merged with reciprocal-rank fusion. Falls back to full-text only (and
-  says so) when no embedding endpoint is configured. Accepts optional
-  `memory_types` (typed filter, e.g. only `decision` or `procedure`
-  memories), `projects`/`project`, `people`/`person`, `thread_id`, `task_id`,
-  and absolute `since`/`until` bounds. These are hard predicates applied by
-  every ranked memory stage before its result limit; the singular forms are
-  compatibility aliases for the distributed Hermes contract. Also accepts
-  `context_depth` (`minimal` runs full-text only and caps results at 4;
-  `low` is the default hybrid behavior) and `budget_strategy`
-  (`facts_first` / `recent_first` reorder results; `balanced` is the
-  default).
 - `alice_context_pack` — a scoped context bundle for a task: relevant
   memories, open loops, and sources with supporting evidence. `projects`,
   `people`, and `time_window` are hard filters across every content section;
@@ -122,26 +156,6 @@ For the full Postgres stack from a checkout:
   `include_sources`/`include_contradictions` flags are tri-state: omit them
   to let the `context_depth` tier decide; an explicit true/false always
   wins.
-- `alice_resume` — a pick-work-back-up brief: last decision, suggested next
-  action, open loops, and recent changes. The policy-resolved project scope is
-  applied before limits. An optional `query` searches decision/next-action
-  memory, open-loop title/description/next-action metadata, and recursive
-  string leaf values in relevant loop-event payloads before limits in both
-  stores. Within open-loop row search, title and description participate as
-  strings; root or nested `next_action` metadata participates only when its
-  JSON value is a string. Loop-event payload keys, non-string values, and JSON
-  serialization structure do not match, and each event string leaf is
-  evaluated independently rather than concatenated with neighboring leaves.
-  Memory title/canonical-text/summary fields selected by
-  `list_memories(query=...)` and `list_resume_memory_events(query=...)`,
-  open-loop row fields, and loop-event string leaves all use the same ASCII
-  case-insensitive literal substring contract: non-ASCII code points are exact
-  and receive no Unicode normalization, while `%`, `_`, and `\\` are literal
-  characters rather than SQL wildcards. This scoped resume/recent-decision
-  filtering does not redefine `alice_recall`; generic `search_memories` keeps
-  its separate FTS/websearch retrieval semantics. Legacy person/
-  thread inputs are accepted for compatibility and reported in
-  `filters_ignored`; they do not narrow the brief.
 - `alice_recent_decisions` — recent decisions, newest first.
 - `alice_open_loops` — list open loops, or close/snooze/edit/reopen one.
 - `alice_explain` — where a memory came from and why it can be trusted:
@@ -158,9 +172,11 @@ as local operator tooling. Key creation requires Postgres — in SQLite
 on-ramp mode, leave `ALICE_AGENT_API_KEY` unset; payload identity is
 honored and audited as `unauthenticated_local`.
 
-A key-bound MCP server exposes only the eleven core tools. The legacy flag
-is deliberately ignored while `ALICE_AGENT_API_KEY` is set, and direct
-legacy calls fail closed instead of attempting partial authorization.
+A key-bound MCP server exposes only the enabled core set: the default three,
+or all eleven when `ALICE_MCP_FULL_TOOLS=1`. The legacy flag is deliberately
+ignored while `ALICE_AGENT_API_KEY` is set, and direct legacy calls fail
+closed instead of attempting partial authorization. Hidden core tools are
+rejected the same way.
 
 ## The debug flag
 
@@ -276,15 +292,18 @@ for the full verb contract see the
 ## Legacy tool surface
 
 Earlier releases exposed a much larger surface. The retained long tail has 62
-memory tools, listed alongside the eleven core tools for 73 total, behind an
-environment flag for integrations that depend on it:
+memory tools. `ALICE_MCP_LEGACY_TOOLS=1` appends that tail to whatever core
+set is enabled. It does not imply the eight extra core tools.
 
 ```bash
 ALICE_MCP_LEGACY_TOOLS=1
+# default three plus the long tail (65), or 68 with ALICE_LEGACY_SURFACES=1
+ALICE_MCP_FULL_TOOLS=1 ALICE_MCP_LEGACY_TOOLS=1
+# eleven plus the long tail (73), or 76 with ALICE_LEGACY_SURFACES=1
 ```
 
 Exactly three task-brief tools are added only when the separate mount-time
-compatibility flag is also set (76 total):
+compatibility flag is also set:
 
 ```bash
 ALICE_MCP_LEGACY_TOOLS=1 ALICE_LEGACY_SURFACES=1
@@ -317,8 +336,9 @@ static `error.message`. Operator-specific details remain in server logs. This
 also applies to the SQLite `alice-memory mcp` adapter.
 The task-brief tools name both flags when either one is missing. Permanently
 deleted hosted, channel, chat, chief-of-staff, and model-pack tools never list.
-New integrations should stay on the eleven core tools; the legacy surface
-is frozen and will not gain new capabilities.
+New integrations should stay on the default three tools; the legacy surface
+is frozen and will not gain new capabilities. Set `ALICE_MCP_FULL_TOOLS=1`
+only when capture, the pack, or review must be in the handshake.
 
 ## Trust boundary
 

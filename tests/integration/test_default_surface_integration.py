@@ -17,24 +17,15 @@ from alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.routers import workspaces as workspaces_router
 from alicebot_api.store import ContinuityStore
-from alicebot_api.vnext_store import PostgresVNextStore
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_HTTP_OPERATION_COUNT = 183
-CORE_MCP_TOOL_NAMES = {
-    "alice_capture",
+DEFAULT_MCP_TOOL_NAMES = [
+    "alice_memory_commit",
     "alice_recall",
     "alice_resume",
-    "alice_context_pack",
-    "alice_open_loops",
-    "alice_recent_decisions",
-    "alice_memory_review",
-    "alice_memory_correct",
-    "alice_explain",
-    "alice_memory_commit",
-    "alice_memory_manage",
-}
+]
 
 # The ordinary PostgreSQL integration runner intentionally enables the legacy
 # HTTP surface. This smoke has its own required CI matrix row, so do not let a
@@ -156,6 +147,7 @@ def _start_mcp_client(*, database_url: str, user_id: UUID) -> _MCPClient:
     for name in (
         "ALICE_LEGACY_SURFACES",
         "ALICE_MCP_LEGACY_TOOLS",
+        "ALICE_MCP_FULL_TOOLS",
         "ALICE_AGENT_API_KEY",
     ):
         env.pop(name, None)
@@ -249,38 +241,22 @@ def test_default_http_and_mcp_surfaces_complete_core_round_trip(
     client = _start_mcp_client(database_url=migrated_database_urls["app"], user_id=user_id)
     try:
         listed_tools = client.request("tools/list")["result"]["tools"]
-        assert len(listed_tools) == 11
-        assert {tool["name"] for tool in listed_tools} == CORE_MCP_TOOL_NAMES
+        assert [tool["name"] for tool in listed_tools] == DEFAULT_MCP_TOOL_NAMES
 
-        captured = _call_tool(
+        committed = _call_tool(
             client,
-            name="alice_capture",
+            name="alice_memory_commit",
             arguments={
-                "raw_text": "Decision: The default surface smoke protects the core round trip.",
                 "title": "Default surface smoke decision",
+                "canonical_text": "The default surface smoke protects the core round trip.",
+                "memory_type": "decision",
                 "domain": "project",
                 "sensitivity": "internal",
+                "confidence": 0.96,
             },
         )
-        assert captured["status"] == "imported"
-        assert captured["candidate_memory_count"] == 1
-
-        with user_connection(migrated_database_urls["app"], user_id) as conn:
-            candidates = PostgresVNextStore(conn).list_memories(status="candidate")
-        candidate = next(
-            item for item in candidates if "default surface smoke" in str(item["canonical_text"]).casefold()
-        )
-        memory_id = str(candidate["id"])
-        approved = _call_tool(
-            client,
-            name="alice_memory_correct",
-            arguments={
-                "review_item_id": memory_id,
-                "action": "approve",
-                "reason": "Required default-surface integration smoke.",
-            },
-        )
-        assert approved["memory"]["status"] == "active"
+        assert committed["status"] == "committed"
+        memory_id = committed["memory"]["id"]
 
         recalled = _call_tool(
             client,
@@ -295,22 +271,5 @@ def test_default_http_and_mcp_surfaces_complete_core_round_trip(
             arguments={},
         )
         assert resumed["brief"]["last_decision"]["id"] == memory_id
-
-        context_pack = _call_tool(
-            client,
-            name="alice_context_pack",
-            arguments={"query": "default surface core round trip"},
-        )
-        assert context_pack["context_pack_id"]
-        assert any(item["id"] == memory_id for item in context_pack["memories"])
-
-        reviewed = _call_tool(
-            client,
-            name="alice_memory_review",
-            arguments={"review_item_id": memory_id},
-        )
-        assert reviewed["mode"] == "vnext_detail"
-        assert reviewed["review"]["memory"]["id"] == memory_id
-        assert reviewed["review"]["memory"]["status"] == "active"
     finally:
         client.close()

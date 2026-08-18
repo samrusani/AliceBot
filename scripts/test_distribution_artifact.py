@@ -199,7 +199,11 @@ def smoke_artifact(artifact: Path, *, expected_version: str) -> None:
         )
         mcp_responses = _parse_json_lines(mcp.stdout)
         assert mcp_responses[0]["result"]["serverInfo"]["version"] == expected_version
-        assert len(mcp_responses[1]["result"]["tools"]) == 11
+        assert [tool["name"] for tool in mcp_responses[1]["result"]["tools"]] == [
+            "alice_memory_commit",
+            "alice_recall",
+            "alice_resume",
+        ]
 
         sqlite_mcp = _run(
             [str(bin_dir / "alice-memory"), "mcp", "--db", str(temp_dir / "memory.db")],
@@ -209,7 +213,11 @@ def smoke_artifact(artifact: Path, *, expected_version: str) -> None:
         )
         sqlite_responses = _parse_json_lines(sqlite_mcp.stdout)
         assert sqlite_responses[0]["result"]["serverInfo"]["version"] == expected_version
-        assert len(sqlite_responses[1]["result"]["tools"]) == 11
+        assert [tool["name"] for tool in sqlite_responses[1]["result"]["tools"]] == [
+            "alice_memory_commit",
+            "alice_recall",
+            "alice_resume",
+        ]
         commit_payload = json.loads(sqlite_responses[2]["result"]["content"][0]["text"])
         recall_payload = json.loads(sqlite_responses[3]["result"]["content"][0]["text"])
         assert commit_payload["status"] == "committed"

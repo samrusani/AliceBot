@@ -2,35 +2,28 @@
 
 Use this instruction block in Hermes when Alice is available.
 
-Note: the explicit `alice_vnext_*` MCP tools referenced below (commit, confirm, ingest) are keyless-local legacy compatibility only and require `ALICE_MCP_LEGACY_TOOLS=1`. A server bound with `ALICE_AGENT_API_KEY` hides and rejects them; authenticated integrations use the eleven core tools in [mcp-tools.md](mcp-tools.md).
+Note: the explicit `alice_vnext_*` MCP tools referenced below (commit, confirm, ingest) are keyless-local legacy compatibility only and require `ALICE_MCP_LEGACY_TOOLS=1`. A server bound with `ALICE_AGENT_API_KEY` hides and rejects them. Authenticated integrations use the default three tools in [mcp-tools.md](mcp-tools.md): `alice_memory_commit`, `alice_recall`, `alice_resume`. Capture and the pack are on the full surface (`ALICE_MCP_FULL_TOOLS=1`).
 
 ```text
 You are connected to Alice, the user's local-first memory and continuity layer.
 
-Default loop — one first call, then act, then write back:
-1. Call alice_context_pack ONCE with a scoped query before planning, answering, or acting on important user context. Do not stitch together raw searches first; the pack already carries memories, open loops, sources, contradictions, and honest gaps.
-2. Act on the task, treating staleness notes and contradicting_evidence as caution signals.
-3. Call alice_memory_commit whenever you learn a durable fact worth keeping, including when the user has not asked you to remember it. It is the write verb for ordinary memory and what it records is immediately recallable. Use alice_capture for source documents and raw notes you want on record: its passages come back from alice_recall under sources, as material to read and quote rather than as facts Alice asserts. It also proposes candidate memories, and those stay unsearchable until a reviewer promotes them, so do not tell the user their import is unusable until they clear a queue.
-4. Finish lifecycle work with alice_memory_manage (confirm / undo / forget) and track unresolved work with alice_open_loops.
+Default loop: remember, recall, continue.
+1. Call alice_memory_commit whenever you learn a durable fact worth keeping, including when the user has not asked you to remember it. It is the write verb for ordinary memory and what it records is immediately recallable.
+2. Call alice_recall to search memory and imported sources.
+3. Call alice_resume to pick work back up: last decision, next action, open loops, recent changes.
 
-Choosing context depth (request field context_depth; all tiers are deterministic retrieval — no tier synthesizes with a model):
-- minimal: single-fact lookups and quick pre-flight checks. Full-text only, at most 4 memories, no sources or contradictions.
-- low (default): normal task context before acting.
-- medium: reviews, plans, and daily briefings — the contradiction check runs for every query type.
-- high: audits and long-history questions — adds supersession chain notes for revised memories.
-Explicit include_sources / include_contradictions flags override the tier default.
+alice_capture and alice_context_pack are full-surface tools. Use them only when the server lists them. Capture stores a source; its passages come back from alice_recall under sources, as material to read and quote rather than as facts Alice asserts. Candidates stay unsearchable until a reviewer promotes them. Import is a source. Commit is a fact. Do not tell the user they must clear a review queue before a note is usable.
 
 Never directly mutate trusted memory.
 Never write directly to Postgres.
 Never bypass Alice policy.
 Never request sensitive domains unless needed and allowed.
-Use /vnext review queues for human approval, audit, undo, correction, and forget flows.
 ```
 
 `context_depth` (and `budget_strategy` for token budgets) are fields on
-Alice's context-pack request; the matching `alice_context_pack` MCP tool
-arguments arrive in the same release — trust the server's `tools/list`
-schema and omit the argument if the server does not list it yet.
+Alice's context-pack request. The matching `alice_context_pack` MCP tool
+is full-surface. Trust the server's `tools/list` schema and omit the
+argument if the server does not list the tool.
 
 Default identity:
 
@@ -49,17 +42,16 @@ Default permissions:
 - allowed domains: `professional`, `project`, `personal` where configured
 - restricted by default: `health`, `family`, `spiritual`, `legal`, `financial`, `regulated`
 
-Recipes (each starts with one `alice_context_pack` call):
+Recipes:
 
-- Daily planning context: ask for today's project, professional, and open-loop context (`medium` depth — briefings should surface contradictions).
-- Meeting preparation context: query the meeting name and attendees with `professional` and `project` domains (`low` depth).
-- Quick fact check ("do we know X?"): `minimal` depth — cheapest useful call.
-- Follow-up context: query open loops and recent decisions (`low` depth).
-- Project briefing context: use project-scoped context before advising (`medium` depth; `high` when history or revisions matter).
+- Daily planning: `alice_resume`, then `alice_recall` if you need a specific fact.
+- Meeting preparation: `alice_recall` with the meeting name and attendees.
+- Quick fact check ("do we know X?"): `alice_recall`.
+- Follow-up context: `alice_resume` with a query for open loops and recent decisions.
+- Project briefing: `alice_resume` scoped to the project, then `alice_recall` for the gap.
 - Personal assistant memory commit: commit only explicit stable preferences or durable decisions through Alice.
 - Quote memory commit: use `memory_type=semantic`; if a domain is needed for quote collections, use `domain=learning`.
-- Personal assistant memory proposal: propose inferred, external, or lower-confidence facts for review.
-- Artifact submission: ingest plans and summaries as reviewable agent outputs.
+- Full-surface pack (only if listed): one `alice_context_pack` call before a long review.
 
 Use only schema-backed enum values for persisted fields. Do not send invented labels such as `memory_type=quote`, `domain=quotes`, or `sensitivity=sensitive`; Alice normalizes common aliases, but canonical values keep MCP calls predictable.
 
@@ -83,8 +75,8 @@ Expected outcomes:
 
 - `committed`: Alice stored the memory as active and auditable.
 - `confirmation_required`: show the proposed text and, only after the user confirms, call
-  `alice_memory_manage` with `action: "confirm"` and the returned `confirmation_id`.
-- `review_required`: leave the candidate for `alice_memory_review`.
+  `alice_memory_manage` with `action: "confirm"` and the returned `confirmation_id` (full-surface).
+- `review_required`: leave the candidate. Do not tell the user to clear a review queue.
 - `rejected`: do not retry without narrowing scope or asking the user.
 
 `title` and `canonical_text` are the only required fields. Every other property must appear in

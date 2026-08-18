@@ -63,6 +63,11 @@ CORE_TOOL_NAMES = [
     "alice_memory_manage",
     "alice_explain",
 ]
+DEFAULT_TOOL_NAMES = [
+    "alice_memory_commit",
+    "alice_recall",
+    "alice_resume",
+]
 TASK_BRIEF_TOOL_NAMES = {
     "alice_task_brief",
     "alice_task_brief_show",
@@ -144,6 +149,93 @@ def test_default_mcp_tool_surface_is_exactly_the_eleven_core_tools(core_surface)
         assert isinstance(tool["inputSchema"], dict)
         assert tool["inputSchema"].get("type") == "object"
         assert tool["inputSchema"].get("additionalProperties") is False
+
+
+def test_default_mcp_handshake_is_exactly_commit_recall_resume(monkeypatch, core_surface) -> None:
+    """Default list_mcp_tools is the three advertised names, in that order.
+
+    If `_enabled_tool_definitions` ignores ALICE_MCP_FULL_TOOLS and always
+    returns `_CORE_TOOL_DEFINITIONS`, this test fails.
+    """
+    monkeypatch.delenv(mcp_tools_module.MCP_FULL_TOOLS_ENV, raising=False)
+    assert [tool["name"] for tool in list_mcp_tools()] == DEFAULT_TOOL_NAMES
+
+
+def test_hidden_core_tool_is_rejected_without_the_full_tools_flag(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    monkeypatch.delenv(mcp_tools_module.MCP_FULL_TOOLS_ENV, raising=False)
+    with pytest.raises(MCPToolNotFoundError, match="ALICE_MCP_FULL_TOOLS=1"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_capture",
+            arguments={"raw_text": "hidden without the full-tools flag"},
+        )
+
+    monkeypatch.setenv(mcp_tools_module.MCP_FULL_TOOLS_ENV, "1")
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+    payload = call_mcp_tool(
+        _mcp_context(),
+        name="alice_capture",
+        arguments={
+            "raw_text": "Decision: Full-surface capture still imports.",
+            "title": "Full-surface capture",
+        },
+    )
+    assert payload["status"] == "imported"
+    assert payload["chunk_count"] >= 1
+
+
+def test_full_tools_flag_lists_the_eleven_core_tools_in_definition_order(monkeypatch, core_surface) -> None:
+    monkeypatch.setenv(mcp_tools_module.MCP_FULL_TOOLS_ENV, "1")
+    assert [tool["name"] for tool in list_mcp_tools()] == CORE_TOOL_NAMES
+
+
+@pytest.mark.parametrize(
+    ("full_tools_value", "mcp_legacy_value", "legacy_surfaces_value", "expected_prefix", "expected_count"),
+    [
+        pytest.param(None, None, None, DEFAULT_TOOL_NAMES, 3, id="default-three"),
+        pytest.param("1", None, None, CORE_TOOL_NAMES, 11, id="full-core"),
+        pytest.param(None, "1", None, DEFAULT_TOOL_NAMES, 65, id="default-plus-long-tail"),
+        pytest.param("1", "1", None, CORE_TOOL_NAMES, 73, id="full-plus-long-tail"),
+        pytest.param(None, "1", "1", DEFAULT_TOOL_NAMES, 68, id="default-plus-legacy-surfaces"),
+        pytest.param("1", "1", "1", CORE_TOOL_NAMES, 76, id="full-plus-legacy-surfaces"),
+    ],
+)
+def test_full_tools_and_legacy_gate_combinations_have_exact_tool_counts(
+    monkeypatch,
+    full_tools_value: str | None,
+    mcp_legacy_value: str | None,
+    legacy_surfaces_value: str | None,
+    expected_prefix: list[str],
+    expected_count: int,
+) -> None:
+    monkeypatch.delenv(mcp_tools_module.AGENT_API_KEY_ENV, raising=False)
+    for name, value in (
+        (mcp_tools_module.MCP_FULL_TOOLS_ENV, full_tools_value),
+        (mcp_tools_module.MCP_LEGACY_TOOLS_ENV, mcp_legacy_value),
+        (mcp_tools_module.LEGACY_SURFACES_ENV, legacy_surfaces_value),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+    names = [str(tool["name"]) for tool in list_mcp_tools()]
+    assert names[: len(expected_prefix)] == expected_prefix
+    assert len(names) == len(set(names)) == expected_count
+    assert ("alice_task_brief" in names) is (mcp_legacy_value == "1" and legacy_surfaces_value == "1")
+
+
+def test_agent_key_hides_legacy_and_keeps_the_enabled_core_set(monkeypatch) -> None:
+    monkeypatch.setenv(mcp_tools_module.AGENT_API_KEY_ENV, "configured")
+    monkeypatch.setenv(mcp_tools_module.MCP_LEGACY_TOOLS_ENV, "1")
+    monkeypatch.delenv(mcp_tools_module.MCP_FULL_TOOLS_ENV, raising=False)
+    assert [tool["name"] for tool in list_mcp_tools()] == DEFAULT_TOOL_NAMES
+
+    monkeypatch.setenv(mcp_tools_module.MCP_FULL_TOOLS_ENV, "1")
+    assert [tool["name"] for tool in list_mcp_tools()] == CORE_TOOL_NAMES
 
 
 def test_core_tool_descriptions_are_plain_language(core_surface) -> None:
