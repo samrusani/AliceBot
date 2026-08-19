@@ -46,9 +46,11 @@ jobs:
           cache: pip
 
       - name: Select PostgreSQL 16 client tools
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends postgresql-client-16
+          bash scripts/ci_apt_get.sh postgresql-client-16
           echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
           /usr/lib/postgresql/16/bin/pg_dump --version
           /usr/lib/postgresql/16/bin/pg_restore --version

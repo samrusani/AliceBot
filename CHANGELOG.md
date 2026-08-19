@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.16.0 — 2026-08-19
+
 - README leads with `alice-memory install` and `demo --vault`, then a
   GIF recorded from that demo on the committed harbour-watch fixture.
   The quote is imported source text. Import stays a source. Commit

@@ -180,6 +180,26 @@ If you imported on `v0.15.6`, upgrade is enough for readability. If you
 imported on `v0.15.5` or earlier, delete those candidates and import
 again.
 
+## What `v0.16.0` Targets
+
+`v0.16.0` is the current release candidate. It is not published.
+
+It takes the work already on `main` and not on PyPI. The default loop
+is on the wheel: `alice-memory install`, `demo --vault`, `doctor`,
+`brief`, write receipts, and a three-tool MCP handshake
+(`alice_memory_commit`, `alice_recall`, `alice_resume`). The other
+eight core tools need `ALICE_MCP_FULL_TOOLS=1`.
+
+Present-tense recall prefers the current fact. Recall hops once
+through provenance. The pack picks a loops / facts / sources view
+from the query. `alice-memory sleep` writes up to eight proposals and
+does not create a memory.
+
+Import stays a source. Commit stays a fact. Candidates stay
+unsearchable as memories. `count=0` after capture is still the
+design. 81.2% stays a `v0.12.0` `store_chunks` receipt.
+`pack_excerpts` is named and not scored.
+
 ## The `v0.15.0` tag was never published
 
 The commit it points at carried a release-gate step that could not run on a CI
