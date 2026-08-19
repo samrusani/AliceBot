@@ -2262,6 +2262,9 @@ jobs:
         run: pnpm build
       - name: Bundle budget
         run: pnpm test:budget
+      - name: Wait for dpkg lock
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci_wait_for_dpkg_lock.sh
       - name: Install browser runtime
         run: pnpm run setup:browser:linux
       - name: Browser navigation and accessibility
