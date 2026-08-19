@@ -542,7 +542,8 @@ def test_local_playwright_setup_is_explicit_idempotent_and_platform_safe() -> No
     assert "make setup-browser-linux" in normalized_releasing
     assert "refuses to run on macOS" in normalized_releasing
 
-    assert "pnpm run setup:browser:linux" in tests_workflow
+    assert "run: pnpm exec playwright install chromium" in tests_workflow
+    assert "run: pnpm run setup:browser:linux" not in tests_workflow
 
 
 def test_env_validator_rejects_unquoted_values_with_spaces(tmp_path: Path) -> None:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fresh ubuntu-24.04 GitHub runners still run unattended-upgrades, which
-# holds /var/lib/dpkg/lock-frontend. playwright install --with-deps and
-# apt-get then block until the job timeout. Linux CI only.
+# holds /var/lib/dpkg/lock-frontend. Timed apt-get in ci_apt_get.sh
+# calls this first. Linux CI only.
 set -euo pipefail
 
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -14,9 +14,11 @@ if ! command -v sudo >/dev/null 2>&1; then
   exit 1
 fi
 
+sudo systemctl mask --now unattended-upgrades.service 2>/dev/null || true
 sudo systemctl stop unattended-upgrades.service 2>/dev/null || true
 sudo systemctl stop apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
 sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+sudo killall -9 unattended-upgr unattended-upgrades apt-get apt 2>/dev/null || true
 
 lock=/var/lib/dpkg/lock-frontend
 for _ in $(seq 1 45); do

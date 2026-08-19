@@ -183,7 +183,10 @@ appropriate on macOS. `make test-web` also declares this prerequisite so a
 direct local web-gate run cannot skip it. On a clean Debian or Ubuntu release
 host, substitute the guarded `make setup-browser-linux` target; it installs
 Chromium plus the required Linux runner packages and refuses to run on macOS.
-The Linux CI job uses the same `setup:browser:linux` package script.
+The Linux CI job installs the Playwright Chromium binary without
+`--with-deps`. That flag shells out to apt-get, which has hung until
+the job timeout on ubuntu-24.04 runners after the dpkg lock was already
+free.
 
 `make migrate` must target a disposable release-candidate database or a live
 database that has a current, restore-tested backup. PostgreSQL verification
